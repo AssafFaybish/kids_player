@@ -128,3 +128,4 @@ native-reference/    MainActivity.java to copy into the generated android/ proje
 # kids_player
 # kids_player
 # kids_player
+# kids_player
