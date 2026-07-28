@@ -1,13 +1,23 @@
 # Dependencies
 node_modules/
 
-# Capacitor generated native project (regenerate with `npx cap add android`)
-/android/
-
 # Build output
 *.apk
 *.aab
 dist/
+
+# Signing material — NEVER commit (the real keystore lives in ~/.keystores, outside the repo)
+*.jks
+*.keystore
+*.p12
+*.pepk
+keystore.properties
+*.keystore.properties
+
+# Secrets
+google-services.json
+.env
+.env.*
 
 # OS / editor
 .DS_Store

@@ -1,131 +1,120 @@
-# הסרטונים שלי — Kids Player
+<div dir="rtl">
 
-A child-safe, parent-curated video player for a 4-year-old on an Android tablet.
-Plays **YouTube links** (via the official IFrame player, on `youtube-nocookie.com`) and
-**direct video files** (e.g. `.mp4` on Google Drive) — **inside the app**, with no navigation to
-youtube.com, no recommendations grid, and the minimum possible YouTube chrome.
+# 🌳 הסרטונים שלי — Kids Player
 
-Built as a plain HTML/CSS/JS web app wrapped into an Android APK with **Capacitor**.
+**נגן וידאו בטוח לילדים, בשליטת ההורים, לטאבלט אנדרואיד.**
 
-> **Maintainers / future development:** read [DEVELOPMENT.md](DEVELOPMENT.md) — it documents the
-> architecture, data model, storage keys, each module, the APK build, and known gotchas, so you can
-> continue from where this stands.
+אפליקציה לילדים בגיל הרך שמנגנת **אך ורק** סרטונים שההורה בחר — בלי המלצות, בלי גלישה ליוטיוב, בלי הפתעות. נבנתה כאפליקציית web ב‑JavaScript טהור (בלי framework) ועטופה ל‑APK עם **Capacitor**.
 
-## Parts
+</div>
 
-- **Profiles** — on launch you pick a profile ("מי צופה?") or create one (a name + an animal
-  avatar). Each profile has its **own separate video list** (and its own remote source) stored on the
-  tablet. Tap the profile chip in the gallery header to switch profiles. A parent can delete the
-  current profile from the parent screen. An existing pre-profiles list is migrated automatically into
-  a profile named "שלי".
-- **Kids screen** — a paginated 3×5 grid (15 per page) of big tappable thumbnails. Tap → the video
-  plays large at the top with only **Play/Pause + Fullscreen** (volume is the tablet's hardware
-  buttons); when it ends, it returns to the gallery automatically.
-- **Parent screen** — reached via the **🔒 הורים** button + a 4-digit PIN (shared across profiles).
-  Curate the active profile's list by **pasting links**, or by pointing it at a **remote file** (a
-  shared Google Sheet) you edit from anywhere.
+<div dir="rtl">
 
-## Requirements
+## ✨ למה זה קיים?
 
-- Node.js 18+
-- JDK 17 and the Android SDK (for building the APK). Android Studio is the easiest way to get both.
+יוטיוב — גם YouTube Kids — מציע לילד תוכן שההורה לא בחר: המלצות, סרטונים קשורים, ופרסומות לתוכן אחר. האפליקציה הזו הופכת את המודל: **ההורה אוצר רשימה, והילד רואה רק אותה.**
 
-## Quick start (web preview — UI only)
+## 🛡️ עקרונות בטיחות
 
-Native features (blocking youtube.com, real fullscreen, no-CORS fetch, file download/cache,
-autoplay-with-sound) only work in the APK. For fast UI iteration you can still open the web app:
+| עיקרון | איך |
+|---|---|
+| אין יציאה ליוטיוב | קוד נייטיב בולע כל ניווט ל‑`youtube.com` / `youtu.be` |
+| אין המלצות | נגן `youtube-nocookie.com` עם `rel=0`, יציאה אוטומטית לפני מסך הסיום |
+| אין ממשק יוטיוב | `controls=0` + שכבת מגע שחוסמת את הלוגו וה‑end-cards |
+| רק לינקים שאושרו | כל לינק עובר מסווג קפדני — YouTube ID אמיתי או קובץ וידאו `https` בלבד |
+| מסך הורים נעול | קוד PIN בן 4 ספרות (נשמר כ‑hash) |
+
+## 🧒 מה יש באפליקציה
+
+- **פרופילים** — כל ילד/ה עם רשימה משלו, אווטאר חיה וצבע.
+- **גלריה ידידותית** — רשת תמונות גדולות עם דפדוף בחצים, RTL מלא בעברית.
+- **נגן מותאם ילדים** — בר התקדמות אדום עם גרירה, לחיצה כפולה לדילוג, מסך מלא אמיתי.
+- **שני סוגי תוכן** — סרטוני YouTube וקבצי וידאו ישירים (למשל `.mp4` מגוגל דרייב, עם הורדה ושמירה מקומית כשההזרמה נכשלת).
+- **ניהול מרחוק** — הרשימה נטענת מ‑Google Sheet משותף: ההורה עורך מכל מקום, האפליקציה מתעדכנת בכל פתיחה.
+
+## 🗺️ בפיתוח (Roadmap)
+
+שדרוג משמעותי בעבודה — ראו את מסמך התכנון המלא:
+
+- 📁 **תיקיות ערוצים** — הוספת ערוץ יוטיוב שלם בשורה אחת בגיליון; האפליקציה מחלצת את כל הסרטונים, השם והלוגו (YouTube Data API + RSS).
+- 🎁 **סרטונים חדשים עטופים כמתנה** — לחיצה ראשונה פותחת עם קונפטי וצליל.
+- ⏳ **תור אישור הורים** — תוכן חדש מערוץ ממתין לאישור (עם טוגל auto‑approve לערוץ).
+- ☁️ **סנכרון בין מכשירים** — גיבוי לגוגל דרייב (OAuth בסקופ מינימלי `drive.file`), כולל מחיקות.
+- 📲 **שיתוף מיוטיוב** — כפתור Share באפליקציית יוטיוב מוסיף סרטון ישירות.
+- 🚀 **ביצועים** — IndexedDB, טעינה מדורגת, מסך טעינה מונפש לילדים.
+- 🔄 **עדכון גירסה מתוך האפליקציה** — דרך GitHub Releases.
+- 📺 מסך תמיד דולק בזמן ניגון, כפתור יציאה ידידותי, כותרת סרטון, ועוד.
+
+## 👨‍👩‍👧 התחלה מהירה להורה
+
+1. פותחים **Google Sheet** חדש (לא קובץ Excel!).
+2. בכל שורה, בעמודה A — לינק ליוטיוב (אפשר שם בעמודה B ותמונה בעמודה C).
+3. **שיתוף ← כל מי שיש לו הקישור: צופה.**
+4. מדביקים את קישור הגיליון במסך ההורים (🔒) באפליקציה.
+
+עדכונים בגיליון מגיעים לאפליקציה תוך דקות, בכל פתיחה או ברענון ידני.
+
+## 🔧 פיתוח
+
+</div>
 
 ```bash
-npm run serve       # always serves at http://localhost:5173 (fixed port)
-```
+# web preview (UI only — native features work only in the APK)
+npm run serve        # → http://localhost:5173 (fixed port)
 
-Then open **http://localhost:5173** in a browser — the address and port never change (the server
-refuses to start on another port rather than switching). Use `localhost` (not a `file://` path) so ES
-modules and WebCrypto work. The server also sends `Cache-Control: no-store`, so a normal refresh
-always loads the latest code.
+# tests
+npm test             # node:test
 
-To get a tap-to-open **app icon on the tablet**, package the APK (below) — that's the robust path
-(self-contained, no server). See [DEVELOPMENT.md §10](DEVELOPMENT.md) for the PWA "Add to Home Screen"
-alternative and its HTTPS requirement.
-
-## Build the Android app
-
-```bash
+# build the APK
 npm install
-npx cap add android            # generates the android/ project (first time only)
-# apply the native tweaks — see "Native tweaks" below
-npx cap copy android           # copy www/ into the native project (after every web change)
-cd android && ./gradlew assembleDebug
-# install on a connected tablet:
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+npx cap add android  # first time only — then apply native-reference/MainActivity.java
+npm run apk          # cap copy + gradlew assembleDebug
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or `npx cap run android` to build + launch on a connected device/emulator, and `npx cap open android`
-to open the project in Android Studio.
+<div dir="rtl">
 
-## Native tweaks (required)
+דרישות: Node.js 18+, JDK 17, Android SDK.
 
-Capacitor's default WebView *opens the external browser* when the child taps the YouTube logo, and
-HTML5 fullscreen is a no-op by default. After `npx cap add android`, copy the reference file
-[`native-reference/MainActivity.java`](native-reference/MainActivity.java) over the generated
-`android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java` (keep the top `package` line
-matching your `appId`). It:
+> 🛠️ **למתחזקים:** [DEVELOPMENT.md](DEVELOPMENT.md) מתעד את הארכיטקטורה, מודל הנתונים, מפתחות האחסון, כל מודול, בניית ה‑APK וה‑gotchas — קריאת חובה לפני שינוי קוד.
 
-- swallows navigations to `youtube.com` / `youtu.be` so the app never leaves to YouTube (the embed,
-  which loads from `youtube-nocookie.com` as a subframe, still plays);
-- installs a `WebChromeClient` that makes real fullscreen work and blocks pop-up windows.
+## 📁 מבנה הפרויקט
 
-Re-apply this file if you ever delete and re-add the `android/` project.
-
-## Using the parent screen
-
-1. Open the app and tap the small **🔒 הורים** (parents) button in the top corner of the gallery.
-2. First time: set a 4-digit PIN (entered twice). Later: enter the PIN to get in. The PIN — not
-   hiding the button — is what keeps the child out.
-3. **Manual mode:** paste a YouTube link or a direct video-file link, press *הוספה*. Optionally set a
-   display name and (for video files) a thumbnail image URL.
-4. **Remote mode:** paste the URL of your list file and press *שמירה* / *רענון עכשיו*. The app then
-   mirrors that file — one link per line (`#` lines ignored; `link,name,thumb` also supported). The
-   order in the file is the display order. The list refreshes on every app launch/return and via the
-   refresh button.
-
-### Recommended remote file: a shared Google Sheet
-
-1. Create a Google **Sheet** (not an Excel/`.xlsx` file — that's binary and won't parse).
-2. Put **one YouTube link per row in column A** (optionally a name in B and a thumbnail URL in C).
-3. **Share → Anyone with the link → Viewer.**
-4. Copy the normal sheet link (`https://docs.google.com/spreadsheets/d/<ID>/edit...`) and paste it
-   into the app. The app converts it to a CSV export automatically.
-
-Edits propagate within ~1–5 minutes (Google's cache). A published `...pub?output=csv` URL or any
-plain-text/CSV URL also works.
-
-## Known limitations (honest)
-
-- **YouTube ads** on monetized videos cannot be blocked by any compliant method. Curate ad-light
-  channels.
-- **YouTube end cards** may flash for a second before the near-end auto-return fires.
-- **Google Drive** streaming of large files is unreliable; the app falls back to downloading the file
-  once and caching it (first play is slower, uses device storage). Direct hosts (Dropbox `?raw=1`, a
-  web server/CDN) stream instantly.
-- Reliable file format: **mp4 (H.264/AAC)**. Other formats depend on the device codecs.
-
-## Lock the child in (recommended)
-
-Enable Android **App pinning** (Settings → Security → App pinning), then pin this app from Recents so
-a 4-year-old cannot leave it.
-
-## Project layout
+</div>
 
 ```
-www/                 the web app (this is what runs)
-  index.html         shell: gallery / watch / PIN / parent views (RTL Hebrew)
+www/                    the entire app (vanilla JS, ES modules, no bundler)
+  index.html            all views in one document (RTL Hebrew)
   css/styles.css
-  js/                platform, store, pin, media, player, sync, app
+  js/
+    app.js              views, gallery, watch, PIN, parent screen
+    player.js           YouTube IFrame + <video>, shared custom HUD
+    store.js            data model, link classifier (the safety boundary), profiles
+    sync.js             remote list mirroring (Google Sheet → CSV)
+    media.js            stream → download+cache fallback for direct files
+    platform.js         Capacitor shim with browser fallbacks
+    pin.js              hashed parent PIN
+test/                   node:test unit tests
+native-reference/       canonical native tweaks (MainActivity.java)
+dev-server.mjs          local dev server (no-store + CORS proxy)
 capacitor.config.json
-native-reference/    MainActivity.java to copy into the generated android/ project
 ```
-# kids_player
-# kids_player
-# kids_player
-# kids_player
+
+<div dir="rtl">
+
+## ⚠️ מגבלות ידועות (בכנות)
+
+- **פרסומות יוטיוב** בסרטונים ממונטזים אינן ניתנות לחסימה בשום שיטה תקנית — העדיפו ערוצים דלי-פרסומות.
+- **end-cards** של יוטיוב עלולים להבהב לרגע לפני היציאה האוטומטית.
+- הזרמת קבצים גדולים מגוגל דרייב לא יציבה — האפליקציה מורידה פעם אחת ושומרת מקומית.
+- פורמט אמין: **mp4 (H.264/AAC)**.
+
+## 🔒 נעילת הילד באפליקציה (מומלץ)
+
+הפעילו **App pinning** באנדרואיד (הגדרות ← אבטחה ← הצמדת אפליקציה) והצמידו את האפליקציה — כך ילד קטן לא יכול לצאת ממנה.
+
+## 📄 רישיון ושימוש
+
+פרויקט משפחתי פרטי. מופץ בהתקנה ידנית (sideload) בלבד — לא בחנות. ראו הערות תאימות ל‑YouTube API ToS במסמכי הפרויקט.
+
+</div>
