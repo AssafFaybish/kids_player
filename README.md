@@ -126,3 +126,4 @@ capacitor.config.json
 native-reference/    MainActivity.java to copy into the generated android/ project
 ```
 # kids_player
+# kids_player
