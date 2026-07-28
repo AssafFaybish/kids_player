@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#6c63ff" />
+  <title>הסרטונים שלי</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="assets/icon.svg" />
+  <link rel="apple-touch-icon" href="assets/icon.svg" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===================== PROFILE PICKER ===================== -->
+    <section id="view-profiles" class="view active">
+      <div class="profiles-wrap">
+        <h1 class="profiles-title">מי צופה? 🍿</h1>
+        <div id="profiles-grid" class="profiles-grid"></div>
+      </div>
+    </section>
+
+    <!-- ===================== CREATE PROFILE ===================== -->
+    <section id="view-create-profile" class="view">
+      <div class="create-wrap">
+        <button id="create-back" class="text-btn create-back" type="button">◀ חזרה</button>
+        <h2 class="create-title">פרופיל חדש</h2>
+        <div class="create-preview"><span id="create-preview-av" class="avatar avatar-lg">🙂</span></div>
+        <input id="create-name" class="input" type="text" maxlength="12" placeholder="איך קוראים לך?" />
+        <p class="create-sub">בחרו תמונה:</p>
+        <div id="avatar-grid" class="avatar-grid"></div>
+        <button id="create-save" class="btn btn-primary" type="button">יצירת פרופיל</button>
+        <div id="create-msg" class="form-msg"></div>
+      </div>
+    </section>
+
+    <!-- ===================== GALLERY (kids) ===================== -->
+    <section id="view-gallery" class="view">
+      <header class="top-bar">
+        <button id="parent-gate-btn" class="parent-gate-btn" type="button" aria-label="אזור הורים">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="10.5" width="16" height="9.5" rx="2.5"></rect>
+            <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"></path>
+            <circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle>
+          </svg>
+          <span class="parent-gate-label">הורים</span>
+        </button>
+        <div class="brand">
+          <span class="brand-logo">🌳</span>
+          <span class="brand-title">הסרטונים שלי</span>
+        </div>
+        <button id="profile-chip" class="profile-chip" type="button" aria-label="החלפת פרופיל">
+          <span id="chip-av" class="chip-av">🙂</span>
+          <span id="chip-name" class="chip-name"></span>
+        </button>
+      </header>
+
+      <main id="grid" class="grid" aria-label="רשימת סרטונים"></main>
+
+      <div id="empty-state" class="empty-state hidden">
+        <div class="empty-emoji">🎬</div>
+        <p class="empty-text">עדיין אין סרטונים</p>
+      </div>
+
+      <nav id="pager" class="pager hidden" aria-label="דפדוף">
+        <button id="pg-prev" class="pg-btn" type="button" aria-label="הקודם">
+          <span class="pg-arrow">▶</span>
+        </button>
+        <div id="pg-info" class="pg-info">1 / 1</div>
+        <button id="pg-next" class="pg-btn" type="button" aria-label="הבא">
+          <span class="pg-arrow">◀</span>
+        </button>
+      </nav>
+    </section>
+
+    <!-- ===================== WATCH ===================== -->
+    <section id="view-watch" class="view">
+      <div class="watch-controls">
+        <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
+      </div>
+      <div id="player-wrap" class="player-wrap">
+        <div id="player-host" class="player-host"></div>
+        <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
+        <div id="seek-feedback" class="seek-feedback"></div>
+        <div class="player-hud">
+          <div class="player-controls">
+            <button id="ctl-play" class="ctl-btn" type="button" aria-label="נגן או עצור">⏸</button>
+            <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
+          </div>
+          <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
+            <div class="seek-track"></div>
+            <div id="seek-fill" class="seek-fill"></div>
+            <div id="seek-knob" class="seek-knob"></div>
+          </div>
+        </div>
+      </div>
+      <div id="watch-status" class="watch-status hidden"></div>
+      <h2 class="watch-more-title">עוד סרטונים</h2>
+      <div id="watch-grid" class="grid grid-more"></div>
+    </section>
+
+    <!-- ===================== PIN ===================== -->
+    <section id="view-pin" class="view">
+      <div class="pin-card">
+        <button id="pin-cancel" class="text-btn pin-cancel" type="button">ביטול</button>
+        <div class="pin-lock">🔒</div>
+        <h2 id="pin-title" class="pin-title">הזינו קוד הורים</h2>
+        <div id="pin-dots" class="pin-dots">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </div>
+        <div id="pin-msg" class="pin-msg"></div>
+        <div class="keypad">
+          <button class="key" type="button" data-k="1">1</button>
+          <button class="key" type="button" data-k="2">2</button>
+          <button class="key" type="button" data-k="3">3</button>
+          <button class="key" type="button" data-k="4">4</button>
+          <button class="key" type="button" data-k="5">5</button>
+          <button class="key" type="button" data-k="6">6</button>
+          <button class="key" type="button" data-k="7">7</button>
+          <button class="key" type="button" data-k="8">8</button>
+          <button class="key" type="button" data-k="9">9</button>
+          <button class="key key-empty" type="button" disabled></button>
+          <button class="key" type="button" data-k="0">0</button>
+          <button class="key key-del" type="button" data-k="del">⌫</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== PARENT ===================== -->
+    <section id="view-parent" class="view">
+      <header class="parent-bar">
+        <button id="parent-exit" class="text-btn" type="button">🔒 יציאה</button>
+        <h2 class="parent-title">מסך הורים</h2>
+      </header>
+
+      <div class="mode-toggle">
+        <button id="mode-manual" class="mode-btn active" type="button">רשימה ידנית</button>
+        <button id="mode-remote" class="mode-btn" type="button">קובץ מרוחק</button>
+      </div>
+
+      <!-- Manual panel -->
+      <div id="panel-manual" class="panel">
+        <div class="field">
+          <label for="add-url">הדביקו לינק (YouTube או קובץ וידאו mp4)</label>
+          <input id="add-url" class="input" type="url" inputmode="url" dir="ltr"
+                 placeholder="https://www.youtube.com/watch?v=... או https://.../movie.mp4" />
+        </div>
+        <details class="opt-details">
+          <summary>אפשרויות (שם / תמונה לקובץ וידאו)</summary>
+          <div class="field">
+            <label for="add-title">שם להצגה (לא חובה)</label>
+            <input id="add-title" class="input" type="text" placeholder="לדוגמה: פרפרים" />
+          </div>
+          <div class="field">
+            <label for="add-thumb">קישור לתמונה (לא חובה, לקובץ וידאו)</label>
+            <input id="add-thumb" class="input" type="url" dir="ltr" placeholder="https://.../image.jpg" />
+          </div>
+        </details>
+        <button id="add-btn" class="btn btn-primary" type="button">➕ הוספה</button>
+        <div id="add-msg" class="form-msg"></div>
+
+        <div class="list-head">
+          <span id="list-count" class="list-count">0 סרטונים</span>
+          <div class="list-actions">
+            <button id="export-btn" class="btn btn-small" type="button">ייצוא</button>
+            <button id="import-btn" class="btn btn-small" type="button">ייבוא</button>
+          </div>
+        </div>
+        <ul id="parent-list" class="parent-list"></ul>
+      </div>
+
+      <!-- Remote panel -->
+      <div id="panel-remote" class="panel hidden">
+        <div class="field">
+          <label for="remote-url">קישור לקובץ הרשימה (Google Sheet כ-CSV, או כל URL)</label>
+          <input id="remote-url" class="input" type="url" inputmode="url" dir="ltr"
+                 placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv" />
+        </div>
+        <div class="row-btns">
+          <button id="remote-save" class="btn btn-primary" type="button">שמירה</button>
+          <button id="remote-refresh" class="btn" type="button">🔄 רענון עכשיו</button>
+          <button id="remote-clear" class="btn btn-small" type="button">ניתוק</button>
+        </div>
+        <div id="remote-status" class="form-msg"></div>
+        <p class="hint">
+          הכי פשוט: פותחים <b>Google Sheet</b>, שמים לינק יוטיוב אחד בכל שורה בעמודה הראשונה,
+          לוחצים <b>שיתוף ← כל מי שיש לו הקישור: צופה</b>, ומדביקים כאן את קישור הגיליון.
+          הסדר בגיליון = סדר ההצגה. אפשר גם <code>לינק,שם,תמונה</code> בשורה, ושורת <code>#</code> תדולג.
+          <br><b>לא</b> להעלות קובץ Excel/‏xlsx — צריך גיליון Google משותף (או קובץ טקסט/CSV).
+        </p>
+      </div>
+
+      <footer class="parent-footer">
+        <button id="clear-cache" class="btn btn-small" type="button">ניקוי קבצי וידאו שהורדו (פינוי מקום)</button>
+        <button id="delete-profile" class="btn btn-small btn-danger" type="button">מחיקת הפרופיל הנוכחי</button>
+        <button id="reset-pin" class="btn btn-small btn-danger" type="button">איפוס קוד ההורים</button>
+      </footer>
+    </section>
+
+  </div>
+
+  <!-- hidden file input for import -->
+  <input id="import-file" type="file" accept="application/json,.json" class="hidden" />
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

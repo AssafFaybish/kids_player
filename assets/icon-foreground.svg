@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Subject kept within the central adaptive-icon safe zone (~66%). -->
+  <circle cx="512" cy="520" r="238" fill="#ffffff"/>
+  <polygon points="455,405 455,635 665,520" fill="#6c63ff"/>
+  <!-- playful sparkles -->
+  <circle cx="340" cy="360" r="26" fill="#ffd166"/>
+  <circle cx="690" cy="680" r="20" fill="#ff7ab6"/>
+  <circle cx="690" cy="345" r="15" fill="#ffe08a"/>
+  <circle cx="345" cy="672" r="14" fill="#ff7ab6"/>
+</svg>

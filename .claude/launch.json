@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kids-web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["/Users/assaf.faybish/repository/kids_player/dev-server.mjs"],
+      "port": 5173
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Capacitor generated native project (regenerate with `npx cap add android`)
+/android/
+
+# Build output
+*.apk
+*.aab
+dist/
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/

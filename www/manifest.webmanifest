@@ -1,0 +1,17 @@
+{
+  "name": "הסרטונים שלי",
+  "short_name": "הסרטונים שלי",
+  "id": "/",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "lang": "he",
+  "dir": "rtl",
+  "background_color": "#fef6e4",
+  "theme_color": "#6c63ff",
+  "icons": [
+    { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "assets/icon.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
