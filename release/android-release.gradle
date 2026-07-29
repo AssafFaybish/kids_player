@@ -1,0 +1,72 @@
+// android-release.gradle — versioning + release signing, applied as the LAST line of
+// android/app/build.gradle:  apply from: rootProject.file("../release/android-release.gradle")
+//
+// - Version single source of truth: package.json "version" (X.Y.Z)
+//     versionName = X.Y.Z ; versionCode = X*10000 + Y*100 + Z  (so 1.0.3 -> 10003)
+//     JS reads its own version at runtime via @capacitor/app App.getInfo() — never stale.
+// - Signing secrets live OUTSIDE the repo in ~/.keystores/kids-player.properties
+//     (override path with $KIDS_PLAYER_SIGNING_PROPS). Nothing secret in this file.
+// - Debug builds get applicationIdSuffix ".dev" so a dev install can NEVER collide with
+//     (or be blocked by) the release-signed app on the tablet.
+// - whenReady guard: a release build without signing props FAILS LOUDLY instead of
+//     silently producing app-release-unsigned.apk.
+
+import groovy.json.JsonSlurper
+
+def pkgVersion = new JsonSlurper().parseText(rootProject.file("../package.json").text).version
+def mm = pkgVersion =~ /^(\d+)\.(\d+)\.(\d+)$/
+if (!mm.matches()) throw new GradleException("package.json version must be X.Y.Z, got '${pkgVersion}'")
+if (mm.group(2).toInteger() > 99 || mm.group(3).toInteger() > 99) {
+    throw new GradleException("package.json version minor/patch must be <= 99 for versionCode scheme, got '${pkgVersion}'")
+}
+def vCode = mm.group(1).toInteger() * 10000 + mm.group(2).toInteger() * 100 + mm.group(3).toInteger()
+
+def propsPath = System.getenv("KIDS_PLAYER_SIGNING_PROPS")
+        ?: "${System.getProperty('user.home')}/.keystores/kids-player.properties"
+def propsFile = new File(propsPath)
+def haveSigning = propsFile.exists()
+def sp = new Properties()
+if (haveSigning) { propsFile.withInputStream { sp.load(it) } }
+
+android {
+    defaultConfig {
+        versionCode vCode
+        versionName pkgVersion
+    }
+    if (haveSigning) {
+        signingConfigs {
+            release {
+                storeFile file(sp.getProperty("storeFile"))
+                storePassword sp.getProperty("storePassword")
+                keyAlias sp.getProperty("keyAlias")
+                keyPassword sp.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (haveSigning) signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+        debug {
+            applicationIdSuffix ".dev"
+            versionNameSuffix "-dev"
+        }
+    }
+}
+
+// Google Drive authorization (drive.file) via Play Services AuthorizationClient —
+// kept here so android/app/build.gradle stays a one-line hook.
+dependencies {
+    implementation "com.google.android.gms:play-services-auth:21.2.0"
+}
+
+gradle.taskGraph.whenReady { graph ->
+    if (!haveSigning && graph.allTasks.any { it.name.toLowerCase().contains("release") }) {
+        throw new GradleException(
+            "Release build requested but no signing properties found at ${propsPath}. " +
+            "See PUBLISHING.md — never ship an unsigned/debug-signed release.")
+    }
+}
+
+println "kids-player: versionName=${pkgVersion} versionCode=${vCode} signed=${haveSigning}"

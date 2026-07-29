@@ -65,29 +65,60 @@
         <p class="empty-text">עדיין אין סרטונים</p>
       </div>
 
-      <nav id="pager" class="pager hidden" aria-label="דפדוף">
-        <button id="pg-prev" class="pg-btn" type="button" aria-label="הקודם">
-          <span class="pg-arrow">▶</span>
-        </button>
-        <div id="pg-info" class="pg-info">1 / 1</div>
-        <button id="pg-next" class="pg-btn" type="button" aria-label="הבא">
-          <span class="pg-arrow">◀</span>
+      <!-- The pager bar itself stays visible even on a single page — the exit button
+           lives here (F6); only the arrow controls hide. -->
+      <nav id="pager" class="pager" aria-label="דפדוף">
+        <div id="pg-controls" class="pg-controls hidden">
+          <button id="pg-prev" class="pg-btn" type="button" aria-label="הקודם">
+            <span class="pg-arrow">▶</span>
+          </button>
+          <div id="pg-info" class="pg-info">1 / 1</div>
+          <button id="pg-next" class="pg-btn" type="button" aria-label="הבא">
+            <span class="pg-arrow">◀</span>
+          </button>
+        </div>
+        <button id="exit-btn" class="exit-btn" type="button" aria-label="יציאה מהאפליקציה">
+          <span class="exit-emoji">🚪</span>
+          <span class="exit-label">יציאה</span>
         </button>
       </nav>
     </section>
 
+    <!-- ===================== FOLDER (channel / list / mine) ===================== -->
+    <section id="view-folder" class="view">
+      <header class="top-bar">
+        <button id="folder-back" class="round-btn" type="button" aria-label="חזרה">🏠</button>
+        <div class="brand">
+          <span id="folder-title" class="brand-title"></span>
+        </div>
+      </header>
+      <main id="folder-grid" class="grid" aria-label="סרטוני התיקייה"></main>
+      <nav id="folder-pager" class="pager" aria-label="דפדוף"></nav>
+    </section>
+
+    <!-- ===================== LOADING (kids) ===================== -->
+    <section id="view-loading" class="view">
+      <div class="load-wrap">
+        <div id="load-stage" class="load-stage"></div>
+        <h2 class="load-title">בטעינה…</h2>
+        <p id="load-sub" class="load-sub"></p>
+        <div class="load-dots"><span></span><span></span><span></span></div>
+      </div>
+    </section>
+
     <!-- ===================== WATCH ===================== -->
     <section id="view-watch" class="view">
-      <div class="watch-controls">
-        <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
-      </div>
-      <div id="player-wrap" class="player-wrap">
+      <!-- 🏠 lives INSIDE #player-wrap: native fullscreen hides the WebView, so anything
+           outside the wrap is unreachable there. It auto-hides with the HUD (F1). -->
+      <div id="player-wrap" class="player-wrap hud-on">
         <div id="player-host" class="player-host"></div>
         <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
         <div id="seek-feedback" class="seek-feedback"></div>
+        <div id="player-top" class="player-top">
+          <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
+        </div>
         <div class="player-hud">
           <div class="player-controls">
-            <button id="ctl-play" class="ctl-btn" type="button" aria-label="נגן או עצור">⏸</button>
             <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
           </div>
           <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
@@ -97,9 +128,11 @@
           </div>
         </div>
       </div>
+      <h1 id="watch-title" class="watch-title hidden"></h1>
       <div id="watch-status" class="watch-status hidden"></div>
       <h2 class="watch-more-title">עוד סרטונים</h2>
       <div id="watch-grid" class="grid grid-more"></div>
+      <nav id="watch-pager" class="pager" aria-label="דפדוף סרטונים"></nav>
     </section>
 
     <!-- ===================== PIN ===================== -->
@@ -137,16 +170,28 @@
       </header>
 
       <div class="mode-toggle">
-        <button id="mode-manual" class="mode-btn active" type="button">רשימה ידנית</button>
-        <button id="mode-remote" class="mode-btn" type="button">קובץ מרוחק</button>
+        <button id="tab-approve" class="mode-btn" type="button">ממתינים <span id="pending-badge" class="tab-badge hidden">0</span></button>
+        <button id="tab-add" class="mode-btn active" type="button">הוספה</button>
+        <button id="tab-sources" class="mode-btn" type="button">מקורות</button>
+        <button id="tab-settings" class="mode-btn" type="button">הגדרות</button>
       </div>
 
-      <!-- Manual panel -->
-      <div id="panel-manual" class="panel">
+      <!-- Pending approval (F10/F12): new channel/shared content waits here -->
+      <div id="panel-approve" class="panel hidden">
+        <div class="row-btns">
+          <button id="approve-all" class="btn btn-primary" type="button">✅ אישור הכול</button>
+          <button id="reject-all" class="btn btn-small btn-danger" type="button">🗑️ דחיית הכול</button>
+        </div>
+        <div id="approve-msg" class="form-msg"></div>
+        <ul id="pending-list" class="parent-list"></ul>
+      </div>
+
+      <!-- Add a single video / a whole channel -->
+      <div id="panel-add" class="panel">
         <div class="field">
-          <label for="add-url">הדביקו לינק (YouTube או קובץ וידאו mp4)</label>
+          <label for="add-url">הדביקו לינק — סרטון YouTube, ערוץ שלם (@ערוץ), או קובץ mp4</label>
           <input id="add-url" class="input" type="url" inputmode="url" dir="ltr"
-                 placeholder="https://www.youtube.com/watch?v=... או https://.../movie.mp4" />
+                 placeholder="https://www.youtube.com/watch?v=... או youtube.com/@channel" />
         </div>
         <details class="opt-details">
           <summary>אפשרויות (שם / תמונה לקובץ וידאו)</summary>
@@ -172,12 +217,12 @@
         <ul id="parent-list" class="parent-list"></ul>
       </div>
 
-      <!-- Remote panel -->
-      <div id="panel-remote" class="panel hidden">
+      <!-- Sources: the input sheet + subscribed channels + API key -->
+      <div id="panel-sources" class="panel hidden">
         <div class="field">
-          <label for="remote-url">קישור לקובץ הרשימה (Google Sheet כ-CSV, או כל URL)</label>
+          <label for="remote-url">קישור לגיליון הרשימה (Google Sheet משותף לצפייה)</label>
           <input id="remote-url" class="input" type="url" inputmode="url" dir="ltr"
-                 placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv" />
+                 placeholder="https://docs.google.com/spreadsheets/d/..." />
         </div>
         <div class="row-btns">
           <button id="remote-save" class="btn btn-primary" type="button">שמירה</button>
@@ -186,11 +231,58 @@
         </div>
         <div id="remote-status" class="form-msg"></div>
         <p class="hint">
-          הכי פשוט: פותחים <b>Google Sheet</b>, שמים לינק יוטיוב אחד בכל שורה בעמודה הראשונה,
-          לוחצים <b>שיתוף ← כל מי שיש לו הקישור: צופה</b>, ומדביקים כאן את קישור הגיליון.
-          הסדר בגיליון = סדר ההצגה. אפשר גם <code>לינק,שם,תמונה</code> בשורה, ושורת <code>#</code> תדולג.
-          <br><b>לא</b> להעלות קובץ Excel/‏xlsx — צריך גיליון Google משותף (או קובץ טקסט/CSV).
+          שורה בגיליון יכולה להיות <b>סרטון</b> (לינק YouTube / mp4) או <b>ערוץ שלם</b>
+          (לינק לערוץ או ‎@שם). לערוץ אפשר להוסיף בעמודה C את המילה <code>auto</code>
+          (סרטונים חדשים נכנסים ישר) או <code>manual</code> (ממתינים לאישור).
+          שורת <code>#</code> תדולג. <b>לא</b> קובץ Excel/xlsx — גיליון Google משותף בלבד.
         </p>
+
+        <div class="list-head"><span class="list-count">ערוצים</span></div>
+        <ul id="channels-list" class="parent-list"></ul>
+
+        <div class="list-head" style="margin-top:18px"><span class="list-count">🔑 מפתח YouTube API</span></div>
+        <p class="hint">
+          <b>למה צריך?</b> כשמוסיפים ערוץ שלם, המפתח מאפשר לאפליקציה למשוך מיוטיוב את
+          <b>כל</b> הסרטונים של הערוץ (גם ישנים), את שם הערוץ ואת הלוגו שלו.
+          <br><b>מה קורה בלי מפתח?</b> האפליקציה עדיין עובדת, אבל מכל ערוץ יגיעו רק
+          <b>15 הסרטונים האחרונים</b> (ללא ההיסטוריה), בלי לוגו — וסרטונים חדשים ימשיכו
+          להתווסף עם הזמן. סרטונים בודדים לא מושפעים בכלל.
+          <br>באפליקציה כבר מובנה מפתח ברירת-מחדל, כך שבדרך כלל <b>אין צורך למלא כאן כלום</b> —
+          השדה נועד להחלפה אם המפתח המובנה יפסיק לעבוד או ייגמר לו המכסה היומית
+          (יצירת מפתח: מדריך <code>GOOGLE_CLOUD_SETUP.md</code> בפרויקט).
+        </p>
+        <div class="field">
+          <input id="apikey-input" class="input" type="text" dir="ltr" placeholder="AIza... (לא חובה)" />
+        </div>
+        <div class="row-btns">
+          <button id="apikey-save" class="btn btn-small" type="button">שמירת מפתח</button>
+        </div>
+        <div id="apikey-msg" class="form-msg"></div>
+      </div>
+
+      <!-- Settings -->
+      <div id="panel-settings" class="panel hidden">
+        <label class="switch-row">
+          <input id="share-approval-toggle" type="checkbox" checked />
+          <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס</span>
+        </label>
+        <div id="settings-msg" class="form-msg"></div>
+
+        <div class="list-head"><span class="list-count">🔄 עדכון גירסה</span></div>
+        <p class="hint">גירסה נוכחית: <b id="ver-current" dir="ltr">—</b> · אחרונה: <b id="ver-latest" dir="ltr">—</b></p>
+        <div class="row-btns">
+          <button id="update-check" class="btn btn-small" type="button">בדיקת עדכון</button>
+          <button id="update-install" class="btn btn-primary btn-small hidden" type="button">⬇️ עדכון גירסה</button>
+        </div>
+        <div id="update-msg" class="form-msg"></div>
+
+        <div class="list-head"><span class="list-count">☁️ גיבוי וסנכרון לגוגל דרייב</span></div>
+        <p id="drive-status" class="hint">כבוי — הספרייה שמורה רק במכשיר הזה.</p>
+        <div class="row-btns">
+          <button id="drive-enable" class="btn btn-small" type="button">הפעלה (חשבון Google)</button>
+          <button id="drive-push" class="btn btn-small hidden" type="button">גיבוי עכשיו</button>
+        </div>
+        <div id="drive-msg" class="form-msg"></div>
       </div>
 
       <footer class="parent-footer">
@@ -200,6 +292,21 @@
       </footer>
     </section>
 
+  </div>
+
+  <!-- ===================== KID MODAL (replaces window.confirm/alert) ===================== -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-scrim" class="modal-scrim"></div>
+    <div class="modal-card">
+      <div id="modal-emoji" class="modal-emoji"></div>
+      <h2 id="modal-title" class="modal-title"></h2>
+      <p id="modal-text" class="modal-text"></p>
+      <div class="modal-btns">
+        <!-- cancel FIRST in DOM = RIGHTMOST in RTL = the safe choice under the thumb -->
+        <button id="modal-cancel" class="btn modal-btn" type="button"></button>
+        <button id="modal-ok" class="btn modal-btn" type="button"></button>
+      </div>
+    </div>
   </div>
 
   <!-- hidden file input for import -->

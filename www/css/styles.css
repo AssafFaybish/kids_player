@@ -67,6 +67,8 @@ body {
   position: relative;
   display: flex; align-items: center; justify-content: center;
   padding: 16px; gap: 10px;
+  /* Android 15 (targetSdk 35) draws edge-to-edge — keep the bar out of the status bar */
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-logo { font-size: 34px; }
@@ -135,7 +137,21 @@ body {
 .pager {
   display: flex; align-items: center; justify-content: center;
   gap: 26px; padding: 10px 0 34px;
+  position: relative;
 }
+.pg-controls { display: flex; align-items: center; justify-content: center; gap: 26px; }
+/* F6: big friendly exit — FIXED to the bottom-left corner of the home screen (user
+   request; the door 🚪 reads as "exit" where the waving hand read as "hello"). */
+.exit-btn {
+  position: fixed; bottom: 18px; left: 18px; z-index: 5;
+  width: 84px; height: 84px; border-radius: 26px; border: none;
+  background: #fff; box-shadow: var(--shadow); cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; font-family: inherit;
+}
+.exit-btn:active { transform: scale(0.92); }
+.exit-emoji { font-size: 34px; line-height: 1.1; }
+.exit-label { font-size: 13px; font-weight: 800; color: var(--muted); }
 .pg-btn {
   border: none; border-radius: 50%;
   width: 74px; height: 74px;
@@ -149,10 +165,6 @@ body {
 
 /* ---------- Watch ---------- */
 #view-watch { padding-bottom: 30px; }
-.watch-controls {
-  display: flex; align-items: center; justify-content: flex-start;
-  gap: 12px; padding: 10px 14px; background: #17141f;
-}
 .player-wrap {
   position: relative;
   width: min(100%, calc(64vh * 16 / 9));
@@ -163,15 +175,36 @@ body {
 }
 .player-host { position: absolute; inset: 0; }
 .player-host iframe, .player-host video { width: 100%; height: 100%; border: 0; display: block; }
-/* Transparent layer over the player: blocks YouTube's own overlay/logo/end-cards; tap = play/pause. */
+/* Transparent layer over the player: blocks YouTube's own overlay/logo/end-cards;
+   taps drive the HUD (reveal / play-pause / double-tap seek). */
 .tap-shield { position: absolute; inset: 0; z-index: 2; background: transparent; touch-action: none; }
+/* Top overlay: home button. Participates in the same hide/show cycle as the HUD. */
+.player-top {
+  position: absolute; inset-inline: 0; top: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: flex-start;
+  padding: 10px 14px;
+  background: linear-gradient(rgba(0, 0, 0, 0.55), transparent);
+}
 .player-hud {
   position: absolute; inset-inline: 0; bottom: 0; z-index: 3;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.6)); padding-bottom: 8px;
 }
+/* F1 auto-hide: one class on the wrap drives everything.
+   CRITICAL: the bar CONTAINERS are pointer-events:none ALWAYS — on a small player the
+   top+bottom gradients cover nearly the whole video, and an interactive bar would
+   swallow the center-tap (pause) and double-tap (seek) that belong to the shield
+   (bug caught with a real-input event probe: pointerdown@tap-shield but
+   pointerup@player-controls). Only the buttons and the seek bar take pointer events,
+   and only while visible. */
+.player-top, .player-hud { opacity: 1; transition: opacity 0.18s ease; pointer-events: none; }
+.player-wrap:not(.hud-on) .player-top,
+.player-wrap:not(.hud-on) .player-hud { opacity: 0; }
+.player-wrap.hud-on .player-top .round-btn,
+.player-wrap.hud-on .player-hud .ctl-btn,
+.player-wrap.hud-on .player-hud .seek { pointer-events: auto; }
 .player-controls {
-  display: flex; align-items: center; justify-content: center; gap: 16px;
-  padding: 10px 12px 8px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 16px;
+  padding: 10px 14px 8px;
 }
 .seek { position: relative; height: 26px; margin: 0 14px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
 .seek-track { position: absolute; inset-inline: 0; height: 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.35); }
@@ -184,7 +217,7 @@ body {
 }
 .seek-feedback.show { opacity: 1; }
 .ctl-btn {
-  width: 62px; height: 62px; border-radius: 50%; border: none;
+  width: var(--tap); height: var(--tap); border-radius: 50%; border: none;
   background: rgba(255, 255, 255, 0.94); color: #17141f;
   font-size: 26px; line-height: 1; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
@@ -192,12 +225,21 @@ body {
 }
 .ctl-btn:active { transform: scale(0.92); }
 .player-wrap:fullscreen, .player-wrap:-webkit-full-screen { width: 100%; height: 100%; aspect-ratio: auto; }
+.watch-title {
+  max-width: 1100px; margin: 0 auto; padding: 12px 18px 0;
+  font-size: 22px; font-weight: 800; color: var(--ink); text-align: start;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 .watch-status { text-align: center; padding: 14px; font-size: 18px; color: var(--muted); }
-.watch-more-title { padding: 16px 18px 0; font-size: 22px; color: var(--brand-2); margin: 0; }
+.watch-more-title { padding: 16px 18px 0; font-size: 22px; color: var(--brand-2); margin: 0; max-width: 1100px; margin: 0 auto; }
 .grid-more { padding-top: 12px; }
+/* the item currently playing, inside the under-player grid */
+.tile-current { outline: 4px solid var(--brand-2); outline-offset: -4px; }
+.tile-current .play-badge { background: var(--brand-2); }
+#watch-pager { padding-bottom: 20px; }
 
 /* ---------- PIN ---------- */
-#view-pin { min-height: 100vh; display: none; }
+#view-pin { min-height: 100dvh; display: none; }
 #view-pin.active { display: flex; align-items: center; justify-content: center; }
 .pin-card {
   position: relative;
@@ -227,7 +269,11 @@ body {
 
 /* ---------- Parent ---------- */
 #view-parent { max-width: 720px; margin: 0 auto; padding: 12px 16px 40px; }
-.parent-bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 4px; }
+.parent-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0 4px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+}
 .parent-title { font-size: 22px; margin: 0; color: var(--brand-2); }
 .mode-toggle {
   display: flex; gap: 8px; background: #eceaff; border-radius: 16px; padding: 6px; margin: 14px 0;
@@ -281,6 +327,23 @@ body {
 .badge-yt { background: #ffe1e1; color: #d33; }
 .badge-file { background: #e1f0ff; color: #06c; }
 
+.tab-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; border-radius: 10px; padding: 0 5px;
+  background: var(--accent); color: #fff; font-size: 12px; margin-inline-start: 4px;
+}
+.switch-row {
+  display: flex; align-items: center; gap: 12px; padding: 12px 0;
+  font-size: 16px; font-weight: 700; color: var(--ink); cursor: pointer;
+}
+.switch-row input { width: 24px; height: 24px; accent-color: var(--brand-2); }
+.parent-list .li-ok {
+  border: none; background: #e7f8ee; color: var(--green);
+  border-radius: 12px; width: 46px; height: 46px; font-size: 20px; cursor: pointer; flex: 0 0 auto;
+}
+.li-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.li-toggle input { width: 20px; height: 20px; accent-color: var(--brand-2); }
+
 @media (max-width: 560px) {
   .grid { grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 6px 10px 18px; }
   .tile .cap { font-size: 13px; padding: 7px 6px 10px; }
@@ -288,11 +351,148 @@ body {
   .brand-title { font-size: 20px; }
 }
 
+/* ---------- Folder tiles (F10): folders ROUND, videos rectangular ---------- */
+.tile-folder { align-items: center; padding: 16px 8px 14px; gap: 10px; }
+.folder-logo {
+  width: 96px; height: 96px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 46px; background: #eceaff; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.folder-logo img { width: 100%; height: 100%; object-fit: cover; }
+.folder-name {
+  font-size: 17px; font-weight: 800; color: var(--ink); line-height: 1.2;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.folder-count { font-size: 13px; font-weight: 700; color: var(--muted); }
+.tile-folder.folder-new .folder-logo {
+  background: repeating-linear-gradient(45deg, #ffe9b3 0 14px, #fff6dd 14px 28px);
+}
+.count-badge {
+  position: absolute; top: 10px; inset-inline-end: 10px;
+  min-width: 28px; height: 28px; border-radius: 14px; padding: 0 7px;
+  background: var(--accent); color: #fff; font-size: 15px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ---------- Gift wrap (F9) — pure CSS, zero assets.
+   Universal yellow-gold wrap with a red ribbon (user request: boy/girl-neutral). ---------- */
+.gift {
+  position: absolute; inset: 0; z-index: 1;
+  background: repeating-linear-gradient(45deg, #ffd166 0 14px, #ffe59a 14px 28px);
+}
+.gift-ribbon-v, .gift-ribbon-h { position: absolute; background: linear-gradient(#ff6b6b, #e63946); }
+.gift-ribbon-v { inset-block: 0; inset-inline-start: 42%; width: 16%; }
+.gift-ribbon-h { inset-inline: 0; top: 42%; height: 16%; }
+.gift-bow {
+  position: absolute; inset: 0; margin: auto; width: 44px; height: 44px;
+  font-size: 38px; line-height: 44px; text-align: center;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
+}
+.tile-gift .play-badge { display: none; }
+.tile-gift .thumb { animation: giftWiggle 2.2s ease-in-out infinite; }
+@keyframes giftWiggle { 0%, 100% { rotate: -1.5deg; } 50% { rotate: 1.5deg; } }
+/* never composite decorations while a video decodes */
+#view-watch .tile-gift .thumb { animation: none; }
+@media (prefers-reduced-motion: reduce) { .tile-gift .thumb { animation: none; } }
+.tile-gift.unwrapping .gift { animation: giftOpen 0.32s ease-in forwards; }
+@keyframes giftOpen { to { transform: scale(1.25); opacity: 0; } }
+
+/* ---------- Confetti (F9) ---------- */
+.confetti-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+.confetti-piece {
+  position: absolute; width: 10px; height: 14px; border-radius: 2px;
+  animation: confettiFly 0.95s ease-out forwards;
+}
+@keyframes confettiFly {
+  to { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity: 0; }
+}
+
+/* ---------- Loading (F11) ---------- */
+#view-loading { min-height: 100dvh; }
+#view-loading.active { display: flex; align-items: center; justify-content: center; }
+.load-wrap { text-align: center; width: min(92vw, 520px); }
+.load-stage { position: relative; height: 150px; overflow: hidden; }
+.load-scene { position: absolute; inset: 0; }
+.scene-sprite { position: absolute; font-size: 64px; line-height: 1; will-change: transform; }
+.load-title { font-size: 28px; color: var(--brand-2); margin: 10px 0 2px; }
+.load-sub { min-height: 24px; color: var(--muted); font-size: 17px; font-weight: 700; margin: 4px 0 10px; }
+.load-dots { display: flex; gap: 10px; justify-content: center; }
+.load-dots span {
+  width: 14px; height: 14px; border-radius: 50%; background: var(--brand-2);
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+.load-dots span:nth-child(2) { animation-delay: 0.2s; }
+.load-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotPulse { 0%, 100% { transform: scale(0.7); opacity: 0.4; } 50% { transform: scale(1); opacity: 1; } }
+
+/* horse: gallops across, bouncing; striped ground scrolls under it (transform-only) */
+.scene-horse .scene-sprite { bottom: 26px; animation: gallopX 2.4s linear infinite, gallopY 0.4s ease-in-out infinite; }
+@keyframes gallopX { from { transform: translateX(-45vw); } to { transform: translateX(45vw); } }
+@keyframes gallopY { 0%, 100% { bottom: 26px; } 50% { bottom: 40px; } }
+.scene-ground {
+  position: absolute; bottom: 8px; inset-inline: -50%; height: 10px; border-radius: 6px;
+  background: repeating-linear-gradient(90deg, #b8e994 0 30px, #8fd0a0 30px 60px);
+  animation: groundMove 0.9s linear infinite;
+}
+@keyframes groundMove { from { transform: translateX(0); } to { transform: translateX(60px); } }
+
+/* rocket: lifts off with sparks; stars drift down */
+.scene-rocket .scene-sprite { left: 50%; bottom: 0; animation: liftOff 2.4s ease-in infinite; }
+@keyframes liftOff {
+  0% { transform: translate(-50%, 60px) rotate(0deg); }
+  60% { transform: translate(-50%, -40px) rotate(6deg); }
+  100% { transform: translate(-50%, -170px) rotate(6deg); }
+}
+.spark { position: absolute; left: 50%; bottom: 6px; width: 10px; height: 10px; border-radius: 50%; background: #ffb703; animation: sparkFade 0.8s ease-out infinite; }
+.spark.s2 { animation-delay: 0.25s; background: var(--accent); }
+.spark.s3 { animation-delay: 0.5s; background: #ffd166; }
+@keyframes sparkFade { from { transform: translate(-50%, 0) scale(1); opacity: 1; } to { transform: translate(-50%, 30px) scale(0.2); opacity: 0; } }
+.star { position: absolute; color: var(--brand-2); font-size: 18px; animation: starDrift 2.6s linear infinite; }
+.star.st1 { left: 20%; } .star.st2 { left: 50%; animation-delay: 0.8s; } .star.st3 { left: 78%; animation-delay: 1.6s; }
+@keyframes starDrift { from { transform: translateY(-20px); opacity: 0.9; } to { transform: translateY(160px); opacity: 0; } }
+
+/* balloon: floats up, swaying; clouds parallax */
+.scene-balloon .scene-sprite { left: 48%; animation: floatUp 2.6s ease-in-out infinite, sway 2.4s ease-in-out infinite; }
+@keyframes floatUp { from { transform: translateY(130px); } to { transform: translateY(-150px); } }
+@keyframes sway { 0%, 100% { margin-left: -10px; } 50% { margin-left: 10px; } }
+.cloud { position: absolute; font-size: 34px; opacity: 0.85; animation: cloudMove 3.2s linear infinite; }
+.cloud.c1 { top: 22px; } .cloud.c2 { top: 78px; font-size: 24px; animation-duration: 4.5s; }
+@keyframes cloudMove { from { transform: translateX(46vw); } to { transform: translateX(-46vw); } }
+
+/* train: chugs across with a smoke puff */
+.scene-train .scene-sprite { bottom: 18px; animation: trainMove 2.8s linear infinite; }
+@keyframes trainMove { from { transform: translateX(45vw) scaleX(-1); } to { transform: translateX(-45vw) scaleX(-1); } }
+.puff { position: absolute; bottom: 74px; left: 50%; font-size: 20px; animation: puffUp 0.7s ease-out infinite; }
+@keyframes puffUp { from { transform: translateY(0) scale(0.6); opacity: 0.9; } to { transform: translateY(-26px) scale(1.2); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .load-scene *, .load-dots span { animation: none !important; }
+}
+
+/* ---------- Kid modal ---------- */
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+.modal-scrim { position: absolute; inset: 0; background: rgba(45, 42, 74, 0.45); }
+.modal-card {
+  position: relative;
+  background: #fff; border-radius: 28px; box-shadow: var(--shadow);
+  padding: 26px 26px 24px; width: min(92vw, 420px); text-align: center;
+  animation: modalPop 0.18s ease-out;
+}
+@keyframes modalPop { from { transform: scale(0.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.modal-emoji { font-size: 56px; line-height: 1.1; }
+.modal-title { font-size: 24px; margin: 10px 0 4px; color: var(--ink); }
+.modal-text { font-size: 17px; color: var(--muted); margin: 0 0 18px; }
+.modal-btns { display: flex; gap: 12px; }
+.modal-btn { flex: 1; min-height: var(--tap); font-size: 22px; }
+.modal-danger { background: #ffe2e3; color: var(--danger); }
+@media (prefers-reduced-motion: reduce) { .modal-card { animation: none; } }
+
 /* ---------- Profiles ---------- */
 .avatar { display: flex; align-items: center; justify-content: center; border-radius: 50%; }
 .avatar-lg { width: 108px; height: 108px; font-size: 58px; box-shadow: var(--shadow); margin: 0 auto; }
 
-#view-profiles { min-height: 100vh; }
+#view-profiles { min-height: 100dvh; }
 #view-profiles.active { display: flex; align-items: center; justify-content: center; }
 .profiles-wrap { text-align: center; padding: 30px; width: 100%; }
 .profiles-title { font-size: 30px; color: var(--brand-2); margin: 0 0 30px; }
@@ -303,7 +503,7 @@ body {
 .avatar-add { background: #eceaff; color: var(--brand-2); font-size: 48px; }
 .profile-add .profile-name { color: var(--muted); }
 
-#view-create-profile { min-height: 100vh; }
+#view-create-profile { min-height: 100dvh; }
 #view-create-profile.active { display: flex; align-items: center; justify-content: center; }
 .create-wrap { position: relative; text-align: center; padding: 24px; width: min(94vw, 460px); }
 .create-title { font-size: 26px; color: var(--brand-2); margin: 6px 0 14px; }

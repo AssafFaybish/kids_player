@@ -47,6 +47,39 @@ async function browserFetchText(url) {
   throw new Error('fetch-failed: ' + url);
 }
 
+/**
+ * General HTTP primitive for Drive/Sheets/YouTube API calls.
+ * Returns { status, headers, data } and NEVER throws on an HTTP status — callers need
+ * the error body (Google APIs put the reason there). Network failure → status 0.
+ *
+ * ⚠ CapacitorHttp trap (verified in CapacitorHttpUrlConnection.setRequestBody): a
+ * request body WITHOUT an explicit Content-Type header is silently discarded — a Drive
+ * multipart upload would return 200 and create an EMPTY file. Always pass Content-Type
+ * when body != null.
+ */
+export async function httpRequest({ method = 'GET', url, headers = {}, body = null, responseType = 'text' } = {}) {
+  const CH = plugin('CapacitorHttp');
+  if (CH) {
+    try {
+      const opts = { method, url, headers, responseType };
+      if (body != null) opts.data = body;
+      const res = await CH.request(opts);
+      return { status: res.status || 0, headers: res.headers || {}, data: res.data };
+    } catch (e) {
+      return { status: 0, headers: {}, data: null, error: String((e && e.message) || e) };
+    }
+  }
+  try {
+    const r = await fetch(url, { method, headers, body: body ?? undefined });
+    const data = responseType === 'json' ? await r.json().catch(() => null) : await r.text();
+    const h = {};
+    r.headers.forEach((v, k) => { h[k.toLowerCase()] = v; });
+    return { status: r.status, headers: h, data };
+  } catch (e) {
+    return { status: 0, headers: {}, data: null, error: String((e && e.message) || e) };
+  }
+}
+
 export async function httpGetText(url) {
   if (plugin('CapacitorHttp')) {
     const data = await nativeRequest(url, 'text');
@@ -87,7 +120,44 @@ export async function fsRemoveDir(path) {
   try { await FS.rmdir({ path, directory: DIRECTORY, recursive: true }); } catch {}
 }
 
-/* ---------------- App lifecycle (resume) ---------------- */
+/* ---------- EXTERNAL dir (updater downloads; survives the unknown-sources detour) ---------- */
+// ⚠ Filesystem.downloadFile IGNORES recursive:true on Android (verified in
+// @capacitor/filesystem source) — mkdir first or the first download throws
+// FileNotFoundException. This likely also affects the videos/ cache in media.js.
+export async function fsMkdirExternal(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return;
+  try { await FS.mkdir({ path, directory: 'EXTERNAL', recursive: true }); } catch {}
+}
+export async function fsStatExternal(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return null;
+  try { return await FS.stat({ path, directory: 'EXTERNAL' }); } catch { return null; }
+}
+export async function fsDeleteExternal(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return;
+  try { await FS.deleteFile({ path, directory: 'EXTERNAL' }); } catch {}
+}
+export async function fsDownloadExternal(url, path, onProgress) {
+  const FS = plugin('Filesystem');
+  if (!FS) throw new Error('no-filesystem');
+  let sub = null;
+  if (onProgress && FS.addListener) {
+    sub = await FS.addListener('progress', (p) => {
+      if (p && p.url === url) { try { onProgress(p.bytes, p.contentLength); } catch {} }
+    });
+  }
+  try {
+    const res = await FS.downloadFile({ url, path, directory: 'EXTERNAL', progress: !!onProgress });
+    return res.path || null; // bare absolute path — hand straight to installApk
+  } finally {
+    if (sub) try { sub.remove(); } catch {}
+  }
+}
+export function appPlugin() { return plugin('App'); }
+
+/* ---------------- App lifecycle (resume / back / exit) ---------------- */
 export function onAppResume(fn) {
   const App = plugin('App');
   if (App && App.addListener) {
@@ -95,4 +165,24 @@ export function onAppResume(fn) {
     return;
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fn(); });
+}
+
+/**
+ * Android hardware back. NOTE: registering this listener disables Capacitor's default
+ * back handling entirely — the handler MUST consume every case (nav.handleBack does).
+ * Browser fallback: Escape key, for dev-preview testing.
+ */
+export function onBackButton(fn) {
+  const App = plugin('App');
+  if (App && App.addListener) {
+    App.addListener('backButton', () => fn());
+    return;
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fn(); });
+}
+
+export function exitApp() {
+  const App = plugin('App');
+  if (App && App.exitApp) { App.exitApp(); return; }
+  try { window.close(); } catch {}
 }

@@ -1,57 +1,23 @@
-// store.js — data model, link classifier, YouTube helpers, and persistence.
+// store.js — data model, YouTube helpers, profiles, and legacy persistence.
+// The link classifiers moved to classify.js (pure, node-tested); they are re-exported
+// here so existing imports keep working.
 import { prefGet, prefSet, prefRemove, httpGetJson } from './platform.js';
+import { classifyLink } from './classify.js';
+
+export {
+  extractYouTubeId, driveFileId, classifyLink, stripTimeHints,
+  parseChannelRef, classifySourceRow, classifyFromSharedText
+} from './classify.js';
 
 const K_VIDEOS = 'videos';
 const K_SOURCE = 'source';
 
-/* ---------------- Link classification ---------------- */
-// Returns null for anything that isn't a supported YouTube link or https video file.
-// This is the safety boundary: only real YouTube IDs or https video URLs get in.
-
-export function extractYouTubeId(url) {
-  const m = String(url).match(
-    /(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
-  );
-  return m ? m[1] : null;
-}
-
-export function driveFileId(url) {
-  const s = String(url);
-  let m = s.match(/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]+)/); if (m) return m[1];
-  m = s.match(/drive\.google\.com\/(?:open|uc)\?(?:[^#]*&)?id=([A-Za-z0-9_-]+)/); if (m) return m[1];
-  m = s.match(/drive\.usercontent\.google\.com\/download\?(?:[^#]*&)?id=([A-Za-z0-9_-]+)/); if (m) return m[1];
-  return null;
-}
-
-const VIDEO_EXT = /\.(mp4|webm|m4v|mov|ogv|ogg)(\?|#|$)/i;
-
-export function classifyLink(raw) {
-  const s = String(raw || '').trim().replace(/^"+|"+$/g, '');
-  if (!s) return null;
-
-  const yt = extractYouTubeId(s);
-  if (yt) return { type: 'youtube', id: yt, key: 'yt:' + yt, srcUrl: s };
-
-  const did = driveFileId(s);
-  if (did) {
-    return {
-      type: 'file', driveId: did,
-      url: `https://drive.google.com/uc?export=download&id=${did}`,
-      srcUrl: s, key: 'file:drive:' + did
-    };
-  }
-
-  if (/^https:\/\//i.test(s) && VIDEO_EXT.test(s)) {
-    return { type: 'file', url: s, srcUrl: s, key: 'file:' + s };
-  }
-  return null;
-}
-
 /* ---------------- YouTube thumbnails + title ---------------- */
 export function youtubeThumbCandidates(id) {
+  // hqdefault FIRST: it exists for EVERY video (480×360, ~20KB; the 4:3 bars are
+  // cropped by object-fit:cover). maxresdefault 404s for a huge share of videos —
+  // starting there cost up to 15 wasted round trips per page (perf defect #3).
   return [
-    `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`,
-    `https://i.ytimg.com/vi/${id}/sddefault.jpg`,
     `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
     `https://i.ytimg.com/vi/${id}/mqdefault.jpg`
   ];
