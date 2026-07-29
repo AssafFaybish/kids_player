@@ -1,6 +1,7 @@
 // sync.js — remote list mirroring. Fetches the parent's file, parses it, and rebuilds the
 // stored list to match it exactly (single source of truth), preserving file order.
 import { httpGetText } from './platform.js';
+import { parseCsv } from './csv.js';
 import {
   getSource, loadItems, saveItems, classifyLink, fetchYouTubeTitle, driveFileId
 } from './store.js';
@@ -30,6 +31,8 @@ export function resolveListUrl(url) {
 }
 
 // Parse plain text / CSV / JSON into rows of { url, title, thumb }.
+// CSV goes through the real RFC4180 tokenizer in csv.js — a quoted Hebrew title
+// containing a comma ("פרפרים, חלק 2") survives intact (the old split destroyed it).
 export function parseList(text) {
   const t = String(text || '').trim();
   if (!t) return [];
@@ -48,11 +51,10 @@ export function parseList(text) {
   }
 
   const rows = [];
-  for (let line of t.split(/\r?\n/)) {
-    line = line.trim();
-    if (!line || line.startsWith('#')) continue;
-    const parts = line.split(/[\t,]/).map((s) => s.trim().replace(/^"+|"+$/g, ''));
-    if (parts[0]) rows.push({ url: parts[0], title: parts[1] || '', thumb: parts[2] || '' });
+  for (const fields of parseCsv(t)) {
+    const parts = fields.map((s) => s.trim().replace(/^"+|"+$/g, ''));
+    if (!parts[0] || parts[0].startsWith('#')) continue;
+    rows.push({ url: parts[0], title: parts[1] || '', thumb: parts[2] || '' });
   }
   return rows;
 }

@@ -47,6 +47,39 @@ async function browserFetchText(url) {
   throw new Error('fetch-failed: ' + url);
 }
 
+/**
+ * General HTTP primitive for Drive/Sheets/YouTube API calls.
+ * Returns { status, headers, data } and NEVER throws on an HTTP status — callers need
+ * the error body (Google APIs put the reason there). Network failure → status 0.
+ *
+ * ⚠ CapacitorHttp trap (verified in CapacitorHttpUrlConnection.setRequestBody): a
+ * request body WITHOUT an explicit Content-Type header is silently discarded — a Drive
+ * multipart upload would return 200 and create an EMPTY file. Always pass Content-Type
+ * when body != null.
+ */
+export async function httpRequest({ method = 'GET', url, headers = {}, body = null, responseType = 'text' } = {}) {
+  const CH = plugin('CapacitorHttp');
+  if (CH) {
+    try {
+      const opts = { method, url, headers, responseType };
+      if (body != null) opts.data = body;
+      const res = await CH.request(opts);
+      return { status: res.status || 0, headers: res.headers || {}, data: res.data };
+    } catch (e) {
+      return { status: 0, headers: {}, data: null, error: String((e && e.message) || e) };
+    }
+  }
+  try {
+    const r = await fetch(url, { method, headers, body: body ?? undefined });
+    const data = responseType === 'json' ? await r.json().catch(() => null) : await r.text();
+    const h = {};
+    r.headers.forEach((v, k) => { h[k.toLowerCase()] = v; });
+    return { status: r.status, headers: h, data };
+  } catch (e) {
+    return { status: 0, headers: {}, data: null, error: String((e && e.message) || e) };
+  }
+}
+
 export async function httpGetText(url) {
   if (plugin('CapacitorHttp')) {
     const data = await nativeRequest(url, 'text');
