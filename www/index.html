@@ -77,7 +77,10 @@
             <span class="pg-arrow">◀</span>
           </button>
         </div>
-        <button id="exit-btn" class="exit-btn" type="button" aria-label="יציאה מהאפליקציה">👋</button>
+        <button id="exit-btn" class="exit-btn" type="button" aria-label="יציאה מהאפליקציה">
+          <span class="exit-emoji">🚪</span>
+          <span class="exit-label">יציאה</span>
+        </button>
       </nav>
     </section>
 
@@ -237,9 +240,19 @@
         <div class="list-head"><span class="list-count">ערוצים</span></div>
         <ul id="channels-list" class="parent-list"></ul>
 
-        <div class="field" style="margin-top:14px">
-          <label for="apikey-input">מפתח YouTube API (לא חובה — בלעדיו: 15 סרטונים אחרונים לערוץ)</label>
-          <input id="apikey-input" class="input" type="text" dir="ltr" placeholder="AIza..." />
+        <div class="list-head" style="margin-top:18px"><span class="list-count">🔑 מפתח YouTube API</span></div>
+        <p class="hint">
+          <b>למה צריך?</b> כשמוסיפים ערוץ שלם, המפתח מאפשר לאפליקציה למשוך מיוטיוב את
+          <b>כל</b> הסרטונים של הערוץ (גם ישנים), את שם הערוץ ואת הלוגו שלו.
+          <br><b>מה קורה בלי מפתח?</b> האפליקציה עדיין עובדת, אבל מכל ערוץ יגיעו רק
+          <b>15 הסרטונים האחרונים</b> (ללא ההיסטוריה), בלי לוגו — וסרטונים חדשים ימשיכו
+          להתווסף עם הזמן. סרטונים בודדים לא מושפעים בכלל.
+          <br>באפליקציה כבר מובנה מפתח ברירת-מחדל, כך שבדרך כלל <b>אין צורך למלא כאן כלום</b> —
+          השדה נועד להחלפה אם המפתח המובנה יפסיק לעבוד או ייגמר לו המכסה היומית
+          (יצירת מפתח: מדריך <code>GOOGLE_CLOUD_SETUP.md</code> בפרויקט).
+        </p>
+        <div class="field">
+          <input id="apikey-input" class="input" type="text" dir="ltr" placeholder="AIza... (לא חובה)" />
         </div>
         <div class="row-btns">
           <button id="apikey-save" class="btn btn-small" type="button">שמירת מפתח</button>

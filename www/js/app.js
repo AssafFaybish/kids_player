@@ -157,7 +157,7 @@ function tileEl(item) {
     btn.classList.add('tile-gift');
     const wrap = document.createElement('span');
     wrap.className = 'gift';
-    wrap.innerHTML = '<span class="gift-ribbon-v"></span><span class="gift-ribbon-h"></span><span class="gift-bow">🎀</span>';
+    wrap.innerHTML = '<span class="gift-ribbon-v"></span><span class="gift-ribbon-h"></span><span class="gift-bow">⭐</span>';
     thumb.appendChild(wrap);
     const cap = btn.querySelector('.cap');
     if (cap) cap.textContent = 'מתנה! 🎁';
@@ -976,9 +976,11 @@ function wire() {
   $('ctl-fs').addEventListener('click', () => {
     const el = $('player-wrap');
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-    if (fsEl) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); }
-    else if (el.requestFullscreen) el.requestFullscreen();
-    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    try {
+      if (fsEl) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); }
+      else if (el.requestFullscreen) { const p = el.requestFullscreen(); if (p && p.catch) p.catch(() => {}); }
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    } catch { /* some embedded webviews deny fullscreen — never throw at the child */ }
   });
 
   document.querySelector('.keypad').addEventListener('click', (e) => {

@@ -140,14 +140,18 @@ body {
   position: relative;
 }
 .pg-controls { display: flex; align-items: center; justify-content: center; gap: 26px; }
-/* F6: big friendly exit — pinned to the bar's end so it never moves with pagination */
+/* F6: big friendly exit — FIXED to the bottom-left corner of the home screen (user
+   request; the door 🚪 reads as "exit" where the waving hand read as "hello"). */
 .exit-btn {
-  position: absolute; inset-inline-end: 22px; top: 4px;
-  width: 74px; height: 74px; border-radius: 50%; border: none;
+  position: fixed; bottom: 18px; left: 18px; z-index: 5;
+  width: 84px; height: 84px; border-radius: 26px; border: none;
   background: #fff; box-shadow: var(--shadow); cursor: pointer;
-  font-size: 34px; display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; font-family: inherit;
 }
 .exit-btn:active { transform: scale(0.92); }
+.exit-emoji { font-size: 34px; line-height: 1.1; }
+.exit-label { font-size: 13px; font-weight: 800; color: var(--muted); }
 .pg-btn {
   border: none; border-radius: 50%;
   width: 74px; height: 74px;
@@ -185,11 +189,19 @@ body {
   position: absolute; inset-inline: 0; bottom: 0; z-index: 3;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.6)); padding-bottom: 8px;
 }
-/* F1 auto-hide: one class on the wrap drives everything. pointer-events:none while
-   hidden → taps over the invisible bars fall through to the shield = reveal, not seek. */
-.player-top, .player-hud { opacity: 1; transition: opacity 0.18s ease; }
+/* F1 auto-hide: one class on the wrap drives everything.
+   CRITICAL: the bar CONTAINERS are pointer-events:none ALWAYS — on a small player the
+   top+bottom gradients cover nearly the whole video, and an interactive bar would
+   swallow the center-tap (pause) and double-tap (seek) that belong to the shield
+   (bug caught with a real-input event probe: pointerdown@tap-shield but
+   pointerup@player-controls). Only the buttons and the seek bar take pointer events,
+   and only while visible. */
+.player-top, .player-hud { opacity: 1; transition: opacity 0.18s ease; pointer-events: none; }
 .player-wrap:not(.hud-on) .player-top,
-.player-wrap:not(.hud-on) .player-hud { opacity: 0; pointer-events: none; }
+.player-wrap:not(.hud-on) .player-hud { opacity: 0; }
+.player-wrap.hud-on .player-top .round-btn,
+.player-wrap.hud-on .player-hud .ctl-btn,
+.player-wrap.hud-on .player-hud .seek { pointer-events: auto; }
 .player-controls {
   display: flex; align-items: center; justify-content: flex-end; gap: 16px;
   padding: 10px 14px 8px;
@@ -354,7 +366,7 @@ body {
 }
 .folder-count { font-size: 13px; font-weight: 700; color: var(--muted); }
 .tile-folder.folder-new .folder-logo {
-  background: repeating-linear-gradient(45deg, #ffe3f0 0 14px, #fff 14px 28px);
+  background: repeating-linear-gradient(45deg, #ffe9b3 0 14px, #fff6dd 14px 28px);
 }
 .count-badge {
   position: absolute; top: 10px; inset-inline-end: 10px;
@@ -363,12 +375,13 @@ body {
   display: flex; align-items: center; justify-content: center;
 }
 
-/* ---------- Gift wrap (F9) — pure CSS, zero assets ---------- */
+/* ---------- Gift wrap (F9) — pure CSS, zero assets.
+   Universal yellow-gold wrap with a red ribbon (user request: boy/girl-neutral). ---------- */
 .gift {
   position: absolute; inset: 0; z-index: 1;
-  background: repeating-linear-gradient(45deg, var(--accent) 0 14px, #ffa8cf 14px 28px);
+  background: repeating-linear-gradient(45deg, #ffd166 0 14px, #ffe59a 14px 28px);
 }
-.gift-ribbon-v, .gift-ribbon-h { position: absolute; background: linear-gradient(#ffd166, #ffb703); }
+.gift-ribbon-v, .gift-ribbon-h { position: absolute; background: linear-gradient(#ff6b6b, #e63946); }
 .gift-ribbon-v { inset-block: 0; inset-inline-start: 42%; width: 16%; }
 .gift-ribbon-h { inset-inline: 0; top: 42%; height: 16%; }
 .gift-bow {
