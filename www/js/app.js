@@ -84,7 +84,13 @@ function registerViews() {
       return true; // no profiles yet → swallow (nowhere to go back to)
     }
   });
-  nav.register('gallery', { onBack: () => { askExit(); return true; } });
+  nav.register('gallery', {
+    onBack: () => { askExit(); return true; },
+    // Re-render on EVERY return home: after unwrapping gifts the "חדשים" folder must
+    // update immediately — and disappear entirely when the last gift was opened
+    // (home then falls back to the flat video grid).
+    onEnter: () => { renderHome(); }
+  });
   nav.register('folder', {}); // default pop → home
   nav.register('watch', {
     onLeave: (prev, next) => {
