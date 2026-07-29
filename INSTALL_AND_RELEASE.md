@@ -33,6 +33,62 @@
 
 ## חלק ב — שחרור גרסה חדשה
 
+### שלב 0: הכנת מחשב לבנייה (חד-פעמי לכל מחשב)
+
+**דרישות בכל מערכת הפעלה:**
+1. **Node.js 18+** — nodejs.org
+2. **JDK 17** — הכי קל: להתקין Android Studio שמביא אותו
+3. **Android SDK** — מגיע עם Android Studio (להריץ אותו פעם אחת שיוריד את ה-SDK)
+4. `npm install` בתיקיית הפרויקט
+5. **ה-keystore** — ראו "העברת מפתח החתימה" למטה. בלעדיו build של release ייכשל
+   (בכוונה!) עם הודעה ברורה.
+
+**מיקומי ברירת מחדל:**
+
+| | macOS | Windows |
+|---|---|---|
+| JAVA_HOME | `/opt/homebrew/opt/openjdk@17/...` או ה-JBR של Android Studio | `C:\Program Files\Android\Android Studio\jbr` |
+| ANDROID_HOME | `~/Library/Android/sdk` | `%LOCALAPPDATA%\Android\Sdk` |
+| keystore | `~/.keystores/` | `C:\Users\<שם>\.keystores\` |
+
+**בנייה ב-macOS** — הסקריפטים המוכנים עובדים כמו שהם:
+
+```bash
+npm run apk:release
+npm run apk:verify
+```
+
+**בנייה ב-Windows** — הסקריפטים ב-package.json מניחים macOS, אז בונים ישירות עם gradle
+(אחרי שמגדירים `JAVA_HOME` ו-`ANDROID_HOME` כמשתני סביבה במערכת, או ב-PowerShell):
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+npx cap copy android
+cd android
+.\gradlew.bat assembleRelease
+# הפלט: android\app\build\outputs\apk\release\app-release.apk
+# אימות חתימה:
+& "$env:ANDROID_HOME\build-tools\34.0.0\apksigner.bat" verify --print-certs app\build\outputs\apk\release\app-release.apk
+```
+
+**העברת מפתח החתימה למחשב אחר (קריטי!):**
+1. העתיקו את **שני** הקבצים מ-`~/.keystores/` במק — `kids-player-release.jks` +
+   `kids-player.properties` — לתיקייה `C:\Users\<שם>\.keystores\` (או `~/.keystores` במק אחר).
+   העבירו בדרך פרטית (USB / AirDrop) — לא במייל ולא ל-repo!
+2. **ערכו את `kids-player.properties`** ועדכנו את השורה `storeFile=` לנתיב החדש, למשל:
+   `storeFile=C:\\Users\\assaf\\.keystores\\kids-player-release.jks`
+3. זהו — ה-gradle מוצא את הקובץ אוטומטית לפי `user.home`.
+   ⚠️ לעולם אל תיצרו keystore חדש "כי לא בא לכם להעביר" — APK חתום במפתח אחר
+   **לא יתקין כעדכון** על אף מכשיר קיים.
+
+**קובץ נוסף שנדרש לבנייה:** `www/js/keys.local.js` (מפתח ה-YouTube API — מחוץ לגיט
+כי ה-repo ציבורי). העתיקו גם אותו למחשב החדש, או צרו אותו מחדש:
+
+```js
+export const DEFAULT_YT_API_KEY = 'AIza...';
+```
+
 ### שלב 1: בניית ה-APK (במחשב)
 
 ```bash
@@ -92,7 +148,29 @@ gh release create v1.0.1 kids-player-v1.0.1.apk --repo devfassaf/kids_player -t 
 |---|---|
 | לעולם לא לאבד את `~/.keystores/` | אובדן = אף עדכון לא יותקן לעולם ([PUBLISHING.md](PUBLISHING.md)) |
 | מספר גרסה תמיד עולה | אנדרואיד מסרב לשנמוך (`INSTALL_FAILED_VERSION_DOWNGRADE`) |
-| תמיד `npm run apk:verify` לפני פרסום | APK לא חתום/חתום-debug יתקע את כל המכשירים |
+| תמיד לאמת חתימה לפני פרסום | APK לא חתום/חתום-debug יתקע את כל המכשירים |
+| את ה-tag מקלידים ידנית באנגלית | tag שהודבק מטקסט עברי קיבל תו RLM בלתי-נראה ושבר את זיהוי הגרסה (קרה באמת ב-v1.0.0 הראשון) |
 | בטא? `gh release create --prerelease` | האפליקציות מתעלמות מ-prerelease אוטומטית |
+
+---
+
+## שאלות נפוצות
+
+**למה המכשיר שואל "לאשר התקנה ממקור לא ידוע" — ואפשר לבטל את זה?**
+
+יש כאן שני דיאלוגים שונים, וחשוב להבדיל:
+
+1. **אישור "התקנת אפליקציות לא ידועות"** (מסך הגדרות) — ההרשאה הזו ניתנת
+   **פר-אפליקציה-מתקינה, פעם אחת**. אם התקנתם פעם דרך דרייב, פעם דרך ואטסאפ
+   ופעם מהאפליקציה עצמה — כל אחת מהן ביקשה אישור משלה, ולכן זה "שאל כל פעם".
+   **מרגע שמעדכנים רק דרך כפתור "עדכון גירסה" שבתוך האפליקציה, האישור נשמר
+   אחרי הפעם הראשונה ולא יופיע שוב.**
+2. **מסך "האם להתקין/לעדכן את האפליקציה?"** של אנדרואיד (לחיצת אישור אחת) —
+   את זה **אי אפשר לבטל**, בכוונה: זו הגנת אבטחה בסיסית של המערכת, ורק אפליקציות
+   מחנות Play או מכשירים בניהול ארגוני (MDM) עוקפים אותה. בפועל: עדכון = לחיצה
+   אחת על "עדכון".
+
+בנוסף, לפעמים **Play Protect** מציג "לסרוק את האפליקציה?" — אפשר ללחוץ
+"אל תשלח"/"התקן בכל זאת"; זה בדרך כלל מפסיק להופיע אחרי הפעמים הראשונות.
 
 </div>
