@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# release.sh — one-command release for kids_player (macOS/Linux; Windows: see
-# INSTALL_AND_RELEASE.md for the manual path).
+# release.sh — one-command release for kids_player (macOS/Linux; Windows:
+# use release.ps1, the PowerShell port of this script).
 #
 #   ./release.sh              build + publish the CURRENT package.json version
 #   ./release.sh patch        bump 1.0.3 -> 1.0.4 first (also: minor / major / X.Y.Z)
