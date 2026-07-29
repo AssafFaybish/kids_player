@@ -14,6 +14,27 @@
 <body>
   <div id="app">
 
+    <!-- ===================== CONNECT GOOGLE (first launch, one-time) ===================== -->
+    <section id="view-connect" class="view">
+      <div class="connect-wrap">
+        <div class="connect-emoji">☁️</div>
+        <h1 class="connect-title">מחברים חשבון Google?</h1>
+        <p class="connect-text">
+          חיבור חד-פעמי של חשבון Google (של ההורים) שומר גיבוי של ספריית הסרטונים
+          בגוגל דרייב הפרטי שלכם. <b>למה זה כדאי?</b>
+        </p>
+        <ul class="connect-points">
+          <li>🛟 אם הטאבלט יתאפס, יאבד או יוחלף — הפרופילים והסרטונים חוזרים</li>
+          <li>🔄 אותה ספרייה בכמה מכשירים, כולל אישורי הורים ומחיקות</li>
+          <li>🔒 הגיבוי פרטי בדרייב שלכם; הילדים לא רואים את החשבון</li>
+        </ul>
+        <button id="connect-google" class="btn btn-primary connect-btn" type="button">חיבור חשבון Google</button>
+        <button id="connect-skip" class="text-btn connect-skip" type="button">דילוג — אתחבר אחר-כך</button>
+        <p class="connect-hint">אפשר להתחבר בכל שלב דרך מסך ההורים ← הגדרות ← גיבוי וסנכרון</p>
+        <div id="connect-msg" class="form-msg"></div>
+      </div>
+    </section>
+
     <!-- ===================== PROFILE PICKER ===================== -->
     <section id="view-profiles" class="view active">
       <div class="profiles-wrap">
@@ -47,6 +68,7 @@
             <circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle>
           </svg>
           <span class="parent-gate-label">הורים</span>
+          <span id="gate-dot" class="attn-dot hidden" aria-hidden="true"></span>
         </button>
         <div class="brand">
           <span class="brand-logo">🌳</span>
@@ -89,6 +111,9 @@
       <header class="top-bar">
         <button id="folder-back" class="round-btn" type="button" aria-label="חזרה">🏠</button>
         <div class="brand">
+          <!-- the channel's logo rides next to its name — the child always knows
+               which channel folder they're inside (v1.0.4) -->
+          <span id="folder-logo-top" class="folder-logo-top hidden"></span>
           <span id="folder-title" class="brand-title"></span>
         </div>
       </header>
@@ -173,7 +198,7 @@
         <button id="tab-approve" class="mode-btn" type="button">ממתינים <span id="pending-badge" class="tab-badge hidden">0</span></button>
         <button id="tab-add" class="mode-btn active" type="button">הוספה</button>
         <button id="tab-sources" class="mode-btn" type="button">מקורות</button>
-        <button id="tab-settings" class="mode-btn" type="button">הגדרות</button>
+        <button id="tab-settings" class="mode-btn" type="button">הגדרות <span id="settings-dot" class="attn-dot attn-dot-inline hidden" aria-hidden="true"></span></button>
       </div>
 
       <!-- Pending approval (F10/F12): new channel/shared content waits here -->
@@ -272,7 +297,7 @@
         <p class="hint">גירסה נוכחית: <b id="ver-current" dir="ltr">—</b> · אחרונה: <b id="ver-latest" dir="ltr">—</b></p>
         <div class="row-btns">
           <button id="update-check" class="btn btn-small" type="button">בדיקת עדכון</button>
-          <button id="update-install" class="btn btn-primary btn-small hidden" type="button">⬇️ עדכון גירסה</button>
+          <button id="update-install" class="btn btn-primary btn-small hidden" type="button">⬇️ עדכון גירסה <span class="attn-dot attn-dot-inline" aria-hidden="true"></span></button>
         </div>
         <div id="update-msg" class="form-msg"></div>
 
