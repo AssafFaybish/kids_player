@@ -95,6 +95,15 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.6: the sheet is the single master list — sheetwrite.js appends manual adds,
+  manual channels and approved shares back to it (requires the `spreadsheets` scope in
+  GoogleAuthPlugin + edit rights; queue survives offline; published /d/e/ links can't be
+  written to). ONE shared "סרטונים נוספים" folder: `absorbMineIntoShared` idempotently
+  folds profile-scope 'mine' records into the library 'sheet' folder on every activation
+  (deny lists union via `db.copyDenies`; share.js writes lib scope directly when sources
+  exist). Channel auto-approve toggle now offers to approve that channel's PENDING videos
+  (dialog with count). Channels without a logo get a PERSISTED `fallbackThumbUrl` (oldest
+  live video's thumbnail) so folders stay visually distinct.
 - The updater reads `devfassaf/kids_player` releases/latest (`UPDATE_REPO` in update.js);
   asset naming: `kids-player-v<X.Y.Z>.apk`.
 - Known unaudited item: `media.js` `videos/` cache may need the same mkdir-before-downloadFile fix.

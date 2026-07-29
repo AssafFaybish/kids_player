@@ -24,6 +24,7 @@ live and how does data flow".
 | `ytrss.js` | pure keyless parsers (never throw): Atom feed + channel-page logo extractor | — |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
+| `sheetwrite.js` | v1.0.6 sheet write-back: manual adds/channels/approved shares APPEND to the input sheet (durable queue in meta, non-interactive token, gid→tab-title resolution, permission errors surfaced) | platform, gauth, db |
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; approval routing | classify, normalize, order, platform, db |

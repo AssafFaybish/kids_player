@@ -57,11 +57,16 @@ async function handleShare(o) {
   if (!c) return; // the safety boundary held — not a playable link
 
   const src = await db.getSources(pid);
-  const scope = db.profScope(pid);
+  // v1.0.6: shares land in the SHARED library folder ('sheet') when sources exist —
+  // one list for the whole family; the profile scope stays only as the pre-first-sync
+  // fallback (absorbed into the library on the next activation).
+  const lib = src && src.libraryId;
+  const scope = lib || db.profScope(pid);
+  const homeFolder = lib ? 'sheet' : 'mine';
   if (await db.getVideo(scope, c.key)) return; // idempotent on double delivery
-  if (src && src.libraryId && await db.getVideo(src.libraryId, c.key)) return;
-  const deny = await db.loadDenySet(scope);
-  if (deny.has(c.key)) return; // a deleted video stays deleted, even via share
+  if (lib && await db.getVideo(db.profScope(pid), c.key)) return;
+  if ((await db.loadDenySet(scope)).has(c.key)) return; // deleted stays deleted
+  if (lib && (await db.loadDenySet(db.profScope(pid))).has(c.key)) return;
 
   const requireApproval = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
   const now = Date.now();
@@ -69,13 +74,20 @@ async function handleShare(o) {
     scopeId: scope, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
     srcUrl: c.srcUrl, driveId: c.driveId ?? null,
     title: c.title || '', titleSource: c.title ? 'sheet' : null, normTitle: normalizeTitle(c.title),
-    folderId: requireApproval ? '~pending' : 'mine',
-    homeFolderId: 'mine', channelId: null,
+    folderId: requireApproval ? '~pending' : homeFolder,
+    homeFolderId: homeFolder, channelId: null,
     sortKey: sortKeyFor({ origin: 'share-intent', addedAt: now }),
     publishedAt: null, rowIndex: null, origin: 'share-intent',
     state: requireApproval ? 'pending' : 'live',
     addedAt: now, approvedAt: requireApproval ? null : now,
     thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
   }]);
+  if (!requireApproval && lib) {
+    // straight-to-live share = part of the master list now; pending ones enqueue at approval
+    try {
+      const { enqueueSheetRow } = await import('./sheetwrite.js');
+      await enqueueSheetRow(pid, { key: c.key, srcUrl: c.srcUrl, title: c.title || '' });
+    } catch {}
+  }
   try { onAdded({ key: c.key, title: c.title, pending: requireApproval }); } catch {}
 }

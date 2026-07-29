@@ -31,12 +31,19 @@
 3. מלא רק את שדות החובה:
    - App name: `הסרטונים שלי`
    - User support email + Developer contact: המייל שלך.
-4. **Scopes** ← Add or Remove Scopes ← סמן **רק** את:
-   `https://www.googleapis.com/auth/drive.file`
-   ("See, edit, create, and delete only the specific Google Drive files you use with this app")
-   ⚠️ אל תוסיף שום scope אחר — כל scope נוסף עלול לדרוש verification.
+4. **Scopes** ← Add or Remove Scopes ← סמן **בדיוק** את השניים:
+   - `https://www.googleapis.com/auth/drive.file`
+     ("See, edit, create, and delete only the specific Google Drive files you use with this app")
+   - `https://www.googleapis.com/auth/spreadsheets` — נדרש מ-v1.0.6 כדי שסרטונים
+     שנוספים באפליקציה יירשמו חזרה בגיליון (מקור אמת יחיד).
+   ⚠️ אל תוסיף scopes נוספים מעבר לשניים האלה.
 5. סיים את האשף ← בעמוד הסיכום לחץ **Publish App** ← Confirm.
-   (בגלל שאין scopes רגישים, הפרסום מיידי ואין טופס verification.)
+   ⚠️ scope של Sheets מסווג אצל גוגל כ"רגיש": באפליקציה שלא עברה verification,
+   מסך ההסכמה יציג פעם אחת אזהרת "Google hasn't verified this app" — לוחצים
+   **Advanced** ← **Go to הסרטונים שלי (unsafe)**. זה צפוי ובסדר: זה הפרויקט
+   הפרטי שלכם והנתונים שלכם; אין צורך בתהליך verification לאפליקציה משפחתית.
+   בנוסף, חשבון ה-Google שמתחברים איתו חייב **הרשאת עריכה** על הגיליון —
+   אחרת האפליקציה תציג "אין הרשאת עריכה לגיליון" והרישום לגיליון יידלג.
 
 ## שלב 4 — שני OAuth Client IDs (אנדרואיד)
 

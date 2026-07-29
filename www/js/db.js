@@ -403,6 +403,23 @@ export async function loadDenySet(scopeId) {
   const keys = await preq(db.transaction('denylist').objectStore('denylist').getAllKeys(range));
   return new Set((keys || []).map((k) => k[1]));
 }
+/**
+ * Union tombstones from one scope into another (v1.0.6 mine→shared absorb):
+ * only keys MISSING in the target are written, so repeated runs are no-ops and the
+ * original deny timestamps in the target are never overwritten.
+ */
+export async function copyDenies(fromScope, toScope) {
+  const from = await loadDenySet(fromScope);
+  if (!from.size) return 0;
+  const have = await loadDenySet(toScope);
+  const missing = [...from].filter((k) => !have.has(k));
+  if (!missing.length) return 0;
+  await tx(['denylist'], 'readwrite', (deny) => {
+    for (const key of missing) deny.put({ scopeId: toScope, key, at: Date.now(), reason: 'scope-merge' });
+  });
+  return missing.length;
+}
+
 export async function unDeny(scopeId, key) {
   await tx(['denylist', 'opLog'], 'readwrite', (deny, ops) => {
     deny.delete([scopeId, key]);
