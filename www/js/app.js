@@ -1091,10 +1091,18 @@ function wire() {
     const msg = $('drive-msg');
     msg.textContent = 'מתחברים…'; msg.className = 'form-msg';
     try {
-      const { signIn } = await import('./gauth.js');
+      const { signIn, lastAuthError } = await import('./gauth.js');
       const { pullDrive, pushDrive } = await import('./drive.js');
       if (!(await signIn())) {
-        msg.textContent = 'ההתחברות בוטלה (או שהמכשיר בלי Google Play Services)';
+        const err = lastAuthError() || '';
+        msg.textContent =
+          /auth-unavailable:10\b/.test(err)
+            ? 'האפליקציה לא רשומה ב-Google Cloud — השלימו את צעדים 3-4 במדריך GOOGLE_CLOUD_SETUP.md (ודאו שה-SHA-1 של גרסת ה-release רשום)'
+            : /auth-unavailable/.test(err)
+              ? `שירותי Google לא זמינים במכשיר (${err})`
+              : err === 'no-plugin'
+                ? 'זמין באפליקציה המותקנת בלבד (לא בדפדפן)'
+                : 'ההתחברות בוטלה';
         msg.className = 'form-msg err';
         return;
       }

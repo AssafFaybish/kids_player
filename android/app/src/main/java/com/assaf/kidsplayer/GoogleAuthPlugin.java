@@ -70,7 +70,16 @@ public class GoogleAuthPlugin extends Plugin {
                         call.reject("consent-ui-failed");
                     }
                 })
-                .addOnFailureListener(e -> call.reject("auth-unavailable: " + e.getMessage()));
+                .addOnFailureListener(e -> {
+                    // Surface the Play Services status code so the UI can tell a parent
+                    // exactly what's wrong: 10 = DEVELOPER_ERROR — the app isn't registered
+                    // in Google Cloud (missing OAuth client / wrong signing SHA-1).
+                    String code = "unknown";
+                    if (e instanceof com.google.android.gms.common.api.ApiException) {
+                        code = String.valueOf(((com.google.android.gms.common.api.ApiException) e).getStatusCode());
+                    }
+                    call.reject("auth-unavailable:" + code);
+                });
     }
 
     @Override
