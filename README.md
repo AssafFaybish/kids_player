@@ -76,7 +76,13 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 דרישות: Node.js 18+, JDK 17, Android SDK.
 
-> 🛠️ **למתחזקים:** [DEVELOPMENT.md](DEVELOPMENT.md) מתעד את הארכיטקטורה, מודל הנתונים, מפתחות האחסון, כל מודול, בניית ה‑APK וה‑gotchas — קריאת חובה לפני שינוי קוד.
+> 🛠️ **למתחזקים ולפיתוח עתידי:**
+> - [CLAUDE.md](CLAUDE.md) — פקודות, אינווריאנטים קשיחים, וזרימת אימות (נטען אוטומטית לסשן AI).
+> - [ARCHITECTURE.md](ARCHITECTURE.md) — מפת מודולים, סכמת ה‑DB, וזרימות הסנכרון/נגן/עדכון.
+> - [DEVELOPMENT.md](DEVELOPMENT.md) — הארכיטקטורה המקורית + תוספת המהפך (§14-§18) וה‑gotchas.
+> - [INSTALL_AND_RELEASE.md](INSTALL_AND_RELEASE.md) — התקנה בטאבלט ושחרור גרסה, צעד-צעד בעברית.
+> - [PUBLISHING.md](PUBLISHING.md) — כללי חתימה, למה לא חנות Play, וצ'קליסט release.
+> - [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) — הקמת OAuth ומפתח YouTube API (חד-פעמי).
 
 ## 📁 מבנה הפרויקט
 
