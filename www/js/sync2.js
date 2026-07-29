@@ -21,7 +21,7 @@ import {
   getSources, putSources, getChannel, putChannel,
   listLibraryChannels, putLibraryChannel,
   loadDenySet, loadMergeIndex, putVideos, setVideoFields, deleteVideoRaw,
-  putVideoStates, getMeta, putMeta, profScope
+  putVideoStates, getMeta, putMeta, profScope, countFolder, pageFolder
 } from './db.js';
 
 const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
@@ -269,12 +269,35 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     }
   }
 
+  /* ---------- stage: folder-image fallback (v1.0.6) ---------- */
+  // A channel with no obtainable logo gets a PERSISTED fallback image: the thumbnail
+  // of its OLDEST live video — deterministic, never changes as new uploads arrive, so
+  // every channel folder stays visually distinct for a non-reading child.
+  for (const lc of libChannels) {
+    if (aborted()) break;
+    const ch = (await getChannel(lc.channelId)) || { channelId: lc.channelId };
+    if (ch.logoUrl || ch.fallbackThumbUrl) continue;
+    const fid = 'ch:' + lc.channelId;
+    const total = await countFolder(scope, fid);
+    if (!total) continue;
+    const oldest = await pageFolder(scope, fid, { offset: total - 1, limit: 1 });
+    const thumb = oldest.items[0] && oldest.items[0].thumbUrl;
+    if (thumb) await putChannel({ ...ch, fallbackThumbUrl: thumb });
+  }
+
   /* ---------- stage: gifts (per calling profile) ---------- */
   report('gifts', 90, 'עוטפים הפתעות…');
   await planProfileGifts(profileId, scope, lib);
 
   await putMeta('sync:' + lib + ':lastFullSyncAt', Date.now());
   report('done', 100, '');
+
+  // v1.0.6: opportunistic sheet write-back — quiet no-op without a queue/token.
+  try {
+    const { flushSheetQueue } = await import('./sheetwrite.js');
+    await flushSheetQueue(profileId);
+  } catch {}
+
   return { ok: true, added: plan.newLiveKeys.length, pending: plan.pendingKeys.length, merged: plan.mergeReport.length };
 }
 

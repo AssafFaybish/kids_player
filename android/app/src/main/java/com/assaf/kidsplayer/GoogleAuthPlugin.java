@@ -25,15 +25,19 @@ import com.google.android.gms.auth.api.identity.AuthorizationResult;
 import com.google.android.gms.auth.api.identity.Identity;
 import com.google.android.gms.common.api.Scope;
 
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 
 @CapacitorPlugin(name = "KidsGoogleAuth", requestCodes = { GoogleAuthPlugin.REQ_AUTHORIZE })
 public class GoogleAuthPlugin extends Plugin {
 
     static final int REQ_AUTHORIZE = 7834;
-    private static final List<Scope> SCOPES =
-            Collections.singletonList(new Scope("https://www.googleapis.com/auth/drive.file"));
+    // drive.file: the app's own backup file. spreadsheets (v1.0.6): append manual
+    // adds back to the parent's input sheet — the sheet stays the single master
+    // list. Adding a scope re-triggers the one-time consent dialog; expected.
+    private static final List<Scope> SCOPES = Arrays.asList(
+            new Scope("https://www.googleapis.com/auth/drive.file"),
+            new Scope("https://www.googleapis.com/auth/spreadsheets"));
 
     private PluginCall pendingCall;
 

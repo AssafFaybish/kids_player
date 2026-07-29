@@ -330,6 +330,46 @@ function folderTile(f) {
   return btn;
 }
 
+/**
+ * v1.0.6: ONE shared "extra videos" list. Profile-scope 'mine' records (manual adds,
+ * approved shares) are absorbed into the library's 'sheet' folder — shared by every
+ * profile on the sheet — and first-time moves are queued for the sheet write-back.
+ * Idempotent and cheap when there is nothing to move; runs on every activation, so
+ * copies resurrected by a Drive merge from a not-yet-updated device self-heal too.
+ */
+async function absorbMineIntoShared(profileId) {
+  try {
+    const src = await db.getSources(profileId);
+    const lib = src && src.libraryId;
+    if (!lib) return; // sources appear on first sync — the next activation absorbs
+    const pScope = db.profScope(profileId);
+    const mine = await db.loadMergeIndex(pScope);
+    let moved = 0;
+    for (const rec of mine.values()) {
+      if ((rec.homeFolderId || rec.folderId) !== 'mine') continue;
+      if (!(await db.getVideo(lib, rec.key))) {
+        const pending = rec.state === 'pending';
+        await db.putVideos([{
+          ...rec, scopeId: lib,
+          folderId: pending ? '~pending' : 'sheet',
+          homeFolderId: pending ? 'sheet' : null,
+          updatedAt: Date.now()
+        }]);
+        // live items are part of the master list — register them in the sheet once
+        // (pending shares enqueue at APPROVAL time instead)
+        if (!pending) {
+          const { enqueueSheetRow } = await import('./sheetwrite.js');
+          await enqueueSheetRow(profileId, { key: rec.key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+        }
+        moved += 1;
+      }
+      await db.deleteVideoRaw(pScope, rec.key); // raw: a move, not a deletion — no tombstone
+    }
+    await db.copyDenies(pScope, lib); // personal deletions keep protecting the shared list
+    if (moved) maybeSchedulePush();
+  } catch { /* absorbing must never block activation; next activation retries */ }
+}
+
 async function buildFolders() {
   const out = [];
   if (!activeProfileId) return out;
@@ -346,14 +386,19 @@ async function buildFolders() {
       if (!count) continue;
       out.push({
         id: 'ch:' + lc.channelId, scope: libScope, title: lc.titleOverride || ch.title || 'ערוץ',
-        logoUrl: ch.logoUrl || '', emoji: '📺', count
+        // logo → persisted per-channel fallback thumbnail → 📺 emoji (v1.0.6):
+        // every channel folder must stay visually distinct for a non-reading child
+        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
       });
     }
+    // the merged shared list (sheet rows + manual adds + approved shares, v1.0.6)
     const sheetCount = await db.countFolder(libScope, 'sheet');
-    if (sheetCount) out.push({ id: 'sheet', scope: libScope, title: 'הרשימה שלנו', emoji: '⭐', count: sheetCount });
+    if (sheetCount) out.push({ id: 'sheet', scope: libScope, title: 'סרטונים נוספים', emoji: '⭐', count: sheetCount });
   }
+  // legacy safety: pre-absorb profile-scope items (e.g. before the first sync creates
+  // sources) stay reachable until absorbMineIntoShared picks them up
   const mineCount = await db.countFolder(db.profScope(activeProfileId), 'mine');
-  if (mineCount) out.push({ id: 'mine', scope: db.profScope(activeProfileId), title: 'הסרטונים שלי', emoji: '💜', count: mineCount });
+  if (mineCount) out.push({ id: 'mine', scope: db.profScope(activeProfileId), title: 'סרטונים נוספים', emoji: '💜', count: mineCount });
   return out;
 }
 
@@ -717,8 +762,32 @@ async function refreshParent() {
   $('approve-msg').textContent = '';
   setParentTab(parentTab);
   refreshDriveStatus();
+  refreshSheetWriteStatus().catch(() => {});
   runUpdateCheck().catch(() => {});
   await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+}
+
+/** v1.0.6: surface the sheet write-back queue state in the sources tab. */
+async function refreshSheetWriteStatus() {
+  const el = $('sheetwrite-status');
+  el.textContent = '';
+  el.className = 'form-msg';
+  if (!libScope) return;
+  const { sheetWriteState, flushSheetQueue } = await import('./sheetwrite.js');
+  await flushSheetQueue(activeProfileId).catch(() => {}); // opportunistic retry on entry
+  const st = await sheetWriteState(libScope);
+  if (!st) return;
+  if (st.error === 'no-edit-permission') {
+    el.textContent = '⚠️ אין הרשאת עריכה לגיליון — סרטונים שנוספו באפליקציה לא נרשמים בו. שתפו את הגיליון לחשבון Google המחובר כעורך.';
+    el.className = 'form-msg err';
+  } else if (st.error === 'published-link') {
+    el.textContent = '⚠️ הקישור לגיליון הוא קישור פרסום — כדי שהאפליקציה תרשום אליו, הדביקו את קישור העריכה הרגיל של הגיליון.';
+    el.className = 'form-msg err';
+  } else if (st.error === 'no-token' && st.pending) {
+    el.textContent = `${st.pending} סרטונים ממתינים להירשם בגיליון — יירשמו אוטומטית אחרי חיבור חשבון Google (בהגדרות).`;
+  } else if (st.pending) {
+    el.textContent = `${st.pending} סרטונים ממתינים להירשם בגיליון — יירשמו אוטומטית בסנכרון הבא.`;
+  }
 }
 
 /** Update panel state (settings tab). manual=true bypasses the 6h throttle. */
@@ -827,6 +896,21 @@ async function refreshParentList() {
   }
 }
 
+/**
+ * v1.0.6: approved shares / manual items become sheet rows — channel videos do NOT
+ * (their channel row already represents them in the sheet).
+ */
+async function enqueueApprovedForSheet(recs) {
+  const rows = (recs || []).filter((r) => r.origin === 'share-intent' || r.origin === 'manual');
+  if (!rows.length) return;
+  try {
+    const { enqueueSheetRow } = await import('./sheetwrite.js');
+    for (const r of rows) {
+      await enqueueSheetRow(activeProfileId, { key: r.key, srcUrl: r.srcUrl || r.url || '', title: r.title || '' });
+    }
+  } catch {}
+}
+
 /** Pending queue (channel discoveries / quarantined sheet rows / shares). */
 async function refreshPendingList() {
   const scopes = [libScope, db.profScope(activeProfileId)].filter(Boolean);
@@ -847,6 +931,7 @@ async function refreshPendingList() {
       rec,
       onApprove: async () => {
         await db.approvePending(rec.scopeId, [rec.key]);
+        await enqueueApprovedForSheet([rec]);
         await refreshPendingList();
         renderHome();
         maybeSchedulePush();
@@ -885,6 +970,24 @@ async function refreshChannelsList() {
     cb.checked = !!lc.autoApprove;
     cb.addEventListener('change', async () => {
       await db.putLibraryChannel({ ...lc, autoApprove: cb.checked, autoApproveSource: 'ui' });
+      if (!cb.checked) return;
+      // v1.0.6: turning auto-approve ON offers to flush the channel's WAITING videos
+      // too — otherwise they'd sit in ממתינים forever ("approved the channel, why is
+      // the queue still full?"). Declining keeps them for one-by-one review.
+      const { items } = await db.pagePending(libScope, { limit: 5000 });
+      const keys = items.filter((r) => r.channelId === lc.channelId).map((r) => r.key);
+      if (!keys.length) return;
+      const yes = await confirmKid({
+        emoji: '✅', title: `לאשר גם ${keys.length} סרטונים שממתינים?`,
+        text: 'הם ייכנסו מיד לתיקיית הערוץ אצל הילד. "רק מהיום" ישאיר אותם ברשימת הממתינים.',
+        ok: 'אישור הכול', cancel: 'רק מהיום והלאה'
+      });
+      if (!yes) return;
+      await db.approvePending(libScope, keys);
+      await loadGiftStates();
+      await Promise.all([refreshPendingList(), refreshParentList()]);
+      renderHome();
+      maybeSchedulePush();
     });
     toggle.appendChild(cb);
     toggle.appendChild(document.createTextNode('אישור אוטומטי לסרטונים חדשים'));
@@ -910,6 +1013,21 @@ async function refreshChannelsList() {
   }
 }
 
+/** The profile's sources record, created on first use (stable library even without a sheet). */
+async function ensureSources() {
+  let src = await db.getSources(activeProfileId);
+  if (!src) {
+    src = {
+      profileId: activeProfileId, schema: 1, sheetUrl: null, libraryId: 'lib:p:' + activeProfileId,
+      shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false }, updatedAt: Date.now()
+    };
+    await db.putSources(src);
+  }
+  libScope = src.libraryId;
+  return src;
+}
+
 /** Add a single video (live immediately — the parent is right here) or a whole channel. */
 async function parentAdd() {
   const url = $('add-url').value.trim();
@@ -921,8 +1039,10 @@ async function parentAdd() {
   const row = classifySourceRow(url);
 
   if (row.kind === 'video') {
-    const scope = db.profScope(activeProfileId);
-    const exists = (await db.getVideo(scope, row.key)) || (libScope && await db.getVideo(libScope, row.key));
+    // v1.0.6: manual adds live in the SHARED library folder (single list for the
+    // whole family) and are appended to the sheet — one master list, everywhere.
+    const scope = (await ensureSources()).libraryId;
+    const exists = (await db.getVideo(scope, row.key)) || (await db.getVideo(db.profScope(activeProfileId), row.key));
     if (exists) { msg.textContent = 'הסרטון כבר קיים ברשימה'; msg.className = 'form-msg err'; return; }
     const now = Date.now();
     const title = $('add-title').value.trim();
@@ -930,13 +1050,15 @@ async function parentAdd() {
       scopeId: scope, key: row.key, type: row.type, id: row.id ?? null, url: row.url ?? null,
       srcUrl: row.srcUrl, driveId: row.driveId ?? null,
       title, titleSource: title ? 'sheet' : null, normTitle: normalizeTitle(title),
-      folderId: 'mine', channelId: null,
+      folderId: 'sheet', channelId: null,
       sortKey: (await import('./order.js')).sortKeyFor({ origin: 'manual', addedAt: now }),
       publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
       addedAt: now, approvedAt: now,
       thumbId: null, thumbUrl: $('add-thumb').value.trim() || null, localPath: null, updatedAt: now
     };
     await db.putVideos([rec]);
+    const { enqueueSheetRow } = await import('./sheetwrite.js');
+    enqueueSheetRow(activeProfileId, { key: rec.key, srcUrl: rec.srcUrl, title: rec.title }).catch(() => {});
     if (!rec.title && rec.type === 'youtube') {
       fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
     }
@@ -944,28 +1066,29 @@ async function parentAdd() {
     msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
     await refreshParentList();
     renderHome();
+    maybeSchedulePush();
     return;
   }
 
   if (row.kind === 'channel') {
     msg.textContent = 'מזהה את הערוץ…';
-    let src = await db.getSources(activeProfileId);
-    if (!src) {
-      src = {
-        profileId: activeProfileId, schema: 1, sheetUrl: null, libraryId: 'lib:p:' + activeProfileId,
-        shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
-        maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false }, updatedAt: Date.now()
-      };
-      await db.putSources(src);
-    }
-    libScope = src.libraryId;
+    await ensureSources();
     const ytApi = await import('./yt.js');
     const channelId = await ytApi.resolveChannelRef(row.channelRef, await ytApi.getApiKey());
     if (!channelId) { msg.textContent = 'לא הצלחנו לזהות את הערוץ'; msg.className = 'form-msg err'; return; }
+    const known = (await db.listLibraryChannels(libScope)).some((c) => c.channelId === channelId);
     await db.putLibraryChannel({
       libraryId: libScope, channelId, autoApprove: false, autoApproveSource: 'ui',
       order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
     });
+    if (!known) { // v1.0.6: channels added here become sheet rows too (single master list)
+      const { enqueueSheetRow } = await import('./sheetwrite.js');
+      enqueueSheetRow(activeProfileId, {
+        key: 'ch:' + channelId,
+        srcUrl: 'https://www.youtube.com/channel/' + channelId,
+        flag: 'manual' // approval-required, matching the in-app default
+      }).catch(() => {});
+    }
     msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
     $('add-url').value = '';
     syncLibrary(activeProfileId, { force: true }).then(async () => {
@@ -1162,6 +1285,7 @@ async function activateProfile(id) {
 
   // HYDRATE first: render whatever IndexedDB has, instantly. Sync runs after.
   await drainShareQueue(); // shares that arrived before a profile was active
+  await absorbMineIntoShared(id); // v1.0.6: fold personal adds into the shared list
   await loadGiftStates();
   await renderHome();
   await updateProfileChip();
@@ -1177,6 +1301,7 @@ async function activateProfile(id) {
   if (await shouldSync(id)) {
     syncLibrary(id, { onProgress: (p) => loading.setStep(p.label || '') })
       .then(async (r) => {
+        await absorbMineIntoShared(id); // first sync may have just created sources
         await loadGiftStates();
         if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
         await loading.hide();
@@ -1272,6 +1397,7 @@ function wire() {
       byScope.get(r.scopeId).push(r.key);
     }
     for (const [s, keys] of byScope) await db.approvePending(s, keys);
+    await enqueueApprovedForSheet(pend);
     $('approve-msg').textContent = `אושרו ${pend.length} סרטונים ✅`;
     $('approve-msg').className = 'form-msg ok';
     await loadGiftStates();
