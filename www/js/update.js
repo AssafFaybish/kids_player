@@ -14,7 +14,11 @@ const CHECK_THROTTLE_MS = 6 * 60 * 60 * 1000;
 /* ---------------- pure (node-tested) ---------------- */
 
 export function parseVersion(v) {
-  const m = String(v || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  // Strip bidi/zero-width marks first: a tag typed in a Hebrew-context field picks up
+  // an invisible RLM (U+200F) — it happened with the real v1.0.0 release and silently
+  // broke version detection (trim() does NOT remove bidi marks).
+  const clean = String(v || '').replace(/[‎‏‪-‮⁦-⁩​-‍﻿]/g, '').trim();
+  const m = clean.match(/^v?(\d+)\.(\d+)\.(\d+)/);
   return m ? [+m[1], +m[2], +m[3]] : null;
 }
 export function compareVersions(a, b) {
@@ -28,7 +32,8 @@ export const isNewer = (remote, local) => compareVersions(remote, local) > 0;
 
 export function pickApkAsset(assets, tag) {
   const list = Array.isArray(assets) ? assets : [];
-  return list.find((a) => a.name === `kids-player-${tag}.apk`)
+  const cleanTag = String(tag || '').replace(/[‎‏‪-‮⁦-⁩​-‍﻿]/g, '').trim();
+  return list.find((a) => a.name === `kids-player-${cleanTag}.apk`)
     || list.find((a) => /\.apk$/i.test(a.name || ''))
     || null;
 }

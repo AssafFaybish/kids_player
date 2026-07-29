@@ -10,6 +10,13 @@ test('numeric per-component compare — the 1.0.10 > 1.0.9 trap', () => {
   assert.equal(isNewer('1.0.0', 'v1.0.1'), false); // never downgrade
 });
 
+test('an invisible RLM in the tag (real incident: ‏v1.0.0) still parses', () => {
+  // U+200F snuck into the real first release tag via Hebrew-context copy-paste
+  assert.deepEqual(parseVersion('‏v1.0.0'), [1, 0, 0]);
+  assert.deepEqual(parseVersion('v1.0.1‎'), [1, 0, 1]);
+  assert.equal(isNewer('‏v1.0.1', '1.0.0'), true);
+});
+
 test('garbage input fails SAFE (never claims newer)', () => {
   assert.equal(isNewer('latest', '1.0.0'), false);
   assert.equal(isNewer('v2.0.0', undefined), false);
