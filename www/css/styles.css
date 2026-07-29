@@ -477,6 +477,29 @@ body {
 @keyframes giftOpen { to { transform: scale(1.25); opacity: 0; } }
 @keyframes giftPop { 50% { transform: scale(1.3) rotate(8deg); } to { transform: scale(0.2) translateY(-40px); opacity: 0; } }
 
+/* ---------- Android TV (v1.0.9): 10-foot layout + D-pad focus ---------- */
+/* html.tv is set at boot when running on a TV (or localStorage tv=1 in dev). */
+html.tv #app { padding: 2.5vh 3vw; } /* overscan safe area — TVs crop the edges */
+/* real TVs are wide; the min-width guard only protects dev previews in narrow panes */
+@media (min-width: 900px) {
+  html.tv body { font-size: 18px; }
+  html.tv .grid { grid-template-columns: repeat(4, 1fr); max-width: none; gap: 26px; }
+  html.tv .tile .cap { font-size: 19px; }
+  html.tv .folder-name { font-size: 21px; }
+  html.tv .brand-title { font-size: 32px; }
+}
+/* the focus ring IS the cursor on TV — big, high-contrast, and everywhere */
+html.tv button:focus, html.tv input:focus, html.tv [tabindex]:focus {
+  outline: 5px solid var(--brand-2);
+  outline-offset: 3px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 9px rgba(108, 99, 255, 0.25);
+  z-index: 2;
+}
+html.tv .tile:focus { transform: scale(1.04); transition: transform 0.12s ease-out; }
+/* touch affordances that mean nothing to a remote */
+html.tv .tile:active, html.tv button:active { transform: none; }
+
 /* ---------- Confetti (F9) ---------- */
 .confetti-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
 .confetti-piece {

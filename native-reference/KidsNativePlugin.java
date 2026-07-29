@@ -57,6 +57,20 @@ public class KidsNativePlugin extends Plugin {
         });
     }
 
+    /* ---------------- TV detection (v1.0.9) ---------------- */
+
+    /** Are we on Android TV / Google TV? Drives the 10-foot layout + D-pad focus mode. */
+    @PluginMethod
+    public void isTv(PluginCall call) {
+        android.app.UiModeManager ui =
+                (android.app.UiModeManager) getContext().getSystemService(Context.UI_MODE_SERVICE);
+        boolean tv = ui != null
+                && ui.getCurrentModeType() == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
+        JSObject ret = new JSObject();
+        ret.put("value", tv);
+        call.resolve(ret);
+    }
+
     /* ---------------- real exit (v1.0.4) ---------------- */
 
     /**

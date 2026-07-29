@@ -2010,6 +2010,16 @@ async function init() {
   wire();
   onBackButton(nav.handleBack);
 
+  // v1.0.9: Android TV — 10-foot layout + D-pad focus mode. Same APK as the tablet;
+  // browser preview can force it with localStorage['tv']='1'.
+  try {
+    const { isTv } = await import('./platform.js');
+    if (await isTv()) {
+      document.documentElement.classList.add('tv');
+      (await import('./ui/dpad.js')).initDpad();
+    }
+  } catch {}
+
   onAppResume(async () => {
     // resync on foreground — but never while a video plays, and only from the home
     if (activeProfileId && isGalleryActive() && await shouldSync(activeProfileId)) {

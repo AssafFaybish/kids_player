@@ -201,6 +201,23 @@ export async function shareText(text, subject = '') {
   return 'none';
 }
 
+/**
+ * Android TV / Google TV detection (v1.0.9) — drives the 10-foot layout and the
+ * D-pad focus mode. Cached (the mode can't change mid-session). Browser preview:
+ * `localStorage['tv'] = '1'` forces TV mode for keyboard-arrow testing.
+ */
+let tvCached = null;
+export async function isTv() {
+  if (tvCached !== null) return tvCached;
+  try { if (localStorage.getItem('tv') === '1') { tvCached = true; return true; } } catch {}
+  const kids = plugin('KidsNative');
+  if (kids && kids.isTv) {
+    try { tvCached = (await kids.isTv()).value === true; return tvCached; } catch {}
+  }
+  tvCached = false;
+  return tvCached;
+}
+
 export function exitApp() {
   // Prefer the native KidsNative.exitApp: App.exitApp() only calls finish(), which on
   // real devices leaves the task in recents — "exit" looked like minimize (v1.0.4 fix).

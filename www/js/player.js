@@ -24,6 +24,21 @@ import * as wake from './wake.js';
 const $id = (id) => document.getElementById(id);
 let ytApiPromise = null;
 let current = null; // { cleanup, kind, reuse? }
+let tvHud = null;   // v1.0.9: the live HUD's controls, for TV-remote keys (dpad.js)
+
+/**
+ * TV remote → player (v1.0.9): 'toggle' = play/pause, 'back'/'fwd' = ±SEEK_STEP,
+ * 'reveal' = show the HUD. Returns false when no video is live (dpad ignores it).
+ */
+export function handleTvKey(action) {
+  if (!tvHud) return false;
+  const { ctl, reveal, renderProgress, flash } = tvHud;
+  if (action === 'toggle') { ctl.togglePlay(); reveal(); return true; }
+  if (action === 'back') { ctl.seekTo(Math.max(0, ctl.getTime() - SEEK_STEP)); flash('⏪ ' + SEEK_STEP); renderProgress(); reveal(); return true; }
+  if (action === 'fwd') { ctl.seekTo(ctl.getTime() + SEEK_STEP); flash(SEEK_STEP + ' ⏩'); renderProgress(); reveal(); return true; }
+  if (action === 'reveal') { reveal(); return true; }
+  return false;
+}
 
 function loadYouTubeApi() {
   if (ytApiPromise) return ytApiPromise;
@@ -144,7 +159,10 @@ function setupHud(ctl) {
   document.addEventListener('fullscreenchange', onFsChange);
   document.addEventListener('webkitfullscreenchange', onFsChange);
 
+  tvHud = { ctl, reveal, renderProgress, flash }; // v1.0.9: TV-remote hook
+
   const teardown = () => {
+    tvHud = null;
     wrap.removeEventListener('pointerdown', onAnyTouch, true);
     if (shield) shield.removeEventListener('pointerup', onTap);
     if (seek) seek.removeEventListener('pointerdown', onDown);
