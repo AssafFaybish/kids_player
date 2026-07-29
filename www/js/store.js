@@ -63,11 +63,11 @@ export async function createProfile(name, avatar, color) {
   return profile;
 }
 /**
- * Merge profiles restored from a Drive backup into the local list (v1.0.4 first-launch
- * connect). Union by id — local profiles always win; returns how many were added.
+ * PURE (node-tested): union of local + restored profile lists by id — local always
+ * wins, remote entries are sanitized to the local profile shape.
  */
-export async function mergeRestoredProfiles(remote) {
-  const list = await getProfiles();
+export function mergeProfileLists(local, remote) {
+  const list = (local || []).slice();
   const have = new Set(list.map((p) => p.id));
   let added = 0;
   for (const p of remote || []) {
@@ -76,6 +76,15 @@ export async function mergeRestoredProfiles(remote) {
     have.add(p.id);
     added += 1;
   }
+  return { list, added };
+}
+
+/**
+ * Merge profiles restored from a Drive backup into the local list (v1.0.4 first-launch
+ * connect). Returns how many were added.
+ */
+export async function mergeRestoredProfiles(remote) {
+  const { list, added } = mergeProfileLists(await getProfiles(), remote);
   if (added) await saveProfiles(list);
   return added;
 }

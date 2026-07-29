@@ -55,6 +55,7 @@ let pinMode = 'verify';
 let pinStep = 1;
 let pinFirst = '';
 let pinBuffer = '';
+let pinOnSuccess = null; // what a correct code unlocks (default: the parent screen)
 
 /* ---------------- Views (routing via nav.js) ---------------- */
 const isGalleryActive = () => nav.isActive('gallery');
@@ -591,6 +592,56 @@ async function persistTitle(item, title) {
   } catch {}
 }
 
+/* ---------------- Delete from the watch page (v1.0.5) ---------------- */
+/**
+ * User-specified order: tap 🗑️ → parent PIN (EVERY tap — no session caching) →
+ * an explicit "delete this video?" confirm → delete → home. Deletion goes through
+ * db.deleteVideo (atomic delete + deny-list tombstone), so the video never comes
+ * back — not on the next sync, not on other devices (the tombstone travels via
+ * the Drive backup).
+ */
+async function onDeleteWatch() {
+  const item = currentWatch;
+  if (!item || !item.key) return;
+  // Capture the item BEFORE navigating: entering the pin view tears the player
+  // down (watch onLeave) and clears currentWatch.
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    replace: true,
+    title: 'קוד הורים למחיקת הסרטון',
+    onSuccess: () => { confirmDeleteWatch(item); }
+  });
+}
+
+async function confirmDeleteWatch(item) {
+  const yes = await confirmKid({
+    emoji: '🗑️', title: 'למחוק את הסרטון הזה?',
+    text: item.title || 'הסרטון יוסר מהספרייה לצמיתות',
+    ok: 'מחיקה', cancel: 'ביטול', danger: true
+  });
+  if (yes) {
+    try {
+      // Delete EVERY copy of this key: the same video can live both in the shared
+      // library (channel/sheet) and in the profile scope (manual add) — removing
+      // just the played copy would leave the other one visible on the home grid.
+      const scopes = new Set([item.scopeId, libScope,
+        activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean));
+      let deleted = false;
+      for (const scope of scopes) {
+        if (await db.getVideo(scope, item.key)) {
+          await db.deleteVideo(scope, item.key); // atomic delete + deny tombstone
+          deleted = true;
+        }
+      }
+      if (deleted) {
+        giftStates.delete(item.key);
+        if (activeProfileId) { try { await db.deleteVideoState(activeProfileId, item.key); } catch {} }
+        maybeSchedulePush();
+      }
+    } catch { /* a failed delete must never strand the child outside the gallery */ }
+  }
+  goGallery();
+}
+
 /* ---------------- PIN ---------------- */
 async function openParentGate() {
   startPin((await hasPin()) ? 'verify' : 'setup');
@@ -599,12 +650,20 @@ function updateDots() {
   const dots = $('pin-dots').children;
   for (let i = 0; i < dots.length; i++) dots[i].classList.toggle('filled', i < pinBuffer.length);
 }
-function startPin(mode) {
+/**
+ * PIN gate (parameterized since v1.0.5 — it also guards in-place deletion).
+ * onSuccess runs once after a correct code (or after setup completes).
+ * replace=true swaps the CURRENT view for the pin view instead of stacking on
+ * top of it — the delete flow uses it so hardware-back never lands on a watch
+ * page whose player was already torn down.
+ */
+function startPin(mode, { onSuccess = enterParent, replace = false, title = '' } = {}) {
   pinMode = mode; pinBuffer = ''; pinFirst = ''; pinStep = 1;
+  pinOnSuccess = onSuccess;
   $('pin-msg').textContent = '';
-  $('pin-title').textContent = mode === 'setup' ? 'בחרו קוד הורים חדש' : 'הזינו קוד הורים';
+  $('pin-title').textContent = mode === 'setup' ? 'בחרו קוד הורים חדש' : (title || 'הזינו קוד הורים');
   updateDots();
-  nav.go('pin');
+  if (replace) nav.replace('pin'); else nav.go('pin');
 }
 async function onPinComplete() {
   if (pinMode === 'setup') {
@@ -614,7 +673,7 @@ async function onPinComplete() {
       updateDots();
       return;
     }
-    if (pinBuffer === pinFirst) { await setPin(pinBuffer); enterParent(); }
+    if (pinBuffer === pinFirst) { await setPin(pinBuffer); pinOnSuccess(); }
     else {
       $('pin-msg').textContent = 'הקודים לא תואמים, נסו שוב';
       pinBuffer = ''; pinFirst = ''; pinStep = 1;
@@ -622,7 +681,7 @@ async function onPinComplete() {
       updateDots();
     }
   } else {
-    if (await verifyPin(pinBuffer)) enterParent();
+    if (await verifyPin(pinBuffer)) pinOnSuccess();
     else { $('pin-msg').textContent = 'קוד שגוי'; pinBuffer = ''; updateDots(); }
   }
 }
@@ -1185,6 +1244,7 @@ function wire() {
   $('folder-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
 
   $('watch-home').addEventListener('click', goGallery);
+  $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
     const el = $('player-wrap');
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
@@ -1332,6 +1392,27 @@ function wire() {
     msg.textContent = r.ok ? 'גובה ✅' : 'הגיבוי נכשל — ננסה שוב אוטומטית';
     msg.className = r.ok ? 'form-msg ok' : 'form-msg err';
     await refreshDriveStatus();
+  });
+
+  // v1.0.5: share a download link for the latest release (OS share sheet; the
+  // browser preview falls back to Web Share / clipboard).
+  $('share-app').addEventListener('click', async () => {
+    const msg = $('share-msg');
+    msg.textContent = 'מכינים את הלינק…'; msg.className = 'form-msg';
+    try {
+      const upd = await import('./update.js');
+      const text = upd.buildAppShareMessage(await upd.latestKnownRelease());
+      const { shareText } = await import('./platform.js');
+      const how = await shareText(text, 'הסרטונים שלי — אפליקציה לילדים');
+      msg.textContent =
+        how === 'native' || how === 'web' ? 'חלון השיתוף נפתח 📤'
+        : how === 'clipboard' ? 'ההודעה עם הלינק הועתקה ללוח — הדביקו איפה שנוח'
+        : 'השיתוף לא זמין במכשיר הזה';
+      msg.className = how === 'none' ? 'form-msg err' : 'form-msg ok';
+    } catch {
+      msg.textContent = 'השיתוף נכשל — נסו שוב';
+      msg.className = 'form-msg err';
+    }
   });
 
   $('update-check').addEventListener('click', () => runUpdateCheck({ manual: true }));

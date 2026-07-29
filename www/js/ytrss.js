@@ -1,8 +1,9 @@
-// ytrss.js — parse YouTube's channel Atom feed (https://www.youtube.com/feeds/videos.xml
-// ?channel_id=UC…). Keyless, quota-free, returns the newest ~15 uploads.
-// PURE and regex-based (no DOMParser) so it runs under `node --test`. The Atom shape is
-// fixed and simple; a truncated body or an HTML error page must return [] — a partial
-// HTTP response must never crash sync.
+// ytrss.js — keyless YouTube parsing helpers: the channel Atom feed
+// (https://www.youtube.com/feeds/videos.xml?channel_id=UC…, newest ~15 uploads) and
+// the channel-page logo extractor (v1.0.5).
+// PURE and regex-based (no DOMParser) so it runs under `node --test`. The shapes are
+// fixed and simple; a truncated body or an HTML error page must return ''/[] — a
+// partial HTTP response must never crash sync.
 
 function decodeEntities(s) {
   return String(s ?? '')
@@ -16,6 +17,22 @@ function decodeEntities(s) {
 function tag(block, name) {
   const m = block.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`));
   return m ? m[1].trim() : '';
+}
+
+/**
+ * The channel avatar URL out of a public channel page (v1.0.4/5 keyless-logo path):
+ * og:image first (stable meta tag), the ytInitialData avatar JSON as fallback.
+ * Handles both HTML entities (&amp;) and JSON escapes (&) in the URL.
+ * Garbage/truncated input -> '' (the caller keeps the emoji fallback).
+ */
+export function extractChannelLogoFromHtml(html) {
+  const s = String(html ?? '');
+  // The JSON fallback must tolerate escapes INSIDE the url (&, \/) — a char
+  // class that excludes backslash would silently fail the whole match on them.
+  const m = s.match(/<meta property="og:image" content="([^"]+)"/)
+    || s.match(/"avatar":\{"thumbnails":\[\{"url":"((?:\\.|[^"\\])*)"/);
+  if (!m || !m[1]) return '';
+  return m[1].replace(/\\u0026/g, '&').replace(/&amp;/g, '&').replace(/\\\//g, '/');
 }
 
 /**

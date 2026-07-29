@@ -21,7 +21,7 @@ live and how does data flow".
 | `sync2.js` | the staged pipeline (below); parseSourceSheet | csv, classify, plan, yt, db, quota |
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
 | `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, UU-derivation | — |
-| `ytrss.js` | pure regex Atom parser (never throws) | — |
+| `ytrss.js` | pure keyless parsers (never throw): Atom feed + channel-page logo extractor | — |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
