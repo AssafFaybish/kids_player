@@ -38,6 +38,39 @@ export function pickApkAsset(assets, tag) {
     || null;
 }
 
+/**
+ * The one decision table for "what does this check mean" — shared by the fresh-fetch
+ * and the throttled-cache paths so update.skip behaves identically in both.
+ * skipped only applies to SILENT checks: a manual check must always surface the update.
+ */
+export function resolveUpdateStatus({ latest, local, skipped, silent }) {
+  if (!latest || !isNewer(latest.version, local)) return 'up-to-date';
+  if (silent && skipped === latest.version) return 'skipped';
+  return 'available';
+}
+
+/** Stable link to the newest release page — the share fallback when no asset URL is known. */
+export function releasesPageUrl() {
+  return `https://github.com/${UPDATE_REPO}/releases/latest`;
+}
+
+/**
+ * The "share the app" message (v1.0.5) — pure, node-tested. Direct APK link when the
+ * latest release is known (one tap → download); the releases page otherwise. Either
+ * way the installed app updates itself afterwards, so a stale link still ends current.
+ */
+export function buildAppShareMessage(latest) {
+  const url = (latest && latest.assetUrl) || releasesPageUrl();
+  const ver = latest && latest.version ? ` (גירסה ${latest.version})` : '';
+  return [
+    `היי! מוזמנים להתקין את "הסרטונים שלי"${ver} — נגן וידאו בטוח לילדים, שבו ההורים בוחרים בדיוק מה רואים.`,
+    '',
+    `הורדה לאנדרואיד: ${url}`,
+    '',
+    'איך מתקינים? מורידים, מקישים על הקובץ, ומאשרים חד-פעמית "התקנה מאפליקציות לא ידועות". מהרגע הזה האפליקציה מתעדכנת מעצמה.'
+  ].join('\n');
+}
+
 /* ---------------- runtime ---------------- */
 
 export async function currentVersion() {
@@ -57,11 +90,8 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
   const last = Number(await prefGet('update.lastCheck')) || 0;
   if (!force && Date.now() - last < CHECK_THROTTLE_MS) {
     const cached = JSON.parse((await prefGet('update.latest')) || 'null');
-    if (!cached || !isNewer(cached.version, local)) return { status: 'up-to-date', latest: cached, local };
-    // The cached path must honor update.skip too — otherwise a declined launch
-    // prompt comes right back on the next launch inside the throttle window.
-    if (silent && (await prefGet('update.skip')) === cached.version) return { status: 'skipped', latest: cached, local };
-    return { status: 'available', latest: cached, local };
+    const status = resolveUpdateStatus({ latest: cached, local, skipped: await prefGet('update.skip'), silent });
+    return { status, latest: cached, local };
   }
 
   const res = await Promise.race([
@@ -86,10 +116,22 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
     notes: (rel.body || '').slice(0, 2000), checkedAt: Date.now()
   };
   await prefSet('update.latest', JSON.stringify(latest));
-  if (!isNewer(latest.version, local)) return { status: 'up-to-date', latest, local };
-  const skipped = await prefGet('update.skip');
-  if (silent && skipped === latest.version) return { status: 'skipped', latest, local };
-  return { status: 'available', latest, local };
+  const status = resolveUpdateStatus({ latest, local, skipped: await prefGet('update.skip'), silent });
+  return { status, latest, local };
+}
+
+/**
+ * Newest release we can name (v1.0.5, for sharing the app): the cached check result,
+ * refreshed from GitHub when absent. Null in the browser preview / offline —
+ * callers fall back to releasesPageUrl().
+ */
+export async function latestKnownRelease() {
+  let latest = null;
+  try { latest = JSON.parse((await prefGet('update.latest')) || 'null'); } catch {}
+  if (!latest) {
+    try { latest = (await checkForUpdate({ silent: true, force: true })).latest || null; } catch {}
+  }
+  return latest;
 }
 
 /** Download (with size verification) and hand the APK to the system installer. */

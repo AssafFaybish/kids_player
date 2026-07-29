@@ -1,6 +1,6 @@
 package com.assaf.kidsplayer;
 
-// Kids Player — the single custom native surface, four features:
+// Kids Player — the single custom native surface, five features:
 //   1) keepAwake/allowSleep (F7): window-level FLAG_KEEP_SCREEN_ON. Needs NO permission
 //      (not even WAKE_LOCK), survives the fullscreen custom-view swap, and is auto-scoped
 //      to window visibility so background/resume need zero handling.
@@ -13,6 +13,8 @@ package com.assaf.kidsplayer;
 //      a phantom failure.
 //   4) exitApp (v1.0.4): finishAndRemoveTask + delayed process kill — App.exitApp()
 //      only finish()es, which reads as "minimize" on real devices.
+//   5) shareText (v1.0.5): the OS share sheet (ACTION_SEND chooser) — used by the
+//      parent screen's "share the app" button; no plugin dependency needed.
 //
 // Canonical copy: native-reference/KidsNativePlugin.java — keep both in sync.
 
@@ -72,6 +74,28 @@ public class KidsNativePlugin extends Plugin {
             new android.os.Handler(android.os.Looper.getMainLooper())
                     .postDelayed(() -> System.exit(0), 250);
         });
+    }
+
+    /* ---------------- share sheet (v1.0.5) ---------------- */
+
+    /** Opens the system share chooser with plain text (link + explanation). */
+    @PluginMethod
+    public void shareText(PluginCall call) {
+        String text = call.getString("text");
+        if (text == null || text.isEmpty()) { call.reject("no-text"); return; }
+        String subject = call.getString("subject");
+        try {
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_TEXT, text);
+            if (subject != null && !subject.isEmpty()) send.putExtra(Intent.EXTRA_SUBJECT, subject);
+            Intent chooser = Intent.createChooser(send, null);
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(chooser);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("share-failed: " + e.getMessage());
+        }
     }
 
     /* ---------------- share-intent inbox (F12b) ---------------- */

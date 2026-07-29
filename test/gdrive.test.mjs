@@ -106,3 +106,31 @@ test('parseDb: round-trip works; garbage and truncated input → null, never thr
   assert.equal(parseDb('{"kind":"other"}'), null);
   assert.equal(parseDb(null), null);
 });
+
+/* ---------------- profileSources (v1.0.4: profile→sheet mapping in the doc) ---------------- */
+
+test('profileSources: LWW by updatedAt, one-sided entries survive, commutative', () => {
+  const a2 = { ...docA, profileSources: { p1: { sheetUrl: 'https://old', updatedAt: 10 }, p2: { sheetUrl: 'https://only-a', updatedAt: 5 } } };
+  const b2 = { ...docB, profileSources: { p1: { sheetUrl: 'https://new', updatedAt: 20 } } };
+  const ab = mergeDbFiles(a2, b2);
+  const ba = mergeDbFiles(b2, a2);
+  assert.equal(ab.profileSources.p1.sheetUrl, 'https://new');
+  assert.equal(ab.profileSources.p2.sheetUrl, 'https://only-a');
+  assert.deepEqual(ab.profileSources, ba.profileSources);
+});
+
+test('profileSources: docs WITHOUT the field (pre-v1.0.4 backups) merge cleanly', () => {
+  const m = mergeDbFiles(docA, docB); // neither doc carries profileSources
+  assert.deepEqual(m.profileSources, {});
+  const mixed = mergeDbFiles(docA, { ...docB, profileSources: { p1: { sheetUrl: 'https://s', updatedAt: 1 } } });
+  assert.equal(mixed.profileSources.p1.sheetUrl, 'https://s');
+});
+
+test('serializeDb round-trips profileSources; omitted -> {}', () => {
+  const json = serializeDb({
+    profiles: [], libraries: {}, profileState: {},
+    profileSources: { p1: { sheetUrl: 'https://sheet', updatedAt: 7 } }
+  });
+  assert.equal(parseDb(json).profileSources.p1.sheetUrl, 'https://sheet');
+  assert.deepEqual(parseDb(serializeDb({ profiles: [], libraries: {}, profileState: {} })).profileSources, {});
+});

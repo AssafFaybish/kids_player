@@ -181,6 +181,26 @@ export function onBackButton(fn) {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fn(); });
 }
 
+/**
+ * Share plain text via the OS share sheet (v1.0.5). Fallback chain: native chooser →
+ * Web Share API → clipboard. Returns how it was delivered ('native' | 'web' |
+ * 'clipboard' | 'none') so the caller can phrase its confirmation message.
+ * A Web-Share cancel still returns 'web' — the user SAW the sheet; falling through
+ * to the clipboard after an intentional cancel would be wrong.
+ */
+export async function shareText(text, subject = '') {
+  const kids = plugin('KidsNative');
+  if (kids && kids.shareText) {
+    try { await kids.shareText({ text, subject }); return 'native'; } catch {}
+  }
+  if (typeof navigator !== 'undefined' && navigator.share) {
+    try { await navigator.share({ text }); } catch { /* user cancelled */ }
+    return 'web';
+  }
+  try { await navigator.clipboard.writeText(text); return 'clipboard'; } catch {}
+  return 'none';
+}
+
 export function exitApp() {
   // Prefer the native KidsNative.exitApp: App.exitApp() only calls finish(), which on
   // real devices leaves the task in recents — "exit" looked like minimize (v1.0.4 fix).

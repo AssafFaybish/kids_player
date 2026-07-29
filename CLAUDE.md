@@ -90,6 +90,11 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   folder tiles restyled + keyless channel-logo scrape (`yt.scrapeChannelLogo`, weekly retry);
   real exit via `KidsNative.exitApp`; red attention dots (`gate-dot` = pending>0 or update
   ready, `settings-dot` + red pending badge inside the parent screen).
+- v1.0.5: in-place delete from the watch page (`watch-delete` → parameterized PIN gate
+  `startPin(mode, {onSuccess, replace, title})` — replace:true so back never lands on a
+  torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
+  the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
+  message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
 - The updater reads `devfassaf/kids_player` releases/latest (`UPDATE_REPO` in update.js);
   asset naming: `kids-player-v<X.Y.Z>.apk`.
 - Known unaudited item: `media.js` `videos/` cache may need the same mkdir-before-downloadFile fix.

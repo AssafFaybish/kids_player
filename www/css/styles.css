@@ -185,6 +185,13 @@ body {
   display: flex; align-items: center; justify-content: flex-start;
   padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px;
 }
+/* v1.0.5: parent-only delete — small and dim ON PURPOSE (user request): the parent
+   knows to look for it, the child's eye slides past it. Opposite corner from 🏠. */
+.watch-delete {
+  margin-inline-start: auto;
+  width: 42px; height: 42px; min-height: 42px; font-size: 17px;
+  opacity: 0.45; box-shadow: none; background: #f4f2ff;
+}
 .player-hud {
   position: absolute; inset-inline: 0; bottom: 0; z-index: 3;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.6)); padding-bottom: 8px;

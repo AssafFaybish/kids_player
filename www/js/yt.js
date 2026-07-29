@@ -109,13 +109,12 @@ export async function fetchChannelMeta(channelIds, key) {
  * Keyless channel-logo fallback (v1.0.4): the avatar URL is not derivable from the
  * channelId, but the public channel page carries it as og:image. Zero quota;
  * CapacitorHttp is CORS-free on device, /__proxy covers the browser preview.
+ * The extraction itself is pure and node-tested in ytrss.js.
  */
 export async function scrapeChannelLogo(channelId) {
   try {
-    const html = String(await httpGetText(`https://www.youtube.com/channel/${channelId}`));
-    const m = html.match(/<meta property="og:image" content="([^"]+)"/)
-      || html.match(/"avatar":\{"thumbnails":\[\{"url":"([^"\\]+)"/);
-    return m ? m[1].replace(/\\u0026/g, '&').replace(/&amp;/g, '&') : '';
+    const { extractChannelLogoFromHtml } = await import('./ytrss.js');
+    return extractChannelLogoFromHtml(await httpGetText(`https://www.youtube.com/channel/${channelId}`));
   } catch { return ''; }
 }
 
