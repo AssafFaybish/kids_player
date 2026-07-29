@@ -288,6 +288,24 @@ body {
   .brand-title { font-size: 20px; }
 }
 
+/* ---------- Kid modal ---------- */
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+.modal-scrim { position: absolute; inset: 0; background: rgba(45, 42, 74, 0.45); }
+.modal-card {
+  position: relative;
+  background: #fff; border-radius: 28px; box-shadow: var(--shadow);
+  padding: 26px 26px 24px; width: min(92vw, 420px); text-align: center;
+  animation: modalPop 0.18s ease-out;
+}
+@keyframes modalPop { from { transform: scale(0.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.modal-emoji { font-size: 56px; line-height: 1.1; }
+.modal-title { font-size: 24px; margin: 10px 0 4px; color: var(--ink); }
+.modal-text { font-size: 17px; color: var(--muted); margin: 0 0 18px; }
+.modal-btns { display: flex; gap: 12px; }
+.modal-btn { flex: 1; min-height: var(--tap); font-size: 22px; }
+.modal-danger { background: #ffe2e3; color: var(--danger); }
+@media (prefers-reduced-motion: reduce) { .modal-card { animation: none; } }
+
 /* ---------- Profiles ---------- */
 .avatar { display: flex; align-items: center; justify-content: center; border-radius: 50%; }
 .avatar-lg { width: 108px; height: 108px; font-size: 58px; box-shadow: var(--shadow); margin: 0 auto; }

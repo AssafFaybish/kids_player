@@ -120,7 +120,7 @@ export async function fsRemoveDir(path) {
   try { await FS.rmdir({ path, directory: DIRECTORY, recursive: true }); } catch {}
 }
 
-/* ---------------- App lifecycle (resume) ---------------- */
+/* ---------------- App lifecycle (resume / back / exit) ---------------- */
 export function onAppResume(fn) {
   const App = plugin('App');
   if (App && App.addListener) {
@@ -128,4 +128,24 @@ export function onAppResume(fn) {
     return;
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fn(); });
+}
+
+/**
+ * Android hardware back. NOTE: registering this listener disables Capacitor's default
+ * back handling entirely — the handler MUST consume every case (nav.handleBack does).
+ * Browser fallback: Escape key, for dev-preview testing.
+ */
+export function onBackButton(fn) {
+  const App = plugin('App');
+  if (App && App.addListener) {
+    App.addListener('backButton', () => fn());
+    return;
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fn(); });
+}
+
+export function exitApp() {
+  const App = plugin('App');
+  if (App && App.exitApp) { App.exitApp(); return; }
+  try { window.close(); } catch {}
 }

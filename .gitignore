@@ -18,6 +18,7 @@ keystore.properties
 google-services.json
 .env
 .env.*
+www/js/keys.local.js
 
 # OS / editor
 .DS_Store

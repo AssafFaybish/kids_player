@@ -1,4 +1,5 @@
-// app.js — view routing, kids gallery + pagination, hidden parent gesture, PIN UI, parent screen.
+// app.js — boot, global wiring, and (until the view split completes) the gallery,
+// PIN and parent screens. Navigation goes through nav.js; dialogs through ui/modal.js.
 import {
   loadItems, saveItems, getSource, setSource, listForDisplay,
   addManualLink, deleteItem, exportJson, importJson, youtubeThumbCandidates,
@@ -9,9 +10,13 @@ import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { playItem, stop } from './player.js';
 import { syncFromRemote } from './sync.js';
 import { clearCache } from './media.js';
-import { onAppResume } from './platform.js';
+import { onAppResume, onBackButton, exitApp } from './platform.js';
+import { runMigrationIfNeeded } from './migrate.js';
+import { PAGE_VIDEOS, AVATARS } from './config.js';
+import { confirmKid, alertKid, mountModal } from './ui/modal.js';
+import * as nav from './nav.js';
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = PAGE_VIDEOS;
 const $ = (id) => document.getElementById(id);
 
 const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
@@ -34,18 +39,37 @@ let pinStep = 1;
 let pinFirst = '';
 let pinBuffer = '';
 
-/* ---------------- Views ---------------- */
-function showView(name) {
-  for (const v of document.querySelectorAll('.view')) v.classList.remove('active');
-  $('view-' + name).classList.add('active');
-}
-const isGalleryActive = () => $('view-gallery').classList.contains('active');
+/* ---------------- Views (routing via nav.js) ---------------- */
+const isGalleryActive = () => nav.isActive('gallery');
 
 function goGallery() {
-  showView('gallery');
   stop();
   currentWatch = null;
   renderGallery();
+  nav.reset('gallery');
+}
+
+async function askExit() {
+  const leave = await confirmKid({
+    emoji: '👋', title: 'לצאת מהאפליקציה?', text: 'תמיד אפשר לחזור!',
+    ok: 'צא', cancel: 'השאר', danger: true
+  });
+  if (leave) exitApp();
+}
+
+function registerViews() {
+  // Back precedence per view. Returning true = consumed; otherwise nav pops.
+  nav.register('profiles', { onBack: () => { askExit(); return true; } });
+  nav.register('create-profile', {
+    onBack: () => {
+      if (profiles.length > 0) { renderProfiles(); nav.reset('profiles'); }
+      return true; // no profiles yet → swallow (nowhere to go back to)
+    }
+  });
+  nav.register('gallery', { onBack: () => { askExit(); return true; } });
+  nav.register('watch', { onLeave: () => { stop(); currentWatch = null; } });
+  nav.register('pin', {}); // default pop
+  nav.register('parent', { onBack: () => { goGallery(); return true; } });
 }
 
 /* ---------------- Gallery ---------------- */
@@ -134,7 +158,11 @@ function renderWatchGrid(current) {
 
 async function openWatch(item) {
   currentWatch = item;
-  showView('watch');
+  // replace() when already watching: back always returns to the gallery, never
+  // through the chain of watched videos. nav scrolls to top — the F4 fix: the
+  // user actually SEES the player instead of staying scrolled at the grid.
+  if (nav.isActive('watch')) nav.replace('watch', { key: item.key });
+  else nav.go('watch', { key: item.key });
   const status = $('watch-status');
   status.classList.add('hidden');
   status.textContent = '';
@@ -172,7 +200,7 @@ function startPin(mode) {
   $('pin-msg').textContent = '';
   $('pin-title').textContent = mode === 'setup' ? 'בחרו קוד הורים חדש' : 'הזינו קוד הורים';
   updateDots();
-  showView('pin');
+  nav.go('pin');
 }
 async function onPinComplete() {
   if (pinMode === 'setup') {
@@ -203,7 +231,7 @@ function onKey(k) {
 }
 
 /* ---------------- Parent screen ---------------- */
-function enterParent() { refreshParent(); showView('parent'); }
+function enterParent() { refreshParent(); nav.replace('parent'); } // replaces 'pin' on the stack
 
 function setModeUI(mode) {
   $('mode-manual').classList.toggle('active', mode === 'manual');
@@ -277,13 +305,6 @@ async function doSyncAndRefresh() {
 }
 
 /* ---------------- Profiles ---------------- */
-const AVATARS = [
-  { e: '🦁', c: '#ffd166' }, { e: '🐼', c: '#cdd6ea' }, { e: '🐰', c: '#ffc9de' },
-  { e: '🦊', c: '#ffb37a' }, { e: '🐸', c: '#b8e994' }, { e: '🐵', c: '#e6c79c' },
-  { e: '🐯', c: '#ffcf6b' }, { e: '🦄', c: '#e4c1f9' }, { e: '🐙', c: '#ff9aa2' },
-  { e: '🐧', c: '#a0c4ff' }, { e: '🐨', c: '#d7d7d7' }, { e: '🐬', c: '#8fd0e0' }
-];
-
 function renderProfiles() {
   const grid = $('profiles-grid');
   grid.innerHTML = '';
@@ -346,7 +367,8 @@ function openCreateProfile() {
   $('create-msg').textContent = '';
   $('create-back').classList.toggle('hidden', profiles.length === 0);
   renderAvatarGrid();
-  showView('create-profile');
+  if (profiles.length === 0) nav.reset('create-profile');
+  else nav.go('create-profile');
 }
 
 async function createNewProfile() {
@@ -370,7 +392,7 @@ async function activateProfile(id) {
   }
   await updateProfileChip();
   renderGallery();
-  showView('gallery');
+  nav.reset('gallery');
 }
 
 async function updateProfileChip() {
@@ -388,18 +410,23 @@ async function backToProfiles() {
   currentWatch = null;
   profiles = await getProfiles();
   renderProfiles();
-  showView('profiles');
+  nav.reset('profiles');
 }
 
 async function deleteCurrentProfile() {
   const p = await getActiveProfile();
   if (!p) return;
-  if (!window.confirm(`למחוק את הפרופיל "${p.name}" ואת כל הסרטונים שלו? פעולה זו אינה הפיכה.`)) return;
+  const yes = await confirmKid({
+    emoji: '🗑️', title: `למחוק את הפרופיל "${p.name}"?`,
+    text: 'כל הסרטונים של הפרופיל יימחקו. פעולה זו אינה הפיכה.',
+    ok: 'מחיקה', cancel: 'ביטול', danger: true
+  });
+  if (!yes) return;
   await deleteProfile(p.id);
   items = [];
   source = { mode: 'manual', url: '' };
   profiles = await getProfiles();
-  if (profiles.length > 0) { renderProfiles(); showView('profiles'); }
+  if (profiles.length > 0) { renderProfiles(); nav.reset('profiles'); }
   else openCreateProfile();
 }
 
@@ -487,12 +514,22 @@ function wire() {
   $('parent-exit').addEventListener('click', goGallery);
   $('clear-cache').addEventListener('click', async () => {
     const n = await clearCache();
-    window.alert(n > 0
-      ? `נמחקו ${n} קבצי וידאו שהורדו למכשיר (פינוי מקום). הרשימה עצמה נשמרת.`
-      : 'אין קבצי וידאו שהורדו למחיקה. (הורדה מתבצעת רק באפליקציה המותקנת, ורק לקובץ mp4 שההזרמה שלו נכשלה.)');
+    await alertKid({
+      emoji: '🧹',
+      title: n > 0 ? `נמחקו ${n} קבצי וידאו` : 'אין מה לנקות',
+      text: n > 0
+        ? 'הקבצים שהורדו למכשיר נמחקו (פינוי מקום). הרשימה עצמה נשמרת.'
+        : 'הורדה מתבצעת רק באפליקציה המותקנת, ורק לקובץ mp4 שההזרמה שלו נכשלה.',
+      ok: 'סבבה'
+    });
   });
   $('reset-pin').addEventListener('click', async () => {
-    if (!window.confirm('לאפס את קוד ההורים? תתבקשו להגדיר קוד חדש בכניסה הבאה.')) return;
+    const yes = await confirmKid({
+      emoji: '🔓', title: 'לאפס את קוד ההורים?',
+      text: 'תתבקשו להגדיר קוד חדש בכניסה הבאה למסך ההורים.',
+      ok: 'איפוס', cancel: 'ביטול', danger: true
+    });
+    if (!yes) return;
     await clearPin();
     goGallery();
   });
@@ -500,7 +537,10 @@ function wire() {
 
 /* ---------------- Init ---------------- */
 async function init() {
+  mountModal();
+  registerViews();
   wire();
+  onBackButton(nav.handleBack);
 
   onAppResume(async () => {
     if (getActiveId() && source.mode === 'remote' && isGalleryActive()) {
@@ -511,11 +551,14 @@ async function init() {
   });
 
   await migrateLegacyIfNeeded();
+  // Preferences → IndexedDB (idempotent, resumable, non-destructive). The views still
+  // read from Preferences until the folder views land; this warms the new store early.
+  try { await runMigrationIfNeeded(); } catch (e) { console.warn('idb migration failed', e); }
   await loadActiveId();
   profiles = await getProfiles();
 
   if (profiles.length === 0) openCreateProfile();
-  else { renderProfiles(); showView('profiles'); }
+  else { renderProfiles(); nav.reset('profiles'); }
 }
 
 init();

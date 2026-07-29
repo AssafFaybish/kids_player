@@ -202,6 +202,21 @@
 
   </div>
 
+  <!-- ===================== KID MODAL (replaces window.confirm/alert) ===================== -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-scrim" class="modal-scrim"></div>
+    <div class="modal-card">
+      <div id="modal-emoji" class="modal-emoji"></div>
+      <h2 id="modal-title" class="modal-title"></h2>
+      <p id="modal-text" class="modal-text"></p>
+      <div class="modal-btns">
+        <!-- cancel FIRST in DOM = RIGHTMOST in RTL = the safe choice under the thumb -->
+        <button id="modal-cancel" class="btn modal-btn" type="button"></button>
+        <button id="modal-ok" class="btn modal-btn" type="button"></button>
+      </div>
+    </div>
+  </div>
+
   <!-- hidden file input for import -->
   <input id="import-file" type="file" accept="application/json,.json" class="hidden" />
 
