@@ -55,6 +55,12 @@ android {
     }
 }
 
+// Google Drive authorization (drive.file) via Play Services AuthorizationClient —
+// kept here so android/app/build.gradle stays a one-line hook.
+dependencies {
+    implementation "com.google.android.gms:play-services-auth:21.2.0"
+}
+
 gradle.taskGraph.whenReady { graph ->
     if (!haveSigning && graph.allTasks.any { it.name.toLowerCase().contains("release") }) {
         throw new GradleException(

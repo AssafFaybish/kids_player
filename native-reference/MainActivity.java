@@ -33,7 +33,8 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        registerPlugin(KidsNativePlugin.class); // MUST run before super.onCreate() (bridge builds there)
+        registerPlugin(KidsNativePlugin.class);  // MUST run before super.onCreate() (bridge builds there)
+        registerPlugin(GoogleAuthPlugin.class);
         super.onCreate(savedInstanceState);
 
         Bridge bridge = getBridge();

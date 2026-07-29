@@ -21,6 +21,7 @@ import { syncLibrary, shouldSync } from './sync2.js';
 import { normalizeTitle } from './normalize.js';
 import { burst } from './ui/confetti.js';
 import { playUnwrap } from './ui/sound.js';
+import { initShareTarget, drainShareQueue } from './share.js';
 
 const PAGE_SIZE = PAGE_VIDEOS;
 const $ = (id) => document.getElementById(id);
@@ -523,7 +524,26 @@ async function refreshParent() {
   $('remote-status').textContent = '';
   $('approve-msg').textContent = '';
   setParentTab(parentTab);
+  refreshDriveStatus();
   await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+}
+
+async function refreshDriveStatus() {
+  const meta = (await db.getMeta('drive')) || {};
+  const on = !!meta.enabled;
+  $('drive-status').textContent = on
+    ? `פעיל ✅ — גיבוי אחרון: ${meta.lastPushAt ? new Date(meta.lastPushAt).toLocaleString('he-IL') : 'עדיין לא'}`
+    : 'כבוי — הספרייה שמורה רק במכשיר הזה. ההפעלה דורשת אישור חד-פעמי בחשבון Google.';
+  $('drive-enable').classList.toggle('hidden', on);
+  $('drive-push').classList.toggle('hidden', !on);
+}
+
+/** Push local state to Drive soon — no-op until the parent enabled backup. */
+async function maybeSchedulePush() {
+  const meta = (await db.getMeta('drive')) || {};
+  if (!meta.enabled) return;
+  const { schedulePush } = await import('./drive.js');
+  schedulePush(profiles);
 }
 
 function parentRow({ rec, onDelete, onApprove }) {
@@ -584,6 +604,7 @@ async function refreshParentList() {
         await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
         await refreshParentList();
         renderHome();
+        maybeSchedulePush();
       }
     }));
   }
@@ -611,6 +632,7 @@ async function refreshPendingList() {
         await db.approvePending(rec.scopeId, [rec.key]);
         await refreshPendingList();
         renderHome();
+        maybeSchedulePush();
       },
       onDelete: async () => {
         await db.rejectPending(rec.scopeId, [rec.key]); // tombstoned — never comes back
@@ -765,6 +787,7 @@ async function doSyncAndRefresh() {
   await loadGiftStates();
   await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
   renderHome();
+  maybeSchedulePush();
 }
 
 /* ---------------- Profiles ---------------- */
@@ -852,6 +875,7 @@ async function activateProfile(id) {
   page = 0;
 
   // HYDRATE first: render whatever IndexedDB has, instantly. Sync runs after.
+  await drainShareQueue(); // shares that arrived before a profile was active
   await loadGiftStates();
   await renderHome();
   await updateProfileChip();
@@ -871,6 +895,7 @@ async function activateProfile(id) {
         if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
         await loading.hide();
         if (!nav.isActive('gallery') && nav.isActive('loading')) nav.reset('gallery');
+        maybeSchedulePush();
       })
       .catch(async () => { await loading.hide(); });
   } else {
@@ -1039,6 +1064,41 @@ function wire() {
     $('settings-msg').className = 'form-msg ok';
   });
 
+  $('drive-enable').addEventListener('click', async () => {
+    const msg = $('drive-msg');
+    msg.textContent = 'מתחברים…'; msg.className = 'form-msg';
+    try {
+      const { signIn } = await import('./gauth.js');
+      const { pullDrive, pushDrive } = await import('./drive.js');
+      if (!(await signIn())) {
+        msg.textContent = 'ההתחברות בוטלה (או שהמכשיר בלי Google Play Services)';
+        msg.className = 'form-msg err';
+        return;
+      }
+      msg.textContent = 'בודקים אם יש גיבוי קיים…';
+      const pulled = await pullDrive(activeProfileId);
+      await pushDrive(profiles);
+      await loadGiftStates();
+      await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+      renderHome();
+      await refreshDriveStatus();
+      msg.textContent = pulled.ok && !pulled.empty ? 'גיבוי קיים מוזג למכשיר ✅' : 'הגיבוי הופעל ✅';
+      msg.className = 'form-msg ok';
+    } catch {
+      msg.textContent = 'שגיאה בהפעלת הגיבוי';
+      msg.className = 'form-msg err';
+    }
+  });
+  $('drive-push').addEventListener('click', async () => {
+    const msg = $('drive-msg');
+    msg.textContent = 'מגבים…'; msg.className = 'form-msg';
+    const { pushDrive } = await import('./drive.js');
+    const r = await pushDrive(profiles);
+    msg.textContent = r.ok ? 'גובה ✅' : 'הגיבוי נכשל — ננסה שוב אוטומטית';
+    msg.className = r.ok ? 'form-msg ok' : 'form-msg err';
+    await refreshDriveStatus();
+  });
+
   $('parent-exit').addEventListener('click', goGallery);
   $('clear-cache').addEventListener('click', async () => {
     const n = await clearCache();
@@ -1081,9 +1141,16 @@ async function init() {
   });
 
   await migrateLegacyIfNeeded();
-  // Preferences → IndexedDB (idempotent, resumable, non-destructive). The views still
-  // read from Preferences until the folder views land; this warms the new store early.
+  // Preferences → IndexedDB (idempotent, resumable, non-destructive).
   try { await runMigrationIfNeeded(); } catch (e) { console.warn('idb migration failed', e); }
+
+  // F12b: videos shared from the YouTube app (listener first, then drain — see share.js)
+  initShareTarget({
+    profileIdGetter: () => activeProfileId,
+    onShareAdded: ({ pending }) => {
+      if (!pending && nav.isActive('gallery')) renderHome();
+    }
+  });
   await loadActiveId();
   profiles = await getProfiles();
 
