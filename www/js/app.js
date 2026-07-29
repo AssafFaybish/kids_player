@@ -13,7 +13,7 @@ import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
-import { confirmKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
+import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
@@ -153,14 +153,22 @@ async function maybePromptUpdate(r) {
     || nav.isActive('connect') || nav.isActive('loading') || nav.isActive('tour')
     || nav.isActive('sheet-setup') || isModalOpen()) return;
   updatePromptedThisSession = true;
-  const yes = await confirmKid({
+  const answer = await askKid({
     emoji: '🚀', title: 'יש גירסה חדשה!',
     text: `גירסה ${r.latest.version} מוכנה להתקנה (במקום ${r.local}). לעדכן עכשיו?`,
     ok: 'עדכון עכשיו', cancel: 'לא עכשיו'
   });
-  if (!yes) {
-    await prefSet('update.skip', r.latest.version);
-    refreshGateDot();
+  if (answer !== 'ok') {
+    // Only the EXPLICIT "לא עכשיו" snoozes this version. A scrim tap / hardware
+    // back (e.g. the child poking the screen) just closes the dialog — it comes
+    // back on the next home entry. Real bug found in the field: an accidental
+    // dismiss silently wrote update.skip and the parent never saw the offer again.
+    if (answer === 'cancel') {
+      await prefSet('update.skip', r.latest.version);
+      refreshGateDot();
+    } else {
+      updatePromptedThisSession = false; // dismissed, not answered — re-offer
+    }
     return;
   }
   // v1.0.7 (user request): installing requires the parent PIN — a child tapping

@@ -37,7 +37,17 @@ function show({ emoji = '❓', title = '', text = '', ok = 'אישור', cancel 
 }
 
 /** Two big buttons; resolves true only on the ok button. */
-export function confirmKid(opts) { return show(opts).then(Boolean); }
+export function confirmKid(opts) { return show(opts).then((r) => r === true); }
+
+/**
+ * Like confirmKid, but tells apart an EXPLICIT cancel-button press from an
+ * accidental dismiss (scrim tap / hardware back): 'ok' | 'cancel' | 'dismiss'.
+ * Use when "no" has consequences (e.g. the update prompt writes update.skip) —
+ * a child poking outside the dialog must not silently answer for the parent.
+ */
+export function askKid(opts) {
+  return show(opts).then((r) => (r === true ? 'ok' : r === 'cancel' ? 'cancel' : 'dismiss'));
+}
 
 /** One button; resolves when dismissed. */
 export function alertKid(opts) { return show({ ...opts, cancel: null }).then(() => undefined); }
@@ -45,6 +55,6 @@ export function alertKid(opts) { return show({ ...opts, cancel: null }).then(() 
 /** Wire once from app.js init. */
 export function mountModal() {
   $('modal-ok').addEventListener('click', () => closeModal(true));
-  $('modal-cancel').addEventListener('click', () => closeModal(false));
-  $('modal-scrim').addEventListener('click', () => closeModal(false));
+  $('modal-cancel').addEventListener('click', () => closeModal('cancel'));
+  $('modal-scrim').addEventListener('click', () => closeModal(false)); // dismiss, not an answer
 }
