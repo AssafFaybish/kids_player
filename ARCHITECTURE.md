@@ -30,6 +30,8 @@ live and how does data flow".
 | `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback | classify, normalize, order, platform, db |
 | `search.js` | PURE home-search ranking: normalized exact/starts/word/substring tiers | normalize |
 | `dataver.js` | one-shot data migrations after an app update (meta dataVersion; pure pendingSteps) | db, store |
+| `spatial.js` | PURE TV D-pad geometry: pickNextIndex / pickFirstIndex (no wrap, drift penalty) | — |
+| `ui/dpad.js` | Android TV focus manager (v1.0.9): spatial nav over the active view, watch-view player mode via player.handleTvKey | spatial, nav, modal, player |
 | `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled; honors `update.skip` on silent checks), downloadAndInstall (size-verified) | platform |
 | `wake.js` | ref-counted keep-screen-on (KidsNative → KeepAwake → wakeLock → noop) | — |
 | `player.js` | YT IFrame + `<video>` engines, shared HUD state machine, loadVideoById reuse path | media, classify, config, wake |
