@@ -13,8 +13,10 @@ import { syncFromRemote } from './sync.js';
 import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
-import { PAGE_VIDEOS, AVATARS } from './config.js';
+import { PAGE_VIDEOS, PAGE_WATCH, AVATARS } from './config.js';
 import { confirmKid, alertKid, mountModal } from './ui/modal.js';
+import { makePager } from './ui/pager.js';
+import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
 
 const PAGE_SIZE = PAGE_VIDEOS;
@@ -79,6 +81,7 @@ function registerViews() {
   });
   nav.register('pin', {}); // default pop
   nav.register('parent', { onBack: () => { goGallery(); return true; } });
+  loading.registerLoadingView();
 }
 
 /* ---------------- Gallery ---------------- */
@@ -144,25 +147,41 @@ function renderGallery() {
     grid.appendChild(tileEl(it));
   }
 
-  const pager = $('pager');
+  // Only the arrow controls hide on a single page — the bar (with the 👋 exit
+  // button) must stay visible (F6).
+  const controls = $('pg-controls');
   if (list.length > PAGE_SIZE) {
-    pager.classList.remove('hidden');
+    controls.classList.remove('hidden');
     $('pg-info').textContent = `${page + 1} / ${total}`;
     $('pg-prev').disabled = page === 0;
     $('pg-next').disabled = page >= total - 1;
   } else {
-    pager.classList.add('hidden');
+    controls.classList.add('hidden');
   }
 }
 
 /* ---------------- Watch ---------------- */
+// F4: the under-player grid is PAGINATED (6 tiles/page) — the old render-everything
+// was the page's lag source with hundreds of tiles. The playing item stays in the
+// grid (marked) so pagination is stable while switching videos.
+let watchPage = 0;
+let watchPager = null;
+
 function renderWatchGrid(current) {
+  if (!watchPager) watchPager = makePager({ mount: $('watch-pager'), onChange: (p) => { watchPage = p; renderWatchGrid(currentWatch); } });
+  const list = listForDisplay(items, source);
+  const total = Math.max(1, Math.ceil(list.length / PAGE_WATCH));
+  if (watchPage >= total) watchPage = total - 1;
+  if (watchPage < 0) watchPage = 0;
+
   const grid = $('watch-grid');
   grid.innerHTML = '';
-  for (const it of listForDisplay(items, source)) {
-    if (it.key === current.key) continue;
-    grid.appendChild(tileEl(it));
+  for (const it of list.slice(watchPage * PAGE_WATCH, (watchPage + 1) * PAGE_WATCH)) {
+    const tile = tileEl(it);
+    if (current && it.key === current.key) tile.classList.add('tile-current');
+    grid.appendChild(tile);
   }
+  watchPager.update(watchPage, total);
 }
 
 async function openWatch(item) {
@@ -170,8 +189,8 @@ async function openWatch(item) {
   // replace() when already watching: back always returns to the gallery, never
   // through the chain of watched videos. nav scrolls to top — the F4 fix: the
   // user actually SEES the player instead of staying scrolled at the grid.
-  if (nav.isActive('watch')) nav.replace('watch', { key: item.key });
-  else nav.go('watch', { key: item.key });
+  if (nav.isActive('watch')) nav.replace('watch', { key: item.key }); // keep the child's grid page
+  else { watchPage = 0; nav.go('watch', { key: item.key }); }
   const status = $('watch-status');
   status.classList.add('hidden');
   status.textContent = '';
@@ -419,11 +438,20 @@ async function activateProfile(id) {
   items = await loadItems();
   page = 0;
   if (source.mode === 'remote') {
-    const r = await syncFromRemote();
-    if (r && r.ok) items = await loadItems();
+    // The one boot path that can take seconds (network) — show the kids loading
+    // screen if it outlives 250ms; never let a failure strand the child there.
+    loading.show({ step: 'מביאים סרטונים חדשים…' });
+    try {
+      const r = await Promise.race([
+        syncFromRemote(),
+        new Promise((res) => setTimeout(() => res({ ok: false, error: 'timeout' }), 12000))
+      ]);
+      if (r && r.ok) items = await loadItems();
+    } catch { /* cached list is fine */ }
   }
   await updateProfileChip();
   renderGallery();
+  await loading.hide();
   nav.reset('gallery');
 }
 
@@ -472,6 +500,7 @@ function wire() {
 
   $('pg-prev').addEventListener('click', () => { page -= 1; renderGallery(); });
   $('pg-next').addEventListener('click', () => { page += 1; renderGallery(); });
+  $('exit-btn').addEventListener('click', askExit);
 
   $('watch-home').addEventListener('click', goGallery);
   $('ctl-fs').addEventListener('click', () => {

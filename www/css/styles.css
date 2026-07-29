@@ -137,7 +137,17 @@ body {
 .pager {
   display: flex; align-items: center; justify-content: center;
   gap: 26px; padding: 10px 0 34px;
+  position: relative;
 }
+.pg-controls { display: flex; align-items: center; justify-content: center; gap: 26px; }
+/* F6: big friendly exit — pinned to the bar's end so it never moves with pagination */
+.exit-btn {
+  position: absolute; inset-inline-end: 22px; top: 4px;
+  width: 74px; height: 74px; border-radius: 50%; border: none;
+  background: #fff; box-shadow: var(--shadow); cursor: pointer;
+  font-size: 34px; display: flex; align-items: center; justify-content: center;
+}
+.exit-btn:active { transform: scale(0.92); }
 .pg-btn {
   border: none; border-radius: 50%;
   width: 74px; height: 74px;
@@ -209,8 +219,12 @@ body {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .watch-status { text-align: center; padding: 14px; font-size: 18px; color: var(--muted); }
-.watch-more-title { padding: 16px 18px 0; font-size: 22px; color: var(--brand-2); margin: 0; }
+.watch-more-title { padding: 16px 18px 0; font-size: 22px; color: var(--brand-2); margin: 0; max-width: 1100px; margin: 0 auto; }
 .grid-more { padding-top: 12px; }
+/* the item currently playing, inside the under-player grid */
+.tile-current { outline: 4px solid var(--brand-2); outline-offset: -4px; }
+.tile-current .play-badge { background: var(--brand-2); }
+#watch-pager { padding-bottom: 20px; }
 
 /* ---------- PIN ---------- */
 #view-pin { min-height: 100dvh; display: none; }
@@ -306,6 +320,68 @@ body {
   .tile .cap { font-size: 13px; padding: 7px 6px 10px; }
   .tile .play-badge { width: 46px; height: 46px; font-size: 20px; }
   .brand-title { font-size: 20px; }
+}
+
+/* ---------- Loading (F11) ---------- */
+#view-loading { min-height: 100dvh; }
+#view-loading.active { display: flex; align-items: center; justify-content: center; }
+.load-wrap { text-align: center; width: min(92vw, 520px); }
+.load-stage { position: relative; height: 150px; overflow: hidden; }
+.load-scene { position: absolute; inset: 0; }
+.scene-sprite { position: absolute; font-size: 64px; line-height: 1; will-change: transform; }
+.load-title { font-size: 28px; color: var(--brand-2); margin: 10px 0 2px; }
+.load-sub { min-height: 24px; color: var(--muted); font-size: 17px; font-weight: 700; margin: 4px 0 10px; }
+.load-dots { display: flex; gap: 10px; justify-content: center; }
+.load-dots span {
+  width: 14px; height: 14px; border-radius: 50%; background: var(--brand-2);
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+.load-dots span:nth-child(2) { animation-delay: 0.2s; }
+.load-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotPulse { 0%, 100% { transform: scale(0.7); opacity: 0.4; } 50% { transform: scale(1); opacity: 1; } }
+
+/* horse: gallops across, bouncing; striped ground scrolls under it (transform-only) */
+.scene-horse .scene-sprite { bottom: 26px; animation: gallopX 2.4s linear infinite, gallopY 0.4s ease-in-out infinite; }
+@keyframes gallopX { from { transform: translateX(-45vw); } to { transform: translateX(45vw); } }
+@keyframes gallopY { 0%, 100% { bottom: 26px; } 50% { bottom: 40px; } }
+.scene-ground {
+  position: absolute; bottom: 8px; inset-inline: -50%; height: 10px; border-radius: 6px;
+  background: repeating-linear-gradient(90deg, #b8e994 0 30px, #8fd0a0 30px 60px);
+  animation: groundMove 0.9s linear infinite;
+}
+@keyframes groundMove { from { transform: translateX(0); } to { transform: translateX(60px); } }
+
+/* rocket: lifts off with sparks; stars drift down */
+.scene-rocket .scene-sprite { left: 50%; bottom: 0; animation: liftOff 2.4s ease-in infinite; }
+@keyframes liftOff {
+  0% { transform: translate(-50%, 60px) rotate(0deg); }
+  60% { transform: translate(-50%, -40px) rotate(6deg); }
+  100% { transform: translate(-50%, -170px) rotate(6deg); }
+}
+.spark { position: absolute; left: 50%; bottom: 6px; width: 10px; height: 10px; border-radius: 50%; background: #ffb703; animation: sparkFade 0.8s ease-out infinite; }
+.spark.s2 { animation-delay: 0.25s; background: var(--accent); }
+.spark.s3 { animation-delay: 0.5s; background: #ffd166; }
+@keyframes sparkFade { from { transform: translate(-50%, 0) scale(1); opacity: 1; } to { transform: translate(-50%, 30px) scale(0.2); opacity: 0; } }
+.star { position: absolute; color: var(--brand-2); font-size: 18px; animation: starDrift 2.6s linear infinite; }
+.star.st1 { left: 20%; } .star.st2 { left: 50%; animation-delay: 0.8s; } .star.st3 { left: 78%; animation-delay: 1.6s; }
+@keyframes starDrift { from { transform: translateY(-20px); opacity: 0.9; } to { transform: translateY(160px); opacity: 0; } }
+
+/* balloon: floats up, swaying; clouds parallax */
+.scene-balloon .scene-sprite { left: 48%; animation: floatUp 2.6s ease-in-out infinite, sway 2.4s ease-in-out infinite; }
+@keyframes floatUp { from { transform: translateY(130px); } to { transform: translateY(-150px); } }
+@keyframes sway { 0%, 100% { margin-left: -10px; } 50% { margin-left: 10px; } }
+.cloud { position: absolute; font-size: 34px; opacity: 0.85; animation: cloudMove 3.2s linear infinite; }
+.cloud.c1 { top: 22px; } .cloud.c2 { top: 78px; font-size: 24px; animation-duration: 4.5s; }
+@keyframes cloudMove { from { transform: translateX(46vw); } to { transform: translateX(-46vw); } }
+
+/* train: chugs across with a smoke puff */
+.scene-train .scene-sprite { bottom: 18px; animation: trainMove 2.8s linear infinite; }
+@keyframes trainMove { from { transform: translateX(45vw) scaleX(-1); } to { transform: translateX(-45vw) scaleX(-1); } }
+.puff { position: absolute; bottom: 74px; left: 50%; font-size: 20px; animation: puffUp 0.7s ease-out infinite; }
+@keyframes puffUp { from { transform: translateY(0) scale(0.6); opacity: 0.9; } to { transform: translateY(-26px) scale(1.2); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .load-scene *, .load-dots span { animation: none !important; }
 }
 
 /* ---------- Kid modal ---------- */

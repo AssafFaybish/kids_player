@@ -65,15 +65,30 @@
         <p class="empty-text">עדיין אין סרטונים</p>
       </div>
 
-      <nav id="pager" class="pager hidden" aria-label="דפדוף">
-        <button id="pg-prev" class="pg-btn" type="button" aria-label="הקודם">
-          <span class="pg-arrow">▶</span>
-        </button>
-        <div id="pg-info" class="pg-info">1 / 1</div>
-        <button id="pg-next" class="pg-btn" type="button" aria-label="הבא">
-          <span class="pg-arrow">◀</span>
-        </button>
+      <!-- The pager bar itself stays visible even on a single page — the exit button
+           lives here (F6); only the arrow controls hide. -->
+      <nav id="pager" class="pager" aria-label="דפדוף">
+        <div id="pg-controls" class="pg-controls hidden">
+          <button id="pg-prev" class="pg-btn" type="button" aria-label="הקודם">
+            <span class="pg-arrow">▶</span>
+          </button>
+          <div id="pg-info" class="pg-info">1 / 1</div>
+          <button id="pg-next" class="pg-btn" type="button" aria-label="הבא">
+            <span class="pg-arrow">◀</span>
+          </button>
+        </div>
+        <button id="exit-btn" class="exit-btn" type="button" aria-label="יציאה מהאפליקציה">👋</button>
       </nav>
+    </section>
+
+    <!-- ===================== LOADING (kids) ===================== -->
+    <section id="view-loading" class="view">
+      <div class="load-wrap">
+        <div id="load-stage" class="load-stage"></div>
+        <h2 class="load-title">בטעינה…</h2>
+        <p id="load-sub" class="load-sub"></p>
+        <div class="load-dots"><span></span><span></span><span></span></div>
+      </div>
     </section>
 
     <!-- ===================== WATCH ===================== -->
@@ -102,6 +117,7 @@
       <div id="watch-status" class="watch-status hidden"></div>
       <h2 class="watch-more-title">עוד סרטונים</h2>
       <div id="watch-grid" class="grid grid-more"></div>
+      <nav id="watch-pager" class="pager" aria-label="דפדוף סרטונים"></nav>
     </section>
 
     <!-- ===================== PIN ===================== -->
