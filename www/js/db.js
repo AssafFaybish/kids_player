@@ -172,6 +172,23 @@ export async function pagePending(scopeId, { offset = 0, limit = 50 } = {}) {
   return { items, total };
 }
 
+/**
+ * Find a LIVE record by key in ANY scope (by_key index) — keys are content-addressed
+ * (yt:<id>), so the same video under a drifted library id is still the same video.
+ * Preference: the passed scopes first, then anything live.
+ */
+export async function findLiveByKey(key, preferScopes = []) {
+  const db = await openDb();
+  const all = await preq(db.transaction('videos').objectStore('videos').index('by_key').getAll(key));
+  const live = (all || []).filter((r) => r.state === 'live');
+  if (!live.length) return null;
+  for (const s of preferScopes) {
+    const hit = live.find((r) => r.scopeId === s);
+    if (hit) return hit;
+  }
+  return live[0];
+}
+
 export async function findByNormTitleInChannel(scopeId, channelId, normTitle) {
   if (!normTitle) return null; // empty normTitle never dedupes
   const db = await openDb();
@@ -289,6 +306,11 @@ export async function countGifts(profileId) {
   const db = await openDb();
   return preq(db.transaction('profileVideoState').objectStore('profileVideoState')
     .index('by_gift').count(IDBKeyRange.bound([profileId, -Infinity], [profileId, Infinity])));
+}
+
+/** Remove an orphaned gift/unwrap state row (its video no longer exists anywhere). */
+export async function deleteVideoState(profileId, key) {
+  await tx(['profileVideoState'], 'readwrite', (s) => { s.delete([profileId, key]); });
 }
 
 /** Unwrap: set unwrappedAt, DELETE giftRank (drops out of by_gift automatically). */

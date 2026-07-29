@@ -324,9 +324,18 @@ async function renderGridPage(grid, scope, fid, which) {
     const res = await db.pageGifts(activeProfileId, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
     total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
     items15 = [];
+    const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
     for (const st of res.items) {
-      const rec = (libScope && await db.getVideo(libScope, st.key)) || (await db.getVideo(db.profScope(activeProfileId), st.key));
-      if (rec && rec.state === 'live') items15.push(rec);
+      // by-key lookup across ALL scopes: immune to library-id drift (a re-saved sheet
+      // URL used to orphan gift states — badge counted them, the folder came up empty)
+      const rec = await db.findLiveByKey(st.key, prefer);
+      if (rec) {
+        items15.push(rec);
+      } else {
+        // self-heal: the video is gone everywhere — drop the orphaned state so the
+        // "חדשים" badge converges with what the child actually sees
+        try { await db.deleteVideoState(activeProfileId, st.key); giftStates.delete(st.key); } catch {}
+      }
     }
   } else {
     const res = await db.pageFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });

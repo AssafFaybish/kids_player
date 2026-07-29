@@ -54,6 +54,10 @@ test('fnv1a is stable and hex-shaped; libraryIdFor canonicalizes sheet variants 
   const a = libraryIdFor('https://docs.google.com/spreadsheets/d/SHEET/edit#gid=0');
   const b = libraryIdFor('https://docs.google.com/spreadsheets/d/SHEET/export?format=csv&gid=0');
   assert.equal(a, b); // /edit and /export of the same sheet+gid = same library
+  // gid=0 IS the default first tab — a bare link must be the SAME library (real bug:
+  // re-saving the URL in a different form orphaned the whole library + gift states)
+  assert.equal(libraryIdFor('https://docs.google.com/spreadsheets/d/SHEET/edit'), a);
+  assert.notEqual(libraryIdFor('https://docs.google.com/spreadsheets/d/SHEET/edit#gid=123'), a);
   const c = libraryIdFor('https://docs.google.com/spreadsheets/d/OTHER/edit');
   assert.notEqual(a, c);
   assert.equal(canonicalSheetKey(''), '');

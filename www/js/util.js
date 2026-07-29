@@ -21,8 +21,11 @@ export function canonicalSheetKey(url) {
   if (!s) return '';
   const gs = s.match(/docs\.google\.com\/spreadsheets\/d\/(e\/)?([A-Za-z0-9_-]+)/);
   if (gs) {
+    // gid=0 IS the default first tab — "…/edit#gid=0" and a bare sheet link must map
+    // to the SAME library, or re-saving the URL orphans the whole library (real bug:
+    // gift badge counted states whose videos lived under the other library id).
     const gid = (s.match(/[#?&]gid=([0-9]+)/) || [])[1];
-    return 'gsheet:' + gs[2] + (gid ? ':' + gid : '');
+    return 'gsheet:' + gs[2] + (gid && gid !== '0' ? ':' + gid : '');
   }
   const m = s.match(/^https?:\/\/([^/?#]+)([^?#]*)/i);
   if (m) return 'url:' + m[1].toLowerCase() + m[2];
