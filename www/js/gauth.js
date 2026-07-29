@@ -3,6 +3,7 @@
 // free, so persisting it would create a bearer credential at rest for nothing.
 
 let cached = null; // { token, expiresAt }
+let lastError = null; // why the last sign-in failed — feeds a SPECIFIC parent-facing message
 
 function plug() {
   const c = typeof window !== 'undefined' ? window.Capacitor : undefined;
@@ -11,6 +12,9 @@ function plug() {
 
 export function gauthAvailable() { return !!plug(); }
 
+/** 'no-plugin' | 'declined' | 'auth-unavailable:<code>' (10 = not registered in Google Cloud) */
+export function lastAuthError() { return lastError; }
+
 /**
  * interactive=false NEVER pops UI — background refresh must not interrupt a child.
  * Returns the access token string, or null (null + needsUi means "ask the parent").
@@ -18,14 +22,18 @@ export function gauthAvailable() { return !!plug(); }
 export async function getAccessToken({ interactive = false } = {}) {
   if (cached && Date.now() < cached.expiresAt) return cached.token;
   const p = plug();
-  if (!p) return null;
+  if (!p) { lastError = 'no-plugin'; return null; }
   try {
     const r = await p.authorize({ interactive });
     if (r && r.granted && r.accessToken) {
       cached = { token: r.accessToken, expiresAt: Date.now() + 55 * 60 * 1000 };
+      lastError = null;
       return r.accessToken;
     }
-  } catch {}
+    lastError = 'declined'; // consent UI shown and dismissed/denied
+  } catch (e) {
+    lastError = String((e && e.message) || e); // e.g. auth-unavailable:10
+  }
   return null;
 }
 
