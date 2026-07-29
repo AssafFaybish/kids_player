@@ -4,8 +4,9 @@ import {
   loadItems, saveItems, getSource, setSource, listForDisplay,
   addManualLink, deleteItem, exportJson, importJson, youtubeThumbCandidates,
   getProfiles, getActiveId, getActiveProfile, createProfile, deleteProfile,
-  migrateLegacyIfNeeded, loadActiveId, setActiveId
+  migrateLegacyIfNeeded, loadActiveId, setActiveId, fetchYouTubeTitle
 } from './store.js';
+import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { playItem, stop } from './player.js';
 import { syncFromRemote } from './sync.js';
@@ -44,6 +45,7 @@ const isGalleryActive = () => nav.isActive('gallery');
 
 function goGallery() {
   stop();
+  wake.releaseAll(); // hard safety net (F7): outside the player, the screen may sleep
   currentWatch = null;
   renderGallery();
   nav.reset('gallery');
@@ -67,7 +69,14 @@ function registerViews() {
     }
   });
   nav.register('gallery', { onBack: () => { askExit(); return true; } });
-  nav.register('watch', { onLeave: () => { stop(); currentWatch = null; } });
+  nav.register('watch', {
+    onLeave: (prev, next) => {
+      if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
+      stop();
+      wake.releaseAll();
+      currentWatch = null;
+    }
+  });
   nav.register('pin', {}); // default pop
   nav.register('parent', { onBack: () => { goGallery(); return true; } });
 }
@@ -166,6 +175,7 @@ async function openWatch(item) {
   const status = $('watch-status');
   status.classList.add('hidden');
   status.textContent = '';
+  setWatchTitle(item);
   renderWatchGrid(item);
 
   await playItem(item, $('player-host'), {
@@ -185,6 +195,28 @@ async function persistThumb(key, data) {
   const arr = await loadItems();
   const it = arr.find((i) => i.key === key);
   if (it && !it.thumb) { it.thumb = data; await saveItems(arr); items = arr; }
+}
+
+/* F5: the playing video's title under the player, YouTube-style. */
+function setWatchTitle(item) {
+  const el = $('watch-title');
+  el.textContent = item.title || '';
+  el.classList.toggle('hidden', !item.title);
+  if (!item.title && item.type === 'youtube') {
+    el.textContent = '…';
+    el.classList.remove('hidden');
+    fetchYouTubeTitle(item.id).then((t) => {
+      if (!currentWatch || currentWatch.key !== item.key) return; // stale fetch
+      if (t) { el.textContent = t; persistTitle(item.key, t); }
+      else { el.textContent = ''; el.classList.add('hidden'); }
+    });
+  }
+}
+
+async function persistTitle(key, title) {
+  const arr = await loadItems();
+  const it = arr.find((i) => i.key === key);
+  if (it && !it.title) { it.title = title; await saveItems(arr); items = arr; }
 }
 
 /* ---------------- PIN ---------------- */

@@ -12,6 +12,7 @@ package com.assaf.kidsplayer;
 //   2) Installs a WebChromeClient that makes HTML5 fullscreen actually work (Capacitor's
 //      onShowCustomView is a no-op) and blocks pop-up windows.
 
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Message;
@@ -32,6 +33,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(KidsNativePlugin.class); // MUST run before super.onCreate() (bridge builds there)
         super.onCreate(savedInstanceState);
 
         Bridge bridge = getBridge();
@@ -39,6 +41,32 @@ public class MainActivity extends BridgeActivity {
         webView.getSettings().setSupportMultipleWindows(false);
         webView.setWebViewClient(new KidsWebViewClient(bridge));
         webView.setWebChromeClient(new KidsWebChromeClient(bridge));
+    }
+
+    // F12b share target. VERIFIED: BridgeActivity.load() ends with
+    // `this.onNewIntent(getIntent())`, so this ONE override covers both cold start and
+    // warm singleTask redelivery — a separate getIntent() branch in onCreate would
+    // double-process. It fires during super.onCreate(), before JS boots, which is why
+    // the payload goes into KidsNativePlugin's static inbox.
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); // keeps bridge plugin dispatch working
+        setIntent(intent);
+        handleShareIntent(intent);
+    }
+
+    private void handleShareIntent(Intent i) {
+        if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
+        String type = i.getType();
+        if (type == null || !type.startsWith("text/")) return;
+        String text = i.getStringExtra(Intent.EXTRA_TEXT);
+        String subject = i.getStringExtra(Intent.EXTRA_SUBJECT);
+        if (text == null && subject == null) return;
+        KidsNativePlugin.enqueueShare(text, subject);
+        // Consume: a process-death task restore replays getIntent() and would re-add.
+        i.removeExtra(Intent.EXTRA_TEXT);
+        i.removeExtra(Intent.EXTRA_SUBJECT);
+        i.setAction(Intent.ACTION_MAIN);
     }
 
     /** Blocks any navigation whose host is YouTube; everything else keeps Capacitor's behavior. */

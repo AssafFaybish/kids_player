@@ -31,7 +31,9 @@ function saveScroll(entry) {
 }
 
 function transition(entry, prev, { restoreScroll = false } = {}) {
-  if (prev && views[prev.name] && views[prev.name].onLeave) { try { views[prev.name].onLeave(prev); } catch {} }
+  // onLeave receives the NEXT entry too — watch→watch must not tear the player down
+  // (the loadVideoById reuse path depends on it staying alive).
+  if (prev && views[prev.name] && views[prev.name].onLeave) { try { views[prev.name].onLeave(prev, entry); } catch {} }
   applyView(entry.name);
   if (views[entry.name] && views[entry.name].onEnter) { try { views[entry.name].onEnter(entry); } catch {} }
   if (restoreScroll) {

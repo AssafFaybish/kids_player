@@ -78,16 +78,17 @@
 
     <!-- ===================== WATCH ===================== -->
     <section id="view-watch" class="view">
-      <div class="watch-controls">
-        <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
-      </div>
-      <div id="player-wrap" class="player-wrap">
+      <!-- 🏠 lives INSIDE #player-wrap: native fullscreen hides the WebView, so anything
+           outside the wrap is unreachable there. It auto-hides with the HUD (F1). -->
+      <div id="player-wrap" class="player-wrap hud-on">
         <div id="player-host" class="player-host"></div>
         <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
         <div id="seek-feedback" class="seek-feedback"></div>
+        <div id="player-top" class="player-top">
+          <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
+        </div>
         <div class="player-hud">
           <div class="player-controls">
-            <button id="ctl-play" class="ctl-btn" type="button" aria-label="נגן או עצור">⏸</button>
             <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
           </div>
           <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
@@ -97,6 +98,7 @@
           </div>
         </div>
       </div>
+      <h1 id="watch-title" class="watch-title hidden"></h1>
       <div id="watch-status" class="watch-status hidden"></div>
       <h2 class="watch-more-title">עוד סרטונים</h2>
       <div id="watch-grid" class="grid grid-more"></div>
