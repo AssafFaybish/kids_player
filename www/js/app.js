@@ -1,15 +1,13 @@
 // app.js — boot, global wiring, and (until the view split completes) the gallery,
 // PIN and parent screens. Navigation goes through nav.js; dialogs through ui/modal.js.
 import {
-  loadItems, saveItems, getSource, setSource, listForDisplay,
-  addManualLink, deleteItem, exportJson, importJson, youtubeThumbCandidates,
+  loadItems, getSource, youtubeThumbCandidates,
   getProfiles, getActiveId, getActiveProfile, createProfile, deleteProfile,
   migrateLegacyIfNeeded, loadActiveId, setActiveId, fetchYouTubeTitle
 } from './store.js';
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { playItem, stop } from './player.js';
-import { syncFromRemote } from './sync.js';
 import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -502,77 +500,270 @@ function onKey(k) {
   if (pinBuffer.length === 4) setTimeout(onPinComplete, 130);
 }
 
-/* ---------------- Parent screen ---------------- */
+/* ---------------- Parent screen (tabs: approve / add / sources / settings) ---------------- */
 function enterParent() { refreshParent(); nav.replace('parent'); } // replaces 'pin' on the stack
 
-function setModeUI(mode) {
-  $('mode-manual').classList.toggle('active', mode === 'manual');
-  $('mode-remote').classList.toggle('active', mode === 'remote');
-  $('panel-manual').classList.toggle('hidden', mode !== 'manual');
-  $('panel-remote').classList.toggle('hidden', mode !== 'remote');
+const PARENT_TABS = ['approve', 'add', 'sources', 'settings'];
+let parentTab = 'add';
+
+function setParentTab(name) {
+  parentTab = name;
+  for (const t of PARENT_TABS) {
+    $('tab-' + t).classList.toggle('active', t === name);
+    $('panel-' + t).classList.toggle('hidden', t !== name);
+  }
 }
-async function setMode(mode) {
-  source = { ...source, mode };
-  await setSource(source);
-  setModeUI(mode);
-  renderHome();
-}
-function refreshParent() {
-  $('remote-url').value = source.url || '';
-  setModeUI(source.mode);
-  refreshParentList();
+
+async function refreshParent() {
+  const src = await db.getSources(activeProfileId);
+  $('remote-url').value = (src && src.sheetUrl) || '';
+  $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
+  $('share-approval-toggle').checked = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
   $('add-msg').textContent = '';
   $('remote-status').textContent = '';
+  $('approve-msg').textContent = '';
+  setParentTab(parentTab);
+  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
 }
-function refreshParentList() {
-  const list = listForDisplay(items, source);
-  $('list-count').textContent = `${list.length} סרטונים`;
+
+function parentRow({ rec, onDelete, onApprove }) {
+  const li = document.createElement('li');
+  const img = document.createElement('img');
+  img.className = 'li-thumb';
+  setThumb(img, rec);
+  const body = document.createElement('div');
+  body.className = 'li-body';
+  const title = document.createElement('div');
+  title.className = 'li-title';
+  title.textContent = rec.title || '(ללא שם)';
+  const badge = document.createElement('span');
+  badge.className = 'badge-type ' + (rec.type === 'youtube' ? 'badge-yt' : 'badge-file');
+  badge.textContent = rec.type === 'youtube' ? 'YouTube' : 'קובץ';
+  title.appendChild(badge);
+  const sub = document.createElement('div');
+  sub.className = 'li-sub';
+  sub.textContent = rec.srcUrl || rec.url || '';
+  body.appendChild(title);
+  body.appendChild(sub);
+  li.appendChild(img);
+  li.appendChild(body);
+  if (onApprove) {
+    const ok = document.createElement('button');
+    ok.className = 'li-ok'; ok.type = 'button'; ok.textContent = '✅';
+    ok.addEventListener('click', onApprove);
+    li.appendChild(ok);
+  }
+  const del = document.createElement('button');
+  del.className = 'li-del'; del.type = 'button'; del.textContent = '🗑️';
+  del.addEventListener('click', onDelete);
+  li.appendChild(del);
+  return li;
+}
+
+const PARENT_LIST_CAP = 200;
+
+/** The library list — reads IndexedDB; deletion writes a TOMBSTONE (durable forever). */
+async function refreshParentList() {
+  const scopes = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  const all = [];
+  for (const s of scopes) {
+    for (const rec of (await db.loadMergeIndex(s)).values()) {
+      if (rec.state === 'live') all.push(rec);
+    }
+  }
+  all.sort((a, b) => (b.sortKey || 0) - (a.sortKey || 0));
+  $('list-count').textContent = all.length > PARENT_LIST_CAP
+    ? `מוצגים ${PARENT_LIST_CAP} מתוך ${all.length} סרטונים`
+    : `${all.length} סרטונים`;
   const ul = $('parent-list');
   ul.innerHTML = '';
-  for (const it of list) {
+  for (const rec of all.slice(0, PARENT_LIST_CAP)) {
+    ul.appendChild(parentRow({
+      rec,
+      onDelete: async () => {
+        await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
+        await refreshParentList();
+        renderHome();
+      }
+    }));
+  }
+}
+
+/** Pending queue (channel discoveries / quarantined sheet rows / shares). */
+async function refreshPendingList() {
+  const scopes = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  const all = [];
+  let grandTotal = 0;
+  for (const s of scopes) {
+    const r = await db.pagePending(s, { limit: 500 });
+    all.push(...r.items);
+    grandTotal += r.total;
+  }
+  const badge = $('pending-badge');
+  badge.textContent = grandTotal;
+  badge.classList.toggle('hidden', grandTotal === 0);
+  const ul = $('pending-list');
+  ul.innerHTML = '';
+  for (const rec of all.slice(0, PARENT_LIST_CAP)) {
+    ul.appendChild(parentRow({
+      rec,
+      onApprove: async () => {
+        await db.approvePending(rec.scopeId, [rec.key]);
+        await refreshPendingList();
+        renderHome();
+      },
+      onDelete: async () => {
+        await db.rejectPending(rec.scopeId, [rec.key]); // tombstoned — never comes back
+        await refreshPendingList();
+      }
+    }));
+  }
+  return all;
+}
+
+async function refreshChannelsList() {
+  const ul = $('channels-list');
+  ul.innerHTML = '';
+  if (!libScope) return;
+  for (const lc of await db.listLibraryChannels(libScope)) {
+    const ch = (await db.getChannel(lc.channelId)) || {};
     const li = document.createElement('li');
-    const img = document.createElement('img');
-    img.className = 'li-thumb';
-    setThumb(img, it);
+    const logo = document.createElement('img');
+    logo.className = 'li-thumb';
+    logo.style.width = '46px';
+    logo.style.aspectRatio = '1';
+    logo.style.borderRadius = '50%';
+    if (ch.logoUrl) logo.src = ch.logoUrl;
     const body = document.createElement('div');
     body.className = 'li-body';
     const title = document.createElement('div');
     title.className = 'li-title';
-    title.innerHTML = (it.title ? escapeHtml(it.title) : '(ללא שם)') +
-      `<span class="badge-type ${it.type === 'youtube' ? 'badge-yt' : 'badge-file'}">` +
-      (it.type === 'youtube' ? 'YouTube' : 'קובץ') + '</span>';
-    const sub = document.createElement('div');
-    sub.className = 'li-sub';
-    sub.textContent = it.srcUrl || it.url || '';
-    body.appendChild(title); body.appendChild(sub);
+    title.textContent = lc.titleOverride || ch.title || lc.channelId;
+    const toggle = document.createElement('label');
+    toggle.className = 'li-toggle';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!lc.autoApprove;
+    cb.addEventListener('change', async () => {
+      await db.putLibraryChannel({ ...lc, autoApprove: cb.checked, autoApproveSource: 'ui' });
+    });
+    toggle.appendChild(cb);
+    toggle.appendChild(document.createTextNode('אישור אוטומטי לסרטונים חדשים'));
+    body.appendChild(title);
+    body.appendChild(toggle);
     const del = document.createElement('button');
     del.className = 'li-del'; del.type = 'button'; del.textContent = '🗑️';
     del.addEventListener('click', async () => {
-      await deleteItem(it.key);
-      items = await loadItems();
-      refreshParentList();
+      const yes = await confirmKid({
+        emoji: '📺', title: 'להסיר את הערוץ?',
+        text: 'הסרטונים שלו יוסתרו מהילד. אפשר להוסיף אותו שוב בעתיד.',
+        ok: 'הסרה', cancel: 'ביטול', danger: true
+      });
+      if (!yes) return;
+      await db.deleteLibraryChannel(libScope, lc.channelId);
+      await refreshChannelsList();
       renderHome();
     });
-    li.appendChild(img); li.appendChild(body); li.appendChild(del);
+    li.appendChild(logo);
+    li.appendChild(body);
+    li.appendChild(del);
     ul.appendChild(li);
   }
 }
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** Add a single video (live immediately — the parent is right here) or a whole channel. */
+async function parentAdd() {
+  const url = $('add-url').value.trim();
+  const msg = $('add-msg');
+  if (!url) { msg.textContent = 'הדביקו קודם לינק'; msg.className = 'form-msg err'; return; }
+  msg.textContent = 'מוסיף…'; msg.className = 'form-msg';
+
+  const { classifySourceRow } = await import('./classify.js');
+  const row = classifySourceRow(url);
+
+  if (row.kind === 'video') {
+    const scope = db.profScope(activeProfileId);
+    const exists = (await db.getVideo(scope, row.key)) || (libScope && await db.getVideo(libScope, row.key));
+    if (exists) { msg.textContent = 'הסרטון כבר קיים ברשימה'; msg.className = 'form-msg err'; return; }
+    const now = Date.now();
+    const title = $('add-title').value.trim();
+    const rec = {
+      scopeId: scope, key: row.key, type: row.type, id: row.id ?? null, url: row.url ?? null,
+      srcUrl: row.srcUrl, driveId: row.driveId ?? null,
+      title, titleSource: title ? 'sheet' : null, normTitle: normalizeTitle(title),
+      folderId: 'mine', channelId: null,
+      sortKey: (await import('./order.js')).sortKeyFor({ origin: 'manual', addedAt: now }),
+      publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
+      addedAt: now, approvedAt: now,
+      thumbId: null, thumbUrl: $('add-thumb').value.trim() || null, localPath: null, updatedAt: now
+    };
+    await db.putVideos([rec]);
+    if (!rec.title && rec.type === 'youtube') {
+      fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
+    }
+    $('add-url').value = ''; $('add-title').value = ''; $('add-thumb').value = '';
+    msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
+    await refreshParentList();
+    renderHome();
+    return;
+  }
+
+  if (row.kind === 'channel') {
+    msg.textContent = 'מזהה את הערוץ…';
+    let src = await db.getSources(activeProfileId);
+    if (!src) {
+      src = {
+        profileId: activeProfileId, schema: 1, sheetUrl: null, libraryId: 'lib:p:' + activeProfileId,
+        shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+        maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false }, updatedAt: Date.now()
+      };
+      await db.putSources(src);
+    }
+    libScope = src.libraryId;
+    const ytApi = await import('./yt.js');
+    const channelId = await ytApi.resolveChannelRef(row.channelRef, await ytApi.getApiKey());
+    if (!channelId) { msg.textContent = 'לא הצלחנו לזהות את הערוץ'; msg.className = 'form-msg err'; return; }
+    await db.putLibraryChannel({
+      libraryId: libScope, channelId, autoApprove: false, autoApproveSource: 'ui',
+      order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
+    });
+    msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
+    $('add-url').value = '';
+    syncLibrary(activeProfileId, { force: true }).then(async () => {
+      await loadGiftStates();
+      await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+      renderHome();
+      msg.textContent = 'הערוץ סונכרן ✅'; msg.className = 'form-msg ok';
+    }).catch(() => { msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err'; });
+    await refreshChannelsList();
+    return;
+  }
+
+  msg.textContent = 'הלינק לא נתמך (סרטון YouTube, ערוץ, או קובץ mp4)';
+  msg.className = 'form-msg err';
 }
 
 async function doSyncAndRefresh() {
   const status = $('remote-status');
   status.textContent = 'טוען…'; status.className = 'form-msg';
-  const res = await syncFromRemote();
-  if (res.skipped) { status.textContent = ''; return; }
-  if (res.ok && res.count > 0) { status.textContent = `עודכן: ${res.count} סרטונים`; status.className = 'form-msg ok'; }
-  else if (res.ok) {
-    status.textContent = 'לא נמצאו לינקים. ודאו שזה Google Sheet משותף לצפייה (לא קובץ Excel/xlsx), ושבכל שורה יש לינק.';
+  try {
+    const res = await syncLibrary(activeProfileId, {
+      force: true,
+      onProgress: (p) => { status.textContent = p.label || 'טוען…'; }
+    });
+    if (res.ok) {
+      status.textContent = `עודכן ✅ ${res.added ? `נוספו ${res.added}` : ''} ${res.pending ? `• ממתינים לאישור: ${res.pending}` : ''}`;
+      status.className = 'form-msg ok';
+    } else {
+      status.textContent = 'שגיאה בסנכרון: ' + (res.error || '');
+      status.className = 'form-msg err';
+    }
+  } catch (e) {
+    status.textContent = 'שגיאה בסנכרון';
     status.className = 'form-msg err';
-  } else { status.textContent = 'שגיאה בטעינת הקובץ: ' + (res.error || ''); status.className = 'form-msg err'; }
-  items = await loadItems();
-  refreshParentList();
+  }
+  await loadGiftStates();
+  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
   renderHome();
 }
 
@@ -750,59 +941,102 @@ function wire() {
   });
   $('pin-cancel').addEventListener('click', goGallery);
 
-  $('mode-manual').addEventListener('click', () => setMode('manual'));
-  $('mode-remote').addEventListener('click', () => setMode('remote'));
+  for (const t of PARENT_TABS) $('tab-' + t).addEventListener('click', () => setParentTab(t));
+  $('add-btn').addEventListener('click', parentAdd);
 
-  $('add-btn').addEventListener('click', async () => {
-    const url = $('add-url').value.trim();
-    const msg = $('add-msg');
-    if (!url) { msg.textContent = 'הדביקו קודם לינק'; msg.className = 'form-msg err'; return; }
-    msg.textContent = 'מוסיף…'; msg.className = 'form-msg';
-    const res = await addManualLink(url, { title: $('add-title').value.trim(), thumb: $('add-thumb').value.trim() });
-    if (res.ok) {
-      $('add-url').value = ''; $('add-title').value = ''; $('add-thumb').value = '';
-      msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
-      items = await loadItems(); refreshParentList(); renderHome();
-    } else {
-      msg.textContent = res.error === 'duplicate' ? 'הסרטון כבר קיים ברשימה'
-        : 'הלינק לא נתמך (רק YouTube או קובץ וידאו mp4)';
-      msg.className = 'form-msg err';
+  $('approve-all').addEventListener('click', async () => {
+    const pend = await refreshPendingList();
+    const byScope = new Map();
+    for (const r of pend) {
+      if (!byScope.has(r.scopeId)) byScope.set(r.scopeId, []);
+      byScope.get(r.scopeId).push(r.key);
     }
+    for (const [s, keys] of byScope) await db.approvePending(s, keys);
+    $('approve-msg').textContent = `אושרו ${pend.length} סרטונים ✅`;
+    $('approve-msg').className = 'form-msg ok';
+    await loadGiftStates();
+    await Promise.all([refreshPendingList(), refreshParentList()]);
+    renderHome();
+  });
+  $('reject-all').addEventListener('click', async () => {
+    const pend = await refreshPendingList();
+    const yes = await confirmKid({
+      emoji: '🗑️', title: `לדחות ${pend.length} סרטונים?`,
+      text: 'הם לא יופיעו שוב, גם לא בסנכרונים הבאים.',
+      ok: 'דחיית הכול', cancel: 'ביטול', danger: true
+    });
+    if (!yes) return;
+    for (const r of pend) await db.rejectPending(r.scopeId, [r.key]);
+    await refreshPendingList();
   });
 
   $('export-btn').addEventListener('click', async () => {
-    const json = await exportJson();
     const msg = $('add-msg');
-    try { await navigator.clipboard.writeText(json); msg.textContent = 'הרשימה הועתקה ללוח'; msg.className = 'form-msg ok'; }
-    catch { window.prompt('העתיקו את הרשימה:', json); }
+    try {
+      const { exportProfileSnapshot } = await import('./snapshot.js');
+      const p = await getActiveProfile();
+      const json = await exportProfileSnapshot(activeProfileId, p);
+      await navigator.clipboard.writeText(json);
+      msg.textContent = 'גיבוי מלא הועתק ללוח (שמרו אותו בקובץ)'; msg.className = 'form-msg ok';
+    } catch { msg.textContent = 'הייצוא נכשל'; msg.className = 'form-msg err'; }
   });
   $('import-btn').addEventListener('click', () => $('import-file').click());
   $('import-file').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
     const msg = $('add-msg');
     try {
-      await importJson(await f.text());
-      items = await loadItems(); refreshParentList(); renderHome();
-      msg.textContent = 'יובא בהצלחה ✅'; msg.className = 'form-msg ok';
+      const { importProfileSnapshot } = await import('./snapshot.js');
+      const res = await importProfileSnapshot(activeProfileId, await f.text());
+      if (res.ok) {
+        msg.textContent = `יובאו ${res.imported} סרטונים ✅${res.rejected ? ` (${res.rejected} נדחו — לינק לא נתמך)` : ''}`;
+        msg.className = 'form-msg ok';
+        await loadGiftStates();
+        await refreshParentList();
+        renderHome();
+      } else { msg.textContent = 'קובץ לא תקין'; msg.className = 'form-msg err'; }
     } catch { msg.textContent = 'קובץ לא תקין'; msg.className = 'form-msg err'; }
     e.target.value = '';
   });
 
   $('remote-save').addEventListener('click', async () => {
-    source = { mode: 'remote', url: $('remote-url').value.trim() };
-    await setSource(source);
-    setModeUI('remote');
+    const url = $('remote-url').value.trim();
+    const { libraryIdFor } = await import('./util.js');
+    let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
+    src = {
+      shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
+      ...src, sheetUrl: url || null, updatedAt: Date.now()
+    };
+    if (url) src.libraryId = libraryIdFor(url);
+    src.sheetHash = null; // force a full re-parse of the new sheet
+    await db.putSources(src);
+    libScope = src.libraryId || null;
     await doSyncAndRefresh();
   });
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
   $('remote-clear').addEventListener('click', async () => {
-    source = { mode: 'manual', url: '' };
-    await setSource(source);
+    const src = await db.getSources(activeProfileId);
+    if (src) await db.putSources({ ...src, sheetUrl: null, sheetHash: null, updatedAt: Date.now() });
     $('remote-url').value = '';
-    setModeUI('manual');
-    $('remote-status').textContent = 'נותק. עברת לרשימה ידנית.';
+    $('remote-status').textContent = 'הגיליון נותק. הערוצים והסרטונים הקיימים נשארים.';
     $('remote-status').className = 'form-msg';
-    renderHome();
+  });
+
+  $('apikey-save').addEventListener('click', async () => {
+    const { prefSet, prefRemove } = await import('./platform.js');
+    const v = $('apikey-input').value.trim();
+    if (v) await prefSet('yt:apiKey', v); else await prefRemove('yt:apiKey');
+    await prefRemove('yt:apiKeyState');
+    $('apikey-msg').textContent = v ? 'המפתח נשמר ✅' : 'המפתח הוסר — האפליקציה תשתמש במפתח המובנה';
+    $('apikey-msg').className = 'form-msg ok';
+  });
+
+  $('share-approval-toggle').addEventListener('change', async (e) => {
+    const src = (await db.getSources(activeProfileId));
+    if (!src) return;
+    await db.putSources({ ...src, shareIntent: { ...(src.shareIntent || {}), enabled: true, requireApproval: e.target.checked }, updatedAt: Date.now() });
+    $('settings-msg').textContent = 'נשמר ✅';
+    $('settings-msg').className = 'form-msg ok';
   });
 
   $('parent-exit').addEventListener('click', goGallery);

@@ -167,16 +167,28 @@
       </header>
 
       <div class="mode-toggle">
-        <button id="mode-manual" class="mode-btn active" type="button">רשימה ידנית</button>
-        <button id="mode-remote" class="mode-btn" type="button">קובץ מרוחק</button>
+        <button id="tab-approve" class="mode-btn" type="button">ממתינים <span id="pending-badge" class="tab-badge hidden">0</span></button>
+        <button id="tab-add" class="mode-btn active" type="button">הוספה</button>
+        <button id="tab-sources" class="mode-btn" type="button">מקורות</button>
+        <button id="tab-settings" class="mode-btn" type="button">הגדרות</button>
       </div>
 
-      <!-- Manual panel -->
-      <div id="panel-manual" class="panel">
+      <!-- Pending approval (F10/F12): new channel/shared content waits here -->
+      <div id="panel-approve" class="panel hidden">
+        <div class="row-btns">
+          <button id="approve-all" class="btn btn-primary" type="button">✅ אישור הכול</button>
+          <button id="reject-all" class="btn btn-small btn-danger" type="button">🗑️ דחיית הכול</button>
+        </div>
+        <div id="approve-msg" class="form-msg"></div>
+        <ul id="pending-list" class="parent-list"></ul>
+      </div>
+
+      <!-- Add a single video / a whole channel -->
+      <div id="panel-add" class="panel">
         <div class="field">
-          <label for="add-url">הדביקו לינק (YouTube או קובץ וידאו mp4)</label>
+          <label for="add-url">הדביקו לינק — סרטון YouTube, ערוץ שלם (@ערוץ), או קובץ mp4</label>
           <input id="add-url" class="input" type="url" inputmode="url" dir="ltr"
-                 placeholder="https://www.youtube.com/watch?v=... או https://.../movie.mp4" />
+                 placeholder="https://www.youtube.com/watch?v=... או youtube.com/@channel" />
         </div>
         <details class="opt-details">
           <summary>אפשרויות (שם / תמונה לקובץ וידאו)</summary>
@@ -202,12 +214,12 @@
         <ul id="parent-list" class="parent-list"></ul>
       </div>
 
-      <!-- Remote panel -->
-      <div id="panel-remote" class="panel hidden">
+      <!-- Sources: the input sheet + subscribed channels + API key -->
+      <div id="panel-sources" class="panel hidden">
         <div class="field">
-          <label for="remote-url">קישור לקובץ הרשימה (Google Sheet כ-CSV, או כל URL)</label>
+          <label for="remote-url">קישור לגיליון הרשימה (Google Sheet משותף לצפייה)</label>
           <input id="remote-url" class="input" type="url" inputmode="url" dir="ltr"
-                 placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv" />
+                 placeholder="https://docs.google.com/spreadsheets/d/..." />
         </div>
         <div class="row-btns">
           <button id="remote-save" class="btn btn-primary" type="button">שמירה</button>
@@ -216,11 +228,32 @@
         </div>
         <div id="remote-status" class="form-msg"></div>
         <p class="hint">
-          הכי פשוט: פותחים <b>Google Sheet</b>, שמים לינק יוטיוב אחד בכל שורה בעמודה הראשונה,
-          לוחצים <b>שיתוף ← כל מי שיש לו הקישור: צופה</b>, ומדביקים כאן את קישור הגיליון.
-          הסדר בגיליון = סדר ההצגה. אפשר גם <code>לינק,שם,תמונה</code> בשורה, ושורת <code>#</code> תדולג.
-          <br><b>לא</b> להעלות קובץ Excel/‏xlsx — צריך גיליון Google משותף (או קובץ טקסט/CSV).
+          שורה בגיליון יכולה להיות <b>סרטון</b> (לינק YouTube / mp4) או <b>ערוץ שלם</b>
+          (לינק לערוץ או ‎@שם). לערוץ אפשר להוסיף בעמודה C את המילה <code>auto</code>
+          (סרטונים חדשים נכנסים ישר) או <code>manual</code> (ממתינים לאישור).
+          שורת <code>#</code> תדולג. <b>לא</b> קובץ Excel/xlsx — גיליון Google משותף בלבד.
         </p>
+
+        <div class="list-head"><span class="list-count">ערוצים</span></div>
+        <ul id="channels-list" class="parent-list"></ul>
+
+        <div class="field" style="margin-top:14px">
+          <label for="apikey-input">מפתח YouTube API (לא חובה — בלעדיו: 15 סרטונים אחרונים לערוץ)</label>
+          <input id="apikey-input" class="input" type="text" dir="ltr" placeholder="AIza..." />
+        </div>
+        <div class="row-btns">
+          <button id="apikey-save" class="btn btn-small" type="button">שמירת מפתח</button>
+        </div>
+        <div id="apikey-msg" class="form-msg"></div>
+      </div>
+
+      <!-- Settings -->
+      <div id="panel-settings" class="panel hidden">
+        <label class="switch-row">
+          <input id="share-approval-toggle" type="checkbox" checked />
+          <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס</span>
+        </label>
+        <div id="settings-msg" class="form-msg"></div>
       </div>
 
       <footer class="parent-footer">
