@@ -62,6 +62,24 @@ export async function createProfile(name, avatar, color) {
   await saveProfiles(list);
   return profile;
 }
+/**
+ * Merge profiles restored from a Drive backup into the local list (v1.0.4 first-launch
+ * connect). Union by id — local profiles always win; returns how many were added.
+ */
+export async function mergeRestoredProfiles(remote) {
+  const list = await getProfiles();
+  const have = new Set(list.map((p) => p.id));
+  let added = 0;
+  for (const p of remote || []) {
+    if (!p || !p.id || have.has(p.id)) continue;
+    list.push({ id: p.id, name: p.name || 'ילד/ה', avatar: p.avatar || '🙂', color: p.color || '#4ea1ff' });
+    have.add(p.id);
+    added += 1;
+  }
+  if (added) await saveProfiles(list);
+  return added;
+}
+
 export async function deleteProfile(id) {
   await saveProfiles((await getProfiles()).filter((p) => p.id !== id));
   await prefRemove(videosKey(id));

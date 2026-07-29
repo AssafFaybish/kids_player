@@ -142,6 +142,19 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     }
   }
 
+  // Logo fallback (v1.0.4): keyless mode (and API misses) left channels logo-less on
+  // the tablet — folder tiles fell back to the 📺 emoji and read like videos. Scrape
+  // the public channel page (0 quota), retry weekly so a transient failure heals.
+  const LOGO_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+  for (const lc of libChannels) {
+    if (aborted()) return { ok: false, error: 'aborted' };
+    const ch = (await getChannel(lc.channelId)) || { channelId: lc.channelId };
+    if (ch.logoUrl) continue;
+    if (ch.logoTriedAt && Date.now() - ch.logoTriedAt < LOGO_RETRY_MS) continue;
+    const logoUrl = await yt.scrapeChannelLogo(lc.channelId);
+    await putChannel({ ...ch, logoUrl: logoUrl || '', logoTriedAt: Date.now() });
+  }
+
   /* ---------- stages: rss + backfill → candidates ---------- */
   const candidates = [];
   const scope = lib; // library scope: shared across profiles/devices on this sheet

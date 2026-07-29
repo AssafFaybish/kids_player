@@ -27,13 +27,13 @@ live and how does data flow".
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; approval routing | classify, normalize, order, platform, db |
-| `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled), downloadAndInstall (size-verified) | platform |
+| `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled; honors `update.skip` on silent checks), downloadAndInstall (size-verified) | platform |
 | `wake.js` | ref-counted keep-screen-on (KidsNative → KeepAwake → wakeLock → noop) | — |
 | `player.js` | YT IFrame + `<video>` engines, shared HUD state machine, loadVideoById reuse path | media, classify, config, wake |
 | `media.js` | Drive URL normalize, stream→download-cache, captureFrame | platform, store |
 | `nav.js` | explicit view stack, hardware-back precedence (fullscreen→modal→view→pop→swallow), scroll restore | ui/modal |
 | `ui/*` | modal (confirmKid/alertKid), pager, tiles (in app.js currently), confetti (CSS), sound (WebAudio synth), loading (4 scenes) | — |
-| `app.js` | boot + all views (folders home/folder/watch/pin/parent) + wiring — the candidate for a future views/ split | everything above |
+| `app.js` | boot + all views (connect/profiles/folders home/folder/watch/pin/parent) + launch update prompt + attention dots + wiring — the candidate for a future views/ split | everything above |
 | `pin.js` | SHA-256 parent PIN | platform |
 | `sync.js` | LEGACY remote-mirror sync — only `resolveListUrl` and `parseList` still used (tests + sheet URL resolution) | platform, csv, store |
 
@@ -95,14 +95,24 @@ exiting fullscreen (back / ⛶) lands on the watch page. The app rotates freely
 One Drive JSON file per Google account, tagged appProperties{kpApp} (searchable after
 reinstall). Document: `{profiles, libraries:{<libId|profScope>: {sheetUrl, videos(no
 localPath/thumbId), denylist, channels(no cursor), libraryChannels}}, profileState:{pid:
-{key:{unwrappedAt|giftRank}}}}`. mergeDbFiles is commutative+idempotent: video union by
-key via mergeVideoRecord, deny UNION (denied never travels), LWW-by-updatedAt for
-profiles/channel toggles, unwrappedAt=min. Push: version-probe → merge-if-changed →
-PATCH (multipart/media with explicit Content-Type).
+{key:{unwrappedAt|giftRank}}}, profileSources:{pid:{sheetUrl,updatedAt}}}`. profileSources
+(v1.0.4, additive) lets a fresh device rebuild each restored profile's sources record —
+without it a restored profile pointed at an empty `lib:p:` library. mergeDbFiles is
+commutative+idempotent: video union by key via mergeVideoRecord, deny UNION (denied never
+travels), LWW-by-updatedAt for profiles/channel toggles/profileSources, unwrappedAt=min.
+Push: version-probe → merge-if-changed → PATCH (multipart/media with explicit
+Content-Type). Pull (v1.0.4) also merges doc.profiles into the local Preferences list
+(union by id, local wins) and applies unwrappedAt states for EVERY profile in the doc —
+the first-launch connect screen (app.js `view-connect`, one-time via `gauth.introDone`)
+rides this to restore a whole device.
 
 ## Update flow (F14)
 
 `releases/latest` of UPDATE_REPO → pickApkAsset(`kids-player-<tag>.apk`) → numeric
 compare vs App.getInfo().version → parent panel shows/downloads (EXTERNAL/updates/,
 mkdir first, size check) → KidsNative.installApk (FileProvider `app_updates` path).
-Launch check: +4s, 6h throttle, silent. Same signing key or Android refuses.
+Launch check: +4s, 6h throttle. Since v1.0.4 an available update PROMPTS (confirmKid;
+never over watch/pin/parent/connect/loading): accept = download with the loading screen,
+decline = `update.skip:<version>` — no more launch prompts for that version, but the red
+gate dot and the parent settings panel (button + `settings-dot`) keep offering it.
+Same signing key or Android refuses.

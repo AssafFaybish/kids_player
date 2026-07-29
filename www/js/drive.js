@@ -14,6 +14,7 @@
 
 import { httpRequest } from './platform.js';
 import { getAccessToken } from './gauth.js';
+import { libraryIdFor } from './util.js';
 import { normalizeTitle, mergeVideoRecord } from './normalize.js';
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
@@ -37,8 +38,10 @@ export function parseDb(text) {
 /**
  * Build the Drive DB document. NEVER includes: localPath (device-local URI),
  * thumb blobs, backfill cursors, or the YouTube API key (explicit refusal list).
+ * profileSources (v1.0.4, additive — old readers ignore it) maps profile→sheetUrl
+ * so a fresh device restoring the backup can rebuild each profile's sources record.
  */
-export function serializeDb({ profiles, libraries, profileState }) {
+export function serializeDb({ profiles, libraries, profileState, profileSources }) {
   const clean = {};
   for (const [libId, lib] of Object.entries(libraries || {})) {
     clean[libId] = {
@@ -51,7 +54,8 @@ export function serializeDb({ profiles, libraries, profileState }) {
   }
   return JSON.stringify({
     kind: 'kids-player-db', schema: 1, exportedAt: Date.now(),
-    profiles: profiles || [], libraries: clean, profileState: profileState || {}
+    profiles: profiles || [], libraries: clean, profileState: profileState || {},
+    profileSources: profileSources || {}
   });
 }
 
@@ -104,6 +108,15 @@ export function mergeDbFiles(a, b) {
       channels: [...chans.values()],
       libraryChannels: [...libCh.values()]
     };
+  }
+
+  // profile→sheet mapping (v1.0.4): LWW by updatedAt, same as profiles
+  out.profileSources = {};
+  const spids = new Set([...Object.keys(a.profileSources || {}), ...Object.keys(b.profileSources || {})]);
+  for (const pid of spids) {
+    const sa = (a.profileSources || {})[pid];
+    const sb = (b.profileSources || {})[pid];
+    out.profileSources[pid] = sa && sb ? lww(sa, sb) : (sa || sb);
   }
 
   // per-profile gift state: unwrappedAt takes MIN (once unwrapped anywhere, forever)
@@ -169,8 +182,12 @@ async function readDbFile(token, fileId) {
 async function buildLocalDoc(profiles) {
   const libraries = {};
   const profileState = {};
+  const profileSources = {};
   for (const p of profiles) {
     const src = await getSources(p.id);
+    if (src && src.sheetUrl) {
+      profileSources[p.id] = { sheetUrl: src.sheetUrl, updatedAt: src.updatedAt || 0 };
+    }
     const lib = src && src.libraryId;
     if (lib && !libraries[lib]) {
       const vids = [...(await loadMergeIndex(lib)).values()];
@@ -210,10 +227,10 @@ async function buildLocalDoc(profiles) {
     });
     profileState[p.id] = states;
   }
-  return { profiles, libraries, profileState };
+  return { profiles, libraries, profileState, profileSources };
 }
 
-async function applyRemoteDoc(doc, myProfileId) {
+async function applyRemoteDoc(doc) {
   for (const [libId, lib] of Object.entries(doc.libraries || {})) {
     const existing = await loadMergeIndex(libId);
     const puts = [];
@@ -238,11 +255,27 @@ async function applyRemoteDoc(doc, myProfileId) {
     }
     for (const lc of lib.libraryChannels || []) await putLibraryChannel({ ...lc, libraryId: libId });
   }
-  const st = (doc.profileState || {})[myProfileId];
-  if (st) {
+  // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the
+  // library data but not WHICH sheet each profile follows. Local records win —
+  // this only fills the gap for profiles that have none.
+  for (const [pid, ps] of Object.entries(doc.profileSources || {})) {
+    if (!ps || !ps.sheetUrl) continue;
+    if (await getSources(pid)) continue;
+    await putSources({
+      profileId: pid, schema: 1, sheetUrl: ps.sheetUrl, libraryId: libraryIdFor(ps.sheetUrl),
+      sheetHash: null, // force a full parse on the first sync
+      shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: true }, updatedAt: Date.now()
+    });
+  }
+
+  // unwrappedAt states apply for EVERY profile in the doc (v1.0.4): a fresh device
+  // restoring the backup must not re-gift videos the children already opened.
+  // giftRank states deliberately stay remote-only — local gift assignment wins.
+  for (const [pid, st] of Object.entries(doc.profileState || {})) {
     const puts = [];
-    for (const [key, v] of Object.entries(st)) {
-      if (v && v.unwrappedAt) puts.push({ profileId: myProfileId, key, unwrappedAt: v.unwrappedAt });
+    for (const [key, v] of Object.entries(st || {})) {
+      if (v && v.unwrappedAt) puts.push({ profileId: pid, key, unwrappedAt: v.unwrappedAt });
     }
     if (puts.length) await putVideoStates(puts);
   }
@@ -281,7 +314,7 @@ export async function pushDrive(profiles) {
   if (fileId && String(remoteVersion) !== String(meta.lastRemoteVersion || '')) {
     const remote = await readDbFile(token, fileId); // changed since our last write: merge first
     const merged = mergeDbFiles(localDoc, remote);
-    await applyRemoteDoc(merged, meta.myProfileId || (profiles[0] && profiles[0].id));
+    await applyRemoteDoc(merged);
     content = JSON.stringify(merged);
   } else {
     content = JSON.stringify(localDoc);
@@ -306,9 +339,16 @@ export async function pullDrive(myProfileId) {
   }
   const doc = await readDbFile(token, fileId);
   if (!doc) return { ok: false, error: 'read-failed' };
-  await applyRemoteDoc(doc, myProfileId);
+  await applyRemoteDoc(doc);
+  // Restore profiles from the backup (v1.0.4): on a fresh device the local list is
+  // empty — without this, a connected backup restored the library but no profiles.
+  let profilesRestored = 0;
+  try {
+    const { mergeRestoredProfiles } = await import('./store.js');
+    profilesRestored = await mergeRestoredProfiles(doc.profiles);
+  } catch {}
   await patchDriveMeta({ enabled: true, dbFileId: fileId, myProfileId });
-  return { ok: true, profiles: doc.profiles || [] };
+  return { ok: true, profiles: doc.profiles || [], profilesRestored };
 }
 
 async function patchDriveMeta(patch) {

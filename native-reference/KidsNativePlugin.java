@@ -1,6 +1,6 @@
 package com.assaf.kidsplayer;
 
-// Kids Player — the single custom native surface, three features:
+// Kids Player — the single custom native surface, four features:
 //   1) keepAwake/allowSleep (F7): window-level FLAG_KEEP_SCREEN_ON. Needs NO permission
 //      (not even WAKE_LOCK), survives the fullscreen custom-view swap, and is auto-scoped
 //      to window visibility so background/resume need zero handling.
@@ -11,6 +11,8 @@ package com.assaf.kidsplayer;
 //   3) APK self-update installer (F14): FileProvider URI + ACTION_VIEW. Deliberately no
 //      resolveActivity() — API 30+ package visibility returns null without <queries>,
 //      a phantom failure.
+//   4) exitApp (v1.0.4): finishAndRemoveTask + delayed process kill — App.exitApp()
+//      only finish()es, which reads as "minimize" on real devices.
 //
 // Canonical copy: native-reference/KidsNativePlugin.java — keep both in sync.
 
@@ -50,6 +52,25 @@ public class KidsNativePlugin extends Plugin {
         a.runOnUiThread(() -> {
             if (on) a.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             else a.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        });
+    }
+
+    /* ---------------- real exit (v1.0.4) ---------------- */
+
+    /**
+     * App.exitApp() only calls activity.finish(): the task stays in recents and on some
+     * launchers the app just minimizes. finishAndRemoveTask() removes the whole task;
+     * the delayed System.exit ensures the process dies even if a plugin holds it alive.
+     */
+    @PluginMethod
+    public void exitApp(PluginCall call) {
+        call.resolve(); // resolve first — the webview is about to die
+        Activity a = getActivity();
+        if (a == null) { System.exit(0); return; }
+        a.runOnUiThread(() -> {
+            a.finishAndRemoveTask();
+            new android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed(() -> System.exit(0), 250);
         });
     }
 

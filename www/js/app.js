@@ -9,7 +9,7 @@ import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { playItem, stop } from './player.js';
 import { clearCache } from './media.js';
-import { onAppResume, onBackButton, exitApp } from './platform.js';
+import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, alertKid, mountModal } from './ui/modal.js';
@@ -75,8 +75,82 @@ async function askExit() {
   if (leave) exitApp();
 }
 
+/* ---------------- Attention (v1.0.4): red dots for the parent ---------------- */
+/** attention = pending approvals waiting OR an update ready to install. */
+async function computeAttention() {
+  let pending = 0;
+  try {
+    const scopes = [libScope, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
+    for (const s of scopes) pending += (await db.pagePending(s, { limit: 1 })).total;
+  } catch {}
+  let updateReady = false;
+  try {
+    const upd = await import('./update.js');
+    const local = await upd.currentVersion(); // null in the browser preview
+    if (local) {
+      const latest = JSON.parse((await prefGet('update.latest')) || 'null');
+      updateReady = !!(latest && upd.isNewer(latest.version, local));
+    }
+  } catch {}
+  return { pending, updateReady };
+}
+
+/** The red dot on the 🔒 gate button — the parent's cue to come look. */
+async function refreshGateDot() {
+  try {
+    const a = await computeAttention();
+    $('gate-dot').classList.toggle('hidden', !(a.pending > 0 || a.updateReady));
+  } catch {}
+}
+
+/* ---------------- Launch update prompt (v1.0.4) ---------------- */
+/**
+ * The deferred launch check now ASKS instead of staying silent. Declining snoozes
+ * THIS version's prompt (update.skip) — the red dot and the parent screen keep
+ * offering it; a newer release prompts again.
+ */
+async function maybePromptUpdate(r) {
+  if (!r || r.status !== 'available' || !r.latest) return;
+  // Never interrupt watching / PIN / parent work / first-launch connect — the red
+  // dot still shows, and the next launch re-offers.
+  if (nav.isActive('watch') || nav.isActive('pin') || nav.isActive('parent')
+    || nav.isActive('connect') || nav.isActive('loading')) return;
+  const yes = await confirmKid({
+    emoji: '🚀', title: 'יש גירסה חדשה!',
+    text: `גירסה ${r.latest.version} מוכנה להתקנה (במקום ${r.local}). לעדכן עכשיו?`,
+    ok: 'עדכון עכשיו', cancel: 'לא עכשיו'
+  });
+  if (!yes) {
+    await prefSet('update.skip', r.latest.version);
+    refreshGateDot();
+    return;
+  }
+  const upd = await import('./update.js');
+  loading.show({ defer: 0, step: 'מורידים את העדכון…' });
+  let res = null;
+  try {
+    res = await upd.downloadAndInstall(r.latest, {
+      onProgress: (done, total) => {
+        if (total) loading.setStep(`מורידים את העדכון… ${Math.round((done / total) * 100)}%`);
+      }
+    });
+  } finally {
+    await loading.hide();
+  }
+  if (!res || !res.ok) {
+    await alertKid({
+      emoji: '😕', title: 'העדכון לא הצליח',
+      text: res && res.error === 'truncated' ? 'ההורדה לא הושלמה — נסו שוב מאוחר יותר.'
+        : res && res.error === 'installed-app-only' ? 'עדכון זמין באפליקציה המותקנת בלבד.'
+        : 'אפשר לנסות שוב דרך מסך ההורים ← הגדרות.',
+      ok: 'בסדר'
+    });
+  }
+}
+
 function registerViews() {
   // Back precedence per view. Returning true = consumed; otherwise nav pops.
+  nav.register('connect', { onBack: () => { askExit(); return true; } });
   nav.register('profiles', { onBack: () => { askExit(); return true; } });
   nav.register('create-profile', {
     onBack: () => {
@@ -237,6 +311,14 @@ function folderTile(f) {
   btn.appendChild(logo);
   btn.appendChild(nm);
   btn.appendChild(cnt);
+  // v1.0.4: channel folders carry an explicit chip — the child (and parent) must
+  // never mistake a folder for a playable video tile.
+  if (String(f.id).startsWith('ch:')) {
+    const chip = document.createElement('span');
+    chip.className = 'folder-chip';
+    chip.textContent = '📺 ערוץ';
+    btn.appendChild(chip);
+  }
   if (f.isNew) {
     const badge = document.createElement('span');
     badge.className = 'count-badge';
@@ -288,6 +370,8 @@ async function renderHome() {
   folders = await buildFolders();
   const grid = $('grid');
   const contentFolders = folders.filter((f) => !f.isNew);
+
+  refreshGateDot(); // fire-and-forget — the red dot must never delay the grid
 
   const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
@@ -360,6 +444,23 @@ async function openFolder(fid) {
   folderPage = 0;
   const f = folders.find((x) => x.id === fid);
   $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.title) : '';
+  // v1.0.4: the channel's logo (or the folder emoji) next to the name — the child
+  // always sees WHICH channel they're inside.
+  const logoTop = $('folder-logo-top');
+  logoTop.innerHTML = '';
+  if (f && f.logoUrl) {
+    const img = document.createElement('img');
+    img.src = f.logoUrl;
+    img.alt = '';
+    img.onerror = () => { img.remove(); logoTop.textContent = f.emoji || '📺'; };
+    logoTop.appendChild(img);
+    logoTop.classList.remove('hidden');
+  } else if (f && f.emoji && !f.isNew) {
+    logoTop.textContent = f.emoji;
+    logoTop.classList.remove('hidden');
+  } else {
+    logoTop.classList.add('hidden');
+  }
   nav.go('folder', { folderId: fid });
   await renderFolderView();
 }
@@ -570,7 +671,11 @@ async function runUpdateCheck({ manual = false } = {}) {
   if (manual) { msg.textContent = 'בודק…'; msg.className = 'form-msg'; }
   const r = await upd.checkForUpdate({ silent: !manual, force: manual });
   if (r.latest) $('ver-latest').textContent = r.latest.version;
-  $('update-install').classList.toggle('hidden', r.status !== 'available');
+  // 'skipped' = the launch prompt was declined — still installable from here, and it
+  // keeps the red dot on the settings tab (v1.0.4).
+  const installable = r.status === 'available' || r.status === 'skipped';
+  $('update-install').classList.toggle('hidden', !installable);
+  $('settings-dot').classList.toggle('hidden', !installable);
   if (!manual) return;
   msg.className = 'form-msg';
   msg.textContent =
@@ -843,6 +948,75 @@ async function doSyncAndRefresh() {
   maybeSchedulePush();
 }
 
+/* ---------------- First-launch Google connect (v1.0.4) ---------------- */
+/** Maps a gauth failure to the parent-facing message (shared: connect + settings). */
+function gauthErrorText(err) {
+  err = err || '';
+  return /auth-unavailable:10\b/.test(err)
+    ? 'האפליקציה לא רשומה ב-Google Cloud — השלימו את צעדים 3-4 במדריך GOOGLE_CLOUD_SETUP.md (ודאו שה-SHA-1 של גרסת ה-release רשום)'
+    : /auth-unavailable/.test(err)
+      ? `שירותי Google לא זמינים במכשיר (${err})`
+      : err === 'no-plugin'
+        ? 'זמין באפליקציה המותקנת בלבד (לא בדפדפן)'
+        : 'ההתחברות בוטלה';
+}
+
+/** The normal boot landing: profiles picker, or profile creation when none exist. */
+function startAtProfiles() {
+  if (profiles.length === 0) openCreateProfile();
+  else { renderProfiles(); nav.reset('profiles'); }
+}
+
+/**
+ * Offer the Google connect ONCE, before profile selection: not in the browser
+ * preview (no Google services), not after it was answered, not when backup is
+ * already on. Skipping is always available — the parent screen keeps the flow.
+ */
+async function shouldOfferConnect() {
+  try {
+    const { gauthAvailable } = await import('./gauth.js');
+    if (!gauthAvailable()) return false;
+    if (await prefGet('gauth.introDone')) return false;
+    return !((await db.getMeta('drive')) || {}).enabled;
+  } catch { return false; }
+}
+
+async function connectGoogleFirstLaunch() {
+  const msg = $('connect-msg');
+  const btn = $('connect-google');
+  btn.disabled = true;
+  msg.textContent = 'מתחברים…'; msg.className = 'form-msg';
+  try {
+    const { signIn, lastAuthError } = await import('./gauth.js');
+    const { pullDrive, pushDrive } = await import('./drive.js');
+    if (!(await signIn())) {
+      msg.textContent = gauthErrorText(lastAuthError());
+      msg.className = 'form-msg err';
+      return;
+    }
+    msg.textContent = 'בודקים אם יש גיבוי קיים…';
+    const pulled = await pullDrive(activeProfileId);
+    profiles = await getProfiles(); // pullDrive may have restored profiles
+    await pushDrive(profiles);      // enables the backup even without a prior file
+    await prefSet('gauth.introDone', 'connected');
+    if (pulled.ok && !pulled.empty) {
+      await alertKid({
+        emoji: '☁️', title: 'הגיבוי חובר ✅',
+        text: pulled.profilesRestored
+          ? `נמצא גיבוי קיים: שוחזרו ${pulled.profilesRestored} פרופילים והספרייה סונכרנה.`
+          : 'נמצא גיבוי קיים והספרייה סונכרנה למכשיר.',
+        ok: 'מעולה'
+      });
+    }
+    startAtProfiles();
+  } catch {
+    msg.textContent = 'שגיאה בהתחברות — אפשר לדלג ולנסות שוב מאוחר יותר דרך מסך ההורים';
+    msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ---------------- Profiles ---------------- */
 function renderProfiles() {
   const grid = $('profiles-grid');
@@ -993,6 +1167,12 @@ async function deleteCurrentProfile() {
 
 /* ---------------- Wiring ---------------- */
 function wire() {
+  $('connect-google').addEventListener('click', connectGoogleFirstLaunch);
+  $('connect-skip').addEventListener('click', async () => {
+    await prefSet('gauth.introDone', 'skipped');
+    startAtProfiles();
+  });
+
   $('profile-chip').addEventListener('click', backToProfiles);
   $('create-back').addEventListener('click', backToProfiles);
   $('create-save').addEventListener('click', createNewProfile);
@@ -1126,15 +1306,7 @@ function wire() {
       const { signIn, lastAuthError } = await import('./gauth.js');
       const { pullDrive, pushDrive } = await import('./drive.js');
       if (!(await signIn())) {
-        const err = lastAuthError() || '';
-        msg.textContent =
-          /auth-unavailable:10\b/.test(err)
-            ? 'האפליקציה לא רשומה ב-Google Cloud — השלימו את צעדים 3-4 במדריך GOOGLE_CLOUD_SETUP.md (ודאו שה-SHA-1 של גרסת ה-release רשום)'
-            : /auth-unavailable/.test(err)
-              ? `שירותי Google לא זמינים במכשיר (${err})`
-              : err === 'no-plugin'
-                ? 'זמין באפליקציה המותקנת בלבד (לא בדפדפן)'
-                : 'ההתחברות בוטלה';
+        msg.textContent = gauthErrorText(lastAuthError());
         msg.className = 'form-msg err';
         return;
       }
@@ -1244,13 +1416,17 @@ async function init() {
   await loadActiveId();
   profiles = await getProfiles();
 
-  if (profiles.length === 0) openCreateProfile();
-  else { renderProfiles(); nav.reset('profiles'); }
+  // v1.0.4: a one-time Google-connect offer lands BEFORE profile selection —
+  // connecting early means a fresh device can restore everything from the backup.
+  if (await shouldOfferConnect()) nav.reset('connect');
+  else startAtProfiles();
 
   // F14 launch check — un-awaited, throttled, all paths caught. NEVER blocks startup.
+  // v1.0.4: when an update exists, ASK whether to install (maybePromptUpdate).
   setTimeout(() => {
     import('./update.js')
       .then((u) => u.cleanupPendingApk().then(() => u.checkForUpdate({ silent: true })))
+      .then((r) => maybePromptUpdate(r))
       .catch(() => {});
   }, 4000);
 }

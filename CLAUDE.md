@@ -54,6 +54,8 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - Scoping (decision 20): `lib:<fnv1a(sheet)>` = shared per input-sheet; `prof:<id>` = personal.
 
 **Platform/native:**
+- `platform.exitApp()` prefers `KidsNative.exitApp` (finishAndRemoveTask + delayed kill) —
+  `App.exitApp()` only finish()es and reads as "minimize" on real devices (v1.0.4).
 - CapacitorHttp silently DROPS a request body without an explicit `Content-Type` header.
 - `Filesystem.downloadFile` IGNORES `recursive:true` on Android — `mkdir` first.
 - Registering Capacitor's `backButton` listener disables ALL default back handling —
@@ -82,6 +84,12 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.4: launch update PROMPT (decline stores `update.skip` per version — the throttled
+  check path honors it); one-time Google-connect screen before profiles (`gauth.introDone`
+  pref; restores profiles + per-profile sheet via the Drive doc's additive `profileSources`);
+  folder tiles restyled + keyless channel-logo scrape (`yt.scrapeChannelLogo`, weekly retry);
+  real exit via `KidsNative.exitApp`; red attention dots (`gate-dot` = pending>0 or update
+  ready, `settings-dot` + red pending badge inside the parent screen).
 - The updater reads `devfassaf/kids_player` releases/latest (`UPDATE_REPO` in update.js);
   asset naming: `kids-player-v<X.Y.Z>.apk`.
 - Known unaudited item: `media.js` `videos/` cache may need the same mkdir-before-downloadFile fix.

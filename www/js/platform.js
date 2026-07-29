@@ -182,6 +182,11 @@ export function onBackButton(fn) {
 }
 
 export function exitApp() {
+  // Prefer the native KidsNative.exitApp: App.exitApp() only calls finish(), which on
+  // real devices leaves the task in recents — "exit" looked like minimize (v1.0.4 fix).
+  // finishAndRemoveTask() + delayed process kill actually closes the app.
+  const kids = plugin('KidsNative');
+  if (kids && kids.exitApp) { Promise.resolve(kids.exitApp()).catch(() => {}); return; }
   const App = plugin('App');
   if (App && App.exitApp) { App.exitApp(); return; }
   try { window.close(); } catch {}

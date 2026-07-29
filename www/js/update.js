@@ -57,7 +57,11 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
   const last = Number(await prefGet('update.lastCheck')) || 0;
   if (!force && Date.now() - last < CHECK_THROTTLE_MS) {
     const cached = JSON.parse((await prefGet('update.latest')) || 'null');
-    return { status: cached && isNewer(cached.version, local) ? 'available' : 'up-to-date', latest: cached, local };
+    if (!cached || !isNewer(cached.version, local)) return { status: 'up-to-date', latest: cached, local };
+    // The cached path must honor update.skip too — otherwise a declined launch
+    // prompt comes right back on the next launch inside the throttle window.
+    if (silent && (await prefGet('update.skip')) === cached.version) return { status: 'skipped', latest: cached, local };
+    return { status: 'available', latest: cached, local };
   }
 
   const res = await Promise.race([
