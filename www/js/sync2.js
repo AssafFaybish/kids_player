@@ -336,10 +336,12 @@ async function pageFolderAll(scope) {
   return { items };
 }
 
-/** Should the app resync now? (launch/resume guard) */
+/** Should the app resync now? (launch/resume/home-entry guard)
+    v1.0.7: 3 minutes — home entry triggers a sync too, and the child bounces
+    home↔video constantly; the sheet hash-skip keeps a no-change run cheap. */
 export async function shouldSync(profileId) {
   const src = await getSources(profileId);
   if (!src || !src.libraryId) return true;
   const last = (await getMeta('sync:' + src.libraryId + ':lastFullSyncAt')) || 0;
-  return Date.now() - last > 10 * 60 * 1000;
+  return Date.now() - last > 3 * 60 * 1000;
 }

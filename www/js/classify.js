@@ -127,3 +127,23 @@ export function classifyFromSharedText(text, subject) {
   }
   return null;
 }
+
+/**
+ * v1.0.7: kind-typed share classification — videos AND whole channels.
+ * Disambiguation matches classifySourceRow: a video link wins over anything else;
+ * a channel reference is recognized only when NO video link exists in the text.
+ * -> { kind:'video', …classifyLink fields, title } | { kind:'channel', channelRef, title } | null
+ */
+export function classifyShared(text, subject) {
+  const video = classifyFromSharedText(text, subject);
+  if (video) return { kind: 'video', ...video };
+  const s = String(text || '');
+  for (const raw of (s.match(/https?:\/\/[^\s<>"']+/g) || [])) {
+    const ref = parseChannelRef(raw.replace(/[)\]}>,.;:!?'"]+$/, ''));
+    if (!ref) continue;
+    const title = String(subject || '').trim() ||
+      s.replace(/https?:\/\/[^\s<>"']+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    return { kind: 'channel', channelRef: ref, title };
+  }
+  return null;
+}

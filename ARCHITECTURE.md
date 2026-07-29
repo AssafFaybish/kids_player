@@ -27,7 +27,8 @@ live and how does data flow".
 | `sheetwrite.js` | v1.0.6 sheet write-back: manual adds/channels/approved shares APPEND to the input sheet (durable queue in meta, non-interactive token, gid→tab-title resolution, permission errors surfaced) | platform, gauth, db |
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
-| `share.js` | share-intent JS side: listener→drain→queue; approval routing | classify, normalize, order, platform, db |
+| `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback | classify, normalize, order, platform, db |
+| `search.js` | PURE home-search ranking: normalized exact/starts/word/substring tiers | normalize |
 | `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled; honors `update.skip` on silent checks), downloadAndInstall (size-verified) | platform |
 | `wake.js` | ref-counted keep-screen-on (KidsNative → KeepAwake → wakeLock → noop) | — |
 | `player.js` | YT IFrame + `<video>` engines, shared HUD state machine, loadVideoById reuse path | media, classify, config, wake |

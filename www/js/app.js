@@ -12,7 +12,8 @@ import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
-import { confirmKid, alertKid, mountModal } from './ui/modal.js';
+import { confirmKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
+import { rankItems } from './search.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -56,6 +57,15 @@ let pinStep = 1;
 let pinFirst = '';
 let pinBuffer = '';
 let pinOnSuccess = null; // what a correct code unlocks (default: the parent screen)
+let pinDone = null;      // v1.0.7: fires exactly once per pin session — success OR cancel
+
+/** Resolve the pin session once. Success consumes it BEFORE navigation, so the
+    onLeave that follows (enterParent replaces the view) can't double-fire as cancel. */
+function consumePinDone(success) {
+  const f = pinDone;
+  pinDone = null;
+  if (f) { try { f(success); } catch {} }
+}
 
 /* ---------------- Views (routing via nav.js) ---------------- */
 const isGalleryActive = () => nav.isActive('gallery');
@@ -96,6 +106,27 @@ async function computeAttention() {
   return { pending, updateReady };
 }
 
+/**
+ * v1.0.7: fresh-on-home — fired on every gallery entry, never blocking the render.
+ * Content sync self-throttles (shouldSync, 3 min); the update check self-throttles
+ * (6h) and the prompt fires at most once per session.
+ */
+function homeEntryRefresh() {
+  if (!activeProfileId) return;
+  (async () => {
+    if (await shouldSync(activeProfileId)) {
+      syncLibrary(activeProfileId).then(async () => {
+        await loadGiftStates();
+        if (nav.isActive('gallery')) renderHome();
+      }).catch(() => {});
+    }
+  })().catch(() => {});
+  import('./update.js')
+    .then((u) => u.checkForUpdate({ silent: true }))
+    .then((r) => maybePromptUpdate(r))
+    .catch(() => {});
+}
+
 /** The red dot on the 🔒 gate button — the parent's cue to come look. */
 async function refreshGateDot() {
   try {
@@ -110,12 +141,16 @@ async function refreshGateDot() {
  * THIS version's prompt (update.skip) — the red dot and the parent screen keep
  * offering it; a newer release prompts again.
  */
+let updatePromptedThisSession = false; // the ask fires at most once per launch
+
 async function maybePromptUpdate(r) {
   if (!r || r.status !== 'available' || !r.latest) return;
+  if (updatePromptedThisSession) return;
   // Never interrupt watching / PIN / parent work / first-launch connect — the red
-  // dot still shows, and the next launch re-offers.
+  // dot still shows, and the next home entry or launch re-offers.
   if (nav.isActive('watch') || nav.isActive('pin') || nav.isActive('parent')
-    || nav.isActive('connect') || nav.isActive('loading')) return;
+    || nav.isActive('connect') || nav.isActive('loading') || isModalOpen()) return;
+  updatePromptedThisSession = true;
   const yes = await confirmKid({
     emoji: '🚀', title: 'יש גירסה חדשה!',
     text: `גירסה ${r.latest.version} מוכנה להתקנה (במקום ${r.local}). לעדכן עכשיו?`,
@@ -126,11 +161,24 @@ async function maybePromptUpdate(r) {
     refreshGateDot();
     return;
   }
+  // v1.0.7 (user request): installing requires the parent PIN — a child tapping
+  // "עדכון עכשיו" can't launch the installer alone.
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    title: 'קוד הורים לעדכון הגירסה',
+    onSuccess: async () => {
+      if (!nav.back()) nav.reset(activeProfileId ? 'gallery' : 'profiles');
+      await runUpdateInstall(r.latest);
+    }
+  });
+}
+
+/** Download + hand off to the Android installer, with the loading screen as progress. */
+async function runUpdateInstall(latest) {
   const upd = await import('./update.js');
   loading.show({ defer: 0, step: 'מורידים את העדכון…' });
   let res = null;
   try {
-    res = await upd.downloadAndInstall(r.latest, {
+    res = await upd.downloadAndInstall(latest, {
       onProgress: (done, total) => {
         if (total) loading.setStep(`מורידים את העדכון… ${Math.round((done / total) * 100)}%`);
       }
@@ -164,9 +212,12 @@ function registerViews() {
     // Re-render on EVERY return home: after unwrapping gifts the "חדשים" folder must
     // update immediately — and disappear entirely when the last gift was opened
     // (home then falls back to the flat video grid).
-    onEnter: () => { renderHome(); }
+    // v1.0.7: every home entry also refreshes content (3-min throttle in shouldSync)
+    // and re-offers a pending update (6h check throttle; asked once per session).
+    onEnter: () => { renderHome(); homeEntryRefresh(); }
   });
   nav.register('folder', {}); // default pop → home
+  nav.register('search', {}); // default pop → home; watch pushed on top returns here
   nav.register('watch', {
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
@@ -175,7 +226,9 @@ function registerViews() {
       currentWatch = null;
     }
   });
-  nav.register('pin', {}); // default pop
+  // Leaving the pin view WITHOUT success (cancel button / hardware back) resolves
+  // the session as cancelled — waiting flows (share add, update) get their answer.
+  nav.register('pin', { onLeave: () => consumePinDone(false) });
   nav.register('parent', { onBack: () => { goGallery(); return true; } });
   loading.registerLoadingView();
 }
@@ -484,11 +537,70 @@ async function renderGridPage(grid, scope, fid, which) {
   else folderPagerObj.update(folderPage, total);
 }
 
+/* ---------------- Search (v1.0.7) ---------------- */
+// The kid searches the APPROVED library only (live records + visible channel folders)
+// — no network, no external content; ranking is pure (search.js, node-tested).
+let searchIndex = null; // { videos: [records], folders: [{...folder, normTitle}] }
+let searchTimer = null;
+
+async function buildSearchIndex() {
+  const videos = [];
+  const scopes = [libScope, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
+  for (const s of scopes) {
+    for (const rec of (await db.loadMergeIndex(s)).values()) {
+      if (rec.state === 'live') videos.push(rec);
+    }
+  }
+  const folderEntries = [];
+  if (libScope) {
+    for (const lc of await db.listLibraryChannels(libScope)) {
+      if (lc.hidden) continue;
+      const ch = (await db.getChannel(lc.channelId)) || {};
+      const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
+      if (!count) continue;
+      const title = lc.titleOverride || ch.title || '';
+      folderEntries.push({
+        id: 'ch:' + lc.channelId, scope: libScope, key: 'folder:' + lc.channelId,
+        title, normTitle: normalizeTitle(title),
+        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
+      });
+    }
+  }
+  searchIndex = { videos, folders: folderEntries };
+}
+
+async function openSearch() {
+  searchIndex = null;
+  nav.go('search');
+  $('search-input').value = '';
+  $('search-results').innerHTML = '';
+  $('search-empty').classList.add('hidden');
+  buildSearchIndex().catch(() => {});
+  setTimeout(() => { try { $('search-input').focus(); } catch {} }, 60);
+}
+
+async function renderSearchResults() {
+  if (!searchIndex) { try { await buildSearchIndex(); } catch { return; } }
+  const q = $('search-input').value;
+  // channel folders first (few, big targets), then videos by match accuracy
+  const folderHits = rankItems(q, searchIndex.folders, { limit: 6 });
+  const videoHits = rankItems(q, searchIndex.videos, { limit: 24 });
+  const grid = $('search-results');
+  grid.innerHTML = '';
+  for (const { item } of folderHits) grid.appendChild(folderTile(item));
+  for (const { item } of videoHits) grid.appendChild(tileEl(item));
+  $('search-empty').classList.toggle(
+    'hidden',
+    !(normalizeTitle(q).length >= 2 && !folderHits.length && !videoHits.length)
+  );
+}
+
 /* ---------------- Folder view ---------------- */
 async function openFolder(fid) {
   folderId = fid;
   folderPage = 0;
-  const f = folders.find((x) => x.id === fid);
+  const f = folders.find((x) => x.id === fid)
+    || (searchIndex && searchIndex.folders.find((x) => x.id === fid)); // opened from search
   $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.title) : '';
   // v1.0.4: the channel's logo (or the folder emoji) next to the name — the child
   // always sees WHICH channel they're inside.
@@ -687,6 +799,45 @@ async function confirmDeleteWatch(item) {
   goGallery();
 }
 
+/* ---------------- Interactive share add (v1.0.7) ---------------- */
+/**
+ * A share from YouTube now opens the ASK flow (user-specified order): parent PIN →
+ * "add this video / whole channel?" → added live + registered in the sheet.
+ * Returns share.js's decision: 'live' | 'pending' | 'channel' | null.
+ * PIN cancel or a "not now" answer parks a VIDEO as pending (never lost); a channel
+ * share is simply not added. When a PIN/modal is already up we don't interrupt —
+ * the share falls back to the silent pending route.
+ */
+function handleShareInteractive(c) {
+  if (nav.isActive('pin') || isModalOpen()) return Promise.resolve(c.kind === 'channel' ? null : 'pending');
+  return new Promise((resolve) => {
+    (async () => {
+      startPin((await hasPin()) ? 'verify' : 'setup', {
+        replace: nav.isActive('watch'), // never leave a torn-down player behind
+        title: c.kind === 'channel' ? 'קוד הורים להוספת הערוץ' : 'קוד הורים להוספת הסרטון',
+        onDone: (success) => { if (!success) resolve(c.kind === 'channel' ? null : 'pending'); },
+        onSuccess: async () => {
+          if (c.kind === 'channel') {
+            const yes = await confirmKid({
+              emoji: '📺', title: 'להוסיף את הערוץ כולו?',
+              text: (c.title ? c.title + ' — ' : '') + 'סרטונים חדשים שלו ימתינו לאישור הורים.',
+              ok: 'הוספת הערוץ', cancel: 'לא עכשיו'
+            });
+            resolve(yes ? 'channel' : null);
+          } else {
+            const yes = await confirmKid({
+              emoji: '▶️', title: 'להוסיף את הסרטון?',
+              text: c.title || c.srcUrl || '', ok: 'הוספה', cancel: 'לא עכשיו'
+            });
+            resolve(yes ? 'live' : 'pending');
+          }
+          goGallery();
+        }
+      });
+    })().catch(() => resolve(c.kind === 'channel' ? null : 'pending'));
+  });
+}
+
 /* ---------------- PIN ---------------- */
 async function openParentGate() {
   startPin((await hasPin()) ? 'verify' : 'setup');
@@ -702,9 +853,10 @@ function updateDots() {
  * top of it — the delete flow uses it so hardware-back never lands on a watch
  * page whose player was already torn down.
  */
-function startPin(mode, { onSuccess = enterParent, replace = false, title = '' } = {}) {
+function startPin(mode, { onSuccess = enterParent, replace = false, title = '', onDone = null } = {}) {
   pinMode = mode; pinBuffer = ''; pinFirst = ''; pinStep = 1;
   pinOnSuccess = onSuccess;
+  pinDone = onDone;
   $('pin-msg').textContent = '';
   $('pin-title').textContent = mode === 'setup' ? 'בחרו קוד הורים חדש' : (title || 'הזינו קוד הורים');
   updateDots();
@@ -718,7 +870,7 @@ async function onPinComplete() {
       updateDots();
       return;
     }
-    if (pinBuffer === pinFirst) { await setPin(pinBuffer); pinOnSuccess(); }
+    if (pinBuffer === pinFirst) { await setPin(pinBuffer); consumePinDone(true); pinOnSuccess(); }
     else {
       $('pin-msg').textContent = 'הקודים לא תואמים, נסו שוב';
       pinBuffer = ''; pinFirst = ''; pinStep = 1;
@@ -726,7 +878,7 @@ async function onPinComplete() {
       updateDots();
     }
   } else {
-    if (await verifyPin(pinBuffer)) pinOnSuccess();
+    if (await verifyPin(pinBuffer)) { consumePinDone(true); pinOnSuccess(); }
     else { $('pin-msg').textContent = 'קוד שגוי'; pinBuffer = ''; updateDots(); }
   }
 }
@@ -1284,7 +1436,6 @@ async function activateProfile(id) {
   page = 0;
 
   // HYDRATE first: render whatever IndexedDB has, instantly. Sync runs after.
-  await drainShareQueue(); // shares that arrived before a profile was active
   await absorbMineIntoShared(id); // v1.0.6: fold personal adds into the shared list
   await loadGiftStates();
   await renderHome();
@@ -1296,6 +1447,10 @@ async function activateProfile(id) {
     loading.show({ step: 'מביאים סרטונים חדשים…' });
   }
   nav.reset('gallery');
+
+  // v1.0.7: shares queued before a profile was active drain AFTER the gallery is up —
+  // their interactive PIN flow must not fight the activation navigation.
+  drainShareQueue().catch(() => {});
 
   // Background sync — never blocks the grid; re-renders when new content lands.
   if (await shouldSync(id)) {
@@ -1368,6 +1523,14 @@ function wire() {
   $('exit-btn').addEventListener('click', askExit);
   $('folder-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
 
+  // v1.0.7: home search
+  $('search-open').addEventListener('click', openSearch);
+  $('search-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
+  $('search-input').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { renderSearchResults().catch(() => {}); }, 180);
+  });
+
   $('watch-home').addEventListener('click', goGallery);
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
@@ -1384,7 +1547,9 @@ function wire() {
     const b = e.target.closest('.key'); if (!b || !b.dataset.k) return;
     onKey(b.dataset.k);
   });
-  $('pin-cancel').addEventListener('click', goGallery);
+  // v1.0.7: cancel returns to WHERE THE PIN OPENED FROM (profiles/gallery/folder) —
+  // the pin view can now open over the profiles screen too (update flow).
+  $('pin-cancel').addEventListener('click', () => { if (!nav.back()) goGallery(); });
 
   for (const t of PARENT_TABS) $('tab-' + t).addEventListener('click', () => setParentTab(t));
   $('add-btn').addEventListener('click', parentAdd);
@@ -1613,11 +1778,20 @@ async function init() {
   // Preferences → IndexedDB (idempotent, resumable, non-destructive).
   try { await runMigrationIfNeeded(); } catch (e) { console.warn('idb migration failed', e); }
 
-  // F12b: videos shared from the YouTube app (listener first, then drain — see share.js)
+  // F12b + v1.0.7: videos AND channels shared from the YouTube app go through the
+  // interactive PIN+confirm flow (listener first, then drain — see share.js).
   initShareTarget({
     profileIdGetter: () => activeProfileId,
-    onShareAdded: ({ pending }) => {
-      if (!pending && nav.isActive('gallery')) renderHome();
+    interactiveHandler: handleShareInteractive,
+    onShareAdded: async ({ pending, channelAdded, channelFailed, title }) => {
+      if (channelFailed) {
+        await alertKid({ emoji: '😕', title: 'לא הצלחנו לזהות את הערוץ', text: 'אפשר לנסות דרך מסך ההורים ← הוספה.', ok: 'בסדר' });
+        return;
+      }
+      if (channelAdded) {
+        await alertKid({ emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — מושכים את הסרטונים שלו; חדשים ימתינו לאישור במסך ההורים.`, ok: 'מעולה' });
+      }
+      if (nav.isActive('gallery')) renderHome();
     }
   });
   await loadActiveId();

@@ -80,6 +80,9 @@
         </button>
       </header>
 
+      <!-- v1.0.7: kid-friendly search — opens the search view with the keyboard up -->
+      <button id="search-open" class="search-launcher" type="button">🔍 חיפוש סרטון…</button>
+
       <main id="grid" class="grid" aria-label="רשימת סרטונים"></main>
 
       <div id="empty-state" class="empty-state hidden">
@@ -119,6 +122,17 @@
       </header>
       <main id="folder-grid" class="grid" aria-label="סרטוני התיקייה"></main>
       <nav id="folder-pager" class="pager" aria-label="דפדוף"></nav>
+    </section>
+
+    <!-- ===================== SEARCH (kids, v1.0.7) ===================== -->
+    <section id="view-search" class="view">
+      <header class="top-bar search-bar">
+        <button id="search-back" class="round-btn" type="button" aria-label="חזרה">🏠</button>
+        <input id="search-input" class="input search-input" type="search"
+               placeholder="מה מחפשים? 🔍" maxlength="60" autocomplete="off" />
+      </header>
+      <main id="search-results" class="grid" aria-label="תוצאות חיפוש"></main>
+      <p id="search-empty" class="search-empty hidden">לא מצאנו סרטון כזה 🙈</p>
     </section>
 
     <!-- ===================== LOADING (kids) ===================== -->

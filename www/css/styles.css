@@ -94,6 +94,22 @@ body {
   margin: 0 auto;
 }
 
+/* ---------- Search (v1.0.7) ---------- */
+.search-launcher {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin: 0 auto 10px; border: none; cursor: pointer; font-family: inherit;
+  background: #fff; border-radius: 26px; padding: 10px 26px;
+  font-size: 16px; font-weight: 800; color: var(--muted);
+  box-shadow: var(--shadow);
+}
+.search-launcher:active { transform: scale(0.96); }
+.search-bar { gap: 10px; }
+.search-input {
+  flex: 1 1 auto; min-width: 0;
+  border-radius: 26px; font-size: 18px; font-weight: 700;
+}
+.search-empty { text-align: center; color: var(--muted); font-size: 20px; font-weight: 800; padding: 34px 20px; }
+
 .tile {
   border: none; background: var(--bg-2); padding: 0;
   border-radius: var(--tile-radius);
