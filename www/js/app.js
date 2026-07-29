@@ -13,11 +13,16 @@ import { syncFromRemote } from './sync.js';
 import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
-import { PAGE_VIDEOS, PAGE_WATCH, AVATARS } from './config.js';
+import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, alertKid, mountModal } from './ui/modal.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
+import * as db from './db.js';
+import { syncLibrary, shouldSync } from './sync2.js';
+import { normalizeTitle } from './normalize.js';
+import { burst } from './ui/confetti.js';
+import { playUnwrap } from './ui/sound.js';
 
 const PAGE_SIZE = PAGE_VIDEOS;
 const $ = (id) => document.getElementById(id);
@@ -29,12 +34,22 @@ const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
   '<polygon points="146,68 146,112 184,90" fill="#fff"/></svg>'
 );
 
-let items = [];
+let items = [];                       // legacy Preferences list — parent screen only
 let source = { mode: 'manual', url: '' };
-let page = 0;
+let page = 0;                         // home page (folder tiles OR flat single-folder)
 let currentWatch = null;
 let profiles = [];
 let createSel = null;
+
+// IDB-backed kid views (F10)
+let activeProfileId = null;
+let libScope = null;                  // the shared library scope of this profile's sheet
+let folders = [];                     // built by buildFolders()
+let folderId = null;                  // open folder in #view-folder
+let folderPage = 0;
+let folderPagerObj = null;
+let giftStates = new Map();           // key -> profileVideoState record (gifts, F9)
+let watchCtx = { scope: null, folderId: null }; // which folder the watch grid pages
 
 // PIN flow state
 let pinMode = 'verify';
@@ -49,7 +64,7 @@ function goGallery() {
   stop();
   wake.releaseAll(); // hard safety net (F7): outside the player, the screen may sleep
   currentWatch = null;
-  renderGallery();
+  renderHome();
   nav.reset('gallery');
 }
 
@@ -71,6 +86,7 @@ function registerViews() {
     }
   });
   nav.register('gallery', { onBack: () => { askExit(); return true; } });
+  nav.register('folder', {}); // default pop → home
   nav.register('watch', {
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
@@ -84,16 +100,22 @@ function registerViews() {
   loading.registerLoadingView();
 }
 
-/* ---------------- Gallery ---------------- */
+/* ---------------- Tiles (IDB records) ---------------- */
 function setThumb(img, item) {
   const chain = [];
-  if (item.thumb) chain.push(item.thumb);
-  if (item.type === 'youtube') chain.push(...youtubeThumbCandidates(item.id));
+  if (item.thumb) chain.push(item.thumb);          // legacy inline data URL
+  if (item.thumbUrl) chain.push(item.thumbUrl);    // API/RSS-provided (guaranteed sizes)
+  if (item.type === 'youtube' && item.id) chain.push(...youtubeThumbCandidates(item.id));
   chain.push(PLACEHOLDER);
   let i = 0;
   const tryNext = () => { img.src = chain[Math.min(i, chain.length - 1)]; };
   img.onerror = () => { i += 1; if (i < chain.length) tryNext(); else img.onerror = null; };
   tryNext();
+  if (item.thumbId) { // migrated legacy Blob — upgrade in place when it loads
+    db.getThumbBlob(item.thumbId)
+      .then((b) => { if (b) { img.onerror = null; img.src = URL.createObjectURL(b); } })
+      .catch(() => {});
+  }
 }
 
 function tileEl(item) {
@@ -106,6 +128,7 @@ function tileEl(item) {
   const img = document.createElement('img');
   img.alt = item.title || '';
   img.loading = 'lazy';
+  img.setAttribute('decoding', 'async');
   setThumb(img, item);
   thumb.appendChild(img);
 
@@ -127,30 +150,161 @@ function tileEl(item) {
     cap.textContent = item.title;
     btn.appendChild(cap);
   }
-  btn.addEventListener('click', () => openWatch(item));
+
+  // F9: an un-unwrapped gift shows wrapped; the FIRST tap unwraps (confetti + jingle)
+  // and does NOT play. From then on it's a normal tile.
+  const st = giftStates.get(item.key);
+  if (st && st.giftRank && !st.unwrappedAt) {
+    btn.classList.add('tile-gift');
+    const wrap = document.createElement('span');
+    wrap.className = 'gift';
+    wrap.innerHTML = '<span class="gift-ribbon-v"></span><span class="gift-ribbon-h"></span><span class="gift-bow">🎀</span>';
+    thumb.appendChild(wrap);
+    const cap = btn.querySelector('.cap');
+    if (cap) cap.textContent = 'מתנה! 🎁';
+  }
+
+  btn.addEventListener('click', () => {
+    const cur = giftStates.get(item.key);
+    if (cur && cur.giftRank && !cur.unwrappedAt) { unwrapTileEl(btn, item); return; }
+    openWatch(item);
+  });
   return btn;
 }
 
-function renderGallery() {
-  const list = listForDisplay(items, source);
-  const total = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
-  if (page >= total) page = total - 1;
-  if (page < 0) page = 0;
+async function unwrapTileEl(btn, item) {
+  playUnwrap();
+  burst(btn);
+  btn.classList.add('unwrapping');
+  giftStates.set(item.key, { ...(giftStates.get(item.key) || {}), giftRank: undefined, unwrappedAt: Date.now() });
+  try { await db.unwrapGift(activeProfileId, item.key); } catch {}
+  setTimeout(() => {
+    btn.querySelector('.gift')?.remove();
+    btn.classList.remove('tile-gift', 'unwrapping');
+    const cap = btn.querySelector('.cap');
+    if (cap) cap.textContent = item.title || '';
+  }, 340);
+}
 
+async function loadGiftStates() {
+  giftStates = new Map();
+  if (!activeProfileId) return;
+  const dbi = await db.openDb();
+  await new Promise((resolve) => {
+    const range = IDBKeyRange.bound([activeProfileId, ''], [activeProfileId, '￿']);
+    const req = dbi.transaction('profileVideoState').objectStore('profileVideoState').openCursor(range);
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) return resolve();
+      giftStates.set(cur.value.key, cur.value);
+      cur.continue();
+    };
+    req.onerror = () => resolve();
+  });
+}
+
+/* ---------------- Home: folders (F10) ---------------- */
+function folderTile(f) {
+  const btn = document.createElement('button');
+  btn.className = 'tile tile-folder' + (f.isNew ? ' folder-new' : '');
+  btn.type = 'button';
+  btn.style.position = 'relative';
+
+  const logo = document.createElement('span');
+  logo.className = 'folder-logo';
+  if (f.logoUrl) {
+    const img = document.createElement('img');
+    img.src = f.logoUrl;
+    img.alt = '';
+    img.onerror = () => { img.remove(); logo.textContent = f.emoji; };
+    logo.appendChild(img);
+  } else {
+    logo.textContent = f.emoji;
+  }
+  const nm = document.createElement('span');
+  nm.className = 'folder-name';
+  nm.textContent = f.title;
+  const cnt = document.createElement('span');
+  cnt.className = 'folder-count';
+  cnt.textContent = `${f.count} סרטונים`;
+  btn.appendChild(logo);
+  btn.appendChild(nm);
+  btn.appendChild(cnt);
+  if (f.isNew) {
+    const badge = document.createElement('span');
+    badge.className = 'count-badge';
+    badge.textContent = f.count;
+    btn.appendChild(badge);
+  }
+  btn.addEventListener('click', () => openFolder(f.id));
+  return btn;
+}
+
+async function buildFolders() {
+  const out = [];
+  if (!activeProfileId) return out;
+  const giftCount = await db.countGifts(activeProfileId);
+  if (giftCount > 0) out.push({ id: 'new', title: 'חדשים', emoji: '🎁', count: giftCount, isNew: true });
+
+  const src = await db.getSources(activeProfileId);
+  libScope = (src && src.libraryId) || null;
+  if (libScope) {
+    for (const lc of await db.listLibraryChannels(libScope)) {
+      if (lc.hidden) continue;
+      const ch = (await db.getChannel(lc.channelId)) || {};
+      const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
+      if (!count) continue;
+      out.push({
+        id: 'ch:' + lc.channelId, scope: libScope, title: lc.titleOverride || ch.title || 'ערוץ',
+        logoUrl: ch.logoUrl || '', emoji: '📺', count
+      });
+    }
+    const sheetCount = await db.countFolder(libScope, 'sheet');
+    if (sheetCount) out.push({ id: 'sheet', scope: libScope, title: 'הרשימה שלנו', emoji: '⭐', count: sheetCount });
+  }
+  const mineCount = await db.countFolder(db.profScope(activeProfileId), 'mine');
+  if (mineCount) out.push({ id: 'mine', scope: db.profScope(activeProfileId), title: 'הסרטונים שלי', emoji: '💜', count: mineCount });
+  return out;
+}
+
+function scopeForFolder(fid) {
+  if (fid === 'mine') return db.profScope(activeProfileId);
+  return libScope;
+}
+
+/**
+ * Home = folder tiles. UX rule: with a SINGLE content folder (the common sheet-only
+ * setup) the home renders that folder's videos flat — exactly today's experience —
+ * and folders appear only once there's something to organize.
+ */
+async function renderHome() {
+  folders = await buildFolders();
   const grid = $('grid');
-  grid.innerHTML = '';
-  const empty = list.length === 0;
+  const contentFolders = folders.filter((f) => !f.isNew);
+
+  const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
   grid.classList.toggle('hidden', empty);
+  if (empty) { $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
-  for (const it of list.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
-    grid.appendChild(tileEl(it));
+  if (contentFolders.length === 1 && folders.length === 1) {
+    await renderGridPage(grid, contentFolders[0].scope, contentFolders[0].id, 'home');
+    return;
   }
 
-  // Only the arrow controls hide on a single page — the bar (with the 👋 exit
-  // button) must stay visible (F6).
+  const total = Math.max(1, Math.ceil(folders.length / PAGE_FOLDERS));
+  if (page >= total) page = total - 1;
+  if (page < 0) page = 0;
+  grid.innerHTML = '';
+  for (const f of folders.slice(page * PAGE_FOLDERS, (page + 1) * PAGE_FOLDERS)) {
+    grid.appendChild(folderTile(f));
+  }
+  updateHomePager(total);
+}
+
+function updateHomePager(total) {
   const controls = $('pg-controls');
-  if (list.length > PAGE_SIZE) {
+  if (total > 1) {
     controls.classList.remove('hidden');
     $('pg-info').textContent = `${page + 1} / ${total}`;
     $('pg-prev').disabled = page === 0;
@@ -160,6 +314,50 @@ function renderGallery() {
   }
 }
 
+/** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
+async function renderGridPage(grid, scope, fid, which) {
+  const pg = which === 'home' ? page : folderPage;
+  let items15;
+  let total;
+  if (fid === 'new') {
+    const res = await db.pageGifts(activeProfileId, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
+    total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
+    items15 = [];
+    for (const st of res.items) {
+      const rec = (libScope && await db.getVideo(libScope, st.key)) || (await db.getVideo(db.profScope(activeProfileId), st.key));
+      if (rec && rec.state === 'live') items15.push(rec);
+    }
+  } else {
+    const res = await db.pageFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
+    total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
+    items15 = res.items;
+  }
+  grid.innerHTML = '';
+  for (const rec of items15) grid.appendChild(tileEl(rec));
+  if (which === 'home') updateHomePager(total);
+  else folderPagerObj.update(folderPage, total);
+}
+
+/* ---------------- Folder view ---------------- */
+async function openFolder(fid) {
+  folderId = fid;
+  folderPage = 0;
+  const f = folders.find((x) => x.id === fid);
+  $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.title) : '';
+  nav.go('folder', { folderId: fid });
+  await renderFolderView();
+}
+
+async function renderFolderView() {
+  if (!folderPagerObj) {
+    folderPagerObj = makePager({
+      mount: $('folder-pager'),
+      onChange: async (p) => { folderPage = p; await renderFolderView(); }
+    });
+  }
+  await renderGridPage($('folder-grid'), scopeForFolder(folderId), folderId, 'folder');
+}
+
 /* ---------------- Watch ---------------- */
 // F4: the under-player grid is PAGINATED (6 tiles/page) — the old render-everything
 // was the page's lag source with hundreds of tiles. The playing item stays in the
@@ -167,18 +365,23 @@ function renderGallery() {
 let watchPage = 0;
 let watchPager = null;
 
-function renderWatchGrid(current) {
+async function renderWatchGrid(current) {
   if (!watchPager) watchPager = makePager({ mount: $('watch-pager'), onChange: (p) => { watchPage = p; renderWatchGrid(currentWatch); } });
-  const list = listForDisplay(items, source);
-  const total = Math.max(1, Math.ceil(list.length / PAGE_WATCH));
-  if (watchPage >= total) watchPage = total - 1;
-  if (watchPage < 0) watchPage = 0;
-
   const grid = $('watch-grid');
+  // Same-folder browsing (user decision): the grid pages the folder the child came
+  // from. A gift opened from "חדשים" browses its ORIGIN folder (rec.folderId).
+  const scope = watchCtx.scope;
+  const fid = watchCtx.folderId;
+  if (!scope || !fid) { grid.innerHTML = ''; watchPager.update(0, 1); return; }
+
+  const res = await db.pageFolder(scope, fid, { offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH });
+  const total = Math.max(1, Math.ceil(res.total / PAGE_WATCH));
+  if (watchPage >= total) watchPage = total - 1;
+
   grid.innerHTML = '';
-  for (const it of list.slice(watchPage * PAGE_WATCH, (watchPage + 1) * PAGE_WATCH)) {
-    const tile = tileEl(it);
-    if (current && it.key === current.key) tile.classList.add('tile-current');
+  for (const rec of res.items) {
+    const tile = tileEl(rec);
+    if (current && rec.key === current.key) tile.classList.add('tile-current');
     grid.appendChild(tile);
   }
   watchPager.update(watchPage, total);
@@ -186,6 +389,11 @@ function renderWatchGrid(current) {
 
 async function openWatch(item) {
   currentWatch = item;
+  // watch-grid context: the record's own folder (or where the child was browsing)
+  watchCtx = {
+    scope: item.scopeId || scopeForFolder(folderId) || libScope || db.profScope(activeProfileId),
+    folderId: (item.folderId && item.folderId !== '~pending') ? item.folderId : folderId
+  };
   // replace() when already watching: back always returns to the gallery, never
   // through the chain of watched videos. nav scrolls to top — the F4 fix: the
   // user actually SEES the player instead of staying scrolled at the grid.
@@ -206,14 +414,23 @@ async function openWatch(item) {
         : 'אופס, לא הצלחנו לנגן את הסרטון';
       status.classList.remove('hidden');
     },
-    onThumb: (data) => persistThumb(item.key, data)
+    onThumb: (data) => persistThumb(item, data)
   });
 }
 
-async function persistThumb(key, data) {
-  const arr = await loadItems();
-  const it = arr.find((i) => i.key === key);
-  if (it && !it.thumb) { it.thumb = data; await saveItems(arr); items = arr; }
+/* Captured first frame of a direct file → Blob in the thumbs store (never base64 in a record). */
+async function persistThumb(item, dataUrl) {
+  try {
+    if (item.thumbId || item.thumbUrl) return;
+    const { dataUrlToBytes } = await import('./migrate.js');
+    const dec = dataUrlToBytes(dataUrl);
+    if (!dec) return;
+    const { fnv1a } = await import('./util.js');
+    const id = 'file:' + fnv1a(item.key);
+    await db.putThumb(id, new Blob([dec.bytes], { type: dec.mime }), { origin: 'capture' });
+    await db.setVideoFields(item.scopeId, item.key, { thumbId: id });
+    item.thumbId = id;
+  } catch {}
 }
 
 /* F5: the playing video's title under the player, YouTube-style. */
@@ -226,16 +443,20 @@ function setWatchTitle(item) {
     el.classList.remove('hidden');
     fetchYouTubeTitle(item.id).then((t) => {
       if (!currentWatch || currentWatch.key !== item.key) return; // stale fetch
-      if (t) { el.textContent = t; persistTitle(item.key, t); }
+      if (t) { el.textContent = t; persistTitle(item, t); }
       else { el.textContent = ''; el.classList.add('hidden'); }
     });
   }
 }
 
-async function persistTitle(key, title) {
-  const arr = await loadItems();
-  const it = arr.find((i) => i.key === key);
-  if (it && !it.title) { it.title = title; await saveItems(arr); items = arr; }
+async function persistTitle(item, title) {
+  try {
+    if (!item.scopeId) return;
+    await db.setVideoFields(item.scopeId, item.key, {
+      title, titleSource: 'oembed', normTitle: normalizeTitle(title)
+    });
+    item.title = title;
+  } catch {}
 }
 
 /* ---------------- PIN ---------------- */
@@ -294,7 +515,7 @@ async function setMode(mode) {
   source = { ...source, mode };
   await setSource(source);
   setModeUI(mode);
-  renderGallery();
+  renderHome();
 }
 function refreshParent() {
   $('remote-url').value = source.url || '';
@@ -330,7 +551,7 @@ function refreshParentList() {
       await deleteItem(it.key);
       items = await loadItems();
       refreshParentList();
-      renderGallery();
+      renderHome();
     });
     li.appendChild(img); li.appendChild(body); li.appendChild(del);
     ul.appendChild(li);
@@ -352,7 +573,7 @@ async function doSyncAndRefresh() {
   } else { status.textContent = 'שגיאה בטעינת הקובץ: ' + (res.error || ''); status.className = 'form-msg err'; }
   items = await loadItems();
   refreshParentList();
-  renderGallery();
+  renderHome();
 }
 
 /* ---------------- Profiles ---------------- */
@@ -434,25 +655,36 @@ async function createNewProfile() {
 
 async function activateProfile(id) {
   await setActiveId(id);
+  activeProfileId = id;
   source = await getSource();
-  items = await loadItems();
+  items = await loadItems(); // legacy list — parent screen only
   page = 0;
-  if (source.mode === 'remote') {
-    // The one boot path that can take seconds (network) — show the kids loading
-    // screen if it outlives 250ms; never let a failure strand the child there.
-    loading.show({ step: 'מביאים סרטונים חדשים…' });
-    try {
-      const r = await Promise.race([
-        syncFromRemote(),
-        new Promise((res) => setTimeout(() => res({ ok: false, error: 'timeout' }), 12000))
-      ]);
-      if (r && r.ok) items = await loadItems();
-    } catch { /* cached list is fine */ }
-  }
+
+  // HYDRATE first: render whatever IndexedDB has, instantly. Sync runs after.
+  await loadGiftStates();
+  await renderHome();
   await updateProfileChip();
-  renderGallery();
-  await loading.hide();
+
+  const hasContent = folders.length > 0;
+  if (!hasContent) {
+    // Nothing cached (fresh profile with a sheet): the child needs the loading screen.
+    loading.show({ step: 'מביאים סרטונים חדשים…' });
+  }
   nav.reset('gallery');
+
+  // Background sync — never blocks the grid; re-renders when new content lands.
+  if (await shouldSync(id)) {
+    syncLibrary(id, { onProgress: (p) => loading.setStep(p.label || '') })
+      .then(async (r) => {
+        await loadGiftStates();
+        if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
+        await loading.hide();
+        if (!nav.isActive('gallery') && nav.isActive('loading')) nav.reset('gallery');
+      })
+      .catch(async () => { await loading.hide(); });
+  } else {
+    await loading.hide();
+  }
 }
 
 async function updateProfileChip() {
@@ -498,9 +730,10 @@ function wire() {
   $('delete-profile').addEventListener('click', deleteCurrentProfile);
   $('parent-gate-btn').addEventListener('click', openParentGate);
 
-  $('pg-prev').addEventListener('click', () => { page -= 1; renderGallery(); });
-  $('pg-next').addEventListener('click', () => { page += 1; renderGallery(); });
+  $('pg-prev').addEventListener('click', () => { page -= 1; renderHome(); });
+  $('pg-next').addEventListener('click', () => { page += 1; renderHome(); });
   $('exit-btn').addEventListener('click', askExit);
+  $('folder-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
 
   $('watch-home').addEventListener('click', goGallery);
   $('ctl-fs').addEventListener('click', () => {
@@ -529,7 +762,7 @@ function wire() {
     if (res.ok) {
       $('add-url').value = ''; $('add-title').value = ''; $('add-thumb').value = '';
       msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
-      items = await loadItems(); refreshParentList(); renderGallery();
+      items = await loadItems(); refreshParentList(); renderHome();
     } else {
       msg.textContent = res.error === 'duplicate' ? 'הסרטון כבר קיים ברשימה'
         : 'הלינק לא נתמך (רק YouTube או קובץ וידאו mp4)';
@@ -549,7 +782,7 @@ function wire() {
     const msg = $('add-msg');
     try {
       await importJson(await f.text());
-      items = await loadItems(); refreshParentList(); renderGallery();
+      items = await loadItems(); refreshParentList(); renderHome();
       msg.textContent = 'יובא בהצלחה ✅'; msg.className = 'form-msg ok';
     } catch { msg.textContent = 'קובץ לא תקין'; msg.className = 'form-msg err'; }
     e.target.value = '';
@@ -569,7 +802,7 @@ function wire() {
     setModeUI('manual');
     $('remote-status').textContent = 'נותק. עברת לרשימה ידנית.';
     $('remote-status').className = 'form-msg';
-    renderGallery();
+    renderHome();
   });
 
   $('parent-exit').addEventListener('click', goGallery);
@@ -604,10 +837,12 @@ async function init() {
   onBackButton(nav.handleBack);
 
   onAppResume(async () => {
-    if (getActiveId() && source.mode === 'remote' && isGalleryActive()) {
-      await syncFromRemote();
-      items = await loadItems();
-      renderGallery();
+    // resync on foreground — but never while a video plays, and only from the home
+    if (activeProfileId && isGalleryActive() && await shouldSync(activeProfileId)) {
+      syncLibrary(activeProfileId).then(async () => {
+        await loadGiftStates();
+        if (isGalleryActive()) renderHome();
+      }).catch(() => {});
     }
   });
 

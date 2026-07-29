@@ -180,7 +180,13 @@ export async function findByNormTitleInChannel(scopeId, channelId, normTitle) {
   return r || null;
 }
 
-/** Light projection of a whole scope for the pure merge planner (~8 fields/record). */
+/**
+ * The whole scope as Map<key, record> for the pure merge planner. FULL records, not a
+ * projection: mergeVideoRecord clones the survivor, so a partial projection would
+ * silently strip type/id/url from merged records (a real bug caught in verification —
+ * a merged record lost its video type). Records are ~400B now (no inline base64), so
+ * 5000 records ≈ 2MB, well off the render path.
+ */
 export async function loadMergeIndex(scopeId) {
   const db = await openDb();
   const map = new Map();
@@ -190,13 +196,7 @@ export async function loadMergeIndex(scopeId) {
     req.onsuccess = () => {
       const cur = req.result;
       if (!cur) return resolve();
-      const v = cur.value;
-      map.set(v.key, {
-        key: v.key, folderId: v.folderId, channelId: v.channelId, state: v.state,
-        title: v.title, titleSource: v.titleSource, normTitle: v.normTitle,
-        addedAt: v.addedAt, sortKey: v.sortKey, rowIndex: v.rowIndex,
-        localPath: v.localPath, thumbId: v.thumbId, thumbUrl: v.thumbUrl, origin: v.origin
-      });
+      map.set(cur.value.key, cur.value);
       cur.continue();
     };
     req.onerror = () => reject(req.error);
@@ -228,11 +228,19 @@ export async function approvePending(scopeId, keys) {
       const r = videos.get([scopeId, key]);
       r.onsuccess = () => {
         if (r.result && r.result.state === 'pending') {
-          videos.put({ ...r.result, state: 'live', approvedAt: now, updatedAt: now });
+          videos.put({
+            ...r.result, state: 'live', approvedAt: now, updatedAt: now,
+            folderId: r.result.homeFolderId || r.result.folderId // un-park (see plan.js)
+          });
         }
       };
     }
   });
+}
+
+/** Remove WITHOUT a tombstone (e.g. a legacy record that migrated into the library scope). */
+export async function deleteVideoRaw(scopeId, key) {
+  await tx(['videos'], 'readwrite', (videos) => { videos.delete([scopeId, key]); });
 }
 
 export async function rejectPending(scopeId, keys) {

@@ -98,9 +98,14 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
 
     if (prior) {
       const merged = mergeVideoRecord({ ...prior, scopeId: c.scopeId, key }, base);
-      // an existing record keeps its curation: state/addedAt/approvedAt/localPath win
-      merged.state = prior.state === 'pending' && base.state === 'live' && prior.origin !== undefined
-        ? prior.state : merged.state;
+      // an existing record keeps its curation: a pending item stays pending (parked)
+      if (prior.state === 'pending') {
+        merged.state = 'pending';
+        merged.homeFolderId = prior.homeFolderId || base.folderId;
+        merged.folderId = '~pending';
+      } else if (merged.folderId === '~pending') {
+        merged.folderId = merged.homeFolderId || base.folderId; // approved elsewhere
+      }
       if (!existing.has(key) || changed(existing.get(key), merged)) puts.set(key, merged);
       continue;
     }
@@ -111,7 +116,12 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
     if (total >= maxTotal) { dropsCapped += 1; continue; }
 
     if (quarantine || !c.autoApprove) {
+      // Pending records are PARKED in '~pending' so the kid-facing folder index
+      // (by_folder_sort has no state component) can never surface them; approval
+      // restores homeFolderId.
       base.state = 'pending';
+      base.homeFolderId = base.folderId;
+      base.folderId = '~pending';
       pendingKeys.push(key);
     } else {
       base.approvedAt = now;
@@ -146,7 +156,9 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
 export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates, firstSync, baseline = 12, now = Date.now() }) {
   const statePuts = [];
   const stateOf = (key) => existingStates.get(key) || null;
-  const giftable = (r) => !!(r.thumbId || r.thumbUrl || r.type === 'youtube');
+  // A gift must reveal a picture. YouTube always has one (hqdefault is guaranteed) —
+  // the key-prefix fallback keeps this true even over partial projections.
+  const giftable = (r) => !!(r.thumbId || r.thumbUrl || r.type === 'youtube' || String(r.key).startsWith('yt:'));
 
   if (firstSync) {
     const sorted = liveRecords.slice().sort(compareForDisplay);

@@ -14,9 +14,10 @@ const K_SOURCE = 'source';
 
 /* ---------------- YouTube thumbnails + title ---------------- */
 export function youtubeThumbCandidates(id) {
+  // hqdefault FIRST: it exists for EVERY video (480×360, ~20KB; the 4:3 bars are
+  // cropped by object-fit:cover). maxresdefault 404s for a huge share of videos —
+  // starting there cost up to 15 wasted round trips per page (perf defect #3).
   return [
-    `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`,
-    `https://i.ytimg.com/vi/${id}/sddefault.jpg`,
     `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
     `https://i.ytimg.com/vi/${id}/mqdefault.jpg`
   ];
