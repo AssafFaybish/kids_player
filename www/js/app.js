@@ -1913,7 +1913,6 @@ function wire() {
     const { applySheetMirror } = await import('./sync2.js');
     await applySheetMirror(libScope, alert);
     await db.putMeta('sheetMirrorAlert:' + libScope, null);
-    await db.putMeta('sheetSeen:' + libScope, null); // next sync rebuilds the baseline
     await loadGiftStates();
     await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
     await refreshSheetWriteStatus().catch(() => {});
@@ -1921,8 +1920,11 @@ function wire() {
     maybeSchedulePush();
   });
   $('mirror-ignore').addEventListener('click', async () => {
+    // remember WHICH divergence was waved off — the presence check runs every sync,
+    // so only a DIFFERENT deletion set may alert again
+    const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
+    if (alert && alert.sig) await db.putMeta('sheetMirrorIgnoredSig:' + libScope, alert.sig);
     await db.putMeta('sheetMirrorAlert:' + libScope, null);
-    await db.putMeta('sheetSeen:' + libScope, null); // keep items; current sheet = baseline
     await refreshSheetWriteStatus().catch(() => {});
   });
   $('remote-clear').addEventListener('click', async () => {

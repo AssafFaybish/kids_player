@@ -13,7 +13,7 @@ import { classifySourceRow } from './classify.js';
 import { resolveListUrl } from './sync.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import { planMutations, planGifts, planSheetMirror } from './plan.js';
-import { pendingChannelDeletes, pendingAppendKeys } from './sheetwrite.js';
+import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle } from './quota.js';
 import { QUOTA_DAILY_SOFT_CAP } from './config.js';
@@ -21,7 +21,7 @@ import * as yt from './yt.js';
 import {
   getSources, putSources, getChannel, putChannel,
   listLibraryChannels, putLibraryChannel, deleteLibraryChannel,
-  loadDenySet, loadMergeIndex, putVideos, setVideoFields, deleteVideoRaw,
+  loadDenySet, loadMergeIndex, putVideos, setVideoFields, deleteVideoRaw, deleteVideo,
   getVideo, unDeny,
   putVideoStates, getMeta, putMeta, profScope, countFolder, pageFolder
 } from './db.js';
@@ -132,30 +132,43 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   }
 
   /* ---------- stage: mirror (v1.0.10 — the sheet is the truth BOTH ways) ---------- */
+  // PRESENCE-based on every successful parse (never diff-vs-baseline: a baseline
+  // forgets, and content resurrected by a stale Drive-doc merge would stay forever).
   if (sheetParsed) {
     try {
+      const libIndex = await loadMergeIndex(lib);
+      // LIVE records only: a PENDING share (parked with homeFolderId 'sheet') gets
+      // its row at APPROVAL time — it has no sheet presence yet, and mirroring it
+      // would tombstone it before the parent ever saw the approval request.
+      const sheetBackedKeys = [...libIndex.values()]
+        .filter((r) => r.state === 'live' && (r.homeFolderId || r.folderId) === 'sheet')
+        .map((r) => r.key);
       const mirror = planSheetMirror({
-        prevSeen: await getMeta('sheetSeen:' + lib),
+        sheetBackedKeys,
+        localChannelIds: (await listLibraryChannels(lib)).map((c) => c.channelId),
         currentVideoKeys: videoRows.map((r) => r.key),
         currentChannelIds: [...sheetChannelIds],
         pendingAppendKeys: await pendingAppendKeys(lib),
+        pendingDeleteKeys: await pendingDeleteKeys(lib),
         deniedKeys: await loadDenySet(lib)
       });
-      // a key that LEFT and CAME BACK = deliberate re-add → the old deny yields
+      // a denied key the sheet LISTS = deliberate re-add → the tombstone yields
       for (const k of mirror.unDenyKeys) await unDeny(lib, k);
       if (mirror.valve) {
-        // SAFETY VALVE: too many rows vanished at once (truncated read / accidental
-        // range delete). Nothing is deleted; the parent decides in the sources tab.
-        await putMeta('sheetMirrorAlert:' + lib, {
-          deleteVideoKeys: mirror.deleteVideoKeys, deleteChannelIds: mirror.deleteChannelIds,
-          disappeared: mirror.disappeared, at: Date.now()
-        });
+        // SAFETY VALVE: too many deletions at once (truncated read / accidental range
+        // delete). Nothing is deleted; the parent decides in the sources tab. The
+        // signature keeps an "ignore" answer from re-alerting on the SAME divergence.
+        const sig = fnv1a(JSON.stringify([mirror.deleteVideoKeys.slice().sort(), mirror.deleteChannelIds.slice().sort()]));
+        if ((await getMeta('sheetMirrorIgnoredSig:' + lib)) !== sig) {
+          await putMeta('sheetMirrorAlert:' + lib, {
+            deleteVideoKeys: mirror.deleteVideoKeys, deleteChannelIds: mirror.deleteChannelIds,
+            disappeared: mirror.disappeared, sig, at: Date.now()
+          });
+        }
       } else {
         await putMeta('sheetMirrorAlert:' + lib, null);
+        await putMeta('sheetMirrorIgnoredSig:' + lib, null);
         await applySheetMirror(lib, mirror);
-        await putMeta('sheetSeen:' + lib, {
-          videoKeys: videoRows.map((r) => r.key), channelIds: [...sheetChannelIds]
-        });
       }
     } catch { /* mirroring must never kill the sync */ }
   }
@@ -342,24 +355,26 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
 }
 
 /**
- * v1.0.10: apply mirror deletions — RAW deletes (no tombstone), so a wrongly
- * removed row heals itself the moment the sheet has it back. Video keys are
- * removed only when the local record is sheet-backed (channelId == null) —
- * channel content is governed by its channel, not by rows. A deleted channel
- * takes its imported videos with it (user decision: full cleanup everywhere).
- * Also used by the parent-screen safety-valve "apply" button and by the UI
- * channel-remove flow.
+ * v1.0.10: apply mirror deletions.
+ * Videos: delete WITH a tombstone ('sheet-mirror') — a stale Drive doc from a
+ * not-yet-synced device must not resurrect them; the tombstone is revoked the
+ * moment the sheet lists the key again (unDenyKeys), so wrong reads self-heal.
+ * Channels: unsubscribe + purge imported videos (raw — presence re-purges), then
+ * ORPHAN GC: any leftover channel-content record whose channel is no longer
+ * subscribed (e.g. resurrected by a Drive merge) is swept on every mirror pass.
+ * Also used by the safety-valve "apply" button and the UI channel-remove flow.
  */
 export async function applySheetMirror(lib, { deleteVideoKeys = [], deleteChannelIds = [] } = {}) {
   for (const key of deleteVideoKeys) {
     const rec = await getVideo(lib, key);
-    if (rec && rec.channelId == null) await deleteVideoRaw(lib, key);
+    if (rec && rec.channelId == null) await deleteVideo(lib, key, 'sheet-mirror');
   }
-  for (const id of deleteChannelIds) {
-    await deleteLibraryChannel(lib, id);
-    for (const rec of (await loadMergeIndex(lib)).values()) {
-      if (rec.channelId === id) await deleteVideoRaw(lib, rec.key);
-    }
+  for (const id of deleteChannelIds) await deleteLibraryChannel(lib, id);
+
+  // orphan GC — one pass covers both the just-deleted channels and doc-resurrected dregs
+  const subscribed = new Set((await listLibraryChannels(lib)).map((c) => c.channelId));
+  for (const rec of (await loadMergeIndex(lib)).values()) {
+    if (rec.channelId && !subscribed.has(rec.channelId)) await deleteVideoRaw(lib, rec.key);
   }
 }
 

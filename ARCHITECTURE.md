@@ -73,9 +73,11 @@ mergedFrom?,updatedAt}` — ~400B, NO base64.
 hydrate (views read IDB directly — the ONLY thing on the critical path)
 └─ background: sheet GET → FNV-1a hash-skip → parseSourceSheet (video rows get ordinals;
    channels rows carry auto/manual flag) → resolve channels (handle cache → API → HTML
-   scrape; ids with a queued sheet-delete are NOT re-subscribed) → MIRROR (v1.0.10:
-   diff vs sheetSeen baseline → raw-delete disappeared rows/channels, unDeny re-added
-   keys, valve alert on mass disappearance) → channel meta batched (1 unit/50) → per channel planChannelFetch:
+   scrape; ids with a queued sheet-delete are NOT re-subscribed) → MIRROR (v1.0.10,
+   PRESENCE-based each parse: live sheet-backed records absent from the sheet →
+   tombstone-delete; denied keys present → unDeny; unsubscribed-channel content →
+   orphan GC; valve alert + ignore-signature on mass deletion) → channel meta
+   batched (1 unit/50) → per channel planChannelFetch:
    → channel meta batched (1 unit/50) → per channel planChannelFetch:
         rss (free, latest 15, etag) | backfill (resumable cursor, 40-page budget, quota soft-cap)
    → planMutations (PURE: key-merge, intra-channel title dedupe, deny drop, pending routing,

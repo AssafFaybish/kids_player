@@ -142,6 +142,15 @@ export async function pendingAppendKeys(libraryId) {
   return q.filter((o) => o.op === 'append').map((o) => o.key);
 }
 
+/** Identities queued for REMOVAL ('yt:…' / 'ch:<id>') — their sheet presence is lag,
+    so the mirror must not treat them as deliberate re-adds (no unDeny). */
+export async function pendingDeleteKeys(libraryId) {
+  if (!libraryId) return [];
+  const q = reconcileOps((await getMeta(qKey(libraryId))) || []);
+  return q.filter((o) => o.op === 'delvideo' || o.op === 'delchannel')
+    .map((o) => (o.op === 'delchannel' ? 'ch:' + o.channelId : o.key));
+}
+
 /** Rows waiting + last error — the parent sources tab renders this. */
 export async function sheetWriteState(libraryId) {
   if (!libraryId) return null;
