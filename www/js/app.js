@@ -525,7 +525,28 @@ async function refreshParent() {
   $('approve-msg').textContent = '';
   setParentTab(parentTab);
   refreshDriveStatus();
+  runUpdateCheck().catch(() => {});
   await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+}
+
+/** Update panel state (settings tab). manual=true bypasses the 6h throttle. */
+async function runUpdateCheck({ manual = false } = {}) {
+  const msg = $('update-msg');
+  const upd = await import('./update.js');
+  const local = await upd.currentVersion();
+  $('ver-current').textContent = local || 'דפדפן';
+  if (manual) { msg.textContent = 'בודק…'; msg.className = 'form-msg'; }
+  const r = await upd.checkForUpdate({ silent: !manual, force: manual });
+  if (r.latest) $('ver-latest').textContent = r.latest.version;
+  $('update-install').classList.toggle('hidden', r.status !== 'available');
+  if (!manual) return;
+  msg.className = 'form-msg';
+  msg.textContent =
+    r.status === 'available' ? `יש גירסה חדשה: ${r.latest.version} 🎉`
+    : r.status === 'up-to-date' ? 'האפליקציה מעודכנת ✅'
+    : r.status === 'browser' ? 'בדיקת עדכון זמינה באפליקציה המותקנת בלבד'
+    : r.status === 'no-asset' ? 'לא נמצא קובץ התקנה בגירסה האחרונה'
+    : 'לא הצלחנו לבדוק (אין רשת?)';
 }
 
 async function refreshDriveStatus() {
@@ -1099,6 +1120,33 @@ function wire() {
     await refreshDriveStatus();
   });
 
+  $('update-check').addEventListener('click', () => runUpdateCheck({ manual: true }));
+  $('update-install').addEventListener('click', async () => {
+    const msg = $('update-msg');
+    const upd = await import('./update.js');
+    const latest = JSON.parse((await import('./platform.js').then((p) => p.prefGet('update.latest'))) || 'null');
+    if (!latest) return;
+    if (!(await upd.canInstall())) {
+      msg.textContent = 'נדרש אישור חד-פעמי: "התקנת אפליקציות לא ידועות" — נפתח את ההגדרה';
+      msg.className = 'form-msg';
+      await upd.openInstallSettings(); // advisory only — we still attempt the install after
+    }
+    msg.textContent = 'מוריד…'; msg.className = 'form-msg';
+    const r = await upd.downloadAndInstall(latest, {
+      onProgress: (done, total) => {
+        if (total) msg.textContent = `מוריד… ${Math.round((done / total) * 100)}%`;
+      }
+    });
+    if (r.ok) { msg.textContent = 'נפתח מסך ההתקנה של אנדרואיד…'; msg.className = 'form-msg ok'; }
+    else {
+      msg.textContent = r.error === 'truncated' ? 'ההורדה לא הושלמה — נסו שוב'
+        : r.error === 'installed-app-only' ? 'עדכון זמין באפליקציה המותקנת בלבד'
+        : r.error === 'no-installer' ? 'לא נמצא מתקין חבילות במכשיר'
+        : 'ההתקנה נכשלה — נסו שוב';
+      msg.className = 'form-msg err';
+    }
+  });
+
   $('parent-exit').addEventListener('click', goGallery);
   $('clear-cache').addEventListener('click', async () => {
     const n = await clearCache();
@@ -1156,6 +1204,13 @@ async function init() {
 
   if (profiles.length === 0) openCreateProfile();
   else { renderProfiles(); nav.reset('profiles'); }
+
+  // F14 launch check — un-awaited, throttled, all paths caught. NEVER blocks startup.
+  setTimeout(() => {
+    import('./update.js')
+      .then((u) => u.cleanupPendingApk().then(() => u.checkForUpdate({ silent: true })))
+      .catch(() => {});
+  }, 4000);
 }
 
 init();

@@ -211,3 +211,62 @@ Getting a home-screen icon that opens the app requires **packaging**, not just a
 - Optional per-profile PIN or a "kid can't create/delete profiles" lock.
 - Watch history / "continue watching"; simple search in the parent screen.
 - Set the Android launcher icon + splash via `@capacitor/assets`.
+
+---
+
+# 2026-07 overhaul addendum (stages 0-6)
+
+The 14-feature overhaul rebuilt large parts of the app. The sections above describe
+the original architecture; everything below supersedes where they conflict.
+Full design record: the session plan file + PR #1 commit messages.
+
+## §14 Release signing & versioning
+Keystore `~/.keystores/kids-player-release.jks` + `kids-player.properties` (OUTSIDE the
+repo; loss = permanent update brick — see PUBLISHING.md). `release/android-release.gradle`
+(committed) derives versionName/versionCode from package.json "version", wires signing,
+fails release builds loudly without it, and gives debug builds the `.dev` applicationId
+suffix. android/ is now COMMITTED; `native-reference/README.md` lists the 8 manual touch
+points for disaster recovery.
+
+## §15 Data layer (IndexedDB)
+`db.js` — DB `kidsplayer` v1, stores: videos (scoped `lib:<hash>` shared-per-sheet /
+`prof:<id>` personal, decision 20), profileVideoState (per-child gift state, sparse
+by_gift index), channels, libraryChannels, thumbs (Blobs), denylist (durable tombstones
+— THE deletion fix), sources, meta, opLog. Pending records park in folderId '~pending'
+so kid queries can never surface them. `migrate.js` = resumable one-time
+Preferences→IDB migration (legacy blob never deleted). loadMergeIndex returns FULL
+records — a partial projection corrupts merges (learned the hard way).
+
+## §16 Sync pipeline
+`sync2.js` stages: sheet (FNV-1a change-skip) → resolveChannels (handle cache is
+permanent; keyless HTML-scrape fallback) → RSS (0 quota, conc 4) → budgeted resumable
+backfill (playlistItems, contentDetails.videoPublishedAt) → PURE planMutations
+(plan.js: dedupe/deny/route; churn-free by test) → chunked persist → batched titles
+(videos.list 50/unit — the old 300-serial-oEmbed freeze fix) → per-profile gifts.
+Post-migration quarantine: unknown sheet keys arrive pending. Hybrid API key
+(keys.local.js, gitignored, ships in APK via cap copy).
+
+## §17 Native surface
+KidsNativePlugin: keepAwake/allowSleep (window FLAG_KEEP_SCREEN_ON, no permission),
+share inbox (static + retained event; onNewIntent handles cold+warm — BridgeActivity
+.load() calls onNewIntent(getIntent()) itself), APK installer (FileProvider +
+ACTION_VIEW, no resolveActivity). GoogleAuthPlugin: Play Services AuthorizationClient,
+drive.file only — NO refresh token exists, so no 7-day Testing expiry; needs one
+Android OAuth client per signing SHA-1. play-services-auth dependency lives in
+release/android-release.gradle.
+
+## §18 Updater (F14)
+`update.js` reads github.com/devfassaf/kids_player releases/latest; numeric version
+compare (1.0.10 > 1.0.9 pinned by test); mkdir-before-download (Filesystem.downloadFile
+IGNORES recursive on Android); size verification before install; Directory.EXTERNAL/
+updates/ + file_paths.xml app_updates entry. Launch check: deferred 4s, throttled 6h,
+never blocks boot. Full release checklist: PUBLISHING.md.
+
+## Gotchas added in the overhaul
+- CapacitorHttp silently DROPS a request body without an explicit Content-Type.
+- Filesystem.downloadFile ignores recursive:true — mkdir first (audit media.js too).
+- An Android-app-restricted YouTube API key breaks CapacitorHttp requests — restrict
+  by API only.
+- Registering Capacitor's backButton listener disables ALL default back handling.
+- Stale §13 note: the test harness EXISTS — `npm test`, 84 node:test cases across
+  test/*.test.mjs; classifyLink & friends moved to classify.js (re-exported).

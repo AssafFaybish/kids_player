@@ -120,6 +120,43 @@ export async function fsRemoveDir(path) {
   try { await FS.rmdir({ path, directory: DIRECTORY, recursive: true }); } catch {}
 }
 
+/* ---------- EXTERNAL dir (updater downloads; survives the unknown-sources detour) ---------- */
+// ⚠ Filesystem.downloadFile IGNORES recursive:true on Android (verified in
+// @capacitor/filesystem source) — mkdir first or the first download throws
+// FileNotFoundException. This likely also affects the videos/ cache in media.js.
+export async function fsMkdirExternal(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return;
+  try { await FS.mkdir({ path, directory: 'EXTERNAL', recursive: true }); } catch {}
+}
+export async function fsStatExternal(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return null;
+  try { return await FS.stat({ path, directory: 'EXTERNAL' }); } catch { return null; }
+}
+export async function fsDeleteExternal(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return;
+  try { await FS.deleteFile({ path, directory: 'EXTERNAL' }); } catch {}
+}
+export async function fsDownloadExternal(url, path, onProgress) {
+  const FS = plugin('Filesystem');
+  if (!FS) throw new Error('no-filesystem');
+  let sub = null;
+  if (onProgress && FS.addListener) {
+    sub = await FS.addListener('progress', (p) => {
+      if (p && p.url === url) { try { onProgress(p.bytes, p.contentLength); } catch {} }
+    });
+  }
+  try {
+    const res = await FS.downloadFile({ url, path, directory: 'EXTERNAL', progress: !!onProgress });
+    return res.path || null; // bare absolute path — hand straight to installApk
+  } finally {
+    if (sub) try { sub.remove(); } catch {}
+  }
+}
+export function appPlugin() { return plugin('App'); }
+
 /* ---------------- App lifecycle (resume / back / exit) ---------------- */
 export function onAppResume(fn) {
   const App = plugin('App');
