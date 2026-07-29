@@ -10,15 +10,15 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
-        <!-- sensorLandscape (user decision): both landscape rotations, never portrait —
-             the player and the new overlaid controls are designed for landscape. -->
+        <!-- Free rotation (user request 2026-07-29, replacing the earlier sensorLandscape
+             lock): the app now supports portrait AND landscape; configChanges includes
+             orientation so the WebView handles rotation without an activity restart. -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
-            android:screenOrientation="sensorLandscape"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

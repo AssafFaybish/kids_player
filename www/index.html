@@ -108,15 +108,15 @@
 
     <!-- ===================== WATCH ===================== -->
     <section id="view-watch" class="view">
-      <!-- 🏠 lives INSIDE #player-wrap: native fullscreen hides the WebView, so anything
-           outside the wrap is unreachable there. It auto-hides with the HUD (F1). -->
+      <!-- 🏠 sits OUTSIDE the player, top-right of the watch screen (user request:
+           going home requires exiting fullscreen first, then tapping home). -->
+      <div class="watch-top">
+        <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
+      </div>
       <div id="player-wrap" class="player-wrap hud-on">
         <div id="player-host" class="player-host"></div>
         <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
         <div id="seek-feedback" class="seek-feedback"></div>
-        <div id="player-top" class="player-top">
-          <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
-        </div>
         <div class="player-hud">
           <div class="player-controls">
             <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
