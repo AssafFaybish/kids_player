@@ -31,6 +31,11 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - HUD bar CONTAINERS are `pointer-events:none` ALWAYS (only buttons/seek take events, only while
   `.hud-on`) — interactive bars swallow the center-tap/double-tap on small players.
 - Tap model: hidden→tap only reveals; visible→center-50% tap toggles play. Paused pins the HUD.
+- Auto-fullscreen on tile tap: `enterPlayerFullscreen()` runs SYNCHRONOUSLY inside the tap
+  gesture (an await first may void the user activation). 🏠 lives OUTSIDE the player
+  (`.watch-top`, top-right) — deliberate: home requires exiting fullscreen first (v1.0.2).
+- The app rotates freely (no manifest screenOrientation since v1.0.2) — portrait tweaks live in
+  the 560px media query; check both orientations when touching layout.
 
 **Data ([www/js/db.js](www/js/db.js), [plan.js](www/js/plan.js), [sync2.js](www/js/sync2.js)):**
 - `classifyLink` in [classify.js](www/js/classify.js) is THE safety boundary — every link entering

@@ -157,7 +157,9 @@ function tileEl(item) {
     btn.classList.add('tile-gift');
     const wrap = document.createElement('span');
     wrap.className = 'gift';
-    wrap.innerHTML = '<span class="gift-ribbon-v"></span><span class="gift-ribbon-h"></span><span class="gift-bow">⭐</span>';
+    // The 3D-looking 🎁 emoji (same one as the "חדשים" folder logo) — user request:
+    // a dimensional gift instead of the flat CSS wrap.
+    wrap.innerHTML = '<span class="gift-emoji">🎁</span>';
     thumb.appendChild(wrap);
     const cap = btn.querySelector('.cap');
     if (cap) cap.textContent = 'מתנה! 🎁';
@@ -386,8 +388,23 @@ async function renderWatchGrid(current) {
   watchPager.update(watchPage, total);
 }
 
+/** Enter fullscreen on the player. MUST be called synchronously inside the tap's
+    user-activation window — after an await the browser may deny the request. */
+function enterPlayerFullscreen() {
+  try {
+    const el = $('player-wrap');
+    if (document.fullscreenElement || document.webkitFullscreenElement) return;
+    if (el.requestFullscreen) { const p = el.requestFullscreen(); if (p && p.catch) p.catch(() => {}); }
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  } catch { /* embedded webviews may deny — playing inline is a fine fallback */ }
+}
+
 async function openWatch(item) {
   currentWatch = item;
+  // Tapping a video goes straight to fullscreen (user request). Synchronous — still
+  // inside the tap gesture. Exiting fullscreen (back / ⛶) lands on the watch page,
+  // where the 🏠 button lives.
+  enterPlayerFullscreen();
   // watch-grid context: the record's own folder (or where the child was browsing)
   watchCtx = {
     scope: item.scopeId || scopeForFolder(folderId) || libScope || db.profScope(activeProfileId),

@@ -83,8 +83,12 @@ States via one class `.hud-on` on `#player-wrap`: HIDDEN / VISIBLE(3s timer) / P
 (paused or dragging). `reveal()` is the single timer entry point. Any pointerdown in the
 wrap (capture) records `wasVisible` then reveals. Shield pointerup: double-tap(<260ms)
 = ±10s seek; single tap after 280ms = togglePlay ONLY IF wasVisible && center-50%.
-🏠 and ⛶ live INSIDE the wrap (native fullscreen hides everything outside), participate
-in hide/show, and are the only pointer-interactive parts of the bars.
+⛶ + the seek bar live inside the wrap and are the ONLY pointer-interactive parts of the
+HUD bar. 🏠 sits OUTSIDE the player in `.watch-top` (top-right; v1.0.2 user request) —
+going home requires exiting fullscreen first. Tapping any video tile calls
+`enterPlayerFullscreen()` synchronously inside the tap gesture (auto-fullscreen);
+exiting fullscreen (back / ⛶) lands on the watch page. The app rotates freely
+(no screenOrientation lock since v1.0.2); narrow-width CSS lives in the 560px media query.
 
 ## Cross-device Drive model (decision 20)
 
