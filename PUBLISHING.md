@@ -60,11 +60,12 @@ npm run apk:release
 # 4) אימות חתימה — חובה, לפני כל פרסום
 npm run apk:verify                          # חייב להציג CN=Kids Player
 
-# 5) שם קובץ לפי המוסכמה שהמעדכן מחפש
-cp android/app/build/outputs/apk/release/app-release.apk kids-player-v<X.Y.Z>.apk
+# 5) שם קובץ לפי המוסכמה שהמעדכן מחפש, בתיקיית האיסוף apk_versions/ (מוחרגת מגיט)
+mkdir -p apk_versions
+cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player-v<X.Y.Z>.apk
 
 # 6) פרסום ל-GitHub Releases (ה-repo הציבורי devfassaf/kids_player)
-gh release create v<X.Y.Z> kids-player-v<X.Y.Z>.apk \
+gh release create v<X.Y.Z> apk_versions/kids-player-v<X.Y.Z>.apk \
   --repo devfassaf/kids_player -t "v<X.Y.Z>" -n "מה חדש: ..."
 
 # 7) commit + tag למקור

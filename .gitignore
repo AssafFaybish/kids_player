@@ -4,6 +4,7 @@ node_modules/
 # Build output
 *.apk
 *.aab
+apk_versions/
 dist/
 
 # Signing material — NEVER commit (the real keystore lives in ~/.keystores, outside the repo)

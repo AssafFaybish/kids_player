@@ -14,8 +14,8 @@
 1. **גיבוי**: באפליקציה הישנה ← 🔒 מסך הורים ← טאב "הוספה" ← **ייצוא**.
    הטקסט מועתק ללוח — הדביקו אותו בפתק/קובץ ושמרו (למשל ב-Google Keep).
 2. **הסרה**: הסירו את האפליקציה הישנה (לחיצה ארוכה על האייקון ← הסרה).
-3. **העברת הקובץ**: את `kids-player-v1.0.0.apk` (בתיקיית הפרויקט במחשב) העלו
-   לגוגל דרייב או שלחו לעצמכם בוואטסאפ, ופתחו בטאבלט.
+3. **העברת הקובץ**: את `kids-player-v<גרסה>.apk` (בתיקיית `apk_versions/`
+   בפרויקט במחשב) העלו לגוגל דרייב או שלחו לעצמכם בוואטסאפ, ופתחו בטאבלט.
 4. **התקנה**: הקישו על הקובץ. אנדרואיד יבקש אישור חד-פעמי
    **"התקנה מאפליקציות לא ידועות"** עבור דרייב/וואטסאפ — אשרו והתקינו.
 5. **שחזור**: פתחו את האפליקציה ← מסך הורים ← **ייבוא** ← בחרו את קובץ הגיבוי.
@@ -41,8 +41,9 @@
 
 זה כל מה שצריך כשהגרסה כבר קודמה (למשל מוזג PR עם קידום): הסקריפט מסנכרן את
 main, מריץ טסטים, בונה APK חתום, **מאמת חתימה** (עוצר אם נכשל), יוצר את הקובץ
-בשם הנכון ומפרסם release ב-GitHub. אם לחשבון ה-`gh` הנוכחי אין הרשאת פרסום —
-הוא מדפיס הוראות פרסום ידני מדויקות (כולל הנתיב המלא של הקובץ).
+בשם הנכון בתיקיית `apk_versions/` ומפרסם release ב-GitHub. אם לחשבון ה-`gh`
+הנוכחי אין הרשאת פרסום — הוא מדפיס הוראות פרסום ידני מדויקות (כולל הנתיב
+המלא של הקובץ). הודעות הפלט של הסקריפט באנגלית.
 
 וריאציות:
 
@@ -127,8 +128,9 @@ npm run apk:release
 # 4. אימות חתימה — חובה לפני כל פרסום!
 npm run apk:verify                             # חייב להדפיס "Verifies"
 
-# 5. שם הקובץ לפי המוסכמה שהאפליקציה מחפשת
-cp android/app/build/outputs/apk/release/app-release.apk kids-player-v1.0.1.apk
+# 5. שם הקובץ לפי המוסכמה שהאפליקציה מחפשת, בתיקיית האיסוף apk_versions/
+mkdir -p apk_versions
+cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player-v1.0.1.apk
 
 # 6. שמירת הגרסה בגיט
 git add package.json package-lock.json && git commit -m "release v1.0.1" && git push
@@ -139,7 +141,7 @@ git add package.json package-lock.json && git commit -m "release v1.0.1" && git 
 #### דרך א' — פקודה אחת (מטרמינל מחובר לחשבון devfassaf)
 
 ```bash
-gh release create v1.0.1 kids-player-v1.0.1.apk --repo devfassaf/kids_player -t "v1.0.1" -n "מה חדש: ..."
+gh release create v1.0.1 apk_versions/kids-player-v1.0.1.apk --repo devfassaf/kids_player -t "v1.0.1" -n "מה חדש: ..."
 ```
 
 #### דרך ב' — דרך האתר (2-3 דקות)
@@ -151,7 +153,7 @@ gh release create v1.0.1 kids-player-v1.0.1.apk --repo devfassaf/kids_player -t 
 3. **Release title**: `v1.0.1`.
 4. **Describe this release**: מה חדש, בעברית — הטקסט הזה מוצג להורה במסך
    העדכון באפליקציה.
-5. גררו את `kids-player-v1.0.1.apk` לתיבת
+5. גררו את `apk_versions/kids-player-v1.0.1.apk` לתיבת
    **"Attach binaries by dropping them here or selecting them"** והמתינו
    לסיום ההעלאה (פס התקדמות ואז שם הקובץ ברשימה).
    ⚠️ **שם הקובץ חשוב**: `kids-player-v<גרסה>.apk` — זו התבנית שהאפליקציה מחפשת.
