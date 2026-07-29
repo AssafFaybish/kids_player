@@ -134,3 +134,36 @@ test('serializeDb round-trips profileSources; omitted -> {}', () => {
   assert.equal(parseDb(json).profileSources.p1.sheetUrl, 'https://sheet');
   assert.deepEqual(parseDb(serializeDb({ profiles: [], libraries: {}, profileState: {} })).profileSources, {});
 });
+
+/* ---------------- v1.0.10: deny LWW with revocation (sheet-wins undeny) ---------------- */
+
+test('a LATER revoke defeats an older deny — the video travels again', async () => {
+  const { mergeDenyRecord } = await import('../www/js/drive.js');
+  const a2 = { ...docA, libraries: { 'lib:x': { ...docA.libraries['lib:x'],
+    denylist: [{ key: 'yt:aaaaaaaaaaa', at: 50 }] } } };
+  const b2 = { ...docB, libraries: { 'lib:x': { ...docB.libraries['lib:x'],
+    denylist: [{ key: 'yt:aaaaaaaaaaa', at: 50, removedAt: 90 }] } } };
+  const m = mergeDbFiles(a2, b2);
+  const entry = m.libraries['lib:x'].denylist.find((d) => d.key === 'yt:aaaaaaaaaaa');
+  assert.equal(entry.removedAt, 90, 'the revoked entry wins the merge');
+  assert.ok(m.libraries['lib:x'].videos.some((v) => v.key === 'yt:aaaaaaaaaaa'),
+    'a revoked deny no longer drops the video');
+  // direct rule checks: later re-deny beats older revoke
+  const reDenied = mergeDenyRecord({ key: 'k', at: 50, removedAt: 90 }, { key: 'k', at: 120 });
+  assert.equal(reDenied.at, 120);
+  assert.equal(reDenied.removedAt, undefined);
+});
+
+test('deny LWW merge stays commutative and idempotent', () => {
+  const a2 = { ...docA, libraries: { 'lib:x': { ...docA.libraries['lib:x'],
+    denylist: [{ key: 'yt:ddddddddddd', at: 5 }, { key: 'yt:aaaaaaaaaaa', at: 40, removedAt: 60 }] } } };
+  const b2 = { ...docB, libraries: { 'lib:x': { ...docB.libraries['lib:x'],
+    denylist: [{ key: 'yt:aaaaaaaaaaa', at: 70 }] } } };
+  const ab = sortAll(canon(mergeDbFiles(a2, b2)));
+  const ba = sortAll(canon(mergeDbFiles(b2, a2)));
+  assert.deepEqual(ab, ba);
+  const aa = sortAll(canon(mergeDbFiles(a2, a2)));
+  assert.deepEqual(aa, sortAll(canon(mergeDbFiles(a2, JSON.parse(JSON.stringify(a2))))));
+  // at 70 > removedAt 60 → the re-deny wins → video dropped
+  assert.ok(!ab.libraries['lib:x'].videos.some((v) => v.key === 'yt:aaaaaaaaaaa'));
+});

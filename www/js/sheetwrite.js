@@ -16,6 +16,7 @@
 import { httpRequest } from './platform.js';
 import { getAccessToken } from './gauth.js';
 import { getMeta, putMeta, getSources } from './db.js';
+import { classifySourceRow } from './classify.js';
 
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
 const QUEUE_CAP = 200;
@@ -42,23 +43,103 @@ export function buildSheetRow({ srcUrl, title = '', flag = '' }) {
 const qKey = (lib) => 'sheetq:' + lib;
 const stateKey = (lib) => 'sheetqState:' + lib;
 
-/* ---------------- queue ---------------- */
+/* ---------------- pure: typed ops (v1.0.10 — deletions too) ---------------- */
+
+/** Queue entries from before v1.0.10 were bare appends — normalize them. */
+export function normalizeOps(queue) {
+  return (queue || []).map((e) => (e && !e.op ? { ...e, op: 'append' } : e)).filter(Boolean);
+}
+
+/** One identity per sheet entity: a video key, or ch:<channelId>. */
+const opIdentity = (o) => (o.op === 'delchannel' ? 'ch:' + o.channelId : o.key);
 
 /**
- * Enqueue one row for the profile's sheet (idempotent by key) and try flushing.
- * Callers enqueue ONLY on a NEW add / first approval — never on merges — so a row
- * lands in the sheet at most once.
+ * The LATEST intent per identity wins: an add followed by a delete (or the other
+ * way around) collapses to whichever the parent did last — the sheet never sees
+ * the superseded operation.
  */
-export async function enqueueSheetRow(profileId, { key, srcUrl, title = '', flag = '' }) {
+export function reconcileOps(queue) {
+  const latest = new Map();
+  for (const o of normalizeOps(queue)) {
+    const id = opIdentity(o);
+    const cur = latest.get(id);
+    if (!cur || (o.at || 0) >= (cur.at || 0)) latest.set(id, o);
+  }
+  return [...latest.values()];
+}
+
+/**
+ * Which 0-based sheet rows should be removed for these delete-ops?
+ * Video rows match by CLASSIFIED key (URL variants of the same video all match);
+ * channel rows match by resolved channel id — @handles resolve through the
+ * handleMap cache that sync populated when the channel was first subscribed.
+ * -> indices sorted DESCENDING (delete bottom-up so indices stay valid).
+ */
+export function matchRowsForDeletion(colA, ops, handleMap = {}) {
+  const deletes = ops.filter((o) => o.op === 'delvideo' || o.op === 'delchannel');
+  if (!deletes.length) return [];
+  const wantVideo = new Set(deletes.filter((o) => o.op === 'delvideo').map((o) => o.key));
+  const wantChannel = new Set(deletes.filter((o) => o.op === 'delchannel').map((o) => o.channelId));
+  const out = [];
+  (colA || []).forEach((raw, i) => {
+    const row = classifySourceRow(raw);
+    if (row.kind === 'video' && wantVideo.has(row.key)) out.push(i);
+    else if (row.kind === 'channel') {
+      const ref = row.channelRef;
+      const id = ref.by === 'id' ? ref.value : handleMap[ref.by + ':' + String(ref.value).toLowerCase()];
+      if (id && wantChannel.has(id)) out.push(i);
+    }
+  });
+  return out.sort((a, b) => b - a);
+}
+
+/* ---------------- queue ---------------- */
+
+async function enqueueOp(profileId, op) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, noSheet: true };
-  const q = (await getMeta(qKey(src.libraryId))) || [];
-  if (!q.some((e) => e.key === key)) {
-    q.push({ key, row: buildSheetRow({ srcUrl, title, flag }), at: Date.now() });
-    await putMeta(qKey(src.libraryId), q.slice(-QUEUE_CAP));
-    await patchState(src.libraryId, { pending: Math.min(q.length, QUEUE_CAP) });
-  }
+  const q = normalizeOps((await getMeta(qKey(src.libraryId))) || []);
+  q.push({ ...op, at: Date.now() });
+  await putMeta(qKey(src.libraryId), q.slice(-QUEUE_CAP));
+  await patchState(src.libraryId, { pending: Math.min(q.length, QUEUE_CAP) });
   return flushSheetQueue(profileId);
+}
+
+/**
+ * Enqueue one APPEND for the profile's sheet and try flushing. Idempotent twice
+ * over: reconcileOps keeps the latest intent per key, and the flush skips appends
+ * whose key already exists in the sheet.
+ */
+export function enqueueSheetRow(profileId, { key, srcUrl, title = '', flag = '' }) {
+  return enqueueOp(profileId, { op: 'append', key, row: buildSheetRow({ srcUrl, title, flag }) });
+}
+
+/** v1.0.10: queue the removal of a VIDEO row (matched by classified key). */
+export function enqueueSheetVideoDelete(profileId, key) {
+  return enqueueOp(profileId, { op: 'delvideo', key });
+}
+
+/** v1.0.10: queue the removal of a CHANNEL row (matched by resolved channel id). */
+export function enqueueSheetChannelDelete(profileId, channelId) {
+  return enqueueOp(profileId, { op: 'delchannel', channelId });
+}
+
+/**
+ * Channel ids with a queued-but-unflushed delete — sync must NOT re-subscribe them
+ * from the still-present sheet row (this closed the "deleted channel comes back"
+ * bug even before the row removal lands).
+ */
+export async function pendingChannelDeletes(libraryId) {
+  if (!libraryId) return new Set();
+  const q = reconcileOps((await getMeta(qKey(libraryId))) || []);
+  return new Set(q.filter((o) => o.op === 'delchannel').map((o) => o.channelId));
+}
+
+/** Video keys queued for APPEND but not yet flushed — mirror treats them as lag. */
+export async function pendingAppendKeys(libraryId) {
+  if (!libraryId) return [];
+  const q = reconcileOps((await getMeta(qKey(libraryId))) || []);
+  return q.filter((o) => o.op === 'append').map((o) => o.key);
 }
 
 /** Rows waiting + last error — the parent sources tab renders this. */
@@ -126,8 +207,9 @@ export async function createSourceSheet(title) {
 
 /* ---------------- flush ---------------- */
 
-/** The tab title for the URL's gid — A1 ranges can only address tabs by title. */
-async function resolveTabTitle(token, spreadsheetId, gid) {
+/** The tab title + numeric sheetId for the URL's gid — A1 ranges address tabs by
+    title, but DeleteDimension (row removal) needs the numeric sheetId. */
+async function resolveTab(token, spreadsheetId, gid) {
   const res = await httpRequest({
     url: `${SHEETS}/${spreadsheetId}?fields=sheets.properties`,
     headers: { Authorization: 'Bearer ' + token },
@@ -137,19 +219,22 @@ async function resolveTabTitle(token, spreadsheetId, gid) {
   const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
   const sheets = (data.sheets || []).map((s) => s.properties || {});
   const hit = sheets.find((p) => p.sheetId === gid) || sheets[0];
-  return hit ? { title: hit.title } : { error: 'no-tabs' };
+  return hit ? { title: hit.title, sheetId: hit.sheetId } : { error: 'no-tabs' };
 }
 
 /**
- * Push every queued row to the sheet. Safe to call any time:
+ * Apply every queued op to the sheet: row DELETIONS first (bottom-up), then the
+ * remaining appends (skipping keys the sheet already has). Safe to call any time:
  * no queue / no sheet / no token → quiet no-op (the queue survives for next time).
+ * Idempotent on retry: a re-run matches no rows for done deletes and dedupes
+ * already-landed appends against the sheet's content.
  */
 export async function flushSheetQueue(profileId) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, empty: true };
   const lib = src.libraryId;
-  const q = (await getMeta(qKey(lib))) || [];
-  if (!q.length) return { ok: true, empty: true };
+  const q = reconcileOps((await getMeta(qKey(lib))) || []);
+  if (!q.length) { await putMeta(qKey(lib), []); return { ok: true, empty: true }; }
 
   const spreadsheetId = extractSpreadsheetId(src.sheetUrl);
   if (!spreadsheetId) {
@@ -162,31 +247,74 @@ export async function flushSheetQueue(profileId) {
     return { ok: false, error: 'no-token' };
   }
 
-  const tab = await resolveTabTitle(token, spreadsheetId, extractGid(src.sheetUrl));
+  const tab = await resolveTab(token, spreadsheetId, extractGid(src.sheetUrl));
   if (tab.error) {
-    // 403/404 here = same permission story as the append itself
+    // 403/404 here = same permission story as the writes themselves
     const permanent = /http-40[34]/.test(tab.error);
     await patchState(lib, { error: permanent ? 'no-edit-permission' : tab.error, pending: q.length });
     return { ok: false, error: tab.error };
   }
+  const auth = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+  const tabRef = encodeURIComponent(`'${tab.title.replace(/'/g, "''")}'!A:A`);
 
-  const range = encodeURIComponent(`'${tab.title.replace(/'/g, "''")}'!A1`);
-  const res = await httpRequest({
-    method: 'POST',
-    url: `${SHEETS}/${spreadsheetId}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ values: q.map((e) => e.row) }),
-    responseType: 'json'
-  });
-
-  if (res.status === 200) {
-    await putMeta(qKey(lib), []);
-    await patchState(lib, { error: null, pending: 0, lastWriteAt: Date.now(), written: q.length });
-    return { ok: true, written: q.length };
+  // current column A — used both for delete matching and append dedupe
+  const read = await httpRequest({ url: `${SHEETS}/${spreadsheetId}/values/${tabRef}`, headers: auth, responseType: 'json' });
+  if (read.status !== 200 || !read.data) {
+    await patchState(lib, { error: read.status === 403 ? 'no-edit-permission' : 'http-' + read.status, pending: q.length });
+    return { ok: false, error: 'http-' + read.status };
   }
-  await patchState(lib, {
-    error: res.status === 403 ? 'no-edit-permission' : res.status === 404 ? 'not-found' : 'http-' + res.status,
-    pending: q.length
+  const readData = typeof read.data === 'string' ? JSON.parse(read.data) : read.data;
+  const colA = (readData.values || []).map((r) => (r && r[0]) || '');
+  const handleMap = (await getMeta('handleMap')) || {};
+
+  /* ---- deletions, bottom-up in ONE batchUpdate ---- */
+  const delRows = matchRowsForDeletion(colA, q, handleMap);
+  if (delRows.length) {
+    const del = await httpRequest({
+      method: 'POST', url: `${SHEETS}/${spreadsheetId}:batchUpdate`, headers: auth,
+      body: JSON.stringify({
+        requests: delRows.map((i) => ({
+          deleteDimension: { range: { sheetId: tab.sheetId, dimension: 'ROWS', startIndex: i, endIndex: i + 1 } }
+        }))
+      }),
+      responseType: 'json'
+    });
+    if (del.status !== 200) {
+      await patchState(lib, { error: del.status === 403 ? 'no-edit-permission' : 'http-' + del.status, pending: q.length });
+      return { ok: false, error: 'http-' + del.status };
+    }
+  }
+
+  /* ---- appends the sheet doesn't already have ---- */
+  const deleted = new Set(delRows);
+  const presentIds = new Set();
+  colA.forEach((raw, i) => {
+    if (deleted.has(i)) return;
+    const row = classifySourceRow(raw);
+    if (row.kind === 'video') presentIds.add(row.key);
+    else if (row.kind === 'channel') {
+      const ref = row.channelRef;
+      const id = ref.by === 'id' ? ref.value : handleMap[ref.by + ':' + String(ref.value).toLowerCase()];
+      if (id) presentIds.add('ch:' + id);
+    }
   });
-  return { ok: false, error: 'http-' + res.status };
+  const appends = q.filter((o) => o.op === 'append' && !presentIds.has(o.key));
+  if (appends.length) {
+    const appendRef = encodeURIComponent(`'${tab.title.replace(/'/g, "''")}'!A1`);
+    const res = await httpRequest({
+      method: 'POST',
+      url: `${SHEETS}/${spreadsheetId}/values/${appendRef}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+      headers: auth,
+      body: JSON.stringify({ values: appends.map((e) => e.row) }),
+      responseType: 'json'
+    });
+    if (res.status !== 200) {
+      await patchState(lib, { error: res.status === 403 ? 'no-edit-permission' : 'http-' + res.status, pending: q.length });
+      return { ok: false, error: 'http-' + res.status };
+    }
+  }
+
+  await putMeta(qKey(lib), []);
+  await patchState(lib, { error: null, pending: 0, lastWriteAt: Date.now(), written: q.length });
+  return { ok: true, written: q.length, deletedRows: delRows.length };
 }

@@ -397,11 +397,24 @@ export async function evictThumbs({ maxBytes = 120 * 1024 * 1024, maxCount = 600
 
 /* ---------------- denylist ---------------- */
 
+/**
+ * v1.0.10: a deny entry can be REVOKED (removedAt >= at) — the sheet re-adding a key
+ * is the one deliberate undeny path ("the sheet wins"). Revoked entries stay stored
+ * (they must travel through Drive merges to defeat stale denies on other devices)
+ * but are INERT: loadDenySet exposes only the active ones.
+ */
+export const denyActive = (d) => !!d && !(d.removedAt >= (d.at || 0));
+
 export async function loadDenySet(scopeId) {
+  const recs = await loadDenyRecords(scopeId);
+  return new Set(recs.filter(denyActive).map((d) => d.key));
+}
+
+/** FULL deny rows (active + revoked) — the Drive doc must carry both. */
+export async function loadDenyRecords(scopeId) {
   const db = await openDb();
   const range = IDBKeyRange.bound([scopeId, ''], [scopeId, '￿']);
-  const keys = await preq(db.transaction('denylist').objectStore('denylist').getAllKeys(range));
-  return new Set((keys || []).map((k) => k[1]));
+  return (await preq(db.transaction('denylist').objectStore('denylist').getAll(range))) || [];
 }
 /**
  * Union tombstones from one scope into another (v1.0.6 mine→shared absorb):
@@ -420,9 +433,15 @@ export async function copyDenies(fromScope, toScope) {
   return missing.length;
 }
 
+/**
+ * v1.0.10: unDeny REVOKES instead of deleting — the inert marker (removedAt) must
+ * out-merge stale active denies still sitting in Drive docs of other devices.
+ */
 export async function unDeny(scopeId, key) {
+  const db = await openDb();
+  const prev = await preq(db.transaction('denylist').objectStore('denylist').get([scopeId, key]));
   await tx(['denylist', 'opLog'], 'readwrite', (deny, ops) => {
-    deny.delete([scopeId, key]);
+    deny.put({ ...(prev || { scopeId, key, at: 0 }), removedAt: Date.now() });
     ops.add({ scopeId, op: 'undeny', key, at: Date.now() });
   });
 }

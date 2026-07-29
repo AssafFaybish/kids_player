@@ -63,3 +63,43 @@ test('starterRows: one 3-column # comment row the parser will skip', async () =>
   const { classifySourceRow } = await import('../www/js/classify.js');
   assert.equal(classifySourceRow(rows[0][0]).kind, 'comment');
 });
+
+/* ---------------- v1.0.10: deletion ops ---------------- */
+
+test('reconcileOps: latest intent per identity wins; legacy entries normalize to appends', async () => {
+  const { reconcileOps } = await import('../www/js/sheetwrite.js');
+  const q = [
+    { key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 10 },              // legacy (pre-v1.0.10) append
+    { op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 20 },                  // then deleted → delete wins
+    { op: 'delchannel', channelId: 'UCx', at: 10 },
+    { op: 'append', key: 'ch:UCx', row: ['u2', '', 'manual'], at: 30 }, // channel re-added → append wins
+    { op: 'append', key: 'yt:bbbbbbbbbb1', row: ['u3', '', ''], at: 5 }
+  ];
+  const out = reconcileOps(q);
+  const byId = Object.fromEntries(out.map((o) => [(o.op === 'delchannel' ? 'ch:' + o.channelId : o.key), o.op]));
+  assert.equal(byId['yt:aaaaaaaaaa1'], 'delvideo');
+  assert.equal(byId['ch:UCx'], 'append');
+  assert.equal(byId['yt:bbbbbbbbbb1'], 'append');
+  assert.equal(out.length, 3);
+});
+
+test('matchRowsForDeletion: keys match across URL variants, channels via handleMap, DESC order', async () => {
+  const { matchRowsForDeletion } = await import('../www/js/sheetwrite.js');
+  const colA = [
+    '# הערה',
+    'https://youtu.be/aaaaaaaaaa1?si=xyz',                       // 1 — video (short link)
+    'https://www.youtube.com/watch?v=aaaaaaaaaa1',               // 2 — SAME video, other form
+    'https://www.youtube.com/@somekids',                         // 3 — channel by handle
+    'https://www.youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz',  // 4 — channel by id
+    'https://youtu.be/keepmmmmmm1'                               // 5 — unrelated, stays
+  ];
+  const ops = [
+    { op: 'delvideo', key: 'yt:aaaaaaaaaa1' },
+    { op: 'delchannel', channelId: 'UCyyyyyyyyyyyyyyyyyyyyyy' },
+    { op: 'delchannel', channelId: 'UCzzzzzzzzzzzzzzzzzzzzzz' }
+  ];
+  const handleMap = { 'handle:somekids': 'UCyyyyyyyyyyyyyyyyyyyyyy' };
+  assert.deepEqual(matchRowsForDeletion(colA, ops, handleMap), [4, 3, 2, 1]);
+  // unresolvable handle without the map → that row is left alone
+  assert.deepEqual(matchRowsForDeletion(colA, [ops[1]], {}), []);
+});

@@ -189,3 +189,51 @@ export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates,
   }
   return statePuts;
 }
+
+/**
+ * v1.0.10 — PURE mirror planner: the sheet is the single source of truth in BOTH
+ * directions. Compares what the sheet contained on the last successful parse
+ * (prevSeen) with what it contains now, and decides what to delete locally,
+ * what to un-deny (a key that left and came back = a deliberate re-add that must
+ * override an older in-app deletion), and whether the SAFETY VALVE should stop
+ * everything (too many rows vanished at once — a truncated read or an accidental
+ * range deletion must never wipe a family's library).
+ *
+ * @param prevSeen           { videoKeys:[], channelIds:[] } from the last good parse
+ * @param currentVideoKeys   Set/array of video keys parsed from the sheet NOW
+ * @param currentChannelIds  Set/array of resolved channel ids in the sheet NOW
+ * @param pendingAppendKeys  keys queued for append but not yet flushed — their absence
+ *                           from the sheet is lag, not deletion
+ * @param deniedKeys         locally denied keys (Set) — for re-add detection
+ * @param valveMin/valvePct  the stop-threshold: disappeared > max(valveMin, valvePct*prevTotal).
+ *                           valvePct is deliberately LOW (5%): mirror deletes are raw
+ *                           and self-heal when rows return, so the valve's job is only
+ *                           to keep a bad read from visibly emptying a big library —
+ *                           while a parent's routine cleanup (≤10 rows) never asks.
+ */
+export function planSheetMirror({
+  prevSeen, currentVideoKeys, currentChannelIds,
+  pendingAppendKeys = [], deniedKeys = new Set(),
+  valveMin = 10, valvePct = 0.05
+} = {}) {
+  const prevVideos = (prevSeen && prevSeen.videoKeys) || [];
+  const prevChannels = (prevSeen && prevSeen.channelIds) || [];
+  const curV = new Set(currentVideoKeys || []);
+  const curC = new Set(currentChannelIds || []);
+  const pending = new Set(pendingAppendKeys || []);
+  const denied = deniedKeys instanceof Set ? deniedKeys : new Set(deniedKeys || []);
+
+  const deleteVideoKeys = prevVideos.filter((k) => !curV.has(k) && !pending.has(k));
+  const deleteChannelIds = prevChannels.filter((id) => !curC.has(id) && !pending.has('ch:' + id));
+
+  // keys present NOW that were absent before AND are denied locally = deliberate
+  // re-add by a sheet participant → the deny must yield (user decision: sheet wins)
+  const prevV = new Set(prevVideos);
+  const unDenyKeys = [...curV].filter((k) => !prevV.has(k) && denied.has(k));
+
+  const prevTotal = prevVideos.length + prevChannels.length;
+  const disappeared = deleteVideoKeys.length + deleteChannelIds.length;
+  const valve = prevTotal > 0 && disappeared > Math.max(valveMin, Math.ceil(prevTotal * valvePct));
+
+  return { deleteVideoKeys, deleteChannelIds, unDenyKeys, valve, disappeared, prevTotal };
+}

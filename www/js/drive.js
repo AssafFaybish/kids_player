@@ -19,7 +19,7 @@ import { normalizeTitle, mergeVideoRecord } from './normalize.js';
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
-  loadDenySet, tx, profScope, putVideoStates
+  loadDenyRecords, denyActive, tx, profScope, putVideoStates
 } from './db.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3';
@@ -61,6 +61,22 @@ export function serializeDb({ profiles, libraries, profileState, profileSources 
 
 const lww = (a, b) => ((b && b.updatedAt) || 0) > ((a && a.updatedAt) || 0) ? b : a;
 
+/**
+ * v1.0.10: deny entries evolved from a grow-only set to an LWW-element set — an
+ * entry may be REVOKED (removedAt >= at; see db.denyActive) when the sheet re-adds
+ * a key. Merge rule: the entry whose LAST EVENT (deny or revoke) is later wins;
+ * on a tie the revoked one wins (converges with "the sheet wins" semantics).
+ */
+const denyLastEvent = (d) => Math.max((d && d.at) || 0, (d && d.removedAt) || 0);
+export function mergeDenyRecord(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ea = denyLastEvent(a);
+  const eb = denyLastEvent(b);
+  if (ea !== eb) return ea > eb ? a : b;
+  return denyActive(a) ? b : a; // tie → prefer the revoked entry
+}
+
 /** Commutative + idempotent (tested): merge(a,b) ≡ merge(b,a); merge(a,a) ≡ a. */
 export function mergeDbFiles(a, b) {
   if (!a) return b;
@@ -85,12 +101,13 @@ export function mergeDbFiles(a, b) {
     for (const v of la.videos || []) vids.set(v.key, v);
     for (const v of lb.videos || []) vids.set(v.key, vids.has(v.key) ? mergeVideoRecord(vids.get(v.key), v) : v);
 
-    // deny-list: UNION, never subtract — deletion durability crosses devices
+    // deny-list: LWW-element union (v1.0.10) — entries never vanish, but a revoked
+    // entry (sheet re-add) is inert. Only ACTIVE winners drop videos.
     const deny = new Map();
     for (const d of [...(la.denylist || []), ...(lb.denylist || [])]) {
-      if (!deny.has(d.key) || (d.at || 0) < (deny.get(d.key).at || 0)) deny.set(d.key, d);
+      deny.set(d.key, mergeDenyRecord(deny.get(d.key), d));
     }
-    for (const key of deny.keys()) vids.delete(key); // a denied video never travels
+    for (const [key, d] of deny) { if (denyActive(d)) vids.delete(key); }
 
     const chans = new Map();
     for (const c of [...(la.channels || []), ...(lb.channels || [])]) {
@@ -191,13 +208,14 @@ async function buildLocalDoc(profiles) {
     const lib = src && src.libraryId;
     if (lib && !libraries[lib]) {
       const vids = [...(await loadMergeIndex(lib)).values()];
-      const denySet = await loadDenySet(lib);
       const libCh = await listLibraryChannels(lib);
       const chans = [];
       for (const lc of libCh) { const c = await getChannel(lc.channelId); if (c) chans.push(c); }
       libraries[lib] = {
         sheetUrl: src.sheetUrl || null, videos: vids,
-        denylist: [...denySet].map((key) => ({ key, at: Date.now() })),
+        // FULL deny rows (v1.0.10) incl. revoked ones — real timestamps, so the
+        // LWW merge is meaningful (the old code stamped Date.now() on every push)
+        denylist: await loadDenyRecords(lib),
         channels: chans, libraryChannels: libCh
       };
     }
@@ -207,7 +225,7 @@ async function buildLocalDoc(profiles) {
     if (pv.length) {
       libraries[pScope] = {
         sheetUrl: null, videos: pv,
-        denylist: [...(await loadDenySet(pScope))].map((key) => ({ key, at: Date.now() })),
+        denylist: await loadDenyRecords(pScope),
         channels: [], libraryChannels: []
       };
     }
@@ -233,10 +251,19 @@ async function buildLocalDoc(profiles) {
 async function applyRemoteDoc(doc) {
   for (const [libId, lib] of Object.entries(doc.libraries || {})) {
     const existing = await loadMergeIndex(libId);
+    // v1.0.10: merge remote deny rows with local ones (LWW per key) — a local
+    // revoke must not be resurrected by a stale active deny from an old doc.
+    const mergedDeny = new Map((await loadDenyRecords(libId)).map((d) => [d.key, d]));
+    for (const d of lib.denylist || []) {
+      if (!d || !d.key) continue;
+      const remote = { scopeId: libId, key: d.key, at: d.at || 0, removedAt: d.removedAt, reason: d.reason || 'drive-sync' };
+      mergedDeny.set(d.key, mergeDenyRecord(mergedDeny.get(d.key), remote));
+    }
+    const activeDenied = new Set([...mergedDeny.values()].filter(denyActive).map((d) => d.key));
+
     const puts = [];
-    const denied = new Set((lib.denylist || []).map((d) => d.key));
     for (const v of lib.videos || []) {
-      if (!v || !v.key || denied.has(v.key)) continue;
+      if (!v || !v.key || activeDenied.has(v.key)) continue;
       const mine = existing.get(v.key);
       const rec = mine ? mergeVideoRecord(mine, { ...v, scopeId: libId }) : { ...v, scopeId: libId, localPath: null, thumbId: null };
       rec.normTitle = normalizeTitle(rec.title);
@@ -244,10 +271,10 @@ async function applyRemoteDoc(doc) {
     }
     await putVideos(puts);
     await tx(['denylist'], 'readwrite', (deny) => {
-      for (const d of lib.denylist || []) deny.put({ scopeId: libId, key: d.key, at: d.at || Date.now(), reason: 'drive-sync' });
+      for (const d of mergedDeny.values()) deny.put(d);
     });
-    await tx(['videos'], 'readwrite', (videos) => { // enforce tombstones on local records
-      for (const d of lib.denylist || []) videos.delete([libId, d.key]);
+    await tx(['videos'], 'readwrite', (videos) => { // enforce ACTIVE tombstones only
+      for (const key of activeDenied) videos.delete([libId, key]);
     });
     for (const c of lib.channels || []) {
       const prev = await getChannel(c.channelId);
