@@ -72,6 +72,58 @@ async function patchState(lib, patch) {
   await putMeta(stateKey(lib), { ...cur, ...patch, at: Date.now() });
 }
 
+/* ---------------- create a fresh source sheet (v1.0.8 wizard) ---------------- */
+
+/** PURE: the welcome row of a new sheet — a # comment (the parser skips it, humans read it). */
+export function starterRows() {
+  return [[
+    '# ברוכים הבאים! כל שורה = סרטון או ערוץ. עמודה A: לינק (סרטון יוטיוב / ערוץ / @שם). עמודה B: שם לתצוגה (לא חובה). עמודה C בשורת ערוץ: auto או manual',
+    '', ''
+  ]];
+}
+
+/** PURE: does this look like a connectable Google Sheets link? */
+export function isSheetsUrl(url) {
+  return /docs\.google\.com\/spreadsheets\//.test(String(url || ''));
+}
+
+/**
+ * Create a new source sheet in the signed-in parent's Drive: title → spreadsheet,
+ * welcome comment row, and "anyone with the link can VIEW" permission — the app
+ * reads sheets via their public CSV export, so a private sheet would sync nothing.
+ * Uses the existing spreadsheets + drive.file scopes (drive.file may manage
+ * permissions of files the app itself created).
+ */
+export async function createSourceSheet(title) {
+  const token = await getAccessToken({ interactive: true });
+  if (!token) return { ok: false, error: 'no-token' };
+  const auth = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+
+  const created = await httpRequest({
+    method: 'POST', url: SHEETS, headers: auth,
+    body: JSON.stringify({ properties: { title } }), responseType: 'json'
+  });
+  if (created.status !== 200 || !created.data) return { ok: false, error: 'create-http-' + created.status };
+  const data = typeof created.data === 'string' ? JSON.parse(created.data) : created.data;
+  const id = data.spreadsheetId;
+  const url = data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${id}/edit`;
+  if (!id) return { ok: false, error: 'no-id' };
+
+  await httpRequest({
+    method: 'POST',
+    url: `${SHEETS}/${id}/values/A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    headers: auth, body: JSON.stringify({ values: starterRows() }), responseType: 'json'
+  });
+
+  const perm = await httpRequest({
+    method: 'POST', url: `https://www.googleapis.com/drive/v3/files/${id}/permissions`,
+    headers: auth, body: JSON.stringify({ role: 'reader', type: 'anyone' }), responseType: 'json'
+  });
+  // Permission failure isn't fatal for creation — but the app won't be able to READ
+  // the sheet until the parent shares it manually; the caller must surface this.
+  return { ok: true, id, url, permissionWarning: perm.status !== 200 };
+}
+
 /* ---------------- flush ---------------- */
 
 /** The tab title for the URL's gid — A1 ranges can only address tabs by title. */

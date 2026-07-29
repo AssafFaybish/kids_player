@@ -298,7 +298,14 @@ body {
 .parent-title { font-size: 22px; margin: 0; color: var(--brand-2); }
 .mode-toggle {
   display: flex; gap: 8px; background: #eceaff; border-radius: 16px; padding: 6px; margin: 14px 0;
+  flex-wrap: wrap; /* v1.0.8: five tabs — wrap instead of overflowing on narrow screens */
 }
+
+/* ---------- About tab (v1.0.8) ---------- */
+.about-hero { text-align: center; margin: 6px 0 2px; }
+.about-emoji { font-size: 44px; }
+.about-title { font-size: 22px; color: var(--brand-2); margin: 4px 0 0; }
+.about-text { line-height: 1.65; }
 .mode-btn {
   flex: 1; border: none; background: transparent; border-radius: 12px;
   padding: 12px; font-size: 16px; font-weight: 700; font-family: inherit;
@@ -598,6 +605,33 @@ body {
   .connect-title { font-size: 23px; }
   .connect-emoji { font-size: 52px; }
 }
+
+/* ---------- Onboarding tour (v1.0.8) ---------- */
+#view-tour { min-height: 100dvh; }
+#view-tour.active { display: flex; align-items: center; justify-content: center; }
+.tour-wrap {
+  position: relative; text-align: center; padding: 22px;
+  width: min(94vw, 640px);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.tour-skip { position: absolute; top: 4px; inset-inline-start: 4px; }
+.tour-stage {
+  width: 100%; border-radius: 18px; overflow: hidden;
+  background: #fff; box-shadow: var(--shadow);
+}
+.tour-img { display: block; width: 100%; height: auto; }
+.tour-title { font-size: 24px; color: var(--brand-2); margin: 6px 0 0; }
+.tour-text { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.55; margin: 0; min-height: 3.2em; }
+.tour-nav { display: flex; align-items: center; gap: 20px; margin-top: 4px; }
+.tour-prev:disabled { background: #cfd8e3; box-shadow: none; opacity: 0.6; }
+.tour-dots { display: flex; gap: 8px; }
+.tour-dots span { width: 12px; height: 12px; border-radius: 50%; background: #d9d4f7; }
+.tour-dots span.on { background: var(--brand-2); }
+
+/* ---------- Sheet setup wizard (v1.0.8) ---------- */
+#view-sheet-setup { min-height: 100dvh; }
+#view-sheet-setup.active { display: flex; align-items: center; justify-content: center; }
+.sheetsetup-paste { display: flex; flex-direction: column; gap: 10px; width: min(88vw, 420px); }
 
 #view-create-profile { min-height: 100dvh; }
 #view-create-profile.active { display: flex; align-items: center; justify-content: center; }

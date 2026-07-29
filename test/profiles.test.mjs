@@ -50,3 +50,18 @@ test('fresh device: empty local + full remote restores everything', () => {
   assert.equal(added, 2);
   assert.deepEqual(list.map((p) => p.id), ['a', 'b']);
 });
+
+/* ---------------- unique profile names (v1.0.8) ---------------- */
+
+test('profileNameExists: trims + collapses whitespace; empty never matches', async () => {
+  const { profileNameExists } = await import('../www/js/store.js');
+  const list = [{ id: 'p1', name: 'דני' }, { id: 'p2', name: 'נועה  לוי' }];
+  assert.equal(profileNameExists(list, 'דני'), true);
+  assert.equal(profileNameExists(list, '  דני  '), true);
+  assert.equal(profileNameExists(list, 'נועה לוי'), true);   // collapsed inner whitespace
+  assert.equal(profileNameExists(list, 'דן'), false);
+  assert.equal(profileNameExists(list, ''), false);
+  assert.equal(profileNameExists(list, '   '), false);
+  assert.equal(profileNameExists([], 'דני'), false);
+  assert.equal(profileNameExists(null, 'דני'), false);
+});
