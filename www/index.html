@@ -35,6 +35,46 @@
       </div>
     </section>
 
+    <!-- ===================== ONBOARDING TOUR (v1.0.8, once per install) ===================== -->
+    <section id="view-tour" class="view">
+      <div class="tour-wrap">
+        <button id="tour-skip" class="text-btn tour-skip" type="button">דלג</button>
+        <div class="tour-stage">
+          <img id="tour-img" class="tour-img" alt="" />
+        </div>
+        <h2 id="tour-title" class="tour-title"></h2>
+        <p id="tour-text" class="tour-text"></p>
+        <div class="tour-nav">
+          <!-- RTL: first child renders on the RIGHT = forward (user-specified) -->
+          <button id="tour-next" class="pg-btn" type="button" aria-label="הבא">◀</button>
+          <div id="tour-dots" class="tour-dots"></div>
+          <button id="tour-prev" class="pg-btn tour-prev" type="button" aria-label="הקודם">▶</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== SHEET SETUP WIZARD (v1.0.8, after profile creation) ===================== -->
+    <section id="view-sheet-setup" class="view">
+      <div class="connect-wrap">
+        <div class="connect-emoji">📄</div>
+        <h1 class="connect-title">מאיפה יגיעו הסרטונים של <span id="sheetsetup-name"></span>?</h1>
+        <p class="connect-text">
+          קובץ מקורות בגוגל (Google Sheets) הוא הרשימה הראשית: כל שורה בו היא
+          סרטון או ערוץ שההורים בחרו. אפשר לערוך אותו מכל מקום — והאפליקציה מתעדכנת.
+        </p>
+        <button id="sheetsetup-create" class="btn btn-primary connect-btn" type="button">✨ צרו לי קובץ חדש</button>
+        <button id="sheetsetup-paste-btn" class="btn connect-btn" type="button">🔗 יש לי קובץ — הדבקת לינק</button>
+        <div id="sheetsetup-paste" class="sheetsetup-paste hidden">
+          <input id="sheetsetup-url" class="input" type="url" inputmode="url" dir="ltr"
+                 placeholder="https://docs.google.com/spreadsheets/d/..." />
+          <button id="sheetsetup-connect" class="btn btn-primary" type="button">חיבור הקובץ</button>
+        </div>
+        <button id="sheetsetup-skip" class="text-btn connect-skip" type="button">דילוג — אגדיר אחר-כך</button>
+        <p class="connect-hint">אפשר תמיד לחבר קובץ דרך מסך ההורים ← מקורות</p>
+        <div id="sheetsetup-msg" class="form-msg"></div>
+      </div>
+    </section>
+
     <!-- ===================== PROFILE PICKER ===================== -->
     <section id="view-profiles" class="view active">
       <div class="profiles-wrap">
@@ -215,7 +255,8 @@
         <button id="tab-approve" class="mode-btn" type="button">ממתינים <span id="pending-badge" class="tab-badge hidden">0</span></button>
         <button id="tab-add" class="mode-btn active" type="button">הוספה</button>
         <button id="tab-sources" class="mode-btn" type="button">מקורות</button>
-        <button id="tab-settings" class="mode-btn" type="button">הגדרות <span id="settings-dot" class="attn-dot attn-dot-inline hidden" aria-hidden="true"></span></button>
+        <button id="tab-settings" class="mode-btn" type="button">הגדרות</button>
+        <button id="tab-about" class="mode-btn" type="button">אודות <span id="about-dot" class="attn-dot attn-dot-inline hidden" aria-hidden="true"></span></button>
       </div>
 
       <!-- Pending approval (F10/F12): new channel/shared content waits here -->
@@ -302,6 +343,13 @@
           <button id="apikey-save" class="btn btn-small" type="button">שמירת מפתח</button>
         </div>
         <div id="apikey-msg" class="form-msg"></div>
+
+        <!-- v1.0.8: cache cleanup lives HERE only (it sat in the footer, which renders
+             under EVERY tab — the user saw it "twice") -->
+        <div class="list-head" style="margin-top:18px"><span class="list-count">🧹 פינוי מקום</span></div>
+        <div class="row-btns">
+          <button id="clear-cache" class="btn btn-small" type="button">ניקוי קבצי וידאו שהורדו (פינוי מקום)</button>
+        </div>
       </div>
 
       <!-- Settings -->
@@ -312,13 +360,7 @@
         </label>
         <div id="settings-msg" class="form-msg"></div>
 
-        <div class="list-head"><span class="list-count">🔄 עדכון גירסה</span></div>
-        <p class="hint">גירסה נוכחית: <b id="ver-current" dir="ltr">—</b> · אחרונה: <b id="ver-latest" dir="ltr">—</b></p>
-        <div class="row-btns">
-          <button id="update-check" class="btn btn-small" type="button">בדיקת עדכון</button>
-          <button id="update-install" class="btn btn-primary btn-small hidden" type="button">⬇️ עדכון גירסה <span class="attn-dot attn-dot-inline" aria-hidden="true"></span></button>
-        </div>
-        <div id="update-msg" class="form-msg"></div>
+        <!-- the version/update section moved to the About tab (v1.0.8) -->
 
         <div class="list-head"><span class="list-count">📤 שיתוף האפליקציה</span></div>
         <p class="hint">שולח הודעה עם לינק להורדת הגירסה האחרונה — למשפחה וחברים שרוצים גם.</p>
@@ -336,8 +378,42 @@
         <div id="drive-msg" class="form-msg"></div>
       </div>
 
+      <!-- About (v1.0.8): what the app is + version/update + contact + tour replay -->
+      <div id="panel-about" class="panel hidden">
+        <div class="about-hero">
+          <div class="about-emoji">🌳</div>
+          <h3 class="about-title">הסרטונים שלי</h3>
+        </div>
+        <p class="hint about-text">
+          <b>למה האפליקציה הזו קיימת?</b> יוטיוב הוא אוקיינוס — נפלא, אבל בלתי נשלט.
+          ילד שצופה חופשי נחשף לפרסומות, להמלצות אקראיות ולתוכן שלא התכוונתם אליו.
+          האפליקציה הזו הופכת את הכיוון: <b>ההורים בוחרים</b> בדיוק אילו ערוצים ואילו
+          סרטונים קיימים בעולם של הילד — והילד מקבל מסך בית פשוט, בטוח ושלו בלבד.
+          <br><br>
+          <b>איך זה עובד?</b> מוסיפים תוכן דרך קובץ מקורות בגוגל (או ישירות מהאפליקציה,
+          או בשיתוף מיוטיוב) · סרטונים חדשים בערוצים ממתינים לאישורכם · סרטונים
+          שאושרו מגיעים לילד עטופים כמתנה 🎁 · אין פרסומות, אין המלצות, אין יציאה
+          ליוטיוב · מחיקה היא לתמיד, וגיבוי בגוגל דרייב שומר הכול גם אם הטאבלט מתחלף.
+        </p>
+
+        <div class="list-head"><span class="list-count">🔄 עדכון גירסה</span></div>
+        <p class="hint">גירסה נוכחית: <b id="ver-current" dir="ltr">—</b> · אחרונה: <b id="ver-latest" dir="ltr">—</b></p>
+        <div class="row-btns">
+          <button id="update-check" class="btn btn-small" type="button">בדיקת עדכון</button>
+          <button id="update-install" class="btn btn-primary btn-small hidden" type="button">⬇️ עדכון גירסה <span class="attn-dot attn-dot-inline" aria-hidden="true"></span></button>
+        </div>
+        <div id="update-msg" class="form-msg"></div>
+
+        <div class="list-head"><span class="list-count">💬 יצירת קשר</span></div>
+        <p class="hint">יש רעיון לשיפור? משהו לא עובד? נשמח לשמוע.</p>
+        <div class="row-btns">
+          <button id="contact-dev" class="btn btn-small" type="button">📧 שליחת מייל למפתח</button>
+          <button id="tour-replay" class="btn btn-small" type="button">🎓 הדרכה מחדש</button>
+        </div>
+        <div id="contact-msg" class="form-msg"></div>
+      </div>
+
       <footer class="parent-footer">
-        <button id="clear-cache" class="btn btn-small" type="button">ניקוי קבצי וידאו שהורדו (פינוי מקום)</button>
         <button id="delete-profile" class="btn btn-small btn-danger" type="button">מחיקת הפרופיל הנוכחי</button>
         <button id="reset-pin" class="btn btn-small btn-danger" type="button">איפוס קוד ההורים</button>
       </footer>

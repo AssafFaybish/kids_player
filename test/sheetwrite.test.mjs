@@ -41,3 +41,25 @@ test('buildSheetRow: always 3 columns, missing fields become empty strings', () 
   );
   assert.deepEqual(buildSheetRow({ srcUrl: null, title: null, flag: null }), ['', '', '']);
 });
+
+/* ---------------- v1.0.8: wizard helpers ---------------- */
+
+test('isSheetsUrl: sheets links pass (incl. published), everything else fails', async () => {
+  const { isSheetsUrl } = await import('../www/js/sheetwrite.js');
+  assert.equal(isSheetsUrl('https://docs.google.com/spreadsheets/d/abc123/edit#gid=0'), true);
+  assert.equal(isSheetsUrl('https://docs.google.com/spreadsheets/d/e/2PACX-x/pub?output=csv'), true);
+  assert.equal(isSheetsUrl('https://drive.google.com/file/d/abc/view'), false);
+  assert.equal(isSheetsUrl('https://example.com'), false);
+  assert.equal(isSheetsUrl(''), false);
+  assert.equal(isSheetsUrl(null), false);
+});
+
+test('starterRows: one 3-column # comment row the parser will skip', async () => {
+  const { starterRows } = await import('../www/js/sheetwrite.js');
+  const rows = starterRows();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].length, 3);
+  assert.ok(rows[0][0].startsWith('#'));
+  const { classifySourceRow } = await import('../www/js/classify.js');
+  assert.equal(classifySourceRow(rows[0][0]).kind, 'comment');
+});

@@ -3,7 +3,8 @@
 import {
   loadItems, getSource, youtubeThumbCandidates,
   getProfiles, getActiveId, getActiveProfile, createProfile, deleteProfile,
-  migrateLegacyIfNeeded, loadActiveId, setActiveId, fetchYouTubeTitle
+  migrateLegacyIfNeeded, loadActiveId, setActiveId, fetchYouTubeTitle,
+  profileNameExists
 } from './store.js';
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
@@ -149,7 +150,8 @@ async function maybePromptUpdate(r) {
   // Never interrupt watching / PIN / parent work / first-launch connect — the red
   // dot still shows, and the next home entry or launch re-offers.
   if (nav.isActive('watch') || nav.isActive('pin') || nav.isActive('parent')
-    || nav.isActive('connect') || nav.isActive('loading') || isModalOpen()) return;
+    || nav.isActive('connect') || nav.isActive('loading') || nav.isActive('tour')
+    || nav.isActive('sheet-setup') || isModalOpen()) return;
   updatePromptedThisSession = true;
   const yes = await confirmKid({
     emoji: '🚀', title: 'יש גירסה חדשה!',
@@ -172,8 +174,23 @@ async function maybePromptUpdate(r) {
   });
 }
 
+/**
+ * v1.0.8 (user request): right before installing, show WHAT'S NEW — the release
+ * notes the parent wrote when publishing (already stored from GitHub). One OK
+ * button, no cancel: informational only, the install follows.
+ */
+async function showWhatsNew(latest) {
+  const notes = String((latest && latest.notes) || '').trim();
+  if (!notes) return;
+  await alertKid({
+    emoji: '✨', title: `מה חדש בגירסה ${latest.version}`,
+    text: notes.slice(0, 600), ok: 'אישור והתקנה'
+  });
+}
+
 /** Download + hand off to the Android installer, with the loading screen as progress. */
 async function runUpdateInstall(latest) {
+  await showWhatsNew(latest);
   const upd = await import('./update.js');
   loading.show({ defer: 0, step: 'מורידים את העדכון…' });
   let res = null;
@@ -200,6 +217,14 @@ async function runUpdateInstall(latest) {
 function registerViews() {
   // Back precedence per view. Returning true = consumed; otherwise nav pops.
   nav.register('connect', { onBack: () => { askExit(); return true; } });
+  // tour back = previous slide (or skip on the first one) — never exits the app
+  nav.register('tour', {
+    onBack: () => {
+      if (tourIdx > 0) { tourIdx -= 1; renderTourSlide(); } else { finishTour(); }
+      return true;
+    }
+  });
+  nav.register('sheet-setup', { onBack: () => { finishSheetSetup(); return true; } });
   nav.register('profiles', { onBack: () => { askExit(); return true; } });
   nav.register('create-profile', {
     onBack: () => {
@@ -893,7 +918,7 @@ function onKey(k) {
 /* ---------------- Parent screen (tabs: approve / add / sources / settings) ---------------- */
 function enterParent() { refreshParent(); nav.replace('parent'); } // replaces 'pin' on the stack
 
-const PARENT_TABS = ['approve', 'add', 'sources', 'settings'];
+const PARENT_TABS = ['approve', 'add', 'sources', 'settings', 'about'];
 let parentTab = 'add';
 
 function setParentTab(name) {
@@ -952,10 +977,10 @@ async function runUpdateCheck({ manual = false } = {}) {
   const r = await upd.checkForUpdate({ silent: !manual, force: manual });
   if (r.latest) $('ver-latest').textContent = r.latest.version;
   // 'skipped' = the launch prompt was declined — still installable from here, and it
-  // keeps the red dot on the settings tab (v1.0.4).
+  // keeps the red dot on the ABOUT tab (the update UI's home since v1.0.8).
   const installable = r.status === 'available' || r.status === 'skipped';
   $('update-install').classList.toggle('hidden', !installable);
-  $('settings-dot').classList.toggle('hidden', !installable);
+  $('about-dot').classList.toggle('hidden', !installable);
   if (!manual) return;
   msg.className = 'form-msg';
   msg.textContent =
@@ -1282,6 +1307,178 @@ async function doSyncAndRefresh() {
   maybeSchedulePush();
 }
 
+/* ---------------- Onboarding tour (v1.0.8, once per install) ---------------- */
+const TOUR_SLIDES = [
+  {
+    img: 'assets/tour/01-profiles.jpg', title: 'לכל ילד פרופיל משלו',
+    text: 'בכניסה בוחרים פרופיל — שם ותמונה. לכל פרופיל ספריית סרטונים, מתנות והתקדמות משלו.'
+  },
+  {
+    img: 'assets/tour/02-home.jpg', title: 'מסך הבית של הילד',
+    text: 'ערוצים כתיקיות עם הלוגו שלהם, "סרטונים נוספים" לכל השאר, חיפוש 🔍 למעלה — וסרטונים חדשים מגיעים עטופים כמתנה 🎁.'
+  },
+  {
+    img: 'assets/tour/03-watch.jpg', title: 'צפייה בטוחה',
+    text: 'בלי פרסומות, בלי המלצות, בלי יציאה ליוטיוב. הבית 🏠 ומחיקת סרטון 🗑️ (עם קוד הורים) — בפינות למעלה.'
+  },
+  {
+    img: 'assets/tour/04-parent.jpg', title: 'מסך ההורים 🔒',
+    text: 'נכנסים עם קוד. מוסיפים סרטון בודד או ערוץ שלם, מחברים קובץ מקורות בגוגל — וכל הוספה נרשמת בקובץ אוטומטית.'
+  },
+  {
+    img: 'assets/tour/05-approve.jpg', title: 'הכול באישור שלכם',
+    text: 'סרטונים חדשים בערוצים ממתינים לאישור. נקודה אדומה על כפתור ההורים אומרת שמשהו מחכה לכם.'
+  }
+];
+let tourIdx = 0;
+let tourOnDone = null;
+
+function renderTourSlide() {
+  const s = TOUR_SLIDES[tourIdx];
+  $('tour-img').src = s.img;
+  $('tour-title').textContent = s.title;
+  $('tour-text').textContent = s.text;
+  $('tour-next').textContent = tourIdx === TOUR_SLIDES.length - 1 ? '✔' : '◀';
+  $('tour-prev').disabled = tourIdx === 0;
+  const dots = $('tour-dots');
+  dots.innerHTML = '';
+  TOUR_SLIDES.forEach((_, i) => {
+    const d = document.createElement('span');
+    if (i === tourIdx) d.classList.add('on');
+    dots.appendChild(d);
+  });
+}
+
+/** Boot shows it once ever (tour.done); the About tab replays on demand. */
+function startTour({ replay = false, onDone = null } = {}) {
+  tourIdx = 0;
+  tourOnDone = onDone;
+  renderTourSlide();
+  if (replay) nav.go('tour'); else nav.reset('tour');
+}
+
+async function finishTour() {
+  await prefSet('tour.done', '1');
+  const done = tourOnDone;
+  tourOnDone = null;
+  if (done) { done(); return; }     // boot flow continues (connect / profiles)
+  if (!nav.back()) goGallery();      // replay from the About tab — go back there
+}
+
+/* ---------------- Sheet setup wizard (v1.0.8, after profile creation) ---------------- */
+let wizardProfile = null; // the freshly-created profile awaiting activation
+
+/**
+ * The wizard shows ONLY when the family truly starts from nothing (user decision):
+ * - profiles restored from the Drive backup arrive with their sheet already wired
+ *   (profileSources) and never pass through here;
+ * - a NEW sibling profile on a device that already has a sheet quietly ADOPTS the
+ *   same sheet (v1.0.6 made the library shared per-sheet anyway) — no wizard.
+ */
+async function openSheetSetup(p) {
+  try {
+    for (const other of await getProfiles()) {
+      if (other.id === p.id) continue;
+      const src = await db.getSources(other.id);
+      if (src && src.sheetUrl) {
+        wizardProfile = p;
+        await connectWizardSheet(src.sheetUrl);
+        wizardProfile = null;
+        await alertKid({
+          emoji: '📄', title: 'חיברנו את הקובץ המשפחתי ✅',
+          text: `${p.name} יקבל את אותה רשימת סרטונים של שאר המשפחה. אפשר לשנות במסך ההורים ← מקורות.`,
+          ok: 'מעולה'
+        });
+        await activateProfile(p.id);
+        return;
+      }
+    }
+  } catch {}
+  wizardProfile = p;
+  $('sheetsetup-name').textContent = p.name;
+  $('sheetsetup-msg').textContent = '';
+  $('sheetsetup-msg').className = 'form-msg';
+  $('sheetsetup-paste').classList.add('hidden');
+  $('sheetsetup-url').value = '';
+  nav.reset('sheet-setup');
+}
+
+async function finishSheetSetup() {
+  const p = wizardProfile;
+  wizardProfile = null;
+  if (p) await activateProfile(p.id); // activation syncs + shows the loading screen
+}
+
+/** The same connection routine as the sources tab — for the wizard's new profile. */
+async function connectWizardSheet(url) {
+  const { libraryIdFor } = await import('./util.js');
+  let src = (await db.getSources(wizardProfile.id)) || { profileId: wizardProfile.id, schema: 1 };
+  src = {
+    shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+    maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
+    ...src, sheetUrl: url, libraryId: libraryIdFor(url), sheetHash: null, updatedAt: Date.now()
+  };
+  await db.putSources(src);
+}
+
+async function wizardCreateSheet() {
+  const msg = $('sheetsetup-msg');
+  msg.textContent = 'מתחברים לחשבון Google ויוצרים את הקובץ…';
+  msg.className = 'form-msg';
+  try {
+    const { createSourceSheet } = await import('./sheetwrite.js');
+    const r = await createSourceSheet(`רשימת הסרטונים של ${wizardProfile.name}`);
+    if (!r.ok) {
+      const { lastAuthError } = await import('./gauth.js');
+      msg.textContent = r.error === 'no-token'
+        ? gauthErrorText(lastAuthError())
+        : 'יצירת הקובץ נכשלה — אפשר לנסות שוב, להדביק לינק לקובץ קיים, או לדלג';
+      msg.className = 'form-msg err';
+      return;
+    }
+    await connectWizardSheet(r.url);
+    if (r.permissionWarning) {
+      await alertKid({
+        emoji: '⚠️', title: 'הקובץ נוצר, אבל…',
+        text: 'לא הצלחנו להגדיר שיתוף לקריאה. פתחו את הקובץ בדרייב ← שיתוף ← "כל מי שיש לו את הקישור — צפייה", אחרת האפליקציה לא תוכל לקרוא אותו.',
+        ok: 'הבנתי'
+      });
+    }
+    const copy = await confirmKid({
+      emoji: '📄', title: 'הקובץ נוצר וחובר! ✅',
+      text: 'מוסיפים סרטונים בהדבקת לינקים בקובץ (שורה = סרטון או ערוץ). אפשר להעתיק את הלינק לקובץ עכשיו.',
+      ok: 'העתקת הלינק', cancel: 'סיום'
+    });
+    if (copy) {
+      try {
+        await navigator.clipboard.writeText(r.url);
+        await alertKid({ emoji: '📋', title: 'הלינק הועתק!', text: 'הדביקו בדפדפן או שמרו בפתק — משם עורכים את הרשימה.', ok: 'סבבה' });
+      } catch {
+        await alertKid({ emoji: '🔗', title: 'הלינק לקובץ', text: r.url, ok: 'סגירה' });
+      }
+    }
+    await finishSheetSetup();
+  } catch {
+    msg.textContent = 'משהו השתבש — אפשר לנסות שוב או לדלג';
+    msg.className = 'form-msg err';
+  }
+}
+
+async function wizardConnectPasted() {
+  const url = $('sheetsetup-url').value.trim();
+  const msg = $('sheetsetup-msg');
+  const { isSheetsUrl } = await import('./sheetwrite.js');
+  if (!isSheetsUrl(url)) {
+    msg.textContent = 'זה לא נראה כמו לינק לגיליון Google Sheets — העתיקו את הלינק מהדפדפן';
+    msg.className = 'form-msg err';
+    return;
+  }
+  msg.textContent = 'מחברים…';
+  msg.className = 'form-msg';
+  await connectWizardSheet(url);
+  await finishSheetSetup();
+}
+
 /* ---------------- First-launch Google connect (v1.0.4) ---------------- */
 /** Maps a gauth failure to the parent-facing message (shared: connect + settings). */
 function gauthErrorText(err) {
@@ -1423,9 +1620,15 @@ async function createNewProfile() {
   const msg = $('create-msg');
   if (!name) { msg.textContent = 'בחרו שם'; msg.className = 'form-msg err'; return; }
   if (!createSel) { msg.textContent = 'בחרו תמונה'; msg.className = 'form-msg err'; return; }
+  // v1.0.8: two profiles with the same name are indistinguishable on screen — block
+  if (profileNameExists(await getProfiles(), name)) {
+    msg.textContent = 'כבר יש פרופיל בשם הזה — בחרו שם אחר';
+    msg.className = 'form-msg err';
+    return;
+  }
   const p = await createProfile(name, createSel.e, createSel.c);
   profiles = await getProfiles();
-  await activateProfile(p.id);
+  await openSheetSetup(p); // v1.0.8: offer a source sheet before entering the app
 }
 
 async function activateProfile(id) {
@@ -1506,6 +1709,36 @@ async function deleteCurrentProfile() {
 
 /* ---------------- Wiring ---------------- */
 function wire() {
+  // v1.0.8: onboarding tour
+  $('tour-next').addEventListener('click', () => {
+    if (tourIdx < TOUR_SLIDES.length - 1) { tourIdx += 1; renderTourSlide(); }
+    else finishTour();
+  });
+  $('tour-prev').addEventListener('click', () => {
+    if (tourIdx > 0) { tourIdx -= 1; renderTourSlide(); }
+  });
+  $('tour-skip').addEventListener('click', finishTour);
+
+  // v1.0.8: sheet setup wizard (PIN required for create/paste — user-specified)
+  $('sheetsetup-skip').addEventListener('click', finishSheetSetup);
+  $('sheetsetup-create').addEventListener('click', async () => {
+    startPin((await hasPin()) ? 'verify' : 'setup', {
+      title: 'קוד הורים ליצירת הקובץ',
+      onSuccess: () => { if (!nav.back()) nav.reset('sheet-setup'); wizardCreateSheet(); }
+    });
+  });
+  $('sheetsetup-paste-btn').addEventListener('click', async () => {
+    startPin((await hasPin()) ? 'verify' : 'setup', {
+      title: 'קוד הורים לחיבור הקובץ',
+      onSuccess: () => {
+        if (!nav.back()) nav.reset('sheet-setup');
+        $('sheetsetup-paste').classList.remove('hidden');
+        setTimeout(() => { try { $('sheetsetup-url').focus(); } catch {} }, 60);
+      }
+    });
+  });
+  $('sheetsetup-connect').addEventListener('click', () => { wizardConnectPasted().catch(() => {}); });
+
   $('connect-google').addEventListener('click', connectGoogleFirstLaunch);
   $('connect-skip').addEventListener('click', async () => {
     await prefSet('gauth.introDone', 'skipped');
@@ -1712,6 +1945,7 @@ function wire() {
     const upd = await import('./update.js');
     const latest = JSON.parse((await import('./platform.js').then((p) => p.prefGet('update.latest'))) || 'null');
     if (!latest) return;
+    await showWhatsNew(latest); // v1.0.8: what's-new before the install starts
     if (!(await upd.canInstall())) {
       msg.textContent = 'נדרש אישור חד-פעמי: "התקנת אפליקציות לא ידועות" — נפתח את ההגדרה';
       msg.className = 'form-msg';
@@ -1732,6 +1966,18 @@ function wire() {
       msg.className = 'form-msg err';
     }
   });
+
+  // v1.0.8: About tab — contact the developer (opens the mail app; the address is
+  // visible in the hint if no mail app handles mailto) + tour replay.
+  $('contact-dev').addEventListener('click', () => {
+    const subject = encodeURIComponent('הסרטונים שלי — הצעה לשיפור');
+    $('contact-msg').textContent = 'dev.fassaf@gmail.com';
+    $('contact-msg').className = 'form-msg';
+    try {
+      window.location.href = `mailto:dev.fassaf@gmail.com?cc=${encodeURIComponent('fassaf.f@gmail.com')}&subject=${subject}`;
+    } catch {}
+  });
+  $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
 
   $('parent-exit').addEventListener('click', goGallery);
   $('clear-cache').addEventListener('click', async () => {
@@ -1777,6 +2023,8 @@ async function init() {
   await migrateLegacyIfNeeded();
   // Preferences → IndexedDB (idempotent, resumable, non-destructive).
   try { await runMigrationIfNeeded(); } catch (e) { console.warn('idb migration failed', e); }
+  // v1.0.8: one-shot data-structure migrations after an app update (dataver.js).
+  try { const { runDataMigrations } = await import('./dataver.js'); await runDataMigrations(); } catch {}
 
   // F12b + v1.0.7: videos AND channels shared from the YouTube app go through the
   // interactive PIN+confirm flow (listener first, then drain — see share.js).
@@ -1797,10 +2045,14 @@ async function init() {
   await loadActiveId();
   profiles = await getProfiles();
 
-  // v1.0.4: a one-time Google-connect offer lands BEFORE profile selection —
-  // connecting early means a fresh device can restore everything from the backup.
-  if (await shouldOfferConnect()) nav.reset('connect');
-  else startAtProfiles();
+  // Boot order (v1.0.8): onboarding tour (once per install) → Google-connect offer
+  // (once) → profiles. The tour never blocks a returning user.
+  const bootContinue = async () => {
+    if (await shouldOfferConnect()) nav.reset('connect');
+    else startAtProfiles();
+  };
+  if (!(await prefGet('tour.done'))) startTour({ onDone: () => { bootContinue().catch(() => startAtProfiles()); } });
+  else await bootContinue();
 
   // F14 launch check — un-awaited, throttled, all paths caught. NEVER blocks startup.
   // v1.0.4: when an update exists, ASK whether to install (maybePromptUpdate).

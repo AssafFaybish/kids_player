@@ -54,6 +54,18 @@ export async function getActiveProfile() {
   if (!activeId) return null;
   return (await getProfiles()).find((p) => p.id === activeId) || null;
 }
+/**
+ * PURE (node-tested, v1.0.8): does a profile with this name already exist?
+ * Compared after trimming + whitespace-collapse — "דני" and " דני " are the same
+ * child; two profiles with the same display name are indistinguishable on screen.
+ */
+export function profileNameExists(list, name) {
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const n = norm(name);
+  if (!n) return false;
+  return (list || []).some((p) => p && norm(p.name) === n);
+}
+
 export async function createProfile(name, avatar, color) {
   const list = await getProfiles();
   const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
