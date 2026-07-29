@@ -1,6 +1,6 @@
 {
   "name": "kids-player",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "description": "Child-safe curated YouTube + direct-video player for a 4-year-old (Android / Capacitor)",
@@ -16,7 +16,8 @@
     "apk:release": "cap copy android && cd android && JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew assembleRelease",
     "apk:verify": "$HOME/Library/Android/sdk/build-tools/34.0.0/apksigner verify --print-certs -v android/app/build/outputs/apk/release/app-release.apk",
     "signing:report": "cd android && JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew :app:signingReport",
-    "android:run": "cap run android"
+    "android:run": "cap run android",
+    "release": "./release.sh"
   },
   "dependencies": {
     "@capacitor/android": "^6.1.0",
