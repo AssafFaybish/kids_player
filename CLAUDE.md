@@ -95,6 +95,15 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.7: interactive share adds — a YouTube share (video OR channel, `classifyShared`)
+  opens PIN → confirm → live + sheet row; cancel parks a video as pending, a channel is
+  dropped (share.js falls back to silent pending without the handler). `startPin` gained
+  `onDone` (fires exactly once — success consumes it before navigation, pin onLeave fires
+  cancel). Home search (`search-open` → `view-search`): pure ranking in search.js over
+  live records + channel folders, back-from-watch returns to results. Home entry syncs
+  (shouldSync now 3 min) + re-offers updates (once per session); installing an update now
+  requires the parent PIN. pin-cancel returns to the PREVIOUS view (nav.back), not
+  hard-coded gallery.
 - v1.0.6: the sheet is the single master list — sheetwrite.js appends manual adds,
   manual channels and approved shares back to it (requires the `spreadsheets` scope in
   GoogleAuthPlugin + edit rights; queue survives offline; published /d/e/ links can't be

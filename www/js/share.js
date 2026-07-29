@@ -7,7 +7,7 @@
 // decides pending-approval vs added-immediately. A share with no active profile is
 // stashed in Preferences and drained on the next profile activation.
 
-import { classifyFromSharedText } from './classify.js';
+import { classifyShared } from './classify.js';
 import { normalizeTitle } from './normalize.js';
 import { sortKeyFor } from './order.js';
 import { prefGet, prefSet } from './platform.js';
@@ -22,10 +22,15 @@ function kidsNative() {
 
 let getPid = () => null;
 let onAdded = () => {};
+// v1.0.7: app.js provides the PIN+confirm dialog flow. Given the classified share it
+// resolves 'live' | 'pending' | 'channel' | 'discard'. When absent (or it throws),
+// everything falls back to the old silent pending routing — a share is never lost.
+let interactive = null;
 
-export function initShareTarget({ profileIdGetter, onShareAdded } = {}) {
+export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler } = {}) {
   if (profileIdGetter) getPid = profileIdGetter;
   if (onShareAdded) onAdded = onShareAdded;
+  if (interactiveHandler) interactive = interactiveHandler;
   const plug = kidsNative();
   if (!plug || !plug.addListener) return; // browser preview / plugin absent
   plug.addListener('shareReceived', (o) => { handleShare(o).catch(() => {}); });
@@ -53,8 +58,10 @@ async function handleShare(o) {
     return;
   }
 
-  const c = classifyFromSharedText(o.text, o.subject);
+  const c = classifyShared(o.text, o.subject);
   if (!c) return; // the safety boundary held — not a playable link
+
+  if (c.kind === 'channel') { await handleChannelShare(pid, c); return; }
 
   const src = await db.getSources(pid);
   // v1.0.6: shares land in the SHARED library folder ('sheet') when sources exist —
@@ -68,7 +75,18 @@ async function handleShare(o) {
   if ((await db.loadDenySet(scope)).has(c.key)) return; // deleted stays deleted
   if (lib && (await db.loadDenySet(db.profScope(pid))).has(c.key)) return;
 
-  const requireApproval = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
+  // v1.0.7: the interactive PIN+confirm flow decides; without it (browser preview,
+  // handler error) the old toggle-based routing still applies. A declined/cancelled
+  // interactive share PARKS AS PENDING (user decision) — never silently lost.
+  let decision = null;
+  if (interactive) {
+    try { decision = await interactive(c); } catch { decision = null; }
+  }
+  if (decision === 'discard') return;
+  const requireApproval = decision
+    ? decision !== 'live'
+    : !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
+
   const now = Date.now();
   await db.putVideos([{
     scopeId: scope, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
@@ -90,4 +108,46 @@ async function handleShare(o) {
     } catch {}
   }
   try { onAdded({ key: c.key, title: c.title, pending: requireApproval }); } catch {}
+}
+
+/**
+ * v1.0.7: a shared CHANNEL link — behaves exactly like adding a channel in the parent
+ * screen: PIN + confirm (interactive handler), resolve the reference, subscribe with
+ * approval-required default, register a sheet row, then sync pulls its videos.
+ * Without the interactive handler a channel share is ignored (subscribing a whole
+ * channel silently is too big a side effect for a fallback path).
+ */
+async function handleChannelShare(pid, c) {
+  if (!interactive) return;
+  let decision = null;
+  try { decision = await interactive(c); } catch { decision = null; }
+  if (decision !== 'channel') return;
+
+  const src = await db.getSources(pid);
+  const lib = src && src.libraryId;
+  if (!lib) return; // no sources yet (pre-first-sync) — the parent screen path covers this
+  try {
+    const yt = await import('./yt.js');
+    const channelId = await yt.resolveChannelRef(c.channelRef, await yt.getApiKey());
+    if (!channelId) { try { onAdded({ channelFailed: true }); } catch {} return; }
+    const known = (await db.listLibraryChannels(lib)).some((x) => x.channelId === channelId);
+    await db.putLibraryChannel({
+      libraryId: lib, channelId, autoApprove: false, autoApproveSource: 'ui',
+      order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false,
+      titleOverride: c.title || ''
+    });
+    if (!known) {
+      try {
+        const { enqueueSheetRow } = await import('./sheetwrite.js');
+        await enqueueSheetRow(pid, {
+          key: 'ch:' + channelId,
+          srcUrl: 'https://www.youtube.com/channel/' + channelId,
+          flag: 'manual'
+        });
+      } catch {}
+    }
+    const { syncLibrary } = await import('./sync2.js');
+    syncLibrary(pid, { force: true }).catch(() => {});
+    try { onAdded({ channelAdded: channelId, title: c.title }); } catch {}
+  } catch { /* a failed resolve must not crash the share pipeline */ }
 }

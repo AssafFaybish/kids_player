@@ -77,3 +77,34 @@ test('classifyLink still rejects the dangerous stuff (boundary regression)', () 
   assert.equal(classifyLink('file:///etc/passwd'), null);
   assert.equal(classifyLink('http://cdn.example.com/a.mp4'), null);
 });
+
+/* ---------------- classifyShared (v1.0.7): videos AND channels from share text ---------------- */
+
+test('classifyShared: a video link wins, channel recognized only without one', async () => {
+  const { classifyShared } = await import('../www/js/classify.js');
+  const vid = classifyShared('תראו! https://youtu.be/dQw4w9WgXcQ?si=abc', 'שיר מגניב');
+  assert.equal(vid.kind, 'video');
+  assert.equal(vid.id, 'dQw4w9WgXcQ');
+  assert.equal(vid.title, 'שיר מגניב');
+
+  const ch = classifyShared('הערוץ המומלץ https://www.youtube.com/@SomeKidsChannel?si=xyz', '');
+  assert.equal(ch.kind, 'channel');
+  assert.deepEqual(ch.channelRef, { by: 'handle', value: 'SomeKidsChannel' });
+  assert.equal(ch.title, 'הערוץ המומלץ');
+
+  const chId = classifyShared('https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv', '');
+  assert.equal(chId.kind, 'channel');
+  assert.deepEqual(chId.channelRef, { by: 'id', value: 'UCabcdefghijklmnopqrstuv' });
+
+  // watch-link + channel link in the same text → the VIDEO wins (same rule as sheet rows)
+  const both = classifyShared('https://www.youtube.com/@x123 וגם https://youtu.be/dQw4w9WgXcQ', '');
+  assert.equal(both.kind, 'video');
+});
+
+test('classifyShared: the safety boundary holds — junk is rejected', async () => {
+  const { classifyShared } = await import('../www/js/classify.js');
+  assert.equal(classifyShared('סתם טקסט בלי לינק', ''), null);
+  assert.equal(classifyShared('https://example.com/not-youtube', ''), null);
+  assert.equal(classifyShared('', ''), null);
+  assert.equal(classifyShared(null, null), null);
+});
