@@ -9,7 +9,10 @@
 import { httpRequest, prefGet, prefSet, appPlugin, fsMkdirExternal, fsStatExternal, fsDeleteExternal, fsDownloadExternal } from './platform.js';
 
 export const UPDATE_REPO = 'devfassaf/kids_player';
-const CHECK_THROTTLE_MS = 6 * 60 * 60 * 1000;
+// 1h (was 6h): a released update reaches devices within the hour. Field lesson:
+// a release published minutes after a device's check stayed invisible for hours.
+// Still tiny vs GitHub's unauthenticated 60 req/h/IP budget.
+const CHECK_THROTTLE_MS = 60 * 60 * 1000;
 
 /* ---------------- pure (node-tested) ---------------- */
 

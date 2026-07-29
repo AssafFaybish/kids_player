@@ -116,8 +116,11 @@ rides this to restore a whole device.
 `releases/latest` of UPDATE_REPO → pickApkAsset(`kids-player-<tag>.apk`) → numeric
 compare vs App.getInfo().version → parent panel shows/downloads (EXTERNAL/updates/,
 mkdir first, size check) → KidsNative.installApk (FileProvider `app_updates` path).
-Launch check: +4s, 6h throttle. Since v1.0.4 an available update PROMPTS (confirmKid;
-never over watch/pin/parent/connect/loading): accept = download with the loading screen,
-decline = `update.skip:<version>` — no more launch prompts for that version, but the red
-gate dot and the parent settings panel (button + `settings-dot`) keep offering it.
-Same signing key or Android refuses.
+Launch check: +4s, 1h throttle (was 6h — a release published right after a device's
+check stayed invisible for hours). Since v1.0.4 an available update PROMPTS (never over
+watch/pin/parent/connect/loading): accept = PIN → what's-new → download. ONLY the
+explicit "לא עכשיו" button writes `update.skip:<version>` (askKid distinguishes it from
+a scrim-tap/back dismiss — an accidental dismiss re-offers on the next home entry;
+field bug: a child's stray tap used to silence the prompt for the whole version). The
+red gate dot and the About tab keep offering a skipped version. Same signing key or
+Android refuses.
