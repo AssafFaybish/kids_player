@@ -3,7 +3,10 @@
 // token, NOT the spreadsheet id — extraction must refuse it, never mis-extract.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME } from '../www/js/sheetwrite.js';
+import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME,
+  starterRows, matchRowsForDeletion, sheetErrorMessage } from '../www/js/sheetwrite.js';
+import { classifySourceRow, parseRemovalRow } from '../www/js/classify.js';
+import { parseSourceRows } from '../www/js/sync2.js';
 
 const ID = '1AbC_dEf-9xYz0123456789abcdefghijklmnopqrst';
 
@@ -44,25 +47,9 @@ test('buildSheetRow: always 3 columns, missing fields become empty strings', () 
 
 /* ---------------- v1.0.8: wizard helpers ---------------- */
 
-test('isSheetsUrl: sheets links pass (incl. published), everything else fails', async () => {
-  const { isSheetsUrl } = await import('../www/js/sheetwrite.js');
-  assert.equal(isSheetsUrl('https://docs.google.com/spreadsheets/d/abc123/edit#gid=0'), true);
-  assert.equal(isSheetsUrl('https://docs.google.com/spreadsheets/d/e/2PACX-x/pub?output=csv'), true);
-  assert.equal(isSheetsUrl('https://drive.google.com/file/d/abc/view'), false);
-  assert.equal(isSheetsUrl('https://example.com'), false);
-  assert.equal(isSheetsUrl(''), false);
-  assert.equal(isSheetsUrl(null), false);
-});
-
-test('starterRows: one 3-column # comment row the parser will skip', async () => {
-  const { starterRows } = await import('../www/js/sheetwrite.js');
-  const rows = starterRows();
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].length, 3);
-  assert.ok(rows[0][0].startsWith('#'));
-  const { classifySourceRow } = await import('../www/js/classify.js');
-  assert.equal(classifySourceRow(rows[0][0]).kind, 'comment');
-});
+// (The old single-row starterRows test lived here. v1.0.19 turned that one crammed
+// sentence into a real column header plus instructions, so `rows.length === 1` no
+// longer holds; the block at the end of this file supersedes it and checks more.)
 
 /* ---------------- v1.0.10: deletion ops ---------------- */
 
@@ -203,4 +190,98 @@ test('extractSpreadsheetId still refuses the published /d/e/ form', () => {
   // opaque token, NOT a spreadsheet id — extracting it would build a bogus API call.
   assert.equal(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/e/2PACX-1vABC/pubhtml'), null);
   assert.equal(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/1AbC_dEf-123/edit#gid=0'), '1AbC_dEf-123');
+});
+
+/* ---- v1.0.19: the starter header must be invisible to the parser ---- */
+
+test('starterRows: every row is a comment the parser skips', () => {
+  const rows = starterRows();
+  assert.ok(rows.length >= 2, 'a header row plus at least one instruction');
+  for (const [a] of rows) {
+    assert.ok(String(a).startsWith('#'),
+      `column A must start with '#' or the header becomes content: ${a}`);
+    assert.equal(classifySourceRow(a).kind, 'comment', `not skipped: ${a}`);
+  }
+});
+
+test('starterRows: the header row captions all THREE columns', () => {
+  // The point of the v1.0.19 rewrite: captions sit UNDER the columns they describe
+  // instead of one long sentence crammed into A.
+  const [header] = starterRows();
+  assert.equal(header.length, 3);
+  assert.ok(/A/.test(header[0]) && /לינק/.test(header[0]), 'A = the link column');
+  assert.ok(/B/.test(header[1]) && /שם/.test(header[1]), 'B = display name');
+  assert.ok(/C/.test(header[2]) && /auto/.test(header[2]), 'C = the auto/manual flag');
+});
+
+test('starterRows: NO row may look like a removal — it would deny a real key', () => {
+  // parseRemovalRow turns "# הוסר: <link>" into a tombstone for every device on the
+  // sheet. The instructions contain an example youtu.be link, so if any line ever
+  // picked up a removal marker it would permanently deny that video id.
+  for (const [a] of starterRows()) {
+    assert.equal(parseRemovalRow(a), null, `reads as a removal row: ${a}`);
+    assert.doesNotMatch(a, /\b(הוסר|הוסרו|removed|remove|deleted)\b/i);
+  }
+});
+
+test('starterRows: the header never shifts video ordinals', () => {
+  // rowIndex feeds sortKey. If comments counted, adding a header line to a new
+  // sheet would renumber every video and reshuffle the child's home screen.
+  const sheet = [...starterRows(), ['https://youtu.be/aaaaaaaaaa1', 'ראשון', ''],
+    ['https://youtu.be/bbbbbbbbbb2', 'שני', '']];
+  const out = parseSourceRows(sheet);
+  assert.equal(out.videoRows.length, 2);
+  assert.deepEqual(out.videoRows.map((r) => r.rowIndex), [0, 1]);
+  assert.equal(out.channelRows.length, 0);
+  assert.equal(out.removedKeys.length, 0);
+});
+
+test('starterRows: the example links are never imported as content', () => {
+  // The instruction row shows a youtu.be URL. It must stay a comment — otherwise a
+  // brand-new sheet would import a placeholder "VIDEO_ID" video for the child.
+  const out = parseSourceRows(starterRows());
+  assert.deepEqual(out.videoRows, []);
+  assert.deepEqual(out.channelRows, []);
+  assert.deepEqual(out.removedKeys, []);
+});
+
+test('starterRows: a deletion pass cannot match the header rows', () => {
+  const colA = starterRows().map(([a]) => a);
+  const ops = [{ op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 1 },
+    { op: 'delchannel', channelId: 'UCchan111111111111111111', at: 2 }];
+  assert.deepEqual(matchRowsForDeletion(colA, ops, {}), [], 'header rows are never deleted');
+});
+
+/* ---- v1.0.19: a failed sheet read must reach the parent, with a next step ---- */
+
+test('sheetErrorMessage: every failure mode names an action the parent can take', () => {
+  // The bug this closes: reads need a token now, so revoking the app freezes the
+  // library forever — and the sources tab used to answer "עודכן ✅" regardless.
+  const cases = ['sheet-no-token', 'sheet-http-401', 'sheet-http-403', 'sheet-http-404',
+    'sheet-bad-url', 'sheet-http-500', 'sheet-failed', '', null, undefined];
+  for (const c of cases) {
+    const m = sheetErrorMessage(c);
+    assert.ok(m && m.length > 20, `no message for ${c}`);
+    assert.doesNotMatch(m, /✅/, `a failure must never render as success: ${c}`);
+  }
+});
+
+test('sheetErrorMessage: a revoked grant points at reconnecting', () => {
+  for (const c of ['sheet-no-token', 'sheet-http-401']) {
+    assert.match(sheetErrorMessage(c), /התחברו מחדש/);
+  }
+});
+
+test('sheetErrorMessage: 403/404 points at creating a new list, not at pasting', () => {
+  // This is the pre-v1.0.19 pasted-sheet case. The old copy told parents to paste
+  // the edit link — an instruction they cannot follow, since that field is gone.
+  for (const c of ['sheet-http-403', 'sheet-http-404']) {
+    const m = sheetErrorMessage(c);
+    assert.match(m, /צרו רשימה חדשה/);
+    assert.doesNotMatch(m, /הדביקו/, 'must not tell them to paste — there is no paste field');
+  }
+});
+
+test('sheetErrorMessage: an offline read reassures that nothing was lost', () => {
+  assert.match(sheetErrorMessage('sheet-http-0'), /התוכן הקיים נשמר/);
 });

@@ -1207,13 +1207,15 @@ function setParentTab(name) {
  * now, or one this app already created for another profile on this device. This is
  * the single place that rewrites the library scope.
  */
-async function connectSheetUrl(url) {
+async function connectSheetUrl(url, { folderId = null } = {}) {
   const { libraryIdFor } = await import('./util.js');
   let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
   src = {
     shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
     maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
-    ...src, sheetUrl: url || null, updatedAt: Date.now()
+    // sheetFolderId is only set when the Drive move was VERIFIED — the panel copy
+    // reads it, so an unverified claim would send parents hunting for a folder.
+    ...src, sheetUrl: url || null, sheetFolderId: folderId, updatedAt: Date.now()
   };
   const oldLib = src.libraryId || null;
   if (url) src.libraryId = libraryIdFor(url);
@@ -1240,9 +1242,13 @@ async function refreshSourcesPanel() {
   const src = await db.getSources(activeProfileId);
   const cur = $('remote-current');
   if (cur) {
-    cur.textContent = src && src.sheetUrl
-      ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
-      : 'אין רשימה מחוברת. אפשר ליצור אחת — או להצטרף לרשימה של פרופיל אחר.';
+    // Only claim the folder when the move actually succeeded (sources.sheetFolderId).
+    // Asserting it unconditionally sent parents hunting for a folder that isn't there.
+    cur.textContent = !(src && src.sheetUrl)
+      ? 'אין רשימה מחוברת. אפשר ליצור אחת — או להצטרף לרשימה של פרופיל אחר.'
+      : src.sheetFolderId
+        ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
+        : 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם.';
     cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
   }
   const join = $('remote-join');
@@ -1313,7 +1319,10 @@ async function refreshSheetWriteStatus() {
     el.textContent = '⚠️ אין הרשאת עריכה לגיליון — סרטונים שנוספו באפליקציה לא נרשמים בו. שתפו את הגיליון לחשבון Google המחובר כעורך.';
     el.className = 'form-msg err';
   } else if (st.error === 'published-link') {
-    el.textContent = '⚠️ הקישור לגיליון הוא קישור פרסום — כדי שהאפליקציה תרשום אליו, הדביקו את קישור העריכה הרגיל של הגיליון.';
+    // v1.0.19: the old copy told the parent to "paste the normal edit link" — advice
+    // they can no longer follow, because the paste field is gone. Point at the action
+    // that actually exists now.
+    el.textContent = '⚠️ לא ניתן לכתוב לרשימה הזו (קובץ שחובר בגרסה ישנה). צרו רשימה חדשה כאן — התוכן הקיים יעבור אליה אוטומטית.';
     el.className = 'form-msg err';
   } else if (st.error === 'no-token' && st.pending) {
     el.textContent = `${st.pending} סרטונים ממתינים להירשם בגיליון — יירשמו אוטומטית אחרי חיבור חשבון Google (בהגדרות).`;
@@ -1756,7 +1765,14 @@ async function doSyncAndRefresh() {
       force: true,
       onProgress: (p) => { status.textContent = p.label || 'טוען…'; loading.progress(p); }
     });
-    if (res.ok) {
+    if (res.ok && res.sheetError) {
+      // v1.0.19: the pipeline ran, but the SHEET was never read. Saying "עודכן ✅"
+      // here is how a permanently frozen library looked healthy — reads need a token
+      // now, so a revoked grant or an unreadable file stops sync silently forever.
+      const { sheetErrorMessage } = await import('./sheetwrite.js');
+      status.textContent = sheetErrorMessage(res.sheetError);
+      status.className = 'form-msg err';
+    } else if (res.ok) {
       status.textContent = `עודכן ✅ ${res.added ? `נוספו ${res.added}` : ''} ${res.pending ? `• ממתינים לאישור: ${res.pending}` : ''}`;
       status.className = 'form-msg ok';
     } else {
@@ -1915,14 +1931,15 @@ async function finishSheetSetup() {
 }
 
 /** The same connection routine as the sources tab — for the wizard's new profile. */
-async function connectWizardSheet(url) {
+async function connectWizardSheet(url, { folderId = null } = {}) {
   const { libraryIdFor } = await import('./util.js');
   let src = (await db.getSources(wizardProfile.id)) || { profileId: wizardProfile.id, schema: 1 };
   const oldLib = src.libraryId || null;
   src = {
     shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
     maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
-    ...src, sheetUrl: url, libraryId: libraryIdFor(url), sheetHash: null, updatedAt: Date.now()
+    ...src, sheetUrl: url, libraryId: libraryIdFor(url), sheetHash: null,
+    sheetFolderId: folderId, updatedAt: Date.now()
   };
   await db.putSources(src);
   // same scope-change hazard as the sources tab (a wizard-created profile is usually
@@ -1956,7 +1973,7 @@ async function wizardCreateSheet() {
       msg.className = 'form-msg err';
       return;
     }
-    await connectWizardSheet(r.url);
+    await connectWizardSheet(r.url, { folderId: r.folderId || null });
     const copy = await confirmKid({
       emoji: '📄', title: 'הקובץ נוצר וחובר! ✅',
       text: 'מוסיפים סרטונים בהדבקת לינקים בקובץ (שורה = סרטון או ערוץ). אפשר להעתיק את הלינק לקובץ עכשיו.',
@@ -2393,7 +2410,7 @@ function wire() {
       msg.className = 'form-msg err';
       return;
     }
-    await connectSheetUrl(r.url);
+    await connectSheetUrl(r.url, { folderId: r.folderId || null });
   });
 
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
@@ -2423,8 +2440,11 @@ function wire() {
   });
   $('remote-clear').addEventListener('click', async () => {
     const src = await db.getSources(activeProfileId);
-    if (src) await db.putSources({ ...src, sheetUrl: null, sheetHash: null, updatedAt: Date.now() });
-    $('remote-status').textContent = 'הגיליון נותק. הערוצים והסרטונים הקיימים נשארים.';
+    if (src) {
+      await db.putSources({ ...src, sheetUrl: null, sheetHash: null, sheetFolderId: null, updatedAt: Date.now() });
+    }
+    await refreshSourcesPanel(); // the panel still said "הרשימה מחוברת ✅" otherwise
+    $('remote-status').textContent = 'הרשימה נותקה. הערוצים והסרטונים הקיימים נשארים.';
     $('remote-status').className = 'form-msg';
   });
 
@@ -2580,6 +2600,15 @@ function wire() {
     const ok = await openExternal(LINKS.site.privacy);
     if (!ok) {
       $('contact-msg').textContent = LINKS.site.privacy;
+      $('contact-msg').className = 'form-msg';
+    }
+  });
+  $('terms-btn').addEventListener('click', async () => {
+    const { LINKS } = await import('./links.js');
+    const { openExternal } = await import('./platform.js');
+    const ok = await openExternal(LINKS.site.terms);
+    if (!ok) {
+      $('contact-msg').textContent = LINKS.site.terms;
       $('contact-msg').className = 'form-msg';
     }
   });

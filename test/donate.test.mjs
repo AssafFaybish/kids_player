@@ -71,9 +71,15 @@ test('links.js: every address is well-formed and the consumers read it', async (
   const { LINKS } = await import('../www/js/links.js');
   const { UPDATE_REPO, releasesPageUrl } = await import('../www/js/update.js');
 
-  for (const url of [LINKS.site.home, LINKS.site.privacy]) {
+  for (const url of [LINKS.site.home, LINKS.site.privacy, LINKS.site.terms]) {
     assert.match(url, /^https:\/\/\S+$/, url);
   }
+  // v1.0.19: privacy + terms must live on the SAME host as the homepage. Google's
+  // OAuth branding rejects a policy link hosted off the app's own domain, and a
+  // mismatch here is the kind of thing nobody notices until a submission bounces.
+  const host = (u) => new URL(u).host;
+  assert.equal(host(LINKS.site.privacy), host(LINKS.site.home));
+  assert.equal(host(LINKS.site.terms), host(LINKS.site.home));
   assert.match(LINKS.contact.email, /^[^@\s]+@[^@\s]+\.[^@\s]+$/);
   if (LINKS.contact.cc) assert.match(LINKS.contact.cc, /^[^@\s]+@[^@\s]+\.[^@\s]+$/);
   assert.match(LINKS.updateRepo, /^[\w.-]+\/[\w.-]+$/, 'owner/repo');
