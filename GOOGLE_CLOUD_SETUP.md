@@ -46,37 +46,82 @@
 
 ## שלב 3א — אימות האפליקציה (verification) — כדי שהמשפחות לא יראו אזהרה
 
-האזהרה "Google לא אימתה את האפליקציה הזו" מופיעה כי אנחנו מבקשים scope רגיש
-(`spreadsheets`) ללא אימות. עבור scope רגיש (בניגוד ל"מוגבל") האימות **קל יחסית**
-ולרוב אינו דורש ביקורת אבטחה בתשלום. השלבים:
+### למה האזהרה בכלל מופיעה
 
-1. **דף בית ומדיניות פרטיות פומביים** — כבר מוכנים בריפו תחת `docs/`
-   (`index.html` + `privacy.html`). פרסמו אותם ב-GitHub Pages:
-   - ב-repo של devfassaf: **Settings ← Pages ← Source: Deploy from a branch ←
-     branch `main`, folder `/docs` ← Save**. אחרי דקה-שתיים הכתובות יהיו:
-     - דף בית: `https://devfassaf.github.io/kids_player/`
-     - מדיניות פרטיות: `https://devfassaf.github.io/kids_player/privacy.html`
-   - הקבצים יושבים בשורש `docs/` בכוונה — כך אין `/site/` בכתובת.
-2. **OAuth consent screen ← Edit App** ומלאו:
-   - **Application home page:** `https://devfassaf.github.io/kids_player/`
-   - **Application privacy policy link:** `https://devfassaf.github.io/kids_player/privacy.html`
-   - **Authorized domains:** `github.io`
-   - **App logo:** אפשר להעלות את `www/assets/icon.svg` כ-PNG.
-3. **Publishing status ← Prepare for verification / Submit for verification**.
-   נוסח מוכן ל"Scope justification" (הדביקו):
+גוגל מסווגת כל scope לאחת משלוש רמות, וזה **כל** ההסבר למסך המפחיד:
+
+| scope שאנחנו מבקשים | סיווג | מפעיל אזהרה? |
+|---|---|---|
+| `drive.file` | **לא-רגיש** ("Recommended") | ❌ לא |
+| `spreadsheets` | **רגיש** (Sensitive) | ✅ כן |
+
+כלומר `spreadsheets` לבדו אחראי למסך. מסך האזהרה מופיע כשאפליקציה מבקשת scope
+**רגיש או מוגבל** ולא עברה אימות — ורק אז.
+
+נקודה חשובה שכדאי להכיר לפני שמשקיעים: האפליקציה **קוראת** את הגיליון בלי שום
+הזדהות (ייצוא CSV ציבורי — ראו `sync2.js`). ה-scope הרגיש נחוץ אך ורק כדי
+**לכתוב** חזרה לגיליון. תיאורטית אפשר לוותר עליו ולהישאר עם `drive.file` בלבד,
+והאזהרה הייתה נעלמת מיד וללא כל הגשה — אבל אז הכתיבה תעבוד רק לגיליון
+שהאפליקציה **יצרה בעצמה**, וגיליון שההורה יצר והדביק כלינק יהפוך לקריאה-בלבד
+(גוגל מחזירה `403 appNotAuthorizedToFile`). בחרנו במסלול האימות כדי לשמור על
+סנכרון דו-כיווני מלא בשני המקרים.
+
+### מה נדרש בפועל (נכון ל-2026)
+
+לטובת scope **רגיש** — בניגוד ל"מוגבל" — **אין צורך בביקורת אבטחה בתשלום**
+(CASA). היא נדרשת רק ל-scopes מוגבלים, וגם חידוש שנתי לא נדרש כאן.
+
+1. ✅ **דף בית ומדיניות פרטיות פומביים** — כבר עלו ופעילים:
+   - דף בית: `https://devfassaf.github.io/kids_player/`
+   - מדיניות פרטיות: `https://devfassaf.github.io/kids_player/privacy.html`
+
+   (מקורם ב-`docs/` בריפו, מוגשים ב-GitHub Pages. הקבצים בשורש `docs/` בכוונה —
+   כך אין `/site/` בכתובת.) גוגל דורשת שמדיניות הפרטיות תתארח **באותו דומיין**
+   של דף הבית ותקושר ממסך ההסכמה — שני התנאים מתקיימים.
+
+2. **אימות בעלות על הדומיין** — זה השלב שהכי קל לפספס ובלעדיו ההגשה נתקעת:
+   נכנסים ל-[Google Search Console](https://search.google.com/search-console),
+   מוסיפים את `devfassaf.github.io` כ-property ומאמתים. אחר כך ב-Cloud Console:
+   **OAuth consent screen ← Edit App ← Authorized domains: `github.io`**.
+
+3. **מסך ההסכמה** — ממלאים גם:
+   - **Application home page** ו-**privacy policy link** — הכתובות מסעיף 1.
+   - **App logo** — `www/assets/icon.svg` מומר ל-PNG.
+
+4. **סרטון הדגמה** (חובה ל-scope רגיש). גוגל בודקת בו דברים ספציפיים, אז ודאו
+   שכולם נראים בבירור:
+   - הסרטון **באנגלית**.
+   - שם האפליקציה במסך ההסכמה **זהה** לשם ב-Cloud Console.
+   - **ה-OAuth client ID גלוי בשורת הכתובת** בזמן ההסכמה.
+   - כל scope רגיש **מודגם בשימוש אמיתי** — כלומר צריך להראות גם הוספת סרטון
+     שנרשמת בגיליון, לא רק את מסך ההתחברות.
+
+5. **Submit for verification**. נוסח מוכן ל-Scope justification (הדביקו):
    > The app is a private, parent-managed video player for young children. It
    > uses `drive.file` to store a single backup file it creates (profiles and the
    > curated library), and `spreadsheets` to read and update the parent's own
-   > source sheet that defines which videos/channels the child may watch. No data
-   > is shared with third parties; everything stays in the user's own Google
-   > account and device.
-   - הקלטת וידאו קצרה של זרימת ההסכמה נדרשת לעיתים — צלמו את מסך החיבור באפליקציה.
-4. ההמתנה לאישור היא בדרך כלל ימים עד שבועות. **עד האישור** הכול עובד — רק עם
-   אזהרת ה"unverified" החד-פעמית. אחרי האישור היא נעלמת לכולם.
+   > source sheet that defines which videos/channels the child may watch. Reading
+   > the sheet needs no OAuth at all (public CSV export); the `spreadsheets` scope
+   > is required only so that videos added inside the app are written back to the
+   > parent's own sheet, keeping a single source of truth. A narrower scope does
+   > not work here because the parent may paste a link to a sheet they created
+   > themselves, which `drive.file` cannot authorize. No data is shared with third
+   > parties; everything stays in the user's own Google account and device.
 
-> חלופה מהירה ללא אימות: **Publishing status: Testing** + הוספת חשבונות ההורים
-> תחת **Test users**. מסיר את האזהרה עבורם מיד, אך מוגבל ל-100 משתמשים וייתכן
-> שיחייב הסכמה מחדש מדי פעם. מתאים לשלב ניסוי; לשיתוף רחב עדיף אימות.
+6. **זמן טיפול: עד 10 ימים.** עד האישור הכול עובד — רק עם האזהרה החד-פעמית.
+
+### ⚠️ המלכודת של מצב Testing
+
+`Publishing status: Testing` + הוספת חשבונות ההורים תחת **Test users** אכן מסיר
+את האזהרה עבורם **מיד**, וזה פתרון גישור לגיטימי עד שהאימות מאושר. אבל שימו לב
+למחיר האמיתי:
+
+- מוגבל ל-**100 משתמשים**.
+- **ההרשאה פגה אחרי 7 ימים** — לא רק ה-refresh token, אלא ההסכמה עצמה. כלומר כל
+  הורה יצטרך להתחבר מחדש **מדי שבוע**. באנדרואיד אנחנו עובדים מול
+  AuthorizationClient שאין בו refresh token בכלל, אז אין שום דרך לעקוף את זה.
+
+לכן Testing מתאים רק כפתרון זמני; להפצה למשפחות — אימות.
 
 ## שלב 4 — שני OAuth Client IDs (אנדרואיד)
 
