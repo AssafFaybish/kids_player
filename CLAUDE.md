@@ -112,6 +112,19 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.13: what's-new is a real SCROLLING view (`view-whatsnew`), not the modal (the old
+  `alertKid` card had no max-height, so long English bodies overflowed it). Only `.wn-body`
+  scrolls — header and button stay put. Notes are PARENT-FACING Hebrew:
+  `update.extractReleaseNotes` prefers the `## מה חדש` section of the release body and
+  otherwise de-noises the whole body (drops headings, urls, @handles, PR refs, markdown,
+  "Full Changelog"); `buildWhatsNew` groups EVERY version above the installed one
+  (newest first, cap 8 + `moreCount`). `checkForUpdate` now fetches `/releases?per_page=30`
+  (same single call) → `latest.whatsNew` + `update.notesAll` (all versions, for the About
+  tab's 🎉 button after an update). Back / "לא עכשיו" CANCELS the update. release.sh /
+  release.ps1 wrap the notes argument in a `## מה חדש` heading (default: Hebrew
+  "שיפורים ותיקונים"); `scripts/backfill-release-notes.sh` adds Hebrew sections to
+  pre-v1.0.13 releases (idempotent, keeps the original body below a divider; needs WRITE
+  access — the local gh account has read-only on devfassaf).
 - v1.0.12: (a) REMOVAL ROWS — a video inside a channel has no row of its own, so its
   deletion travels as a comment row `# הוסר: <link> — <title>` (`classify.parseRemovalRow`
   → `classifySourceRow` kind 'removed'; old app versions skip comments, so a removal can

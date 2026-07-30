@@ -64,9 +64,15 @@ cp android/app/build/outputs/apk/release/app-release.apk "$APK"
 say "Built and verified: $APK ($(du -h "$APK" | cut -f1 | tr -d ' '))"
 
 # ---- publish -------------------------------------------------------------------
-[ -n "$NOTES" ] || NOTES="Version $V"
+# The release body is what PARENTS read in the app's what's-new screen (v1.0.13):
+# Hebrew, user-facing, one bullet per change. The app extracts exactly this section,
+# so keep technical detail in the PR — not here.
+[ -n "$NOTES" ] || NOTES="שיפורים ותיקונים כלליים"
+BODY="## מה חדש
+
+$NOTES"
 say "Publishing GitHub release…"
-if gh release create "$TAG" "$APK" --repo "$REPO" -t "$TAG" -n "$NOTES" 2>/dev/null; then
+if gh release create "$TAG" "$APK" --repo "$REPO" -t "$TAG" -n "$BODY" 2>/dev/null; then
   printf '\n\033[1;32m✓ Published! Devices will see the update via the "check for update" button.\033[0m\n'
 else
   cat <<EOT

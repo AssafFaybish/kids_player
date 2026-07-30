@@ -74,6 +74,65 @@ export function buildAppShareMessage(latest) {
   ].join('\n');
 }
 
+/* ---------------- what's-new notes (v1.0.13, pure) ---------------- */
+
+const NOTES_HEADING = /^\s*#{1,6}\s*(?:מה\s*חדש|what'?s\s*new)\s*\??\s*$/im;
+const MAX_LINE = 160;
+const MAX_LINES_PER_VERSION = 12;
+
+/**
+ * The PARENT-FACING lines of one release body. GitHub's auto-generated body is
+ * English PR titles + @handles + URLs — noise for a parent. So:
+ *   1. prefer the section under a `## מה חדש` heading (release.sh writes one);
+ *   2. otherwise fall back to the whole body, aggressively de-noised.
+ * Returns short plain-text lines (no markdown, no links) — never null.
+ */
+export function extractReleaseNotes(body) {
+  let text = String(body || '');
+  const m = text.match(NOTES_HEADING);
+  if (m) {
+    const after = text.slice(m.index + m[0].length);
+    const next = after.search(/^\s*#{1,6}\s+\S|^\s*---\s*$/m); // next heading or divider
+    text = next >= 0 ? after.slice(0, next) : after;
+  }
+  return text
+    .split(/\r?\n/)
+    // markdown HEADINGS are structure, never content — in the fallback path they'd
+    // otherwise leak in as a bogus first bullet ("What's Changed")
+    .map((raw) => (/^\s*#{1,6}\s+/.test(raw) ? '' : raw)
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/^\s*[>]+\s*/, '')                        // quotes
+      .replace(/^\s*[-*+]\s+/, '')                       // bullet markers
+      .replace(/\*\*(.*?)\*\*/g, '$1').replace(/[*_`]/g, '')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')           // md links → their text
+      .replace(/\bby\s+@[\w-]+\s+in\s+\S+/gi, '')        // "by @user in <url>"
+      .replace(/@[\w-]+/g, '')                            // bare handles
+      .replace(/https?:\/\/\S+/g, '')                     // bare urls
+      .replace(/^\s*Full Changelog.*$/i, '')
+      .replace(/\(#\d+\)|#\d+/g, '')                      // PR/issue refs
+      .replace(/\s{2,}/g, ' ')
+      .trim())
+    .filter((l) => l && !/^[-=–—.:]+$/.test(l))
+    .map((l) => (l.length > MAX_LINE ? l.slice(0, MAX_LINE - 1).trimEnd() + '…' : l))
+    .slice(0, MAX_LINES_PER_VERSION);
+}
+
+/**
+ * Group release notes per version for the what's-new screen.
+ * `above` (default) keeps only versions NEWER than `local` — a device jumping several
+ * versions sees everything it missed, newest first, capped so the screen stays a
+ * screen (the remainder is reported as `moreCount`).
+ */
+export function buildWhatsNew(releases, local, { max = 8, above = true } = {}) {
+  const list = (Array.isArray(releases) ? releases : [])
+    .filter((r) => r && !r.draft && !r.prerelease && r.tag_name)
+    .map((r) => ({ version: String(r.tag_name).replace(/^v/, ''), lines: extractReleaseNotes(r.body), tag: r.tag_name }))
+    .filter((r) => parseVersion(r.version))
+    .filter((r) => (above ? isNewer(r.version, local) : true))
+    .sort((a, b) => compareVersions(b.version, a.version));
+  return { versions: list.slice(0, max), moreCount: Math.max(0, list.length - max) };
+}
+
 /* ---------------- runtime ---------------- */
 
 export async function currentVersion() {
@@ -97,9 +156,12 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
     return { status, latest: cached, local };
   }
 
+  // v1.0.13: fetch the release LIST (same one call) — it yields both the newest
+  // publishable release AND the notes of every version in between, so a device that
+  // skipped several versions can be told everything it missed.
   const res = await Promise.race([
     httpRequest({
-      url: `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`,
+      url: `https://api.github.com/repos/${UPDATE_REPO}/releases?per_page=30`,
       headers: { Accept: 'application/vnd.github+json' },
       responseType: 'json'
     }),
@@ -108,7 +170,14 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
   await prefSet('update.lastCheck', String(Date.now()));
   if (res.status !== 200 || !res.data) return { status: 'network-error', local };
 
-  const rel = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+  const all = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+  const releases = Array.isArray(all) ? all : [];
+  // same semantics as /releases/latest: newest non-draft, non-prerelease
+  const rel = releases.find((r) => r && !r.draft && !r.prerelease) || null;
+  if (!rel) return { status: 'no-asset', local };
+  // every version's notes (not just newer ones) — the About tab reads the installed
+  // version's entry from here after the update lands
+  await prefSet('update.notesAll', JSON.stringify(buildWhatsNew(releases, local, { above: false, max: 30 }).versions));
   const tag = rel.tag_name || '';
   const asset = pickApkAsset(rel.assets, tag);
   if (!asset) return { status: 'no-asset', local };
@@ -116,7 +185,9 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
   const latest = {
     version: tag.replace(/^v/, ''), tag,
     assetName: asset.name, assetUrl: asset.browser_download_url, size: asset.size || 0,
-    notes: (rel.body || '').slice(0, 2000), checkedAt: Date.now()
+    notes: (rel.body || '').slice(0, 2000), checkedAt: Date.now(),
+    // v1.0.13: parent-facing notes for EVERY version this device would gain
+    whatsNew: buildWhatsNew(releases, local)
   };
   await prefSet('update.latest', JSON.stringify(latest));
   const status = resolveUpdateStatus({ latest, local, skipped: await prefGet('update.skip'), silent });
@@ -135,6 +206,19 @@ export async function latestKnownRelease() {
     try { latest = (await checkForUpdate({ silent: true, force: true })).latest || null; } catch {}
   }
   return latest;
+}
+
+/**
+ * v1.0.13: the notes of the version this device is RUNNING — for the About tab's
+ * "what's new" button after an update landed. Falls back to the newest known entry.
+ */
+export async function notesForInstalledVersion() {
+  const local = await currentVersion();
+  let all = [];
+  try { all = JSON.parse((await prefGet('update.notesAll')) || '[]'); } catch {}
+  if (!Array.isArray(all) || !all.length) return { versions: [], moreCount: 0 };
+  const exact = local ? all.find((v) => compareVersions(v.version, local) === 0) : null;
+  return { versions: exact ? [exact] : all.slice(0, 1), moreCount: 0 };
 }
 
 /** Download (with size verification) and hand the APK to the system installer. */

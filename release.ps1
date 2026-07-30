@@ -109,11 +109,14 @@ $SizeMb = [math]::Round((Get-Item $Apk).Length / 1MB, 1)
 Say "Built and verified: $Apk (${SizeMb}M)"
 
 # ---- publish -------------------------------------------------------------------
-if (-not $Notes) { $Notes = "Version $V" }
+# The release body is what PARENTS read in the app's what's-new screen (v1.0.13):
+# Hebrew, user-facing, one bullet per change. Technical detail belongs in the PR.
+if (-not $Notes) { $Notes = "שיפורים ותיקונים כלליים" }
+$Body = "## מה חדש`n`n$Notes"
 Say "Publishing GitHub release..."
 $Published = $false
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    gh release create $Tag $Apk --repo $Repo -t $Tag -n $Notes 2>$null
+    gh release create $Tag $Apk --repo $Repo -t $Tag -n $Body 2>$null
     $Published = ($LASTEXITCODE -eq 0)
 }
 if ($Published) {
