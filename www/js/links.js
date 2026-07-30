@@ -22,11 +22,11 @@ export const LINKS = {
     paypal: 'https://paypal.me/assaffaybish'
   },
 
-  /** Where "📧 שליחת מייל למפתח" and "💡 רעיון לשיפור" send the parent. */
+  /** Where the About tab's "💡 שלח הצעות לשיפור" button sends the parent. */
   contact: {
     email: 'dev.fassaf@gmail.com',
     cc: 'fassaf.f@gmail.com',
-    subject: 'הסרטונים שלי — הצעה לשיפור'
+    subject: 'הסרטונים שלי — הצעות לשיפור'
   },
 
   /**
