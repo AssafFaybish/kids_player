@@ -151,6 +151,7 @@ npm run apk:verify                             # חייב להדפיס "Verifies
 # 5. שם הקובץ לפי המוסכמה שהאפליקציה מחפשת, בתיקיית האיסוף apk_versions/
 mkdir -p apk_versions
 cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player-v1.0.1.apk
+cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player.apk
 
 # 6. שמירת הגרסה בגיט
 git add package.json package-lock.json && git commit -m "release v1.0.1" && git push
@@ -161,7 +162,7 @@ git add package.json package-lock.json && git commit -m "release v1.0.1" && git 
 #### דרך א' — פקודה אחת (מטרמינל מחובר לחשבון devfassaf)
 
 ```bash
-gh release create v1.0.1 apk_versions/kids-player-v1.0.1.apk --repo devfassaf/kids_player -t "v1.0.1" -n "מה חדש: ..."
+gh release create v1.0.1 apk_versions/kids-player-v1.0.1.apk apk_versions/kids-player.apk --repo devfassaf/kids_player -t "v1.0.1" -n "מה חדש: ..."
 ```
 
 #### דרך ב' — דרך האתר (2-3 דקות)
@@ -173,10 +174,13 @@ gh release create v1.0.1 apk_versions/kids-player-v1.0.1.apk --repo devfassaf/ki
 3. **Release title**: `v1.0.1`.
 4. **Describe this release**: מה חדש, בעברית — הטקסט הזה מוצג להורה במסך
    העדכון באפליקציה.
-5. גררו את `apk_versions/kids-player-v1.0.1.apk` לתיבת
+5. גררו את **שני** הקבצים — `apk_versions/kids-player-v1.0.1.apk`
+   ו-`apk_versions/kids-player.apk` — לתיבת
    **"Attach binaries by dropping them here or selecting them"** והמתינו
    לסיום ההעלאה (פס התקדמות ואז שם הקובץ ברשימה).
-   ⚠️ **שם הקובץ חשוב**: `kids-player-v<גרסה>.apk` — זו התבנית שהאפליקציה מחפשת.
+   ⚠️ **שני השמות חשובים**: `kids-player-v<גרסה>.apk` היא התבנית שהאפליקציה מחפשת,
+   ו-`kids-player.apk` הוא השם הקבוע שכפתור ההורדה באתר מצביע אליו
+   (`/releases/latest/download/kids-player.apk`). בלי השני — הכפתור באתר יחזיר 404.
 6. ודאו ש-**"Set as the latest release"** מסומן (ברירת המחדל).
 7. **Publish release** (הכפתור הירוק). לא "Save draft" — טיוטה בלתי נראית לאפליקציה!
 

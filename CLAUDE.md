@@ -227,8 +227,15 @@ pins that the consumers follow the config and that every address is well-formed.
   exist). Channel auto-approve toggle now offers to approve that channel's PENDING videos
   (dialog with count). Channels without a logo get a PERSISTED `fallbackThumbUrl` (oldest
   live video's thumbnail) so folders stay visually distinct.
-- The updater reads `devfassaf/kids_player` releases/latest (`UPDATE_REPO` in update.js);
-  asset naming: `kids-player-v<X.Y.Z>.apk`.
+- The updater reads `devfassaf/kids_player` releases/latest (`UPDATE_REPO` in update.js).
+  EVERY release carries **TWO copies of the same APK** (v1.0.19):
+  `kids-player-v<X.Y.Z>.apk` (humans + `pickApkAsset`'s exact match) and
+  `kids-player.apk` (a STABLE name, because GitHub's
+  `/releases/latest/download/<asset>` redirect — what the website's download button
+  uses — resolves only an exactly-named asset). Both release.sh and release.ps1
+  upload both, and `test/distribution.test.mjs` pins the names together across the
+  two scripts and docs/index.html. Publishing by hand with only one file silently
+  404s the website button.
 - v1.0.18: (a) EVERY BLOCKING WAIT uses the full-screen `view-loading` (horse/rocket/
   balloon/train), not a `.form-msg` line — Google connect, Drive enable/push, sheet
   creation, forced sync, add-channel. `loading.show({title, step, pct})` +

@@ -2603,6 +2603,19 @@ function wire() {
       $('contact-msg').className = 'form-msg';
     }
   });
+  // v1.0.19: the landing page — what the app is, the install walkthrough, and the
+  // link a parent forwards to another parent. Same openExternal path as the policy
+  // buttons: the WebView blocks external navigation by design, so it must leave
+  // the app; if that fails, show the address so it can still be copied by hand.
+  $('site-btn').addEventListener('click', async () => {
+    const { LINKS } = await import('./links.js');
+    const { openExternal } = await import('./platform.js');
+    const ok = await openExternal(LINKS.site.home);
+    if (!ok) {
+      $('contact-msg').textContent = LINKS.site.home;
+      $('contact-msg').className = 'form-msg';
+    }
+  });
   $('terms-btn').addEventListener('click', async () => {
     const { LINKS } = await import('./links.js');
     const { openExternal } = await import('./platform.js');
