@@ -2583,6 +2583,15 @@ function wire() {
       $('contact-msg').className = 'form-msg';
     }
   });
+  $('terms-btn').addEventListener('click', async () => {
+    const { LINKS } = await import('./links.js');
+    const { openExternal } = await import('./platform.js');
+    const ok = await openExternal(LINKS.site.terms);
+    if (!ok) {
+      $('contact-msg').textContent = LINKS.site.terms;
+      $('contact-msg').className = 'form-msg';
+    }
+  });
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
   $('guide-add').addEventListener('click', () => { startAddGuide(); });
   // v1.0.13: re-read what changed, any time (About tab)

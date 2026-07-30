@@ -36,7 +36,11 @@ export const LINKS = {
    */
   site: {
     home: 'https://devfassaf.github.io/kids_player/',
-    privacy: 'https://devfassaf.github.io/kids_player/privacy.html'
+    privacy: 'https://devfassaf.github.io/kids_player/privacy.html',
+    // Optional in Google's Branding page, but worth having for an app handed to
+    // other families: disclaims warranty, states we host no content, and makes the
+    // "not affiliated with Google/YouTube" point explicit.
+    terms: 'https://devfassaf.github.io/kids_player/terms.html'
   },
 
   /** owner/repo the in-app updater reads releases from (asset: kids-player-v<X.Y.Z>.apk). */
