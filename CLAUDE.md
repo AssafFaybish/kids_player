@@ -31,6 +31,15 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - HUD bar CONTAINERS are `pointer-events:none` ALWAYS (only buttons/seek take events, only while
   `.hud-on`) — interactive bars swallow the center-tap/double-tap on small players.
 - Tap model: hidden→tap only reveals; visible→center-50% tap toggles play. Paused pins the HUD.
+- A video that ENDS calls `leaveWatch()` (v1.0.16): exit fullscreen, then `nav.back()` —
+  the child returns to the FOLDER / search results they came from, never unconditionally
+  home (`goGallery()` there was the bug). Works after video→video switches too because
+  `openWatch` uses `nav.replace` while watching, so the entry below stays the folder.
+- The app runs in game-style IMMERSIVE mode always (v1.0.16, MainActivity
+  `applyImmersive()` + re-applied in `onWindowFocusChanged`): system bars hidden,
+  `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` reveals them on an edge swipe. CSS keeps a
+  minimum top padding (`calc(16px + env(safe-area-inset-top))`) so content never hugs
+  the bezel when the insets report 0.
 - Auto-fullscreen on tile tap: `enterPlayerFullscreen()` runs SYNCHRONOUSLY inside the tap
   gesture (an await first may void the user activation). 🏠 lives OUTSIDE the player
   (`.watch-top`, top-right) — deliberate: home requires exiting fullscreen first (v1.0.2).
