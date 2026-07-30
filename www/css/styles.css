@@ -629,6 +629,38 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   .connect-emoji { font-size: 52px; }
 }
 
+/* ---------- What's new (v1.0.13) ----------
+   A real screen, not a dialog: release notes can run long, so the NOTES scroll
+   while the header and the action button stay put (the old modal had no
+   max-height and long English bodies overflowed the card). */
+#view-whatsnew { min-height: 100dvh; }
+#view-whatsnew.active { display: flex; align-items: center; justify-content: center; }
+.wn-wrap {
+  display: flex; flex-direction: column; gap: 12px;
+  width: min(94vw, 560px); max-height: 92dvh;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) 18px 18px;
+}
+.wn-head { text-align: center; flex: 0 0 auto; }
+.wn-emoji { font-size: 46px; line-height: 1; }
+.wn-title { font-size: 26px; color: var(--brand-2); margin: 4px 0 0; }
+.wn-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: #fff; border-radius: 18px; box-shadow: var(--shadow);
+  padding: 14px 18px; text-align: start;
+}
+.wn-ver { font-size: 18px; font-weight: 800; color: var(--brand-2); margin: 14px 0 6px; }
+.wn-ver:first-child { margin-top: 2px; }
+.wn-list { margin: 0; padding-inline-start: 20px; }
+/* comfortable reading size + line height — this is parent-facing text, not a chip */
+.wn-list li { font-size: 17px; line-height: 1.65; color: var(--ink); margin-bottom: 6px; }
+.wn-more { font-size: 15px; color: var(--muted); margin: 12px 0 0; font-weight: 700; }
+.wn-actions { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.wn-ok { min-width: 240px; }
+@media (max-width: 560px) {
+  .wn-title { font-size: 22px; }
+  .wn-list li { font-size: 16px; }
+}
+
 /* ---------- Onboarding tour (v1.0.8) ---------- */
 #view-tour { min-height: 100dvh; }
 #view-tour.active { display: flex; align-items: center; justify-content: center; }

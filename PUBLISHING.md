@@ -65,17 +65,38 @@ mkdir -p apk_versions
 cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player-v<X.Y.Z>.apk
 
 # 6) פרסום ל-GitHub Releases (ה-repo הציבורי devfassaf/kids_player)
+#    גוף ה-release הוא מה שההורים קוראים במסך "מה חדש" באפליקציה — עברית, קצר,
+#    בולט לכל שינוי, תחת הכותרת "## מה חדש" (release.sh עושה זאת אוטומטית).
 gh release create v<X.Y.Z> apk_versions/kids-player-v<X.Y.Z>.apk \
-  --repo devfassaf/kids_player -t "v<X.Y.Z>" -n "מה חדש: ..."
+  --repo devfassaf/kids_player -t "v<X.Y.Z>" \
+  -n "## מה חדש
+
+* השינוי הראשון שההורה יראה
+* השינוי השני"
 
 # 7) commit + tag למקור
 git add package.json && git commit -m "release v<X.Y.Z>" && git tag v<X.Y.Z> && git push --tags
 ```
 
-המעדכן באפליקציה קורא את `releases/latest` (מדלג על drafts/prereleases — אפשר לפרסם
+המעדכן באפליקציה קורא את רשימת ה-releases (מדלג על drafts/prereleases — אפשר לפרסם
 בטא עם `--prerelease` והמכשירים יתעלמו ממנה), משווה גרסאות נומרית, מוריד עם אימות
 גודל, ומפעיל את מתקין המערכת. בטלפון נדרש אישור חד-פעמי של "התקנת אפליקציות לא
 ידועות" לאפליקציה.
+
+## הערות "מה חדש" שההורים רואים (v1.0.13)
+
+לפני כל התקנת עדכון האפליקציה מציגה מסך נגלל עם **כל** הגרסאות שמעל המותקנת. הטקסט
+נלקח מהקטע שתחת `## מה חדש` בגוף ה-release; אם אין קטע כזה, האפליקציה מנקה את הגוף
+(מסירה קישורים, שמות משתמש, הפניות PR ו-markdown) — אבל התוצאה תמיד פחות טובה מנוסח
+עברי שנכתב להורים. לכן: **תמיד לכתוב את הקטע העברי**, ולהשאיר את הפירוט הטכני ב-PR.
+
+לריליסים שפורסמו לפני v1.0.13 יש סקריפט חד-פעמי שמוסיף להם קטע עברי (שומר את הגוף
+המקורי מתחת לקו מפריד, ואפשר להריץ שוב בבטחה):
+
+```bash
+gh auth login          # נדרשת הרשאת כתיבה ל-devfassaf/kids_player
+./scripts/backfill-release-notes.sh
+```
 
 ## התקנה ראשונה של גרסת release על טאבלט שמריץ debug ישן (חד-פעמי!)
 

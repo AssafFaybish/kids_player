@@ -215,22 +215,68 @@ async function maybePromptUpdate(r) {
 }
 
 /**
- * v1.0.8 (user request): right before installing, show WHAT'S NEW — the release
- * notes the parent wrote when publishing (already stored from GitHub). One OK
- * button, no cancel: informational only, the install follows.
+ * What's-new screen (v1.0.8 → rewritten v1.0.13). A real SCROLLING view, not the
+ * modal: notes can span several versions, so the list scrolls while the button
+ * stays reachable. Hebrew parent-facing lines only (update.extractReleaseNotes
+ * strips GitHub's PR titles/handles/links). Resolves true = proceed to install.
+ * Back / "לא עכשיו" cancel the update (user decision).
  */
-async function showWhatsNew(latest) {
-  const notes = String((latest && latest.notes) || '').trim();
-  if (!notes) return;
-  await alertKid({
-    emoji: '✨', title: `מה חדש בגירסה ${latest.version}`,
-    text: notes.slice(0, 600), ok: 'אישור והתקנה'
+let wnResolve = null;
+
+function renderWhatsNew({ versions, moreCount }, { installMode }) {
+  $('wn-title').textContent = installMode ? 'מה חדש בעדכון' : 'מה חדש בגירסה';
+  const body = $('wn-body');
+  body.innerHTML = '';
+  for (const v of versions) {
+    const h = document.createElement('div');
+    h.className = 'wn-ver';
+    h.textContent = 'גירסה ' + v.version;
+    body.appendChild(h);
+    const ul = document.createElement('ul');
+    ul.className = 'wn-list';
+    const lines = v.lines && v.lines.length ? v.lines : ['שיפורים ותיקונים כלליים'];
+    for (const line of lines) {
+      const li = document.createElement('li');
+      li.textContent = line;
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  }
+  if (moreCount > 0) {
+    const p = document.createElement('p');
+    p.className = 'wn-more';
+    p.textContent = `ועוד ${moreCount} גרסאות קודמות`;
+    body.appendChild(p);
+  }
+  $('wn-ok').textContent = installMode ? 'עדכון עכשיו' : 'סגירה';
+  $('wn-cancel').classList.toggle('hidden', !installMode);
+  body.scrollTop = 0;
+}
+
+/** installMode=true → resolves true only if the parent pressed "עדכון עכשיו". */
+function showWhatsNew(data, { installMode = true } = {}) {
+  const versions = (data && data.versions) || [];
+  if (installMode && !versions.length) return Promise.resolve(true); // nothing to show — don't block the update
+  renderWhatsNew({ versions, moreCount: (data && data.moreCount) || 0 }, { installMode });
+  return new Promise((resolve) => {
+    wnResolve = resolve;
+    nav.go('whatsnew');
   });
+}
+
+/** Resolve the screen exactly once (button OR hardware back). */
+function closeWhatsNew(proceed) {
+  const f = wnResolve;
+  wnResolve = null;
+  if (f) f(proceed);
 }
 
 /** Download + hand off to the Android installer, with the loading screen as progress. */
 async function runUpdateInstall(latest) {
-  await showWhatsNew(latest);
+  // v1.0.13: the what's-new screen is the last gate — back / "לא עכשיו" aborts
+  const proceed = await showWhatsNew(latest && latest.whatsNew, { installMode: true });
+  if (!proceed) { if (!nav.back()) goGallery(); return; }
+  if (nav.isActive('whatsnew') && !nav.back()) goGallery();
   const upd = await import('./update.js');
   loading.show({ defer: 0, step: 'מורידים את העדכון…' });
   let res = null;
@@ -265,6 +311,8 @@ function registerViews() {
     }
   });
   nav.register('sheet-setup', { onBack: () => { finishSheetSetup(); return true; } });
+  // v1.0.13: back on the what's-new screen CANCELS the update (user decision)
+  nav.register('whatsnew', { onLeave: () => closeWhatsNew(false) });
   nav.register('profiles', { onBack: () => { askExit(); return true; } });
   nav.register('create-profile', {
     onBack: () => {
@@ -2177,7 +2225,9 @@ function wire() {
     const upd = await import('./update.js');
     const latest = JSON.parse((await import('./platform.js').then((p) => p.prefGet('update.latest'))) || 'null');
     if (!latest) return;
-    await showWhatsNew(latest); // v1.0.8: what's-new before the install starts
+    // v1.0.13: what's-new first; the parent may still back out here
+    if (!(await showWhatsNew(latest.whatsNew, { installMode: true }))) { if (!nav.back()) goGallery(); return; }
+    if (nav.isActive('whatsnew') && !nav.back()) goGallery();
     if (!(await upd.canInstall())) {
       msg.textContent = 'נדרש אישור חד-פעמי: "התקנת אפליקציות לא ידועות" — נפתח את ההגדרה';
       msg.className = 'form-msg';
@@ -2210,6 +2260,19 @@ function wire() {
     } catch {}
   });
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
+  // v1.0.13: re-read what changed, any time (About tab)
+  $('whatsnew-btn').addEventListener('click', async () => {
+    const upd = await import('./update.js');
+    const data = await upd.notesForInstalledVersion();
+    if (!data.versions.length) {
+      await alertKid({ emoji: '🎉', title: 'מה חדש', text: 'אין עדיין מידע על שינויים — נסו "בדיקת עדכון" קודם.', ok: 'סבבה' });
+      return;
+    }
+    await showWhatsNew(data, { installMode: false });
+    if (nav.isActive('whatsnew')) nav.back();
+  });
+  $('wn-ok').addEventListener('click', () => { closeWhatsNew(true); if (nav.isActive('whatsnew')) nav.back(); });
+  $('wn-cancel').addEventListener('click', () => { closeWhatsNew(false); if (nav.isActive('whatsnew')) nav.back(); });
 
   $('parent-exit').addEventListener('click', goGallery);
   $('clear-cache').addEventListener('click', async () => {
