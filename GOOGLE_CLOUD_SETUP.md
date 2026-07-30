@@ -79,22 +79,67 @@
    כך אין `/site/` בכתובת.) גוגל דורשת שמדיניות הפרטיות תתארח **באותו דומיין**
    של דף הבית ותקושר ממסך ההסכמה — שני התנאים מתקיימים.
 
-2. **אימות בעלות על הדומיין** — זה השלב שהכי קל לפספס ובלעדיו ההגשה נתקעת:
-   נכנסים ל-[Google Search Console](https://search.google.com/search-console),
-   מוסיפים את `devfassaf.github.io` כ-property ומאמתים. אחר כך ב-Cloud Console:
-   **OAuth consent screen ← Edit App ← Authorized domains: `github.io`**.
+2. ⛔ **אימות בעלות על הדומיין — כאן המסלול נחסם עם `github.io`.**
 
-3. **מסך ההסכמה** — ממלאים גם:
-   - **Application home page** ו-**privacy policy link** — הכתובות מסעיף 1.
-   - **App logo** — `www/assets/icon.svg` מומר ל-PNG.
+   גוגל דורשת במפורש **Domain Property (ברמת DNS)** ב-Search Console, ולא
+   "URL prefix": *"You must verify the Domain Property (DNS-level), rather than a
+   'URL prefix' or 'Site,' property."* Domain Property מחייב רשומת **TXT ב-DNS**
+   של הדומיין — ו-`github.io` הוא דומיין של GitHub. **אין לנו גישה ל-DNS שלו,
+   ולכן אי אפשר לאמת אותו.**
 
-4. **סרטון הדגמה** (חובה ל-scope רגיש). גוגל בודקת בו דברים ספציפיים, אז ודאו
+   מצטבר לזה: `github.io` הוא דומיין משותף (Public Suffix List), וגוגל ממליצה
+   במפורש נגד אירוח דף הבית "on a third-party platform where you can't verify
+   that you own your subdomain". יש דיווחים מ-2025-2026 של מפתחים שאימתו
+   `*.github.io` ב-Search Console ועדיין נדחו עם *"The website of your home page
+   URL is not registered to you"*.
+
+   > הערה: גם ההוראה הקודמת כאן ("Authorized domains: `github.io`") הייתה שגויה —
+   > היחידה הנכונה היא `devfassaf.github.io`. זה ממילא לא עוזר כל עוד אין DNS.
+
+   **הפתרון: דומיין משלנו.** קונים דומיין זול (~40-60 ₪ לשנה), מפנים אותו
+   ל-GitHub Pages (קובץ `CNAME` בריפו + רשומות DNS אצל הרשם). האחסון נשאר חינם,
+   אבל עכשיו יש DNS אמיתי לרשומת ה-TXT, והאתר נחשב "first-party". אחרי המעבר
+   צריך לעדכן את `site.home` ו-`site.privacy` ב-[www/js/links.js](www/js/links.js).
+
+   ⚠️ החשבון שמאמת ב-Search Console חייב להיות **Owner** על ה-property **וגם**
+   Owner על פרויקט ה-Cloud. "Full User" לא מספיק.
+
+3. **מסך ההסכמה.** ⚠️ מאפריל 2025 גוגל העבירה את כל הדף הזה למקום חדש בשם
+   **Google Auth Platform** — הנתיב הישן `APIs & Services ← OAuth consent screen`
+   כבר לא קיים. כתובות ישירות (הכי בטוח לגשת דרכן):
+
+   | דף | כתובת | למה הוא משמש |
+   |---|---|---|
+   | Branding | `console.cloud.google.com/auth/branding` | שם, לוגו, דף בית, פרטיות, Authorized domains |
+   | Audience | `console.cloud.google.com/auth/audience` | Testing / In production, test users |
+   | Data Access | `console.cloud.google.com/auth/scopes` | הוספה והסרה של scopes |
+   | Verification Center | `console.cloud.google.com/auth/verification` | ההגשה עצמה ומעקב אחריה |
+   | Clients | `console.cloud.google.com/auth/clients` | ה-OAuth Client IDs |
+
+   בדף **Branding** ממלאים: **Application home page** ו-**privacy policy link**
+   (הכתובות מסעיף 1), ו-**App logo** — ריבוע 120×120 פיקסלים, עד 1MB
+   (`www/assets/icon.svg` מומר ל-PNG). חשוב: **מוסיפים Authorized domains לפני**
+   שממלאים את כתובות דף הבית והפרטיות, אחרת הן נדחות.
+
+   ⚠️ **האימות הוא שני מסלולים נפרדים, וזה מה שרוב המדריכים מפספסים:**
+   - **Brand verification** — כפתור **"Verify Branding"** בדף Branding. אוטומטי
+     ברובו (דקות; אם עובר לבדיקה ידנית — 2-3 ימי עסקים).
+   - **Data access verification** (ה-scope הרגיש) — ב-**Verification Center**.
+     **חייבים לסיים את ה-brand verification קודם** — אחרת אי אפשר בכלל להגיש.
+
+4. **סרטון הדגמה** (חובה ל-scope רגיש). מעלים אותו ל-**YouTube כ-Unlisted**
+   ומוסרים **לינק** — לא מעלים קובץ. גוגל בודקת בו דברים ספציפיים, אז ודאו
    שכולם נראים בבירור:
-   - הסרטון **באנגלית**.
+   - הסרטון **באנגלית** (כולל החלפת שפת מסך ההסכמה לאנגלית — הבורר בפינה
+     השמאלית התחתונה של המסך).
    - שם האפליקציה במסך ההסכמה **זהה** לשם ב-Cloud Console.
    - **ה-OAuth client ID גלוי בשורת הכתובת** בזמן ההסכמה.
-   - כל scope רגיש **מודגם בשימוש אמיתי** — כלומר צריך להראות גם הוספת סרטון
-     שנרשמת בגיליון, לא רק את מסך ההתחברות.
+   - כל scope רגיש **מודגם בשימוש אמיתי** — לא מספיק מסך ההתחברות: צריך להראות
+     סרטון שמתווסף באפליקציה ואז **נרשם בפועל בגיליון**.
+
+   תסריט מוצע (2-3 דקות): פתיחת האפליקציה → מסך ההורים → חיבור לגוגל → מסך
+   ההסכמה (עוצרים עליו כמה שניות עם ה-client ID גלוי) → הדבקת לינק לסרטון →
+   מעבר לגיליון בדפדפן ומראים את השורה החדשה שנוספה.
 
 5. **Submit for verification**. נוסח מוכן ל-Scope justification (הדביקו):
    > The app is a private, parent-managed video player for young children. It
