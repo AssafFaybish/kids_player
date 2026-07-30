@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="ttl">
+  <title id="ttl">שלוש דרכים להוסיף סרטונים — וכולן מגיעות למסך הבית של הילד</title>
+  <defs>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#2d2a4a" flood-opacity="0.16"/>
+    </filter>
+    <filter id="softsm" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#2d2a4a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="ah" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#6c63ff"/>
+    </marker>
+    <clipPath id="tgt">
+      <rect x="340" y="524" width="600" height="200" rx="30"/>
+    </clipPath>
+    <clipPath id="mini">
+      <rect x="181" y="164" width="126" height="126" rx="10"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="800" rx="28" fill="#faf8ff"/>
+  <circle cx="44" cy="54" r="76" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="1244" cy="60" r="64" fill="#f0b429" opacity="0.08"/>
+  <circle cx="1250" cy="756" r="76" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="36" cy="752" r="64" fill="#f0b429" opacity="0.07"/>
+
+  <!-- ============ route 1 (rightmost): share from YouTube ============ -->
+  <g filter="url(#softsm)">
+    <rect x="853" y="96" width="366" height="300" rx="26" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <circle cx="1175" cy="138" r="27" fill="#6c63ff"/>
+  <text x="1175" y="148" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#ffffff">1</text>
+
+  <!-- phone with the YouTube app -->
+  <rect x="991" y="164" width="90" height="130" rx="16" fill="#ffffff" stroke="#2d2a4a" stroke-width="3.5"/>
+  <rect x="1000" y="176" width="72" height="106" rx="10" fill="#faf8ff"/>
+  <rect x="1012" y="196" width="48" height="34" rx="10" fill="#ff0000"/>
+  <polygon points="1030,204 1030,222 1047,213" fill="#ffffff"/>
+  <rect x="1008" y="242" width="56" height="8" rx="4" fill="#cfc9ea"/>
+  <rect x="1020" y="258" width="44" height="7" rx="3.5" fill="#e3dff5"/>
+  <!-- share glyph badge -->
+  <g filter="url(#softsm)">
+    <circle cx="983" cy="278" r="30" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <g stroke="#6c63ff" stroke-width="4" stroke-linecap="round">
+    <line x1="974" y1="278" x2="994" y2="269"/>
+    <line x1="974" y1="278" x2="994" y2="287"/>
+  </g>
+  <circle cx="994" cy="269" r="6" fill="#6c63ff"/>
+  <circle cx="994" cy="287" r="6" fill="#6c63ff"/>
+  <circle cx="974" cy="278" r="6" fill="#6c63ff"/>
+
+  <text x="1036" y="330" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#2d2a4a">שיתוף מיוטיוב</text>
+  <text x="1036" y="364" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" fill="#6b6890">מתוך אפליקציית יוטיוב</text>
+
+  <!-- ============ route 2 (middle): paste a link in the parent screen ============ -->
+  <g filter="url(#softsm)">
+    <rect x="457" y="96" width="366" height="300" rx="26" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <circle cx="779" cy="138" r="27" fill="#6c63ff"/>
+  <text x="779" y="148" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#ffffff">2</text>
+
+  <!-- phone showing the parent screen -->
+  <rect x="595" y="164" width="90" height="130" rx="16" fill="#ffffff" stroke="#2d2a4a" stroke-width="3.5"/>
+  <rect x="604" y="176" width="72" height="106" rx="10" fill="#faf8ff"/>
+  <rect x="604" y="176" width="72" height="22" rx="10" fill="#6c63ff"/>
+  <rect x="604" y="188" width="72" height="10" fill="#6c63ff"/>
+  <rect x="628" y="183" width="24" height="7" rx="3.5" fill="#ffffff" opacity="0.9"/>
+  <rect x="612" y="212" width="56" height="26" rx="9" fill="#ffffff" stroke="#6c63ff" stroke-width="2.5"/>
+  <rect x="618" y="222" width="34" height="6" rx="3" fill="#cfc9ea"/>
+  <line x1="661" y1="219" x2="661" y2="231" stroke="#6c63ff" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="612" y="250" width="56" height="24" rx="12" fill="#6c63ff"/>
+  <!-- paste glyph badge -->
+  <g filter="url(#softsm)">
+    <circle cx="587" cy="278" r="30" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <rect x="574" y="266" width="26" height="28" rx="5" fill="#ffffff" stroke="#6c63ff" stroke-width="3"/>
+  <g stroke="#6c63ff" stroke-width="2.5" stroke-linecap="round">
+    <line x1="580" y1="279" x2="594" y2="279"/>
+    <line x1="580" y1="287" x2="590" y2="287"/>
+  </g>
+  <rect x="580" y="260" width="14" height="9" rx="3" fill="#6c63ff"/>
+
+  <text x="640" y="330" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#2d2a4a">הדבקת לינק במסך ההורים</text>
+  <text x="640" y="364" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" fill="#6b6890">מדביקים ולוחצים הוספה</text>
+
+  <!-- ============ route 3 (leftmost): the list file in Google Drive ============ -->
+  <g filter="url(#softsm)">
+    <rect x="61" y="96" width="366" height="300" rx="26" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <circle cx="383" cy="138" r="27" fill="#6c63ff"/>
+  <text x="383" y="148" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#ffffff">3</text>
+
+  <!-- mini spreadsheet -->
+  <rect x="181" y="164" width="126" height="126" rx="10" fill="#ffffff" stroke="#d5cfee" stroke-width="2.5"/>
+  <g clip-path="url(#mini)">
+    <rect x="181" y="164" width="126" height="26" fill="#efecfb"/>
+    <rect x="181" y="190" width="24" height="100" fill="#f6f4fd"/>
+    <rect x="205" y="214" width="102" height="24" fill="#0f9d58" opacity="0.10"/>
+    <rect x="205" y="262" width="102" height="24" fill="#6c63ff" opacity="0.10"/>
+  </g>
+  <g stroke="#e4dff5" stroke-width="2">
+    <line x1="181" y1="190" x2="307" y2="190"/>
+    <line x1="181" y1="214" x2="307" y2="214"/>
+    <line x1="181" y1="238" x2="307" y2="238"/>
+    <line x1="181" y1="262" x2="307" y2="262"/>
+    <line x1="205" y1="164" x2="205" y2="290"/>
+    <line x1="265" y1="164" x2="265" y2="290"/>
+  </g>
+  <g>
+    <rect x="211" y="198" width="46" height="7" rx="3.5" fill="#cfc9ea"/>
+    <rect x="211" y="222" width="46" height="7" rx="3.5" fill="#0f9d58" opacity="0.55"/>
+    <rect x="211" y="246" width="46" height="7" rx="3.5" fill="#cfc9ea"/>
+    <rect x="211" y="270" width="46" height="7" rx="3.5" fill="#6c63ff" opacity="0.5"/>
+    <rect x="271" y="198" width="28" height="7" rx="3.5" fill="#e3dff5"/>
+    <rect x="271" y="222" width="28" height="7" rx="3.5" fill="#e3dff5"/>
+    <rect x="271" y="246" width="28" height="7" rx="3.5" fill="#e3dff5"/>
+  </g>
+  <!-- Google Sheets badge -->
+  <g filter="url(#softsm)">
+    <circle cx="175" cy="278" r="30" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <rect x="163" y="264" width="24" height="28" rx="5" fill="#0f9d58"/>
+  <rect x="168" y="270" width="14" height="16" rx="2" fill="#ffffff"/>
+  <g stroke="#0f9d58" stroke-width="2">
+    <line x1="175" y1="270" x2="175" y2="286"/>
+    <line x1="168" y1="278" x2="182" y2="278"/>
+  </g>
+
+  <text x="244" y="330" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#2d2a4a">קובץ הרשימה בגוגל דרייב</text>
+  <text x="244" y="364" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" fill="#6b6890">שורה לכל סרטון או ערוץ</text>
+
+  <!-- ============ the three routes converge ============ -->
+  <path d="M1036 404 C 1036 462, 986 506, 878 516" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round" marker-end="url(#ah)"/>
+  <path d="M640 404 L640 516" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round" marker-end="url(#ah)"/>
+  <path d="M244 404 C 244 462, 294 506, 402 516" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round" marker-end="url(#ah)"/>
+
+  <!-- ============ one target: the child's home screen ============ -->
+  <g filter="url(#soft)">
+    <rect x="340" y="524" width="600" height="200" rx="30" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <g clip-path="url(#tgt)">
+    <rect x="340" y="524" width="600" height="62" fill="#6c63ff"/>
+  </g>
+  <text x="640" y="566" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#ffffff">מסך הבית של הילד</text>
+
+  <rect x="676" y="604" width="230" height="100" rx="18" fill="#eae7ff"/>
+  <circle cx="791" cy="654" r="28" fill="#6c63ff"/>
+  <polygon points="783,640 783,668 805,654" fill="#ffffff"/>
+
+  <rect x="374" y="604" width="230" height="100" rx="18" fill="#e6f6ec"/>
+  <circle cx="489" cy="654" r="28" fill="#0f9d58"/>
+  <polygon points="481,640 481,668 503,654" fill="#ffffff"/>
+
+  <!-- ============ caption ============ -->
+  <text x="640" y="772" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="30" font-weight="700" fill="#2d2a4a">שלוש דרכים · אותו יעד</text>
+</svg>

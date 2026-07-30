@@ -46,12 +46,15 @@
         <div class="tour-stage">
           <img id="tour-img" class="tour-img" alt="" />
         </div>
+        <!-- chapter chip + step counter: only long decks use them (tour.deckChrome) -->
+        <div id="tour-chapter" class="tour-chapter hidden"></div>
         <h2 id="tour-title" class="tour-title"></h2>
         <p id="tour-text" class="tour-text"></p>
         <div class="tour-nav">
           <!-- RTL: first child renders on the RIGHT = forward (user-specified) -->
           <button id="tour-next" class="pg-btn" type="button" aria-label="הבא">◀</button>
           <div id="tour-dots" class="tour-dots"></div>
+          <div id="tour-step" class="tour-step hidden"></div>
           <button id="tour-prev" class="pg-btn tour-prev" type="button" aria-label="הקודם">▶</button>
         </div>
       </div>
@@ -148,6 +151,9 @@
       <div id="empty-state" class="empty-state hidden">
         <div class="empty-emoji">🎬</div>
         <p class="empty-text">עדיין אין סרטונים</p>
+        <!-- v1.0.20: a parent staring at an empty screen is exactly who needs the
+             guide, so it is offered here too (reading it needs no PIN). -->
+        <button id="empty-guide" class="btn btn-small" type="button">➕ איך מוסיפים סרטונים?</button>
       </div>
 
       <!-- The pager bar itself stays visible even on a single page — the exit button

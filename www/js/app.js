@@ -25,7 +25,7 @@ import { normalizeTitle } from './normalize.js';
 import { burst } from './ui/confetti.js';
 import { playUnwrap } from './ui/sound.js';
 import { initShareTarget, drainShareQueue } from './share.js';
-import { TOUR_SLIDES, ADD_GUIDE_SLIDES, nextIndex, slideState, backAction } from './tour.js';
+import { TOUR_SLIDES, ADD_GUIDE_SLIDES, nextIndex, slideState, deckChrome, backAction } from './tour.js';
 
 const PAGE_SIZE = PAGE_VIDEOS;
 const $ = (id) => document.getElementById(id);
@@ -1809,6 +1809,7 @@ function renderTourSlide() {
   const s = tourDeck[tourIdx];
   if (!s) return;
   const st = slideState(tourIdx, tourDeck.length);
+  const ch = deckChrome(tourDeck, tourIdx);
   $('tour-img').src = s.img;
   $('tour-img').alt = s.title;
   $('tour-title').textContent = s.title;
@@ -1819,8 +1820,18 @@ function renderTourSlide() {
   // never learns how to add a link cannot use the app at all.
   const more = $('tour-more');
   if (more) more.classList.toggle('hidden', !(st.isLast && tourIsOnboarding));
+  // Chapter chip + "שלב N מתוך M" replace the dots once a deck is too long to count
+  // (18 dots read as noise); the short onboarding deck keeps its dots untouched.
+  const chip = $('tour-chapter');
+  chip.textContent = ch.chapter;
+  chip.classList.toggle('hidden', !ch.chapter);
+  const step = $('tour-step');
+  step.textContent = ch.stepLabel;
+  step.classList.toggle('hidden', ch.useDots);
   const dots = $('tour-dots');
+  dots.classList.toggle('hidden', !ch.useDots);
   dots.innerHTML = '';
+  if (!ch.useDots) return;
   for (const on of st.dots) {
     const d = document.createElement('span');
     if (on) d.classList.add('on');
@@ -2627,6 +2638,10 @@ function wire() {
   });
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
   $('guide-add').addEventListener('click', () => { startAddGuide(); });
+  // v1.0.20: the same guide from the child's EMPTY home — the one moment a parent is
+  // guaranteed to be looking at the app and stuck. Reading it needs no PIN (it adds
+  // nothing); back returns to the empty home because startAddGuide uses nav.go.
+  $('empty-guide').addEventListener('click', () => { startAddGuide(); });
   // v1.0.13: re-read what changed, any time (About tab)
   $('whatsnew-btn').addEventListener('click', async () => {
     const upd = await import('./update.js');

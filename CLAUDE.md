@@ -136,7 +136,12 @@ pins that the consumers follow the config and that every address is well-formed.
   `startPin(mode, {onSuccess, replace, title})` — replace:true so back never lands on a
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
-  message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+  message built by pure `update.buildAppShareMessage` — explainer page first, then the
+  APK link, which since v1.0.20 is ALWAYS `update.latestApkUrl()`
+  (`/releases/latest/download/kids-player.apk`, `STABLE_APK_ASSET`) and never
+  `latest.assetUrl`: a forwarded WhatsApp message outlives its release and must not
+  install a frozen build. `test/distribution.test.mjs` pins that link, the website
+  button and both release scripts to ONE asset name).
 - v1.0.14: parent screen LANDS on "אודות" (`PARENT_TABS[0]`; the panel's initial markup
   must match it or the screen flashes empty). Voluntary support block: two FREE ways to
   help (share / feedback) + `❤️ תרומה למפתח` → `askKid` payment-method choice (an
@@ -249,7 +254,27 @@ pins that the consumers follow the config and that every address is well-formed.
   unit-tested) — app.js holds only the DOM. Only the ONBOARDING deck may write
   `tour.done`. Guide illustrations are hand-authored SVGs in www/assets/guide/, all
   `viewBox="0 0 1280 800"` to match the screenshots (the slide CSS has no max-height,
-  so a different ratio pushes the nav off-screen).
+  so a different ratio pushes the nav off-screen). See v1.0.20 for the guide deck's
+  current form.
+- v1.0.20 — the ADD-CONTENT GUIDE is the app's real manual: **18 slides, chaptered.**
+  Without it the app is worthless to a parent, so it gets the detail it needs.
+  Same `view-tour` mechanism; every `ADD_GUIDE_SLIDES` slide now carries a `chapter`
+  (לפני שמתחילים · דרך 1 · שיתוף מיוטיוב · דרך 2 · במסך ההורים · דרך 3 · קובץ הרשימה ·
+  אישור ומחיקה). Pure `deckChrome(deck, idx)` picks the chrome: a deck longer than
+  `DOTS_MAX` (8) HIDES the dot row and shows a chapter chip + "שלב N מתוך M" (18 dots
+  are noise); the onboarding deck keeps its dots and shows no chip. `chapters(deck)`
+  derives the chapter table FROM THE SLIDES — never a second hand-kept list — and the
+  tests pin that the chapters are contiguous, uniquely titled, and cover every slide.
+  IMAGES (decision, not taste): every APP screen is a REAL 1280x800 screenshot
+  (`assets/guide/app-*.jpg` + `share-04-pin.jpg` / `share-05-confirm.jpg`), staged
+  through the live UI with playwright — scratchpad tooling, NOT in the repo, so they
+  must be re-shot by hand. ONLY what the app doesn't render stays a drawing: YouTube's
+  share button, Android's chooser, the spreadsheet columns, the Drive folder. A drawn
+  parent screen sends parents hunting for a button that looks like nothing on screen.
+  A test pins that every slide's asset EXISTS in `www/` and that app steps are
+  photographed rather than drawn. Entry points: the parent screen (`guide-add`), the
+  last onboarding slide (`tour-more`), the About tab — and the child's EMPTY home
+  (`#empty-guide`, no PIN: reading adds nothing), which is where a stuck parent is.
 - v1.0.19 — **`drive.file` IS THE ONLY OAUTH SCOPE.** `spreadsheets` is classified
   SENSITIVE and was the sole cause of the "Google hasn't verified this app" screen.
   Verification was not an option: it needs a DNS-level Search Console Domain

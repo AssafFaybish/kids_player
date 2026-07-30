@@ -4,9 +4,15 @@
 // now, and these tests are what keep the four call sites honest.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
-  TOUR_SLIDES, ADD_GUIDE_SLIDES, nextIndex, slideState, backAction
+  TOUR_SLIDES, ADD_GUIDE_SLIDES, nextIndex, slideState, backAction,
+  deckChrome, chapters, DOTS_MAX
 } from '../www/js/tour.js';
+
+const WWW = join(dirname(fileURLToPath(import.meta.url)), '..', 'www');
 
 test('nextIndex clamps at both ends — never off the deck', () => {
   assert.equal(nextIndex(0, 6, 1), 1);
@@ -106,12 +112,102 @@ test('the onboarding deck OPENS with the landing page, not a screen tour', () =>
 });
 
 test('the guide covers all three ways to add content', () => {
-  const all = ADD_GUIDE_SLIDES.map((s) => s.title + ' ' + s.text).join(' ');
+  const all = ADD_GUIDE_SLIDES.map((s) => (s.chapter || '') + ' ' + s.title + ' ' + s.text).join(' ');
   assert.ok(/שיתוף מיוטיוב/.test(all), 'sharing from the YouTube app');
-  assert.ok(/הדבקת לינק בתוך האפליקציה/.test(all), 'pasting inside the app');
-  assert.ok(/דרייב|הרשימה בגוגל|קובץ הרשימה/.test(all), 'the Google Sheet list');
-  // and it must say what happens after — approval is the step parents miss
+  assert.ok(/מדביקים לינק|הדבקת לינק/.test(all), 'pasting inside the app');
+  assert.ok(/דרייב|קובץ הרשימה/.test(all), 'the Google Sheet list');
+  // and it must say what happens after — approval and deletion are the steps parents
+  // ask about the day AFTER they add something.
   assert.ok(/אישור|מאשרים/.test(all), 'the approval step');
+  assert.ok(/מוחקים|מחיקה/.test(all), 'how to remove something again');
+});
+
+/* ---- assets: a slide whose image 404s is a blank white card on the tablet ---- */
+
+test('every slide image in both decks EXISTS in www/', () => {
+  for (const [name, deck] of [['TOUR_SLIDES', TOUR_SLIDES], ['ADD_GUIDE_SLIDES', ADD_GUIDE_SLIDES]]) {
+    deck.forEach((s, i) => {
+      assert.ok(existsSync(join(WWW, s.img)),
+        `${name}[${i}] points at a missing asset: www/${s.img}`);
+    });
+  }
+});
+
+test('every guide illustration is 1280x800, like the screenshots next to it', () => {
+  // The slide CSS caps the image by viewport height and letterboxes with object-fit;
+  // a drawing with a different ratio would sit in a visibly different frame than the
+  // photographed slides it is mixed with.
+  const svgs = [...TOUR_SLIDES, ...ADD_GUIDE_SLIDES].map((s) => s.img).filter((p) => /\.svg$/.test(p));
+  assert.ok(svgs.length > 0);
+  for (const p of new Set(svgs)) {
+    const body = readFileSync(join(WWW, p), 'utf8');
+    assert.match(body, /viewBox="0 0 1280 800"/, `${p} must use viewBox="0 0 1280 800"`);
+  }
+});
+
+test('the guide shows REAL app screenshots for app screens', () => {
+  // Decision (v1.0.20): only what is not ours — YouTube, Android, the spreadsheet,
+  // the Drive folder — may be a drawing. A drawn "parent screen" sends parents
+  // looking for a button that does not look like that.
+  const jpgs = ADD_GUIDE_SLIDES.filter((s) => /\.jpg$/.test(s.img));
+  assert.ok(jpgs.length >= 10, `expected the app steps to be photographed, got ${jpgs.length}`);
+  const svgs = ADD_GUIDE_SLIDES.filter((s) => /\.svg$/.test(s.img));
+  for (const s of svgs) {
+    assert.ok(/map-|share-0[123]|sheet-/.test(s.img),
+      `${s.img} is a drawing of something the app itself renders — screenshot it`);
+  }
+});
+
+/* ---- long-deck chrome (v1.0.20) ---- */
+
+test('deckChrome: a long deck counts steps, a short one keeps its dots', () => {
+  const long = deckChrome(ADD_GUIDE_SLIDES, 3);
+  assert.equal(long.useDots, false, `${ADD_GUIDE_SLIDES.length} dots are not countable`);
+  assert.equal(long.stepLabel, `שלב 4 מתוך ${ADD_GUIDE_SLIDES.length}`);
+  assert.ok(long.chapter.length > 0, 'a long deck labels its chapters');
+
+  const short = deckChrome(TOUR_SLIDES, 0);
+  assert.equal(short.useDots, true, 'the first-run deck must look exactly as before');
+  assert.equal(short.chapter, '', 'no chapter chip on the onboarding deck');
+});
+
+test('deckChrome clamps and survives junk like the rest of the arithmetic', () => {
+  assert.equal(deckChrome(ADD_GUIDE_SLIDES, 999).stepLabel,
+    `שלב ${ADD_GUIDE_SLIDES.length} מתוך ${ADD_GUIDE_SLIDES.length}`);
+  assert.equal(deckChrome(ADD_GUIDE_SLIDES, -5).stepLabel, `שלב 1 מתוך ${ADD_GUIDE_SLIDES.length}`);
+  const none = deckChrome([], 0);
+  assert.deepEqual([none.chapter, none.stepLabel, none.useDots], ['', '', false]);
+  assert.equal(deckChrome(undefined, NaN).useDots, false);
+});
+
+test('the guide is long enough to be detailed and every slide has a chapter', () => {
+  assert.ok(ADD_GUIDE_SLIDES.length > DOTS_MAX,
+    'the counter chrome only exists because this deck is long — keep it that way');
+  assert.ok(ADD_GUIDE_SLIDES.length >= 14 && ADD_GUIDE_SLIDES.length <= 20,
+    `guide is ${ADD_GUIDE_SLIDES.length} slides — detailed, but still finishable in one sitting`);
+  ADD_GUIDE_SLIDES.forEach((s, i) => {
+    assert.ok(s.chapter && s.chapter.trim().length > 0,
+      `ADD_GUIDE_SLIDES[${i}] has no chapter — its chip would render empty`);
+  });
+});
+
+test('chapters() partitions the guide into contiguous, covering chapters', () => {
+  const ch = chapters(ADD_GUIDE_SLIDES);
+  assert.ok(ch.length >= 4, `expected the map + three methods + approval, got ${ch.length}`);
+  assert.equal(ch[0].from, 0);
+  assert.equal(ch[ch.length - 1].to, ADD_GUIDE_SLIDES.length - 1);
+  let expected = 0;
+  for (const c of ch) {
+    assert.equal(c.from, expected, `chapter "${c.title}" must start where the previous ended`);
+    assert.equal(c.count, c.to - c.from + 1);
+    expected = c.to + 1;
+  }
+  assert.equal(expected, ADD_GUIDE_SLIDES.length, 'every slide belongs to a chapter');
+  // A chapter title must not repeat later in the deck — the chip would lie about
+  // where the parent is (and chapters() would split it in two).
+  const titles = ch.map((c) => c.title);
+  assert.equal(new Set(titles).size, titles.length, 'chapter titles must be unique: ' + titles);
+  assert.deepEqual(chapters(TOUR_SLIDES), [], 'the onboarding deck has no chapters');
 });
 
 test('the first-run deck stays short enough that nobody skips it', () => {
