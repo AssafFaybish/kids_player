@@ -189,3 +189,53 @@ export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates,
   }
   return statePuts;
 }
+
+
+/**
+ * v1.0.10 — PURE mirror planner, PRESENCE-based: the sheet is the single source of
+ * truth in BOTH directions, judged fresh on EVERY successful parse (not as a diff
+ * against a remembered baseline — a diff forgets, and content resurrected later by
+ * a stale Drive-doc merge would silently stay forever).
+ *
+ *  - sheet-backed local videos missing from the sheet → delete (WITH tombstone: a
+ *    stale Drive doc must not re-import them; the tombstone is revoked the moment
+ *    the sheet lists the key again — self-healing both ways);
+ *  - locally-denied keys PRESENT in the sheet → unDeny (a deliberate re-add wins),
+ *    unless our own row-removal for that key is still queued (lag, not intent);
+ *  - subscribed channels missing from the sheet → unsubscribe + purge;
+ *  - SAFETY VALVE: too many deletions at once (truncated read / accidental range
+ *    delete) parks everything behind a parent decision. Deliberately LOW pct:
+ *    a parent's routine cleanup (≤10 rows) never asks.
+ *
+ * @param sheetBackedKeys   keys of LOCAL records that live in the shared 'sheet'
+ *                          folder (rows are their only representation)
+ * @param localChannelIds   currently subscribed channel ids (all of them)
+ * @param currentVideoKeys  video keys parsed from the sheet NOW
+ * @param currentChannelIds resolved channel ids in the sheet NOW
+ * @param pendingAppendKeys queued-but-unflushed adds ('yt:…' / 'ch:<id>') — absence is lag
+ * @param pendingDeleteKeys queued-but-unflushed removals — presence is lag
+ * @param deniedKeys        locally ACTIVE denies (Set) — for re-add revival
+ */
+export function planSheetMirror({
+  sheetBackedKeys = [], localChannelIds = [],
+  currentVideoKeys = [], currentChannelIds = [],
+  pendingAppendKeys = [], pendingDeleteKeys = [],
+  deniedKeys = new Set(),
+  valveMin = 10, valvePct = 0.05
+} = {}) {
+  const curV = new Set(currentVideoKeys);
+  const curC = new Set(currentChannelIds);
+  const pendingAdd = new Set(pendingAppendKeys);
+  const pendingDel = new Set(pendingDeleteKeys);
+  const denied = deniedKeys instanceof Set ? deniedKeys : new Set(deniedKeys || []);
+
+  const deleteVideoKeys = sheetBackedKeys.filter((k) => !curV.has(k) && !pendingAdd.has(k));
+  const deleteChannelIds = localChannelIds.filter((id) => !curC.has(id) && !pendingAdd.has('ch:' + id));
+  const unDenyKeys = [...denied].filter((k) => curV.has(k) && !pendingDel.has(k));
+
+  const localTotal = sheetBackedKeys.length + localChannelIds.length;
+  const disappeared = deleteVideoKeys.length + deleteChannelIds.length;
+  const valve = localTotal > 0 && disappeared > Math.max(valveMin, Math.ceil(localTotal * valvePct));
+
+  return { deleteVideoKeys, deleteChannelIds, unDenyKeys, valve, disappeared, localTotal };
+}

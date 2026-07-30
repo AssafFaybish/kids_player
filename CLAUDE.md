@@ -44,8 +44,25 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   merged records (real bug once).
 - Pending records are PARKED in `folderId:'~pending'` (kid folder queries must never see them);
   approval restores `homeFolderId`.
-- Deletion = atomic delete + deny-list tombstone. The deny-list only ever GROWS (union in every
-  merge path) — that's what makes deletion durable across syncs and devices.
+- Deletion = atomic delete + deny-list tombstone. Since v1.0.10 the deny-list is an
+  LWW-element set: entries are never removed, but the SHEET re-adding a key revokes them
+  (`removedAt >= at` = inert; `db.denyActive`, merge rule `drive.mergeDenyRecord` — later
+  event wins, tie → revoked). The ONLY undeny path is a sheet re-add
+  (`planSheetMirror.unDenyKeys`); everything else still only grows the set.
+- The sheet mirrors BOTH ways (v1.0.10), judged by PRESENCE on every successful parse
+  (never diff-vs-baseline — a baseline forgets, and a stale Drive-doc merge would
+  resurrect deleted content forever): LIVE sheet-backed records missing from the sheet
+  are deleted WITH a 'sheet-mirror' tombstone (docs can't resurrect them); denied keys
+  the sheet LISTS are revived (unless our own row-removal is still queued). PENDING
+  records are NOT sheet-backed (their row appears at approval) — mirroring them would
+  kill shares before the parent saw them (real bug, audit-caught). Unsubscribed-channel
+  content is orphan-GC'd on every mirror pass. The SAFETY VALVE (>max(10, 5%)
+  deletions at once) parks everything behind a parent decision in the sources tab;
+  "ignore" remembers the divergence signature so the SAME divergence never re-alerts.
+  In-app deletes of sheet-backed entities enqueue ROW-REMOVAL ops (sheetwrite
+  delvideo/delchannel; channel rows matched via the handleMap cache); a channel with a
+  queued delete is never re-subscribed from its lingering row. Single-video deletions
+  from a CHANNEL are NOT representable in the sheet — they stay per-account.
 - `sortKey` depends only on the row's own ordinal/timestamps — appending sheet rows never renumbers
   existing ones (test-pinned). Sheet display order is REVERSED via DESC cursor (last row shown first).
 - `planMutations` twice over identical inputs ⇒ empty diff (the churn-free test is sacred).
@@ -95,6 +112,11 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.10: the sheet is the truth in BOTH directions — deletions too. sheetwrite ops
+  queue (append/delvideo/delchannel, reconcileOps latest-intent, flush deletes rows
+  bottom-up via batchUpdate then appends with sheet-presence dedupe); sync mirror stage
+  (sheetSeen baseline diff, valve alert meta + sources-tab resolution UI); deny-list
+  became revocable (see invariants). Channel remove = full cleanup everywhere.
 - v1.0.9: Android TV support, same APK (manifest: LEANBACK_LAUNCHER + optional
   leanback/touchscreen + tv_banner drawable). `KidsNative.isTv` (UiModeManager) →
   `platform.isTv()` (dev override: localStorage tv=1) → `html.tv` class = 10-foot CSS

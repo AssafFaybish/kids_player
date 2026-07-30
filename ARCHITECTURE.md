@@ -24,7 +24,7 @@ live and how does data flow".
 | `ytrss.js` | pure keyless parsers (never throw): Atom feed + channel-page logo extractor | — |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
-| `sheetwrite.js` | v1.0.6 sheet write-back: manual adds/channels/approved shares APPEND to the input sheet (durable queue in meta, non-interactive token, gid→tab-title resolution, permission errors surfaced) | platform, gauth, db |
+| `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends | platform, gauth, db, classify |
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback | classify, normalize, order, platform, db |
@@ -72,7 +72,12 @@ mergedFrom?,updatedAt}` — ~400B, NO base64.
 ```
 hydrate (views read IDB directly — the ONLY thing on the critical path)
 └─ background: sheet GET → FNV-1a hash-skip → parseSourceSheet (video rows get ordinals;
-   channels rows carry auto/manual flag) → resolve channels (handle cache → API → HTML scrape)
+   channels rows carry auto/manual flag) → resolve channels (handle cache → API → HTML
+   scrape; ids with a queued sheet-delete are NOT re-subscribed) → MIRROR (v1.0.10,
+   PRESENCE-based each parse: live sheet-backed records absent from the sheet →
+   tombstone-delete; denied keys present → unDeny; unsubscribed-channel content →
+   orphan GC; valve alert + ignore-signature on mass deletion) → channel meta
+   batched (1 unit/50) → per channel planChannelFetch:
    → channel meta batched (1 unit/50) → per channel planChannelFetch:
         rss (free, latest 15, etag) | backfill (resumable cursor, 40-page budget, quota soft-cap)
    → planMutations (PURE: key-merge, intra-channel title dedupe, deny drop, pending routing,

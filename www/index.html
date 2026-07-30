@@ -315,6 +315,14 @@
         <div id="remote-status" class="form-msg"></div>
         <!-- v1.0.6: sheet write-back state (queued rows / permission problems) -->
         <div id="sheetwrite-status" class="form-msg"></div>
+        <!-- v1.0.10: safety-valve — mass row disappearance waits for the parent -->
+        <div id="mirror-alert" class="hidden">
+          <div id="mirror-alert-text" class="form-msg err"></div>
+          <div class="row-btns">
+            <button id="mirror-apply" class="btn btn-small btn-danger" type="button">מחקו אצלי בהתאם לקובץ</button>
+            <button id="mirror-ignore" class="btn btn-small" type="button">השאירו הכול (זו הייתה תקלה)</button>
+          </div>
+        </div>
         <p class="hint">
           שורה בגיליון יכולה להיות <b>סרטון</b> (לינק YouTube / mp4) או <b>ערוץ שלם</b>
           (לינק לערוץ או ‎@שם). לערוץ אפשר להוסיף בעמודה C את המילה <code>auto</code>

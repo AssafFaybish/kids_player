@@ -816,8 +816,11 @@ async function confirmDeleteWatch(item) {
       const scopes = new Set([item.scopeId, libScope,
         activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean));
       let deleted = false;
+      let sheetBacked = false;
       for (const scope of scopes) {
-        if (await db.getVideo(scope, item.key)) {
+        const rec = await db.getVideo(scope, item.key);
+        if (rec) {
+          if ((rec.homeFolderId || rec.folderId) === 'sheet') sheetBacked = true;
           await db.deleteVideo(scope, item.key); // atomic delete + deny tombstone
           deleted = true;
         }
@@ -825,6 +828,9 @@ async function confirmDeleteWatch(item) {
       if (deleted) {
         giftStates.delete(item.key);
         if (activeProfileId) { try { await db.deleteVideoState(activeProfileId, item.key); } catch {} }
+        // v1.0.10: a sheet-backed video loses its ROW too — every sheet participant
+        // converges. (Channel videos have no row; their deletion stays per-account.)
+        if (sheetBacked) enqueueSheetDeleteVideo(item.key);
         maybeSchedulePush();
       }
     } catch { /* a failed delete must never strand the child outside the gallery */ }
@@ -869,6 +875,20 @@ function handleShareInteractive(c) {
       });
     })().catch(() => resolve(c.kind === 'channel' ? null : 'pending'));
   });
+}
+
+/* v1.0.10: fire-and-forget sheet write-back helpers (never block the UI) */
+function enqueueSheetDeleteVideo(key) {
+  import('./sheetwrite.js')
+    .then((sw) => sw.enqueueSheetVideoDelete(activeProfileId, key))
+    .then(() => refreshSheetWriteStatus().catch(() => {}))
+    .catch(() => {});
+}
+function enqueueSheetDeleteChannel(channelId) {
+  import('./sheetwrite.js')
+    .then((sw) => sw.enqueueSheetChannelDelete(activeProfileId, channelId))
+    .then(() => refreshSheetWriteStatus().catch(() => {}))
+    .catch(() => {});
 }
 
 /* ---------------- PIN ---------------- */
@@ -952,12 +972,21 @@ async function refreshParent() {
   await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
 }
 
-/** v1.0.6: surface the sheet write-back queue state in the sources tab. */
+/** v1.0.6: surface the sheet write-back queue state in the sources tab.
+    v1.0.10: also the mirror safety-valve alert (mass row disappearance). */
 async function refreshSheetWriteStatus() {
   const el = $('sheetwrite-status');
   el.textContent = '';
   el.className = 'form-msg';
   if (!libScope) return;
+
+  const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
+  $('mirror-alert').classList.toggle('hidden', !alert);
+  if (alert) {
+    $('mirror-alert-text').textContent =
+      `⚠️ ${alert.disappeared} שורות נעלמו מקובץ המקורות בבת אחת — ייתכן שנמחקו בכוונה, וייתכן שזו תקלת קריאה. המחיקה אצלך הושהתה עד להחלטתך:`;
+  }
+
   const { sheetWriteState, flushSheetQueue } = await import('./sheetwrite.js');
   await flushSheetQueue(activeProfileId).catch(() => {}); // opportunistic retry on entry
   const st = await sheetWriteState(libScope);
@@ -1073,6 +1102,8 @@ async function refreshParentList() {
       rec,
       onDelete: async () => {
         await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
+        // v1.0.10: sheet-backed rows are removed from the sheet for everyone
+        if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
         await refreshParentList();
         renderHome();
         maybeSchedulePush();
@@ -1183,13 +1214,19 @@ async function refreshChannelsList() {
     del.addEventListener('click', async () => {
       const yes = await confirmKid({
         emoji: '📺', title: 'להסיר את הערוץ?',
-        text: 'הסרטונים שלו יוסתרו מהילד. אפשר להוסיף אותו שוב בעתיד.',
+        text: 'הערוץ וכל הסרטונים שלו יימחקו — גם מקובץ המקורות, אצל כל מי שמשתמש בו. אפשר להוסיף אותו שוב בעתיד.',
         ok: 'הסרה', cancel: 'ביטול', danger: true
       });
       if (!yes) return;
-      await db.deleteLibraryChannel(libScope, lc.channelId);
-      await refreshChannelsList();
+      // v1.0.10: full cleanup — the subscription, its imported videos, AND the
+      // sheet row (so the channel doesn't resurrect on the next sync, anywhere)
+      const { applySheetMirror } = await import('./sync2.js');
+      await applySheetMirror(libScope, { deleteChannelIds: [lc.channelId] });
+      enqueueSheetDeleteChannel(lc.channelId);
+      await loadGiftStates();
+      await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
       renderHome();
+      maybeSchedulePush();
     });
     li.appendChild(logo);
     li.appendChild(body);
@@ -1866,6 +1903,30 @@ function wire() {
     await doSyncAndRefresh();
   });
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
+
+  // v1.0.10: safety-valve resolution — the parent decides what a mass row
+  // disappearance meant. Apply = mirror the sheet (delete locally); ignore =
+  // keep everything and adopt the current sheet as the new baseline.
+  $('mirror-apply').addEventListener('click', async () => {
+    const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
+    if (!alert) return;
+    const { applySheetMirror } = await import('./sync2.js');
+    await applySheetMirror(libScope, alert);
+    await db.putMeta('sheetMirrorAlert:' + libScope, null);
+    await loadGiftStates();
+    await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+    await refreshSheetWriteStatus().catch(() => {});
+    renderHome();
+    maybeSchedulePush();
+  });
+  $('mirror-ignore').addEventListener('click', async () => {
+    // remember WHICH divergence was waved off — the presence check runs every sync,
+    // so only a DIFFERENT deletion set may alert again
+    const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
+    if (alert && alert.sig) await db.putMeta('sheetMirrorIgnoredSig:' + libScope, alert.sig);
+    await db.putMeta('sheetMirrorAlert:' + libScope, null);
+    await refreshSheetWriteStatus().catch(() => {});
+  });
   $('remote-clear').addEventListener('click', async () => {
     const src = await db.getSources(activeProfileId);
     if (src) await db.putSources({ ...src, sheetUrl: null, sheetHash: null, updatedAt: Date.now() });
