@@ -10,7 +10,8 @@
 import { prefGet } from './platform.js';
 // v1.0.19: reads moved to the authenticated Sheets API, so the CSV-export fetch
 // (httpGetText + resolveListUrl) and its HTML-error-page guard are gone from this
-// path. parseCsv still backs parseSourceSheet, which snapshot import still uses.
+// path. parseCsv still backs parseSourceSheet, which is TEST-ONLY (no production
+// caller) — see the note on that function.
 import { parseCsv } from './csv.js';
 import { classifySourceRow } from './classify.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
@@ -31,8 +32,14 @@ import {
 const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
 
 /**
- * PURE: typed rows from the raw sheet text. rowIndex counts VIDEO rows only, so
- * comments/blank lines/channels never reshuffle video ordinals (tested).
+ * PURE: typed rows from raw CSV TEXT.
+ *
+ * ⚠️ v1.0.19: this has NO production caller. Reads go through the authenticated
+ * Sheets API and land in `parseSourceRows` below; nothing in the app fetches CSV
+ * any more. It is retained only because the tests use it to exercise the tokenizer
+ * and the row classifier together. Do NOT wire it back to a network fetch — a CSV
+ * export URL only works on a publicly shared sheet, which is exactly the property
+ * v1.0.19 removed.
  */
 export function parseSourceSheet(text) {
   return parseSourceRows(parseCsv(text));
@@ -110,6 +117,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   let removedKeys = [];
   let sheetChanged = false;
   let sheetParsed = false; // v1.0.10: mirroring may run ONLY on a successful fetch
+  let sheetError = null;   // v1.0.19: WHY it failed — the caller must be able to say so
   if (src.sheetUrl) {
     report('sheet', 5, 'מביאים את הרשימה…');
     try {
@@ -129,6 +137,11 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       sheetParsed = true;
       if (sheetChanged) await putSources({ ...src, sheetHash: hash, sheetFetchedAt: Date.now() });
     } catch (e) {
+      // v1.0.19 — REPORT IT. Keeping the cached library is right, but swallowing the
+      // reason was not: reads now need a token where the old CSV read needed none, so
+      // a revoked grant or a dead refresh freezes the library FOREVER — and the
+      // sources tab used to answer every 🔄 with "עודכן ✅" while nothing synced.
+      sheetError = (e && e.message) || 'sheet-failed';
       report('sheet', 5, ''); // offline: proceed with known channels
     }
   }
@@ -433,7 +446,13 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   } catch {}
   report('done', 100, '');
 
-  return { ok: true, added: plan.newLiveKeys.length, pending: plan.pendingKeys.length, merged: plan.mergeReport.length };
+  // `ok` still means "the pipeline ran" — the cached library is intact either way.
+  // `sheetError` is separate on purpose: the sync succeeded, but the SHEET was not
+  // read, and the parent has to be told or they will never know it stopped syncing.
+  return {
+    ok: true, added: plan.newLiveKeys.length, pending: plan.pendingKeys.length,
+    merged: plan.mergeReport.length, sheetError
+  };
 }
 
 /**

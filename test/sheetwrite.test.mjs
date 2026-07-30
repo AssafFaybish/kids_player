@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME,
-  starterRows, matchRowsForDeletion } from '../www/js/sheetwrite.js';
+  starterRows, matchRowsForDeletion, sheetErrorMessage } from '../www/js/sheetwrite.js';
 import { classifySourceRow, parseRemovalRow } from '../www/js/classify.js';
 import { parseSourceRows } from '../www/js/sync2.js';
 
@@ -250,4 +250,38 @@ test('starterRows: a deletion pass cannot match the header rows', () => {
   const ops = [{ op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 1 },
     { op: 'delchannel', channelId: 'UCchan111111111111111111', at: 2 }];
   assert.deepEqual(matchRowsForDeletion(colA, ops, {}), [], 'header rows are never deleted');
+});
+
+/* ---- v1.0.19: a failed sheet read must reach the parent, with a next step ---- */
+
+test('sheetErrorMessage: every failure mode names an action the parent can take', () => {
+  // The bug this closes: reads need a token now, so revoking the app freezes the
+  // library forever — and the sources tab used to answer "עודכן ✅" regardless.
+  const cases = ['sheet-no-token', 'sheet-http-401', 'sheet-http-403', 'sheet-http-404',
+    'sheet-bad-url', 'sheet-http-500', 'sheet-failed', '', null, undefined];
+  for (const c of cases) {
+    const m = sheetErrorMessage(c);
+    assert.ok(m && m.length > 20, `no message for ${c}`);
+    assert.doesNotMatch(m, /✅/, `a failure must never render as success: ${c}`);
+  }
+});
+
+test('sheetErrorMessage: a revoked grant points at reconnecting', () => {
+  for (const c of ['sheet-no-token', 'sheet-http-401']) {
+    assert.match(sheetErrorMessage(c), /התחברו מחדש/);
+  }
+});
+
+test('sheetErrorMessage: 403/404 points at creating a new list, not at pasting', () => {
+  // This is the pre-v1.0.19 pasted-sheet case. The old copy told parents to paste
+  // the edit link — an instruction they cannot follow, since that field is gone.
+  for (const c of ['sheet-http-403', 'sheet-http-404']) {
+    const m = sheetErrorMessage(c);
+    assert.match(m, /צרו רשימה חדשה/);
+    assert.doesNotMatch(m, /הדביקו/, 'must not tell them to paste — there is no paste field');
+  }
+});
+
+test('sheetErrorMessage: an offline read reassures that nothing was lost', () => {
+  assert.match(sheetErrorMessage('sheet-http-0'), /התוכן הקיים נשמר/);
 });

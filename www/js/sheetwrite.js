@@ -6,8 +6,9 @@
 //  - Local state is written FIRST and never blocks on the network: rows go into a
 //    durable queue (meta store) and are flushed opportunistically (after sync, after
 //    adds) with a NON-interactive token — no consent UI ever pops mid-flow.
-//  - Requires the signed-in Google account to have EDIT permission on the sheet and
-//    the extra `spreadsheets` OAuth scope (GoogleAuthPlugin; one-time re-consent).
+//  - v1.0.19: the ONLY scope is `drive.file`, which reaches exactly the files this
+//    app created — which is why the sheet must be one the app created, and why
+//    pasting a link to the parent's own sheet was removed (403 appNotAuthorizedToFile).
 //  - Published links (docs.google.com/spreadsheets/d/e/…) carry an opaque token, NOT
 //    the spreadsheet id — writing is impossible; surfaced as a parent-facing state.
 //  - Appends target the SAME tab the app reads: the gid in the sheet URL is resolved
@@ -286,11 +287,15 @@ export function sheetNameFor(profileName) {
 }
 
 /**
- * Create a new source sheet in the signed-in parent's Drive: title → spreadsheet,
- * welcome comment row, and "anyone with the link can VIEW" permission — the app
- * reads sheets via their public CSV export, so a private sheet would sync nothing.
- * Uses the existing spreadsheets + drive.file scopes (drive.file may manage
- * permissions of files the app itself created).
+ * Create a new source sheet in the signed-in parent's Drive: title → spreadsheet →
+ * header + how-to rows (starterRows) → filed into the app's Drive folder.
+ *
+ * v1.0.19: it is NOT shared publicly. Reads go through the authenticated Sheets API
+ * (readSourceSheet), so the sheet stays private to the parent's account — it used to
+ * be forced to "anyone with the link can VIEW" purely so an unauthenticated CSV
+ * export could see it, which made every family's playlist world-readable.
+ *
+ * -> { ok, id, url, folderId }  — folderId is null unless the move was VERIFIED.
  */
 export async function createSourceSheet(title) {
   const token = await getAccessToken({ interactive: true });
@@ -318,15 +323,23 @@ export async function createSourceSheet(title) {
   // account. Previously every family's playlist was world-readable to anyone
   // holding the URL, purely because the reader was an unauthenticated CSV fetch.
   // File it in the app's folder; a failure there is cosmetic, not fatal.
-  const folderId = await ensureSheetsFolder(token);
+  // `removeParents=root` is required: Drive v3 dropped multi-parenting, and an
+  // addParents-only PATCH can leave the file sitting in root — the exact thing the
+  // folder exists to prevent. httpRequest RETURNS a status rather than throwing, so
+  // the status must be checked explicitly; a try/catch alone would never fire, and
+  // the UI would keep telling parents the file is filed when it is not.
+  let folderId = await ensureSheetsFolder(token);
   if (folderId) {
+    let moved = false;
     try {
-      await httpRequest({
+      const mv = await httpRequest({
         method: 'PATCH',
-        url: `${DRIVE}/files/${id}?addParents=${folderId}&fields=id,parents`,
+        url: `${DRIVE}/files/${id}?addParents=${folderId}&removeParents=root&fields=id,parents`,
         headers: auth, body: JSON.stringify({}), responseType: 'json'
       });
-    } catch { /* the sheet still works from Drive root */ }
+      moved = mv.status === 200;
+    } catch { moved = false; }
+    if (!moved) folderId = null; // the sheet still works from Drive root — just say so
   }
   return { ok: true, id, url, folderId: folderId || null };
 }
@@ -360,6 +373,29 @@ export async function readSourceSheet(sheetUrl) {
   // sheet (not a failure) — and the mirror's total-disappearance valve is what
   // asks the parent about it, so returning [] here is correct.
   return (data.values || []).map((r) => (Array.isArray(r) ? r : []));
+}
+
+/**
+ * PURE (v1.0.19) — turn a readSourceSheet failure into something a parent can ACT on.
+ *
+ * This exists because the failure used to be invisible: sync swallowed the throw,
+ * still returned ok, and the sources tab answered every refresh with "עודכן ✅" while
+ * the library was frozen. Reads need a token now, so that state is reachable simply
+ * by revoking the app in the Google account. Every branch must end in a next step —
+ * a dead end here recreates the bug in a politer font.
+ */
+export function sheetErrorMessage(err) {
+  const e = String(err || '');
+  if (/no-token|401/.test(e)) {
+    return 'אין חיבור לחשבון Google — הרשימה לא נקראה. התחברו מחדש בהגדרות (הגיבוי בגוגל דרייב).';
+  }
+  if (/40[34]/.test(e)) {
+    // The pre-v1.0.19 case: a sheet the parent created and pasted. drive.file cannot
+    // reach it, and the paste flow that produced it no longer exists.
+    return 'אין גישה לקובץ הרשימה. אם חיברתם קובץ ידנית בגרסה ישנה — צרו רשימה חדשה כאן, והתוכן הקיים יעבור אליה.';
+  }
+  if (/bad-url/.test(e)) return 'הקישור לרשימה אינו תקין — צרו רשימה חדשה.';
+  return 'לא הצלחנו לקרוא את הרשימה (אולי אין חיבור לאינטרנט). התוכן הקיים נשמר.';
 }
 
 /* ---------------- flush ---------------- */

@@ -262,8 +262,9 @@ pins that the consumers follow the config and that every address is well-formed.
     `readSourceSheet` THROWS on any non-200 and that is load-bearing: the throw keeps
     `sheetParsed` false so the presence-mirror can't read "unreadable" as "emptied".
     Never soften it to a silent `[]`.
-  - `parseSourceRows(rows)` is the parser; `parseSourceSheet(text)` is the CSV front
-    door kept for snapshot import. Sheets-API rows are RAGGED (trailing empty cells
+  - `parseSourceRows(rows)` is the parser. `parseSourceSheet(text)` has NO production
+    caller (verified) and is kept only for the tokenizer tests — do not wire it back
+    to a fetch. `sync.js` is likewise dead in production. Sheets-API rows are RAGGED (trailing empty cells
     omitted) — both must tolerate that without throwing.
   - `starterRows()` writes a real COLUMN HEADER (A=link, B=display name, C=auto/manual)
     plus how-to lines into every new sheet. Every one starts column A with `#` so

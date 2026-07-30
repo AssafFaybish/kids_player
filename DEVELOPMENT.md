@@ -141,8 +141,9 @@ makes HTML5 fullscreen actually work (Capacitor's default is a no-op) and blocks
 > returns `403 appNotAuthorizedToFile`. See CLAUDE.md's v1.0.19 block and
 > GOOGLE_CLOUD_SETUP.md שלב 3א.
 >
-> `sync.js` itself still exists and `resolveListUrl` still has a caller: the legacy
-> snapshot-import path. Read the rest of this section as history, not as current behaviour.
+> `sync.js` still exists on disk but has **zero production importers** — only tests
+> reference it. Read this section as history, not as current behaviour, and treat the
+> module as scheduled for deletion.
 
 - `resolveListUrl(url)` makes a pasted link fetchable: a Google **Sheet** `/edit` link → CSV export
   (`/export?format=csv&gid=…`); a Google **Drive** file link → `uc?export=download`; already-CSV or
