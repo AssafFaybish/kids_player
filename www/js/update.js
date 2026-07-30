@@ -60,6 +60,26 @@ export function releasesPageUrl() {
 }
 
 /**
+ * The link a parent SENDS another parent (v1.0.20): always the newest APK, never the
+ * versioned asset URL of whatever release this device happens to know about.
+ *
+ * A shared message outlives the release it was written in — it sits in a WhatsApp
+ * thread for months. `…/download/v1.0.19/kids-player-v1.0.19.apk` keeps working but
+ * hands out a stale build (and 404s outright once an old release is deleted), while
+ * this redirect resolves to the current one for as long as the repo exists.
+ *
+ * It relies on GitHub matching the asset by EXACT name, which is why every release
+ * uploads a version-less copy alongside the versioned one (PUBLISHING.md,
+ * test/distribution.test.mjs). Same URL as the website's download button.
+ */
+export function latestApkUrl() {
+  return `https://github.com/${UPDATE_REPO}/releases/latest/download/${STABLE_APK_ASSET}`;
+}
+
+/** The version-less asset name every release must carry — see distribution.test.mjs. */
+export const STABLE_APK_ASSET = 'kids-player.apk';
+
+/**
  * The "share the app" message (v1.0.5) — pure, node-tested.
  *
  * v1.0.19: the HOME PAGE leads, the APK follows. A bare `.apk` link arriving from a
@@ -73,9 +93,13 @@ export function releasesPageUrl() {
  * The direct link stays, second and clearly labelled, for whoever just wants the file.
  * Either way the installed app updates itself afterwards, so a stale link still ends
  * current.
+ *
+ * v1.0.20: that direct link is `latestApkUrl()` — the stable latest-download redirect,
+ * NOT `latest.assetUrl`. The message gets forwarded long after this release stops being
+ * the newest, and it must always install the current build.
  */
 export function buildAppShareMessage(latest) {
-  const url = (latest && latest.assetUrl) || releasesPageUrl();
+  const url = latestApkUrl();
   const ver = latest && latest.version ? ` (גירסה ${latest.version})` : '';
   return [
     `היי! מוזמנים להתקין את "הסרטונים שלי"${ver} — נגן וידאו בטוח לילדים, שבו ההורים בוחרים בדיוק מה רואים.`,

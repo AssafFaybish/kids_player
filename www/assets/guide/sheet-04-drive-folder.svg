@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="ttl">
+  <title id="ttl">תיקיית גוגל דרייב עם קובץ הרשימה — פרטית לחשבון שלכם ומסונכרנת עם האפליקציה</title>
+  <defs>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#2d2a4a" flood-opacity="0.18"/>
+    </filter>
+    <filter id="softsm" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#2d2a4a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="ah" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#6c63ff"/>
+    </marker>
+    <marker id="ahg" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#0f9d58"/>
+    </marker>
+    <clipPath id="win">
+      <rect x="560" y="130" width="670" height="470" rx="22"/>
+    </clipPath>
+    <clipPath id="scr">
+      <rect x="110" y="152" width="272" height="500" rx="24"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="800" rx="28" fill="#faf8ff"/>
+  <circle cx="46" cy="118" r="86" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="1240" cy="96" r="70" fill="#f0b429" opacity="0.08"/>
+  <circle cx="1246" cy="744" r="76" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="62" cy="764" r="58" fill="#f0b429" opacity="0.07"/>
+
+  <text x="640" y="84" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="36" font-weight="700" fill="#2d2a4a">הקובץ שלכם בגוגל דרייב</text>
+
+  <!-- ============ the Drive window ============ -->
+  <g filter="url(#soft)">
+    <rect x="560" y="130" width="670" height="470" rx="22" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
+  </g>
+  <g clip-path="url(#win)">
+    <rect x="560" y="130" width="670" height="60" fill="#f1eefc"/>
+  </g>
+  <line x1="560" y1="190" x2="1230" y2="190" stroke="#e0dbf3" stroke-width="2"/>
+  <circle cx="596" cy="160" r="9" fill="#ff6b6b"/>
+  <circle cx="628" cy="160" r="9" fill="#f0b429"/>
+  <circle cx="660" cy="160" r="9" fill="#0f9d58"/>
+  <rect x="700" y="146" width="380" height="28" rx="14" fill="#e2ddf3"/>
+  <rect x="1128" y="146" width="28" height="28" rx="8" fill="#e2ddf3"/>
+  <rect x="1168" y="146" width="28" height="28" rx="8" fill="#e2ddf3"/>
+
+  <!-- the folder the app creates -->
+  <path d="M1136 232 a8 8 0 0 1 8 -8 h20 l10 12 h30 a8 8 0 0 1 8 8 v40 a8 8 0 0 1 -8 8 h-60 a8 8 0 0 1 -8 -8 z" fill="#f0b429"/>
+  <text x="858" y="252" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#2d2a4a">רשימת השמעה לאפליקציה הסרטונים שלי</text>
+  <text x="858" y="284" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" fill="#6b6890">התיקייה שהאפליקציה יוצרת בדרייב שלכם</text>
+  <line x1="590" y1="306" x2="1200" y2="306" stroke="#ece8f8" stroke-width="2"/>
+
+  <!-- the list file inside it -->
+  <rect x="590" y="322" width="610" height="112" rx="20" fill="#f8f6fe" stroke="#ece8f8" stroke-width="2"/>
+  <rect x="1104" y="338" width="64" height="80" rx="10" fill="#0f9d58"/>
+  <rect x="1116" y="352" width="40" height="48" rx="4" fill="#ffffff"/>
+  <g stroke="#0f9d58" stroke-width="2.5">
+    <line x1="1136" y1="352" x2="1136" y2="400"/>
+    <line x1="1116" y1="368" x2="1156" y2="368"/>
+    <line x1="1116" y1="384" x2="1156" y2="384"/>
+  </g>
+  <text x="848" y="366" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#2d2a4a">דני_רשימת סרטונים</text>
+  <text x="848" y="400" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" fill="#6b6890">גיליון Google שהאפליקציה יצרה</text>
+
+  <!-- privacy badge -->
+  <rect x="590" y="456" width="610" height="96" rx="24" fill="#e6f5ec"/>
+  <rect x="1126" y="490" width="48" height="38" rx="9" fill="#0f9d58"/>
+  <path d="M1137 490 L1137 479 A13 13 0 0 1 1163 479 L1163 490" fill="none" stroke="#0f9d58" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="1150" cy="504" r="5" fill="#ffffff"/>
+  <rect x="1147.5" y="506" width="5" height="12" rx="2.5" fill="#ffffff"/>
+  <text x="858" y="513" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#0f7f4c">הקובץ פרטי לחשבון הגוגל שלכם</text>
+  <text x="895" y="578" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="21" fill="#6b6890">רק אתם רואים אותו — הוא לא משותף לאף אחד</text>
+
+  <!-- ============ the app on the device ============ -->
+  <g filter="url(#soft)">
+    <rect x="96" y="132" width="300" height="540" rx="36" fill="#ffffff" stroke="#2d2a4a" stroke-width="4"/>
+  </g>
+  <rect x="211" y="140" width="70" height="7" rx="3.5" fill="#d3cee8"/>
+  <rect x="206" y="658" width="80" height="5" rx="2.5" fill="#d3cee8"/>
+  <rect x="110" y="152" width="272" height="500" rx="24" fill="#faf8ff"/>
+
+  <g clip-path="url(#scr)">
+    <rect x="110" y="152" width="272" height="52" fill="#6c63ff"/>
+
+    <!-- header: search + profile -->
+    <g stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round">
+      <circle cx="136" cy="176" r="9"/>
+      <line x1="143" y1="183" x2="150" y2="190"/>
+    </g>
+    <circle cx="358" cy="178" r="13" fill="#ffffff" opacity="0.92"/>
+    <circle cx="358" cy="175" r="4.5" fill="#6c63ff"/>
+    <path d="M350 187 q8 -8 16 0" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round"/>
+    <text x="246" y="185" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" font-weight="700" fill="#ffffff">הסרטונים שלי</text>
+
+    <!-- row 1 -->
+    <rect x="254" y="224" width="112" height="74" rx="12" fill="#eae7ff"/>
+    <circle cx="310" cy="261" r="18" fill="#6c63ff"/>
+    <polygon points="304,252 304,270 320,261" fill="#ffffff"/>
+    <rect x="270" y="306" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+    <rect x="126" y="224" width="112" height="74" rx="12" fill="#e6f6ec"/>
+    <circle cx="182" cy="261" r="18" fill="#0f9d58"/>
+    <polygon points="176,252 176,270 192,261" fill="#ffffff"/>
+    <rect x="142" y="306" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+
+    <!-- row 2 -->
+    <rect x="254" y="322" width="112" height="74" rx="12" fill="#fff3d9"/>
+    <circle cx="310" cy="359" r="18" fill="#f0b429"/>
+    <polygon points="304,350 304,368 320,359" fill="#ffffff"/>
+    <rect x="270" y="404" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+    <rect x="126" y="322" width="112" height="74" rx="12" fill="#ffe9ef"/>
+    <circle cx="182" cy="359" r="18" fill="#ff6b95"/>
+    <polygon points="176,350 176,368 192,359" fill="#ffffff"/>
+    <rect x="142" y="404" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+
+    <!-- row 3 -->
+    <rect x="254" y="420" width="112" height="74" rx="12" fill="#eae7ff"/>
+    <circle cx="310" cy="457" r="18" fill="#6c63ff"/>
+    <polygon points="304,448 304,466 320,457" fill="#ffffff"/>
+    <rect x="270" y="502" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+    <rect x="126" y="420" width="112" height="74" rx="12" fill="#e6f6ec"/>
+    <circle cx="182" cy="457" r="18" fill="#0f9d58"/>
+    <polygon points="176,448 176,466 192,457" fill="#ffffff"/>
+    <rect x="142" y="502" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+
+    <!-- row 4 -->
+    <rect x="254" y="518" width="112" height="74" rx="12" fill="#fff3d9"/>
+    <circle cx="310" cy="555" r="18" fill="#f0b429"/>
+    <polygon points="304,546 304,564 320,555" fill="#ffffff"/>
+    <rect x="270" y="600" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+    <rect x="126" y="518" width="112" height="74" rx="12" fill="#ffe9ef"/>
+    <circle cx="182" cy="555" r="18" fill="#ff6b95"/>
+    <polygon points="176,546 176,564 192,555" fill="#ffffff"/>
+    <rect x="142" y="600" width="80" height="9" rx="4.5" fill="#e3dff5"/>
+
+    <!-- row 5, clipped: the library keeps going -->
+    <rect x="254" y="616" width="112" height="74" rx="12" fill="#eae7ff"/>
+    <rect x="126" y="616" width="112" height="74" rx="12" fill="#e6f6ec"/>
+  </g>
+
+  <text x="246" y="706" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="22" font-weight="600" fill="#6b6890">האפליקציה בטאבלט</text>
+
+  <!-- ============ two-way sync ============ -->
+  <path d="M552 316 C 500 296, 452 296, 404 312" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round" marker-end="url(#ah)"/>
+  <path d="M404 480 C 452 496, 500 496, 552 476" fill="none" stroke="#0f9d58" stroke-width="4" stroke-linecap="round" marker-end="url(#ahg)"/>
+  <g filter="url(#softsm)">
+    <rect x="420" y="372" width="116" height="44" rx="22" fill="#ede9ff"/>
+  </g>
+  <text x="478" y="402" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="22" font-weight="700" fill="#4f46b8">סנכרון</text>
+
+  <!-- ============ caption ============ -->
+  <text x="640" y="764" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#2d2a4a">מה שמוסיפים כאן מופיע באפליקציה — ולהיפך</text>
+</svg>

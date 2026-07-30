@@ -43,42 +43,114 @@ export const TOUR_SLIDES = [
   }
 ];
 
+/**
+ * The detailed add-content guide (v1.0.20). 18 slides, grouped into CHAPTERS via the
+ * optional `chapter` field — a deck this long shows a chapter chip and a
+ * "שלב N מתוך M" counter instead of 18 unreadable dots (see deckChrome).
+ *
+ * Images: every APP screen is a real 1280x800 screenshot (assets/guide/app-*.jpg,
+ * share-04/05) staged through the real UI; only what is NOT ours — YouTube's share
+ * button, Android's app chooser, the spreadsheet, the Drive folder — is a drawing.
+ * That mix is deliberate: a parent hunting for a real button needs to recognise it.
+ */
 export const ADD_GUIDE_SLIDES = [
   {
-    img: 'assets/guide/intro-hero.svg', title: 'איך מוסיפים סרטונים?',
-    text: 'זה הלב של האפליקציה — בלי זה מסך הבית של הילד יישאר ריק. יש שלוש דרכים, וכולן מגיעות לאותו מקום. נעבור עליהן אחת-אחת.'
+    img: 'assets/guide/map-00-three-ways.svg', chapter: 'לפני שמתחילים',
+    title: 'שלוש דרכים להוסיף תוכן',
+    text: 'אפשר לשתף סרטון מיוטיוב, להדביק לינק במסך ההורים, או לכתוב אותו בקובץ הרשימה בגוגל דרייב. שלושתן מגיעות לאותו מקום — מסך הבית של הילד. נעבור עליהן אחת-אחת.'
+  },
+
+  /* ---- דרך 1: שיתוף מיוטיוב ---- */
+  {
+    img: 'assets/guide/share-01-open.svg', chapter: 'דרך 1 · שיתוף מיוטיוב',
+    title: 'פותחים ביוטיוב ולוחצים "שיתוף"',
+    text: 'זו הדרך המהירה. מצאתם ביוטיוב סרטון או ערוץ שמתאים לילד? לוחצים על כפתור השיתוף — מתחת לסרטון, או ליד שם הערוץ בעמוד הערוץ.'
   },
   {
-    img: 'assets/guide/share-01-open.svg', title: 'דרך 1: שיתוף מיוטיוב — הכי מהיר',
-    text: 'מצאתם ביוטיוב סרטון או ערוץ שמתאים לילד? פותחים אותו באפליקציית יוטיוב ולוחצים על כפתור השיתוף.'
+    img: 'assets/guide/share-02-choose.svg', chapter: 'דרך 1 · שיתוף מיוטיוב',
+    title: 'בוחרים "הסרטונים שלי"',
+    text: 'ברשימת האפליקציות שנפתחת בוחרים את "הסרטונים שלי". אם היא לא מופיעה — גוללים ימינה ברשימה או לוחצים "עוד". האפליקציה תיפתח בעצמה.'
   },
   {
-    img: 'assets/guide/share-02-choose.svg', title: 'בוחרים "הסרטונים שלי"',
-    text: 'ברשימת האפליקציות שנפתחת בוחרים את "הסרטונים שלי". אם היא לא מופיעה — גוללים ימינה ברשימה או לוחצים "עוד".'
+    img: 'assets/guide/share-04-pin.jpg', chapter: 'דרך 1 · שיתוף מיוטיוב',
+    title: 'מקישים את קוד ההורים',
+    text: 'לפני שמשהו נכנס לילד — האפליקציה מבקשת את קוד ההורים. ככה גם אם הטאבלט בידיים של הילד, שיתוף מיוטיוב לא יכול להוסיף תוכן בלעדיכם.'
   },
   {
-    img: 'assets/guide/share-03-approve.svg', title: 'מקישים את קוד ההורים ומאשרים',
-    text: 'האפליקציה נפתחת, מבקשת את קוד ההורים ומראה לכם מה עומד להתווסף. מאשרים — והסרטון כבר אצל הילד. ביטול שומר אותו ברשימת ההמתנה במקום למחוק אותו.'
+    img: 'assets/guide/share-05-confirm.jpg', chapter: 'דרך 1 · שיתוף מיוטיוב',
+    title: 'רואים מה מתווסף — ומאשרים',
+    text: '"הוספה" — והסרטון כבר אצל הילד. "לא עכשיו" לא מוחק אותו: הוא נשמר ברשימת ההמתנה שבמסך ההורים. שיתוף של ערוץ שלם עובד בדיוק אותו הדבר.'
+  },
+
+  /* ---- דרך 2: במסך ההורים ---- */
+  {
+    img: 'assets/guide/app-01-empty-home.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'נכנסים למסך ההורים',
+    text: 'המסך של הילד ריק? מכאן מתחילים. לוחצים על 🔒 "הורים" בפינה למעלה ומקישים את קוד ההורים — לשם הילד לא מגיע.'
   },
   {
-    img: 'assets/guide/add-01-inapp.svg', title: 'דרך 2: הדבקת לינק בתוך האפליקציה',
-    text: 'במסך ההורים יש שדה להדבקת לינק. עובד גם לסרטון בודד וגם לערוץ שלם — ערוץ מביא אוטומטית את כל הסרטונים שלו, וכל סרטון חדש שיעלה בו יגיע לאישורכם.'
+    img: 'assets/guide/app-02-parent-tabs.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'חמש הלשוניות של מסך ההורים',
+    text: 'אודות · ממתינים · הוספה · מקורות · הגדרות. להוספת תוכן לוחצים על "הוספה". הנקודה האדומה על "ממתינים" אומרת שיש סרטונים שמחכים לאישור שלכם.'
   },
   {
-    img: 'assets/guide/sheet-01-what.svg', title: 'דרך 3: קובץ הרשימה בגוגל דרייב',
-    text: 'האפליקציה יוצרת לכם קובץ בגוגל דרייב, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי". כל שורה בו = סרטון אחד או ערוץ אחד. נוח כשרוצים להוסיף הרבה בבת אחת מהמחשב. הקובץ פרטי לחשבון שלכם — רק אתם רואים אותו.'
+    img: 'assets/guide/app-03-add-paste.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'מדביקים לינק ולוחצים "הוספה"',
+    text: 'מעתיקים לינק מיוטיוב — מהדפדפן או מכפתור השיתוף — ומדביקים בשדה. תחת "אפשרויות" אפשר לתת לסרטון שם משלכם או תמונה, אבל זה לא חובה.'
   },
   {
-    img: 'assets/guide/sheet-02-paste.svg', title: 'פשוט מדביקים לינק בשורה חדשה',
-    text: 'במסך ההורים ← מקורות יש כפתור "העתקת הלינק לרשימה". פותחים את הקובץ בדפדפן, מדביקים לינק מיוטיוב בשורה ריקה בעמודה הראשונה — וזהו. אפשר להוסיף שם לסרטון בעמודה השנייה, אבל זה לא חובה.'
+    img: 'assets/guide/app-04-add-done.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'נוסף! ✅',
+    text: 'ההודעה הירוקה מאשרת שהסרטון נכנס, והוא מופיע ברשימה שמתחת עם התמונה שלו. השם מגיע אוטומטית מיוטיוב — לפעמים אחרי כמה שניות.'
   },
   {
-    img: 'assets/guide/sheet-01-what.svg', title: 'הקובץ והאפליקציה מסונכרנים',
-    text: 'מה שתוסיפו בקובץ יופיע באפליקציה בסנכרון הבא, ומה שתוסיפו באפליקציה יירשם בקובץ אוטומטית. גם מחיקה עוברת בשני הכיוונים, כך שהרשימה תמיד זהה בכל המכשירים.'
+    img: 'assets/guide/app-05-add-channel.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'ערוץ שלם בלינק אחד',
+    text: 'מדביקים לינק של ערוץ (למשל youtube.com/@SuperSimpleSongs) — והאפליקציה מביאה את הסרטונים שלו ופותחת לו תיקייה עם הלוגו במסך של הילד. כל סרטון חדש שיעלה בערוץ יחכה לאישור שלכם.'
+  },
+
+  /* ---- דרך 3: קובץ הרשימה ---- */
+  {
+    img: 'assets/guide/app-07-sources-create.jpg', chapter: 'דרך 3 · קובץ הרשימה',
+    title: 'יוצרים קובץ רשימה בדרייב',
+    text: 'לשונית "מקורות" ← "✨ יצירת רשימה חדשה", והאפליקציה יוצרת בשבילכם גיליון בגוגל דרייב שלכם. הדרך הזו נוחה כשרוצים להוסיף הרבה סרטונים בבת אחת מהמחשב.'
   },
   {
-    img: 'assets/tour/05-approve.jpg', title: 'ואתם תמיד מאשרים לפני הילד',
-    text: 'סרטון חדש שעולה בערוץ שעוקבים אחריו לא מגיע לילד לבד — הוא ממתין לכם במסך ההורים עם נקודה אדומה. אפשר גם להגדיר ערוץ מסוים כ"מאושר אוטומטית" אם אתם סומכים עליו.'
+    img: 'assets/guide/app-08-sources-connected.jpg', chapter: 'דרך 3 · קובץ הרשימה',
+    title: 'מעתיקים את הלינק לקובץ',
+    text: '"📋 העתקת הלינק לרשימה" מעתיק את כתובת הקובץ — שולחים אותה לעצמכם ופותחים במחשב. "🔄 רענון עכשיו" מביא מיד את מה שהוספתם, בלי לחכות לסנכרון.'
+  },
+  {
+    img: 'assets/guide/sheet-03-columns.svg', chapter: 'דרך 3 · קובץ הרשימה',
+    title: 'שורה אחת = סרטון אחד',
+    text: 'בעמודה A מדביקים את הלינק, וזה כל מה שחייבים. בעמודה B אפשר לכתוב שם שיוצג לילד, ובעמודה C לרשום auto כדי שסרטונים חדשים מערוץ ייכנסו בלי אישור. שורה שמתחילה ב-# היא הערה שהאפליקציה מדלגת עליה.'
+  },
+  {
+    img: 'assets/guide/sheet-04-drive-folder.svg', chapter: 'דרך 3 · קובץ הרשימה',
+    title: 'הקובץ פרטי — והסנכרון דו-כיווני',
+    text: 'הקובץ יושב בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי" בדרייב שלכם, ורק אתם רואים אותו. מה שתוסיפו בקובץ יופיע באפליקציה, ומה שתוסיפו באפליקציה יירשם בקובץ — וגם מחיקות עוברות בשני הכיוונים.'
+  },
+
+  /* ---- אישור ומחיקה ---- */
+  {
+    img: 'assets/guide/app-06-channel-auto.jpg', chapter: 'אישור ומחיקה',
+    title: 'ערוץ שאתם סומכים עליו',
+    text: 'בלשונית "מקורות", ליד כל ערוץ, יש "אישור אוטומטי לסרטונים חדשים". מסמנים — וסרטונים חדשים מהערוץ יגיעו לילד בלי לחכות לכם. משאירים כבוי = הכול עובר דרככם.'
+  },
+  {
+    img: 'assets/guide/app-09-pending.jpg', chapter: 'אישור ומחיקה',
+    title: 'רשימת ההמתנה',
+    text: 'כל מה שמחכה לאישור נמצא בלשונית "ממתינים": ✅ מאשר, 🗑️ דוחה, ויש גם "אישור הכול". סרטון שדחיתם לא יחזור — גם לא בסנכרון הבא.'
+  },
+  {
+    img: 'assets/guide/app-10-delete.jpg', chapter: 'אישור ומחיקה',
+    title: 'מוחקים סרטון',
+    text: 'בלשונית "הוספה" יש רשימה של כל הסרטונים, עם 🗑️ ליד כל אחד. אפשר למחוק גם בזמן צפייה, מהפינה למעלה, עם קוד ההורים. המחיקה נשמרת — הסרטון לא חוזר בסנכרון.'
+  },
+  {
+    img: 'assets/guide/app-11-kid-home.jpg', chapter: 'אישור ומחיקה',
+    title: 'וזה מה שהילד רואה',
+    text: 'תיקייה לכל ערוץ, "סרטונים נוספים" לכל השאר, וסרטונים חדשים שמחכים עטופים כמתנה 🎁. בלי פרסומות, בלי המלצות, בלי דרך לצאת ליוטיוב — רק מה שאתם בחרתם.'
   }
 ];
 
@@ -105,6 +177,45 @@ export function slideState(idx, len) {
     prevDisabled: i <= 0,
     dots: Array.from({ length: total }, (_, n) => n === i)
   };
+}
+
+/** Above this many slides, dots stop being countable and become a step counter. */
+export const DOTS_MAX = 8;
+
+/**
+ * The chrome for ONE position in ANY deck (v1.0.20). Long decks (the add-content
+ * guide) get a chapter chip + "שלב N מתוך M"; the short onboarding deck keeps its
+ * dots and shows no chapter, so nothing about the first run changes.
+ * Pure: takes the deck, returns strings — app.js only writes them into the DOM.
+ */
+export function deckChrome(deck, idx) {
+  const list = Array.isArray(deck) ? deck : [];
+  const total = list.length;
+  const i = Math.min(Math.max(0, Number(idx || 0)), Math.max(0, total - 1));
+  const slide = list[i] || {};
+  return {
+    chapter: typeof slide.chapter === 'string' ? slide.chapter : '',
+    stepLabel: total ? `שלב ${i + 1} מתוך ${total}` : '',
+    useDots: total > 0 && total <= DOTS_MAX
+  };
+}
+
+/**
+ * Chapter table for a deck: [{ title, from, to, count }] in slide order.
+ * Only the tests and future navigation need it, but deriving it from the deck
+ * itself is what keeps the chapter labels from drifting out of sync with the
+ * slides (a hand-maintained second list is the bug this avoids).
+ */
+export function chapters(deck) {
+  const out = [];
+  (Array.isArray(deck) ? deck : []).forEach((s, i) => {
+    const title = (s && typeof s.chapter === 'string') ? s.chapter : '';
+    if (!title) return;
+    const last = out[out.length - 1];
+    if (last && last.title === title) { last.to = i; last.count++; return; }
+    out.push({ title, from: i, to: i, count: 1 });
+  });
+  return out;
 }
 
 /**

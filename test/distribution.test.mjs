@@ -74,6 +74,18 @@ test('the manual-publish fallback tells the human about BOTH files', () => {
   }
 });
 
+test('the app SHARES the same stable asset the website serves (v1.0.20)', async () => {
+  // Fourth file in the coupling: the parent-to-parent share message. It used to send
+  // the versioned asset URL of whatever release the device knew about, so a forwarded
+  // message installed a frozen build. Now it must resolve to the same asset name the
+  // website button uses — rename one and this fails instead of a parent's link.
+  const { latestApkUrl, STABLE_APK_ASSET } = await import('../www/js/update.js');
+  assert.equal(STABLE_APK_ASSET, downloadHref.split('/').pop(),
+    'the shared asset name drifted from docs/index.html');
+  assert.equal(latestApkUrl(), downloadHref,
+    'the shared link and the website button must be the same URL');
+});
+
 test('the install steps do not name a versioned file the button no longer serves', () => {
   // The walkthrough used to say "choose kids-player-v<version>.apk" — describing the
   // old two-step flow through the releases page. The button downloads directly now.

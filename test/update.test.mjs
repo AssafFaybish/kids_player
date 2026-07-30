@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseVersion, compareVersions, isNewer, pickApkAsset,
-  resolveUpdateStatus, buildAppShareMessage, releasesPageUrl, UPDATE_REPO
+  resolveUpdateStatus, buildAppShareMessage, releasesPageUrl, UPDATE_REPO,
+  latestApkUrl, STABLE_APK_ASSET
 } from '../www/js/update.js';
 import { LINKS } from '../www/js/links.js';
 
@@ -66,27 +67,39 @@ test('resolveUpdateStatus: the decision table (skip applies to SILENT checks onl
   assert.equal(resolveUpdateStatus({ latest: null, local: '1.0.4', skipped: null, silent: true }), 'up-to-date');
 });
 
-test('buildAppShareMessage: direct asset link when known, releases page otherwise', () => {
-  const direct = buildAppShareMessage({ version: '1.0.5', assetUrl: 'https://github.com/x/y/releases/download/v1.0.5/kids-player-v1.0.5.apk' });
-  assert.ok(direct.includes('https://github.com/x/y/releases/download/v1.0.5/kids-player-v1.0.5.apk'));
-  assert.ok(direct.includes('1.0.5'));
-  assert.ok(direct.includes('אזהרות'), 'must warn that Android will show warnings');
+test('buildAppShareMessage always shares the LATEST-apk link, never a versioned one', () => {
+  const msg = buildAppShareMessage({ version: '1.0.5', assetUrl: 'https://github.com/x/y/releases/download/v1.0.5/kids-player-v1.0.5.apk' });
+  assert.ok(msg.includes(latestApkUrl()), 'the message must carry the stable latest link');
+  // v1.0.20 — the whole point: a forwarded message must not install a frozen build.
+  assert.ok(!msg.includes('kids-player-v1.0.5.apk'),
+    'the versioned asset URL must never reach the shared message');
+  assert.ok(msg.includes('1.0.5'));
+  assert.ok(msg.includes('אזהרות'), 'must warn that Android will show warnings');
 
   // v1.0.19: the explainer page LEADS and the APK follows. A bare .apk link arriving
   // from a friend reads as something you should not tap, and whoever taps it meets
   // Chrome's "may harm your device", unknown-sources and Play Protect with nobody
   // having explained them — which is exactly what the site's install steps do.
-  assert.ok(direct.includes(LINKS.site.home), 'the explainer page must be in the message');
-  assert.ok(direct.indexOf(LINKS.site.home) < direct.indexOf('kids-player-v1.0.5.apk'),
+  assert.ok(msg.includes(LINKS.site.home), 'the explainer page must be in the message');
+  assert.ok(msg.indexOf(LINKS.site.home) < msg.indexOf(latestApkUrl()),
     'the explainer page must come BEFORE the direct download');
 
-  for (const latest of [null, {}, { version: '1.0.5' }]) {
-    const fallback = buildAppShareMessage(latest);
-    assert.ok(fallback.includes(releasesPageUrl()), 'no asset url -> releases page link');
+  // the link does not depend on what this device happens to know about releases
+  for (const latest of [null, {}, { version: '1.0.5' }, { assetUrl: 'https://x/y.apk' }]) {
+    assert.ok(buildAppShareMessage(latest).includes(latestApkUrl()));
   }
-  assert.ok(releasesPageUrl().includes(UPDATE_REPO));
   // no-version fallback must not render an empty "(גירסה )"
   assert.ok(!buildAppShareMessage(null).includes('(גירסה'));
+});
+
+test('latestApkUrl is the version-less redirect on OUR repo — same as the website', () => {
+  const url = latestApkUrl();
+  assert.ok(url.includes('/' + UPDATE_REPO + '/'), `must point at ${UPDATE_REPO}: ${url}`);
+  assert.match(url, /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/releases\/latest\/download\/[\w.-]+\.apk$/);
+  // A version anywhere in it means the link freezes on today's release.
+  assert.doesNotMatch(url, /\d+\.\d+\.\d+/, 'no version may appear in the shared link');
+  assert.equal(url.split('/').pop(), STABLE_APK_ASSET);
+  assert.ok(releasesPageUrl().includes(UPDATE_REPO));
 });
 
 /* ---------------- v1.0.13: what's-new notes (Hebrew, de-noised, multi-version) ---------------- */

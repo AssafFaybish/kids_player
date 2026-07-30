@@ -149,6 +149,8 @@ body {
 .empty-state { text-align: center; padding: 80px 20px; color: var(--muted); }
 .empty-emoji { font-size: 72px; }
 .empty-text { font-size: 22px; font-weight: 700; }
+/* v1.0.20: the add-content guide, offered where a stuck parent actually is */
+#empty-guide { margin-top: 14px; }
 
 .pager {
   display: flex; align-items: center; justify-content: center;
@@ -689,6 +691,9 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   position: relative; text-align: center; padding: 22px;
   width: min(94vw, 640px);
   display: flex; flex-direction: column; align-items: center; gap: 10px;
+  /* margin:auto — not align-items alone: a centered flex ITEM that overflows gets its
+     top clipped and unscrollable, which would hide the chapter chip and the image. */
+  margin: auto;
 }
 .tour-skip { position: absolute; top: 4px; inset-inline-start: 4px; }
 /* v1.0.18: the hand-off into the add-videos guide, last onboarding slide only */
@@ -697,7 +702,9 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   width: 100%; border-radius: 18px; overflow: hidden;
   background: #fff; box-shadow: var(--shadow);
 }
-.tour-img { display: block; width: 100%; height: auto; }
+/* Cap the illustration by VIEWPORT height, not ratio: the nav row must stay reachable
+   on a short landscape screen. object-fit keeps every 1280x800 asset undistorted. */
+.tour-img { display: block; width: 100%; height: auto; max-height: 46dvh; object-fit: contain; }
 .tour-title { font-size: 24px; color: var(--brand-2); margin: 6px 0 0; }
 .tour-text { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.55; margin: 0; min-height: 3.2em; }
 .tour-nav { display: flex; align-items: center; gap: 20px; margin-top: 4px; }
@@ -705,6 +712,12 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .tour-dots { display: flex; gap: 8px; }
 .tour-dots span { width: 12px; height: 12px; border-radius: 50%; background: #d9d4f7; }
 .tour-dots span.on { background: var(--brand-2); }
+/* v1.0.20 — long decks (the add-content guide): chapter chip instead of a 18-dot row */
+.tour-chapter {
+  font-size: 14px; font-weight: 800; color: var(--brand-2);
+  background: #ece9ff; border-radius: 999px; padding: 4px 14px;
+}
+.tour-step { font-size: 15px; font-weight: 800; color: var(--muted); min-width: 7.5em; }
 
 /* ---------- Sheet setup wizard (v1.0.8) ---------- */
 #view-sheet-setup { min-height: 100dvh; }
