@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="ttl">
+  <title id="ttl">מסך אפליקציית וידאו עם כפתור השיתוף מסומן</title>
+  <defs>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#2d2a4a" flood-opacity="0.18"/>
+    </filter>
+    <filter id="softsm" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#2d2a4a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="ah" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#6c63ff"/>
+    </marker>
+    <clipPath id="scr">
+      <rect x="798" y="62" width="364" height="676" rx="30"/>
+    </clipPath>
+  </defs>
+
+  <!-- page background -->
+  <rect x="0" y="0" width="1280" height="800" rx="28" fill="#faf8ff"/>
+  <circle cx="150" cy="130" r="95" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="240" cy="700" r="130" fill="#f0b429" opacity="0.08"/>
+  <circle cx="1215" cy="735" r="70" fill="#6c63ff" opacity="0.07"/>
+
+  <!-- ============ annotation card ============ -->
+  <g filter="url(#softsm)">
+    <rect x="80" y="336" width="580" height="212" rx="30" fill="#ffffff" stroke="#e7e3f7" stroke-width="2"/>
+  </g>
+  <!-- big share glyph -->
+  <g stroke="#6c63ff" stroke-width="6" stroke-linecap="round">
+    <line x1="340" y1="400" x2="400" y2="372"/>
+    <line x1="340" y1="400" x2="400" y2="428"/>
+  </g>
+  <circle cx="400" cy="372" r="11" fill="#6c63ff"/>
+  <circle cx="400" cy="428" r="11" fill="#6c63ff"/>
+  <circle cx="340" cy="400" r="11" fill="#6c63ff"/>
+  <text x="370" y="510" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="54" font-weight="700" fill="#2d2a4a">שיתוף</text>
+
+  <!-- pointer arrow -->
+  <path d="M668 452 C 706 456, 748 462, 786 470" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round" marker-end="url(#ah)"/>
+
+  <!-- ============ phone ============ -->
+  <g filter="url(#soft)">
+    <rect x="780" y="40" width="400" height="720" rx="46" fill="#ffffff" stroke="#2d2a4a" stroke-width="4"/>
+  </g>
+  <rect x="935" y="48" width="90" height="8" rx="4" fill="#d3cee8"/>
+  <rect x="925" y="746" width="110" height="6" rx="3" fill="#d3cee8"/>
+  <rect x="798" y="62" width="364" height="676" rx="30" fill="#ffffff"/>
+
+  <g clip-path="url(#scr)">
+    <!-- red app header -->
+    <rect x="798" y="62" width="364" height="68" fill="#ff0000"/>
+    <rect x="1094" y="79" width="48" height="34" rx="9" fill="#ffffff"/>
+    <polygon points="1110,87 1110,105 1128,96" fill="#ff0000"/>
+    <circle cx="830" cy="94" r="11" fill="none" stroke="#ffffff" stroke-width="3.5"/>
+    <line x1="838" y1="102" x2="847" y2="111" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>
+    <circle cx="886" cy="96" r="13" fill="#ffffff"/>
+
+    <!-- video thumbnail -->
+    <rect x="810" y="150" width="340" height="191" rx="14" fill="#2d2a4a"/>
+    <polygon points="956,211 956,280 1016,245" fill="#ffffff"/>
+    <rect x="1100" y="309" width="42" height="22" rx="6" fill="#2d2a4a" opacity="0.85"/>
+
+    <!-- title placeholder bars -->
+    <rect x="884" y="360" width="266" height="16" rx="8" fill="#cfc9ea"/>
+    <rect x="990" y="390" width="160" height="14" rx="7" fill="#e3dff5"/>
+
+    <!-- action icon row -->
+    <circle cx="844" cy="478" r="32" fill="#ede9ff"/>
+    <circle cx="935" cy="478" r="32" fill="#f1eefc"/>
+    <circle cx="1026" cy="478" r="32" fill="#f1eefc"/>
+    <circle cx="1117" cy="478" r="32" fill="#f1eefc"/>
+
+    <!-- share glyph (highlighted) -->
+    <g stroke="#4f46b8" stroke-width="3.5" stroke-linecap="round">
+      <line x1="829" y1="478" x2="858" y2="461"/>
+      <line x1="829" y1="478" x2="858" y2="495"/>
+    </g>
+    <circle cx="858" cy="461" r="6.5" fill="#4f46b8"/>
+    <circle cx="858" cy="495" r="6.5" fill="#4f46b8"/>
+    <circle cx="829" cy="478" r="6.5" fill="#4f46b8"/>
+
+    <!-- heart -->
+    <path d="M935 493 C 917 479, 918 461, 928 461 C 933 461, 935 465, 935 468 C 935 465, 937 461, 942 461 C 952 461, 953 479, 935 493 Z" fill="none" stroke="#6b6890" stroke-width="3.5" stroke-linejoin="round"/>
+    <!-- plus -->
+    <g stroke="#6b6890" stroke-width="3.5" stroke-linecap="round">
+      <line x1="1012" y1="478" x2="1040" y2="478"/>
+      <line x1="1026" y1="464" x2="1026" y2="492"/>
+    </g>
+    <!-- download -->
+    <g stroke="#6b6890" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <line x1="1117" y1="462" x2="1117" y2="486"/>
+      <polyline points="1107,477 1117,487 1127,477"/>
+      <line x1="1103" y1="494" x2="1131" y2="494"/>
+    </g>
+
+    <!-- list rows -->
+    <rect x="1022" y="560" width="128" height="72" rx="10" fill="#2d2a4a"/>
+    <polygon points="1078,584 1078,608 1100,596" fill="#ffffff"/>
+    <rect x="830" y="574" width="170" height="13" rx="6" fill="#cfc9ea"/>
+    <rect x="898" y="600" width="102" height="11" rx="5" fill="#e3dff5"/>
+
+    <rect x="1022" y="656" width="128" height="72" rx="10" fill="#2d2a4a"/>
+    <polygon points="1078,680 1078,704 1100,692" fill="#ffffff"/>
+    <rect x="830" y="670" width="170" height="13" rx="6" fill="#cfc9ea"/>
+    <rect x="866" y="696" width="134" height="11" rx="5" fill="#e3dff5"/>
+  </g>
+
+  <!-- highlight rings drawn above the screen clip so they read clearly -->
+  <circle cx="844" cy="478" r="44" fill="none" stroke="#6c63ff" stroke-width="4"/>
+  <circle cx="844" cy="478" r="56" fill="none" stroke="#6c63ff" stroke-width="3" opacity="0.28"/>
+</svg>

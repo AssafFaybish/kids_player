@@ -691,6 +691,8 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   display: flex; flex-direction: column; align-items: center; gap: 10px;
 }
 .tour-skip { position: absolute; top: 4px; inset-inline-start: 4px; }
+/* v1.0.18: the hand-off into the add-videos guide, last onboarding slide only */
+.tour-more { margin-top: 2px; }
 .tour-stage {
   width: 100%; border-radius: 18px; overflow: hidden;
   background: #fff; box-shadow: var(--shadow);

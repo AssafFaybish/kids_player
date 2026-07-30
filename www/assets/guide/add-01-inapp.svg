@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="ttl">
+  <title id="ttl">הוספת קישור לסרטון ישירות ממסך ההורים באפליקציה</title>
+  <defs>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#2d2a4a" flood-opacity="0.18"/>
+    </filter>
+    <filter id="softsm" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#2d2a4a" flood-opacity="0.13"/>
+    </filter>
+    <clipPath id="scr">
+      <rect x="458" y="62" width="364" height="676" rx="30"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="800" rx="28" fill="#faf8ff"/>
+  <rect x="378" y="86" width="524" height="628" rx="64" fill="#6c63ff" opacity="0.05"/>
+  <circle cx="165" cy="200" r="100" fill="#6c63ff" opacity="0.07"/>
+  <circle cx="1115" cy="185" r="78" fill="#f0b429" opacity="0.09"/>
+  <circle cx="1145" cy="640" r="115" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="145" cy="655" r="78" fill="#f0b429" opacity="0.07"/>
+
+  <!-- ============ phone ============ -->
+  <g filter="url(#soft)">
+    <rect x="440" y="40" width="400" height="720" rx="46" fill="#ffffff" stroke="#2d2a4a" stroke-width="4"/>
+  </g>
+  <rect x="595" y="48" width="90" height="8" rx="4" fill="#d3cee8"/>
+  <rect x="585" y="746" width="110" height="6" rx="3" fill="#d3cee8"/>
+  <rect x="458" y="62" width="364" height="676" rx="30" fill="#faf8ff"/>
+
+  <g clip-path="url(#scr)">
+    <rect x="458" y="62" width="364" height="72" fill="#6c63ff"/>
+  </g>
+  <polyline points="792,88 802,98 792,108" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="640" y="107" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#ffffff">הורים</text>
+
+  <!-- ============ add form card ============ -->
+  <g filter="url(#softsm)">
+    <rect x="470" y="160" width="340" height="246" rx="22" fill="#ffffff" stroke="#ece8f8" stroke-width="2"/>
+  </g>
+  <text x="640" y="205" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="24" font-weight="700" fill="#2d2a4a">הוספה מתוך האפליקציה</text>
+
+  <rect x="494" y="228" width="292" height="64" rx="14" fill="#ffffff" stroke="#cfc9ea" stroke-width="3"/>
+  <text x="512" y="267" direction="ltr" text-anchor="start" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="19" fill="#9a96b8">youtube.com/watch?v=...</text>
+  <line x1="748" y1="244" x2="748" y2="276" stroke="#6c63ff" stroke-width="3" stroke-linecap="round"/>
+
+  <rect x="494" y="308" width="292" height="68" rx="16" fill="#6c63ff"/>
+  <text x="640" y="352" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#ffffff">הוספה</text>
+
+  <!-- ============ recently added ============ -->
+  <text x="727" y="452" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="22" font-weight="600" fill="#6b6890">נוספו לאחרונה</text>
+
+  <rect x="470" y="470" width="340" height="94" rx="18" fill="#ffffff" stroke="#ece8f8" stroke-width="2"/>
+  <rect x="676" y="486" width="110" height="62" rx="10" fill="#2d2a4a"/>
+  <polygon points="723,506 723,528 742,517" fill="#ffffff"/>
+  <rect x="498" y="498" width="158" height="14" rx="7" fill="#cfc9ea"/>
+  <rect x="566" y="524" width="90" height="12" rx="6" fill="#e3dff5"/>
+
+  <rect x="470" y="580" width="340" height="94" rx="18" fill="#ffffff" stroke="#ece8f8" stroke-width="2"/>
+  <rect x="676" y="596" width="110" height="62" rx="10" fill="#2d2a4a"/>
+  <polygon points="723,616 723,638 742,627" fill="#ffffff"/>
+  <rect x="526" y="608" width="130" height="14" rx="7" fill="#cfc9ea"/>
+  <rect x="590" y="634" width="66" height="12" rx="6" fill="#e3dff5"/>
+</svg>

@@ -25,6 +25,7 @@ import { normalizeTitle } from './normalize.js';
 import { burst } from './ui/confetti.js';
 import { playUnwrap } from './ui/sound.js';
 import { initShareTarget, drainShareQueue } from './share.js';
+import { TOUR_SLIDES, ADD_GUIDE_SLIDES, nextIndex, slideState, backAction } from './tour.js';
 
 const PAGE_SIZE = PAGE_VIDEOS;
 const $ = (id) => document.getElementById(id);
@@ -306,7 +307,7 @@ function registerViews() {
   // tour back = previous slide (or skip on the first one) — never exits the app
   nav.register('tour', {
     onBack: () => {
-      if (tourIdx > 0) { tourIdx -= 1; renderTourSlide(); } else { finishTour(); }
+      if (backAction(tourIdx) === 'prev') tourStep(-1); else finishTour();
       return true;
     }
   });
@@ -1705,58 +1706,70 @@ async function doSyncAndRefresh() {
   maybeSchedulePush();
 }
 
-/* ---------------- Onboarding tour (v1.0.8, once per install) ---------------- */
-const TOUR_SLIDES = [
-  {
-    img: 'assets/tour/01-profiles.jpg', title: 'לכל ילד פרופיל משלו',
-    text: 'בכניסה בוחרים פרופיל — שם ותמונה. לכל פרופיל ספריית סרטונים, מתנות והתקדמות משלו.'
-  },
-  {
-    img: 'assets/tour/02-home.jpg', title: 'מסך הבית של הילד',
-    text: 'ערוצים כתיקיות עם הלוגו שלהם, "סרטונים נוספים" לכל השאר, חיפוש 🔍 למעלה — וסרטונים חדשים מגיעים עטופים כמתנה 🎁.'
-  },
-  {
-    img: 'assets/tour/03-watch.jpg', title: 'צפייה בטוחה',
-    text: 'בלי פרסומות, בלי המלצות, בלי יציאה ליוטיוב. הבית 🏠 ומחיקת סרטון 🗑️ (עם קוד הורים) — בפינות למעלה.'
-  },
-  {
-    img: 'assets/tour/04-parent.jpg', title: 'מסך ההורים 🔒',
-    text: 'נכנסים עם קוד. מוסיפים סרטון בודד או ערוץ שלם, מחברים קובץ מקורות בגוגל — וכל הוספה נרשמת בקובץ אוטומטית.'
-  },
-  {
-    img: 'assets/tour/05-approve.jpg', title: 'הכול באישור שלכם',
-    text: 'סרטונים חדשים בערוצים ממתינים לאישור. נקודה אדומה על כפתור ההורים אומרת שמשהו מחכה לכם.'
-  }
-];
+/* ---------------- Onboarding tour (v1.0.8; two decks since v1.0.18) ----------------
+   Slide content and all bounds arithmetic live in tour.js (pure + unit-tested).
+   This half is only the DOM. `tourDeck` is whichever deck is on screen, so the
+   first-run tour and the "how do I add videos" guide share one view and one
+   renderer. `tour.done` is written only by the FIRST-RUN deck — replaying the
+   guide must never look like the onboarding was completed. */
+let tourDeck = TOUR_SLIDES;
 let tourIdx = 0;
 let tourOnDone = null;
+let tourIsOnboarding = true;
 
 function renderTourSlide() {
-  const s = TOUR_SLIDES[tourIdx];
+  const s = tourDeck[tourIdx];
+  if (!s) return;
+  const st = slideState(tourIdx, tourDeck.length);
   $('tour-img').src = s.img;
+  $('tour-img').alt = s.title;
   $('tour-title').textContent = s.title;
   $('tour-text').textContent = s.text;
-  $('tour-next').textContent = tourIdx === TOUR_SLIDES.length - 1 ? '✔' : '◀';
-  $('tour-prev').disabled = tourIdx === 0;
+  $('tour-next').textContent = st.nextLabel;
+  $('tour-prev').disabled = st.prevDisabled;
+  // The first-run deck hands off to the guide instead of just ending: a parent who
+  // never learns how to add a link cannot use the app at all.
+  const more = $('tour-more');
+  if (more) more.classList.toggle('hidden', !(st.isLast && tourIsOnboarding));
   const dots = $('tour-dots');
   dots.innerHTML = '';
-  TOUR_SLIDES.forEach((_, i) => {
+  for (const on of st.dots) {
     const d = document.createElement('span');
-    if (i === tourIdx) d.classList.add('on');
+    if (on) d.classList.add('on');
     dots.appendChild(d);
-  });
+  }
 }
 
-/** Boot shows it once ever (tour.done); the About tab replays on demand. */
-function startTour({ replay = false, onDone = null } = {}) {
+/**
+ * Boot shows the onboarding deck once ever (tour.done); the About tab replays it,
+ * and the parent screen opens the add-videos guide directly.
+ * @param deck        which slide deck to show
+ * @param onboarding  does finishing this deck mark the onboarding as done?
+ */
+function startTour({ replay = false, onDone = null, deck = TOUR_SLIDES, onboarding = true } = {}) {
+  tourDeck = Array.isArray(deck) && deck.length ? deck : TOUR_SLIDES;
+  tourIsOnboarding = onboarding;
   tourIdx = 0;
   tourOnDone = onDone;
   renderTourSlide();
   if (replay) nav.go('tour'); else nav.reset('tour');
 }
 
+/** The add-videos chapter — from the last tour slide, the parent screen, About. */
+function startAddGuide({ replay = true } = {}) {
+  startTour({ replay, deck: ADD_GUIDE_SLIDES, onboarding: false });
+}
+
+function tourStep(delta) {
+  const n = nextIndex(tourIdx, tourDeck.length, delta);
+  if (n === tourIdx) return;
+  tourIdx = n;
+  renderTourSlide();
+}
+
 async function finishTour() {
-  await prefSet('tour.done', '1');
+  // Only the onboarding deck may retire the first-run tour.
+  if (tourIsOnboarding) await prefSet('tour.done', '1');
   const done = tourOnDone;
   tourOnDone = null;
   if (done) { done(); return; }     // boot flow continues (connect / profiles)
@@ -2159,13 +2172,23 @@ async function deleteCurrentProfile() {
 function wire() {
   // v1.0.8: onboarding tour
   $('tour-next').addEventListener('click', () => {
-    if (tourIdx < TOUR_SLIDES.length - 1) { tourIdx += 1; renderTourSlide(); }
-    else finishTour();
+    if (slideState(tourIdx, tourDeck.length).isLast) finishTour();
+    else tourStep(1);
   });
-  $('tour-prev').addEventListener('click', () => {
-    if (tourIdx > 0) { tourIdx -= 1; renderTourSlide(); }
-  });
+  $('tour-prev').addEventListener('click', () => tourStep(-1));
   $('tour-skip').addEventListener('click', finishTour);
+  // v1.0.18: last slide of the onboarding deck → straight into the add-videos
+  // guide, without losing the "onboarding finished" mark on the way.
+  $('tour-more').addEventListener('click', async () => {
+    await prefSet('tour.done', '1');
+    const done = tourOnDone;
+    tourOnDone = null;
+    tourDeck = ADD_GUIDE_SLIDES;
+    tourIsOnboarding = false;
+    tourIdx = 0;
+    tourOnDone = done; // the boot flow still continues once the guide ends
+    renderTourSlide();
+  });
 
   // v1.0.8: sheet setup wizard (PIN required for create/paste — user-specified)
   $('sheetsetup-skip').addEventListener('click', finishSheetSetup);
@@ -2503,6 +2526,7 @@ function wire() {
     }
   });
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
+  $('guide-add').addEventListener('click', () => { startAddGuide(); });
   // v1.0.13: re-read what changed, any time (About tab)
   $('whatsnew-btn').addEventListener('click', async () => {
     const upd = await import('./update.js');

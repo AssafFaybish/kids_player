@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="ttl">
+  <title id="ttl">בחירת האפליקציה הסרטונים שלי מתוך תפריט השיתוף</title>
+  <defs>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#2d2a4a" flood-opacity="0.18"/>
+    </filter>
+    <filter id="softsm" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#2d2a4a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="ah" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#6c63ff"/>
+    </marker>
+    <clipPath id="scr">
+      <rect x="798" y="62" width="364" height="676" rx="30"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="800" rx="28" fill="#faf8ff"/>
+  <circle cx="150" cy="140" r="95" fill="#6c63ff" opacity="0.06"/>
+  <circle cx="230" cy="712" r="120" fill="#f0b429" opacity="0.08"/>
+  <circle cx="1218" cy="120" r="66" fill="#6c63ff" opacity="0.07"/>
+
+  <!-- ============ annotation card ============ -->
+  <g filter="url(#softsm)">
+    <rect x="80" y="372" width="580" height="216" rx="30" fill="#ffffff" stroke="#e7e3f7" stroke-width="2"/>
+  </g>
+  <!-- our app icon, large -->
+  <rect x="322" y="400" width="96" height="96" rx="24" fill="#6c63ff"/>
+  <circle cx="370" cy="448" r="23" fill="#ffffff"/>
+  <polygon points="364,437 364,459 384,448" fill="#6c63ff"/>
+  <circle cx="349" cy="428" r="4" fill="#ffd166"/>
+  <circle cx="392" cy="468" r="3.4" fill="#ff7ab6"/>
+  <text x="370" y="552" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="42" font-weight="700" fill="#2d2a4a">הסרטונים שלי</text>
+
+  <path d="M668 488 C 708 486, 748 490, 788 494" fill="none" stroke="#6c63ff" stroke-width="4" stroke-linecap="round" marker-end="url(#ah)"/>
+
+  <!-- ============ phone ============ -->
+  <g filter="url(#soft)">
+    <rect x="780" y="40" width="400" height="720" rx="46" fill="#ffffff" stroke="#2d2a4a" stroke-width="4"/>
+  </g>
+  <rect x="935" y="48" width="90" height="8" rx="4" fill="#d3cee8"/>
+  <rect x="925" y="746" width="110" height="6" rx="3" fill="#d3cee8"/>
+  <rect x="798" y="62" width="364" height="676" rx="30" fill="#ffffff"/>
+
+  <g clip-path="url(#scr)">
+    <!-- dimmed app behind -->
+    <rect x="798" y="62" width="364" height="68" fill="#ff0000"/>
+    <rect x="1094" y="79" width="48" height="34" rx="9" fill="#ffffff"/>
+    <polygon points="1110,87 1110,105 1128,96" fill="#ff0000"/>
+    <circle cx="886" cy="96" r="13" fill="#ffffff"/>
+    <rect x="810" y="150" width="340" height="191" rx="14" fill="#2d2a4a"/>
+    <polygon points="956,211 956,280 1016,245" fill="#ffffff"/>
+    <rect x="884" y="360" width="266" height="16" rx="8" fill="#cfc9ea"/>
+    <rect x="990" y="390" width="160" height="14" rx="7" fill="#e3dff5"/>
+
+    <!-- scrim -->
+    <rect x="798" y="62" width="364" height="676" fill="#2d2a4a" opacity="0.46"/>
+
+    <!-- share sheet -->
+    <rect x="798" y="396" width="364" height="364" rx="30" fill="#ffffff"/>
+    <rect x="952" y="412" width="56" height="7" rx="4" fill="#cfc9ea"/>
+
+    <!-- highlighted cell background -->
+    <rect x="820" y="440" width="112" height="146" rx="24" fill="#ede9ff"/>
+
+    <!-- row 1 -->
+    <rect x="838" y="456" width="76" height="76" rx="18" fill="#6c63ff"/>
+    <circle cx="876" cy="494" r="18.5" fill="#ffffff"/>
+    <polygon points="871,485 871,503 887,494" fill="#6c63ff"/>
+    <text x="876" y="568" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="15" font-weight="700" fill="#2d2a4a">הסרטונים שלי</text>
+
+    <rect x="942" y="456" width="76" height="76" rx="18" fill="#9aa7c7"/>
+    <circle cx="980" cy="494" r="17" fill="#ffffff" opacity="0.85"/>
+    <rect x="946" y="558" width="68" height="10" rx="5" fill="#d8d3f0"/>
+
+    <rect x="1046" y="456" width="76" height="76" rx="18" fill="#c3b2d4"/>
+    <rect x="1068" y="476" width="32" height="32" rx="8" fill="#ffffff" opacity="0.85"/>
+    <rect x="1050" y="558" width="68" height="10" rx="5" fill="#d8d3f0"/>
+
+    <!-- row 2 -->
+    <rect x="838" y="600" width="76" height="76" rx="18" fill="#a8c4b8"/>
+    <rect x="858" y="624" width="36" height="28" rx="7" fill="#ffffff" opacity="0.85"/>
+    <rect x="842" y="702" width="68" height="10" rx="5" fill="#d8d3f0"/>
+
+    <rect x="942" y="600" width="76" height="76" rx="18" fill="#d6c0a4"/>
+    <circle cx="980" cy="638" r="17" fill="#ffffff" opacity="0.85"/>
+    <rect x="946" y="702" width="68" height="10" rx="5" fill="#d8d3f0"/>
+
+    <rect x="1046" y="600" width="76" height="76" rx="18" fill="#b0aec9"/>
+    <rect x="1066" y="624" width="36" height="28" rx="7" fill="#ffffff" opacity="0.85"/>
+    <rect x="1050" y="702" width="68" height="10" rx="5" fill="#d8d3f0"/>
+  </g>
+
+  <!-- highlight ring above the clip -->
+  <rect x="828" y="446" width="96" height="96" rx="26" fill="none" stroke="#6c63ff" stroke-width="4"/>
+</svg>
