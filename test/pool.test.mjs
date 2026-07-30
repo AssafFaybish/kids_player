@@ -63,3 +63,16 @@ test('fnv1a is stable and hex-shaped; libraryIdFor canonicalizes sheet variants 
   assert.equal(canonicalSheetKey(''), '');
   assert.equal(libraryIdFor(''), null);
 });
+
+/* ---------------- v1.0.17: WHY a scope migration is needed ---------------- */
+
+test('libraryIdFor: the scope IS the sheet identity — changing sheets changes scope', () => {
+  const a = libraryIdFor('https://docs.google.com/spreadsheets/d/AAA/edit');
+  const b = libraryIdFor('https://docs.google.com/spreadsheets/d/BBB/edit');
+  assert.notEqual(a, b, 'two sheets must never share a library scope');
+  // …and a profile with no sheet gets a scope that no sheet can ever produce, which is
+  // exactly why connecting a sheet later MUST move the content (db.moveScope):
+  assert.equal(libraryIdFor(''), null);
+  assert.equal(libraryIdFor(null), null);
+  assert.ok(!String(a).startsWith('lib:p:'), 'sheet scopes never collide with lib:p:<profile>');
+});

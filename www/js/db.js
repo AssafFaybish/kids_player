@@ -437,6 +437,45 @@ export async function copyDenies(fromScope, toScope) {
  * v1.0.10: unDeny REVOKES instead of deleting — the inert marker (removedAt) must
  * out-merge stale active denies still sitting in Drive docs of other devices.
  */
+/**
+ * v1.0.17 — move an ENTIRE library scope's content to another scope.
+ * Needed because the library id is derived from the SHEET URL: connecting (or
+ * changing) a sheet changes the scope, and everything the parent had already
+ * added lived in the old one — it stayed in IndexedDB but vanished from the UI.
+ * Videos and channel subscriptions move; tombstones are unioned (never dropped).
+ * Idempotent: re-running finds an empty source scope and does nothing.
+ * Returns WHAT moved (not just counts) — the caller registers exactly those in the
+ * sheet; enqueueing the whole target scope could overflow the write queue and drop
+ * the genuinely-new rows.
+ * -> { videoKeys: [], channelIds: [] }
+ */
+export async function moveScope(fromScope, toScope) {
+  if (!fromScope || !toScope || fromScope === toScope) return { videoKeys: [], channelIds: [] };
+  const recs = [...(await loadMergeIndex(fromScope)).values()];
+  const puts = [];
+  for (const rec of recs) {
+    // a key already present in the target wins (it came from the real sheet)
+    if (await getVideo(toScope, rec.key)) continue;
+    puts.push({ ...rec, scopeId: toScope, updatedAt: Date.now() });
+  }
+  if (puts.length) await putVideos(puts);
+  await tx(['videos'], 'readwrite', (videos) => {
+    for (const rec of recs) videos.delete([fromScope, rec.key]);
+  });
+  await copyDenies(fromScope, toScope);
+
+  const movedChannels = [];
+  const targetChannels = new Set((await listLibraryChannels(toScope)).map((c) => c.channelId));
+  for (const lc of await listLibraryChannels(fromScope)) {
+    if (!targetChannels.has(lc.channelId)) {
+      await putLibraryChannel({ ...lc, libraryId: toScope });
+      movedChannels.push(lc.channelId);
+    }
+    await deleteLibraryChannel(fromScope, lc.channelId);
+  }
+  return { videoKeys: puts.map((r) => r.key), channelIds: movedChannels };
+}
+
 export async function unDeny(scopeId, key) {
   const db = await openDb();
   const prev = await preq(db.transaction('denylist').objectStore('denylist').get([scopeId, key]));

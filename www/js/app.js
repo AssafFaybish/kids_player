@@ -545,8 +545,12 @@ async function buildFolders() {
 
   const src = await db.getSources(activeProfileId);
   libScope = (src && src.libraryId) || null;
+  // ALL grouping state resets here, before the libScope guard: a profile without
+  // sources used to keep the PREVIOUS profile's looseSingles, so any future code
+  // rendering the flat list would show another child's videos (latent leak).
   singleGroups = new Map();
   absorbedSingles = new Map();
+  looseSingles = [];
   if (libScope) {
     const subscribedIds = new Set((await db.listLibraryChannels(libScope)).map((c) => c.channelId));
     for (const lc of await db.listLibraryChannels(libScope)) {
@@ -739,6 +743,18 @@ async function buildSearchIndex() {
         id: 'ch:' + lc.channelId, scope: libScope, key: 'folder:' + lc.channelId,
         title, normTitle: normalizeTitle(title),
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
+      });
+    }
+    // v1.0.17: the 🎞️ collections of grouped singles are folders on the home screen,
+    // so a child searching their channel name must find them too (they were missing).
+    for (const [channelId, recs] of singleGroups) {
+      const f = folders.find((x) => x.id === 'grp:' + channelId);
+      const title = (f && f.title) || (recs[0] && recs[0].srcChannelTitle) || '';
+      if (!title) continue;
+      folderEntries.push({
+        id: 'grp:' + channelId, scope: libScope, key: 'group:' + channelId,
+        title, normTitle: normalizeTitle(title),
+        logoUrl: (f && f.logoUrl) || '', emoji: '🎞️', count: recs.length
       });
     }
   }
@@ -1467,6 +1483,37 @@ async function refreshChannelsList() {
   }
 }
 
+/**
+ * v1.0.17 — the library scope is derived from the SHEET URL, so connecting a sheet
+ * (or switching to another one) moves the profile to a different scope. Everything
+ * the parent had already added lived in the old scope and simply DISAPPEARED from
+ * the UI. Now the content follows the profile, and the moved items are registered
+ * in the new sheet — which is also what keeps the presence-mirror from tombstoning
+ * them (queued appends count as "not yet in the sheet, on purpose").
+ */
+async function adoptLibraryScope(profileId, oldLib, newLib) {
+  if (!oldLib || !newLib || oldLib === newLib) return { videoKeys: [], channelIds: [] };
+  const moved = await db.moveScope(oldLib, newLib);
+  if (!moved.videoKeys.length && !moved.channelIds.length) return moved;
+  try {
+    const sw = await import('./sheetwrite.js');
+    for (const key of moved.videoKeys) {
+      const rec = await db.getVideo(newLib, key);
+      if (!rec || rec.state !== 'live') continue;
+      if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
+      await sw.enqueueSheetRow(profileId, { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+    }
+    for (const channelId of moved.channelIds) {
+      await sw.enqueueSheetRow(profileId, {
+        key: 'ch:' + channelId,
+        srcUrl: 'https://www.youtube.com/channel/' + channelId,
+        flag: 'manual'
+      });
+    }
+  } catch { /* the move already happened; rows retry on the next flush */ }
+  return moved;
+}
+
 /** The profile's sources record, created on first use (stable library even without a sheet). */
 async function ensureSources() {
   let src = await db.getSources(activeProfileId);
@@ -1714,12 +1761,16 @@ async function finishSheetSetup() {
 async function connectWizardSheet(url) {
   const { libraryIdFor } = await import('./util.js');
   let src = (await db.getSources(wizardProfile.id)) || { profileId: wizardProfile.id, schema: 1 };
+  const oldLib = src.libraryId || null;
   src = {
     shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
     maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
     ...src, sheetUrl: url, libraryId: libraryIdFor(url), sheetHash: null, updatedAt: Date.now()
   };
   await db.putSources(src);
+  // same scope-change hazard as the sources tab (a wizard-created profile is usually
+  // empty, but "skip now, connect later" and re-runs are not)
+  await adoptLibraryScope(wizardProfile.id, oldLib, src.libraryId);
 }
 
 async function wizardCreateSheet() {
@@ -2152,11 +2203,20 @@ function wire() {
       maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
       ...src, sheetUrl: url || null, updatedAt: Date.now()
     };
+    const oldLib = src.libraryId || null;
     if (url) src.libraryId = libraryIdFor(url);
     src.sheetHash = null; // force a full re-parse of the new sheet
     await db.putSources(src);
     libScope = src.libraryId || null;
+    // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
+    const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
     await doSyncAndRefresh();
+    // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
+    if (moved.videoKeys.length || moved.channelIds.length) {
+      $('remote-status').textContent =
+        `הועברו לקובץ החדש: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בו אוטומטית.`;
+      $('remote-status').className = 'form-msg ok';
+    }
   });
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
