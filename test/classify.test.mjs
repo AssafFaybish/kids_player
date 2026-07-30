@@ -108,3 +108,45 @@ test('classifyShared: the safety boundary holds — junk is rejected', async () 
   assert.equal(classifyShared('', ''), null);
   assert.equal(classifyShared(null, null), null);
 });
+
+/* ---------------- v1.0.12: removal rows ('# הוסר: <link>') ---------------- */
+
+test('a removal row yields a KEY TO DENY and never playable content', async () => {
+  const { classifySourceRow, parseRemovalRow } = await import('../www/js/classify.js');
+  for (const raw of [
+    '# הוסר: https://youtu.be/dQw4w9WgXcQ — שיר',
+    '#הוסר https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    '# removed: https://youtu.be/dQw4w9WgXcQ',
+    '# deleted - https://youtu.be/dQw4w9WgXcQ'
+  ]) {
+    const row = classifySourceRow(raw);
+    assert.equal(row.kind, 'removed', raw);
+    assert.equal(row.key, 'yt:dQw4w9WgXcQ', raw);
+    assert.equal(row.type, undefined, 'a removal row must not look like a video');
+    assert.equal(row.srcUrl, undefined);
+  }
+  assert.equal(parseRemovalRow('# הוסר: https://youtu.be/dQw4w9WgXcQ').key, 'yt:dQw4w9WgXcQ');
+});
+
+test('ordinary comments stay comments; a bare link stays a video', async () => {
+  const { classifySourceRow, parseRemovalRow } = await import('../www/js/classify.js');
+  assert.equal(classifySourceRow('# רשימת הסרטונים של דני').kind, 'comment');
+  assert.equal(classifySourceRow('# הוסר: בלי לינק בכלל').kind, 'comment'); // no key → not a removal
+  assert.equal(parseRemovalRow('# just a note'), null);
+  assert.equal(parseRemovalRow('https://youtu.be/dQw4w9WgXcQ'), null); // not a comment row
+  assert.equal(classifySourceRow('https://youtu.be/dQw4w9WgXcQ').kind, 'video');
+});
+
+test('parseSourceSheet: removal rows are collected AND win over a video row of the same key', async () => {
+  const { parseSourceSheet } = await import('../www/js/sync2.js');
+  const sheet = [
+    'https://youtu.be/aaaaaaaaaaa,שיר א',
+    'https://youtu.be/bbbbbbbbbbb,שיר ב',
+    '# הוסר: https://youtu.be/bbbbbbbbbbb — שיר ב',
+    'https://www.youtube.com/@somechannel,ערוץ,manual'
+  ].join('\n');
+  const p = parseSourceSheet(sheet);
+  assert.deepEqual(p.removedKeys, ['yt:bbbbbbbbbbb']);
+  assert.deepEqual(p.videoRows.map((r) => r.key), ['yt:aaaaaaaaaaa']); // b filtered out
+  assert.equal(p.channelRows.length, 1);
+});

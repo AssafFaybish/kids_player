@@ -239,3 +239,49 @@ export function planSheetMirror({
 
   return { deleteVideoKeys, deleteChannelIds, unDenyKeys, valve, disappeared, localTotal };
 }
+
+/**
+ * v1.0.12 — PURE: group loose single links by their SOURCE channel.
+ * Singles (manual adds / sheet rows / shares — records with no channelId) that come
+ * from the same YouTube channel are collected into one virtual folder so the child's
+ * home stays tidy; a channel with only ONE single stays in the flat list, which also
+ * means deleting down to one video un-groups it automatically (no migration).
+ *
+ * A single whose channel is ALREADY subscribed is NOT grouped separately (user
+ * decision): its id is returned under `absorb` so the UI can show it inside that
+ * channel's existing folder — one folder per channel, never two with the same name.
+ *
+ * @param singles      [{ key, srcChannelId, srcChannelTitle }] — live, sheet-folder records
+ * @param subscribedChannelIds Set/array of channel ids the library subscribes to
+ * @param min          how many singles make a group (2 = "a pair or more")
+ * @returns { groups: [{ channelId, title, keys }], absorb: Map<channelId, keys[]>, loose: keys[] }
+ */
+export function groupSinglesByChannel(singles, subscribedChannelIds = [], min = 2) {
+  const subscribed = subscribedChannelIds instanceof Set
+    ? subscribedChannelIds : new Set(subscribedChannelIds || []);
+  const byChannel = new Map();
+  const loose = [];
+  for (const s of singles || []) {
+    if (!s || !s.key) continue;
+    if (!s.srcChannelId) { loose.push(s.key); continue; }
+    if (!byChannel.has(s.srcChannelId)) byChannel.set(s.srcChannelId, []);
+    byChannel.get(s.srcChannelId).push(s);
+  }
+  const groups = [];
+  const absorb = new Map();
+  for (const [channelId, list] of byChannel) {
+    if (subscribed.has(channelId)) { absorb.set(channelId, list.map((s) => s.key)); continue; }
+    if (list.length >= min) {
+      const titled = list.find((s) => s.srcChannelTitle);
+      groups.push({
+        channelId,
+        title: (titled && titled.srcChannelTitle) || 'ערוץ',
+        keys: list.map((s) => s.key)
+      });
+    } else {
+      for (const s of list) loose.push(s.key);
+    }
+  }
+  groups.sort((a, b) => (b.keys.length - a.keys.length) || (a.channelId < b.channelId ? -1 : 1));
+  return { groups, absorb, loose };
+}

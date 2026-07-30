@@ -158,6 +158,45 @@ export async function fetchChannelRss(channelId) {
 
 /* ---------------- loose-link titles (batched with key, oEmbed without) ---------------- */
 
+/**
+ * v1.0.12 — ids -> Map<id, {title, channelId, channelTitle}>. The channel of a
+ * loose link comes FOR FREE: videos.list(part=snippet) already carries channelId
+ * and channelTitle (1 unit per 50, the same call titles use), and keyless oEmbed
+ * carries author_name + author_url. Used to group singles of the same channel.
+ */
+export async function fetchVideoMeta(ids, key) {
+  const out = new Map();
+  if (!ids.length) return out;
+  if (key) {
+    for (const batch of batchIds(ids, 50)) {
+      const r = await apiGet('videos', { part: 'snippet', id: batch.join(','), maxResults: 50 }, key);
+      for (const item of r.data?.items || []) {
+        const sn = item.snippet || {};
+        out.set(item.id, { title: sn.title || '', channelId: sn.channelId || null, channelTitle: sn.channelTitle || '' });
+      }
+      if (r.error) break;
+    }
+    return out;
+  }
+  // keyless: oEmbed gives the channel as author_url (@handle or /channel/UC…)
+  const { mapWithConcurrency } = await import('./util.js');
+  const { parseChannelRef } = await import('./classify.js');
+  const capped = ids.slice(0, 60); // bounded per run; the rest resolve next sync
+  const results = await mapWithConcurrency(capped, 6, async (id) => {
+    try {
+      const inner = encodeURIComponent(`https://www.youtube.com/watch?v=${id}`);
+      const data = await httpRequest({ url: `https://www.youtube.com/oembed?url=${inner}&format=json`, responseType: 'json' });
+      if (data.status !== 200 || !data.data) return null;
+      const d = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      const ref = d.author_url ? parseChannelRef(d.author_url) : null;
+      const channelId = ref ? await resolveChannelRef(ref, '') : null; // cached forever
+      return { title: d.title || '', channelId: channelId || null, channelTitle: d.author_name || '' };
+    } catch { return null; }
+  });
+  results.forEach((r, i) => { if (r.ok && r.value) out.set(capped[i], r.value); });
+  return out;
+}
+
 /** ids -> Map<id, title>. With a key: 1 unit per 50 (the fix for the 300-serial-fetch freeze). */
 export async function fetchTitles(ids, key) {
   const out = new Map();

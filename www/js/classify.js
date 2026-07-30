@@ -90,10 +90,32 @@ function safeDecode(s) { try { return decodeURIComponent(s); } catch { return s;
  * Classify one input-sheet row (column A). Disambiguation rule (tested):
  * a watch URL that also carries &list= is a VIDEO — the watch link wins.
  */
+/**
+ * v1.0.12 — REMOVAL rows. A video that lives inside a channel has no row of its own
+ * (the channel row represents all of them), so a per-video deletion is expressed as
+ * a COMMENT row: `# הוסר: <link> — <title>`. Comment form on purpose: older app
+ * versions skip comments entirely, so a removal can never resurrect content there.
+ * Returns the removed video's key, or null when the comment isn't a removal row.
+ * SAFETY: this only ever yields a key to DENY — never a playable record.
+ */
+const REMOVAL_MARKERS = /^#\s*(?:הוסר|הוסרו|removed|remove|deleted)\s*[:\-–]?\s*/i;
+export function parseRemovalRow(raw) {
+  const s = String(raw || '').trim().replace(/^"+|"+$/g, '');
+  if (!s.startsWith('#') || !REMOVAL_MARKERS.test(s)) return null;
+  const rest = s.replace(REMOVAL_MARKERS, '');
+  const m = rest.match(/https?:\/\/[^\s<>"']+/);
+  const c = classifyLink(m ? m[0].replace(/[)\]}>,.;:!?'"]+$/, '') : rest.split(/\s+/)[0]);
+  return c ? { key: c.key } : null;
+}
+
 export function classifySourceRow(raw) {
   const s = String(raw || '').trim().replace(/^"+|"+$/g, '');
   if (!s) return { kind: 'blank', raw: s };
-  if (s.startsWith('#')) return { kind: 'comment', raw: s };
+  if (s.startsWith('#')) {
+    const rm = parseRemovalRow(s);
+    // a removal row is NOT playable content — it only carries a key to deny
+    return rm ? { kind: 'removed', key: rm.key, raw: s } : { kind: 'comment', raw: s };
+  }
 
   const video = classifyLink(s);
   if (video) return { kind: 'video', ...video };

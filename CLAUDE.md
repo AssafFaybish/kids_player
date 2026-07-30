@@ -112,6 +112,23 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.12: (a) REMOVAL ROWS — a video inside a channel has no row of its own, so its
+  deletion travels as a comment row `# הוסר: <link> — <title>` (`classify.parseRemovalRow`
+  → `classifySourceRow` kind 'removed'; old app versions skip comments, so a removal can
+  never resurrect content there). A removal row WINS over a video row of the same key in
+  the same sheet; the mirror denies those keys and never un-denies them.
+  `enqueueSheetRemovalRow` refuses rows that don't round-trip (no dead rows). Bulk
+  reject-all deliberately writes NO rows (hundreds would wreck the sheet).
+  (b) LOOSE-SINGLE GROUPING — `plan.groupSinglesByChannel` (pure) folds 2+ singles of the
+  same channel into a VIRTUAL `grp:<channelId>` folder (🎞️ אוסף chip); one single stays
+  loose, so deleting down to one un-groups by itself. Singles of an already-subscribed
+  channel are absorbed into its 📺 folder instead. `srcChannelId/srcChannelTitle` come
+  free from the videos.list(snippet)/oEmbed calls titles already make (sync enrichment
+  stage, ≤100/run, weekly retry). `pageAnyFolder` is the ONE pagination entry point
+  (group slices / trimmed flat list / channel+absorbed prepend).
+  (c) The sheet wizard ALWAYS asks (no silent adopt): join `<profile>`'s file (one button
+  per distinct sheet, PIN-gated) / create (`sheetwrite.sheetNameFor` → "<שם>_רשימת
+  סרטונים") / paste link / skip.
 - v1.0.11: exit lock (`exitLock` pref, PER-DEVICE, settings toggle) — OS screen-pinning
   kiosk via `KidsNative.lockTask/unlockTask` (HOME is uninterceptable by apps; lock-task
   is the sanctioned mechanism; native exitApp stopLockTask()s defensively first). Exit
