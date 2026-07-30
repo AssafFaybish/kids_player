@@ -11,7 +11,7 @@ live and how does data flow".
 | `platform.js` | Capacitor shim: Preferences, HTTP (`httpRequest` never throws on status), Filesystem (DATA + EXTERNAL), app lifecycle, back button, exitApp | — |
 | `util.js` | fnv1a, canonicalSheetKey/libraryIdFor, mapWithConcurrency | — |
 | `csv.js` | RFC4180 parser (quoted Hebrew titles with commas survive) | — |
-| `classify.js` | **THE safety boundary**: classifyLink, parseChannelRef, classifySourceRow (watch-link-wins), stripTimeHints, classifyFromSharedText | — |
+| `classify.js` | **THE safety boundary**: classifyLink, parseChannelRef, classifySourceRow (watch-link-wins; kind 'removed' for `# הוסר` rows), parseRemovalRow, stripTimeHints, classifyFromSharedText/classifyShared | — |
 | `order.js` | sortKeyFor domains (channel=publishedAt / sheet=BASE+rowIndex / manual=above-all), compareForDisplay | — |
 | `normalize.js` | normalizeTitle (Hebrew: niqqud/bidi/emoji), mergeVideoRecord (survivor policy) | — |
 | `store.js` | legacy Preferences layer (profiles, PIN key, oEmbed title, thumb candidates hq-first); re-exports classify | platform, classify |

@@ -35,11 +35,13 @@ const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
 export function parseSourceSheet(text) {
   const videoRows = [];
   const channelRows = [];
+  const removedKeys = []; // v1.0.12: '# הוסר: <link>' rows — deny these for everyone
   const invalid = [];
   let videoOrdinal = 0;
   for (const fields of parseCsv(text)) {
     const parts = fields.map((s) => String(s ?? '').trim().replace(/^"+|"+$/g, ''));
     const row = classifySourceRow(parts[0] || '');
+    if (row.kind === 'removed') { removedKeys.push(row.key); continue; }
     if (row.kind === 'blank' || row.kind === 'comment') continue;
     if (row.kind === 'video') {
       videoRows.push({ ...row, title: parts[1] || '', thumbUrl: parts[2] || '', rowIndex: videoOrdinal });
@@ -53,7 +55,10 @@ export function parseSourceSheet(text) {
       invalid.push(row);
     }
   }
-  return { videoRows, channelRows, invalid };
+  // a removal row always wins over a video row for the same key in the SAME sheet:
+  // safety-first — to bring a video back the parent deletes the removal row.
+  const removed = new Set(removedKeys);
+  return { videoRows: videoRows.filter((r) => !removed.has(r.key)), channelRows, removedKeys, invalid };
 }
 
 const inFlight = new Map(); // profileId -> Promise
@@ -86,6 +91,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   /* ---------- stage: sheet ---------- */
   let videoRows = [];
   let channelRows = [];
+  let removedKeys = [];
   let sheetChanged = false;
   let sheetParsed = false; // v1.0.10: mirroring may run ONLY on a successful fetch
   if (src.sheetUrl) {
@@ -97,6 +103,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       const parsed = parseSourceSheet(text);
       videoRows = parsed.videoRows;
       channelRows = parsed.channelRows;
+      removedKeys = parsed.removedKeys || [];
       sheetParsed = true;
       if (sheetChanged) await putSources({ ...src, sheetHash: hash, sheetFetchedAt: Date.now() });
     } catch (e) {
@@ -136,6 +143,12 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   // forgets, and content resurrected by a stale Drive-doc merge would stay forever).
   if (sheetParsed) {
     try {
+      // v1.0.12: '# הוסר' rows deny their key for EVERY participant — that is how a
+      // deletion of a video INSIDE a channel travels (it has no row of its own).
+      for (const key of removedKeys) {
+        if (await getVideo(lib, key)) await deleteVideo(lib, key, 'sheet-removed');
+        else if (!(await loadDenySet(lib)).has(key)) await deleteVideo(lib, key, 'sheet-removed');
+      }
       const libIndex = await loadMergeIndex(lib);
       // LIVE records only: a PENDING share (parked with homeFolderId 'sheet') gets
       // its row at APPROVAL time — it has no sheet presence yet, and mirroring it
@@ -149,7 +162,9 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         currentVideoKeys: videoRows.map((r) => r.key),
         currentChannelIds: [...sheetChannelIds],
         pendingAppendKeys: await pendingAppendKeys(lib),
-        pendingDeleteKeys: await pendingDeleteKeys(lib),
+        // a key with a '# הוסר' row must never be un-denied by presence, and neither
+        // must one whose own row-removal is still queued
+        pendingDeleteKeys: [...(await pendingDeleteKeys(lib)), ...removedKeys],
         deniedKeys: await loadDenySet(lib)
       });
       // a denied key the sheet LISTS = deliberate re-add → the tombstone yields
@@ -321,6 +336,36 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       if (title) await setVideoFields(scope, 'yt:' + id, { title, titleSource: key ? 'api' : 'oembed', normTitle: normalizeTitle(title) });
     }
   }
+
+  /* ---------- stage: source-channel enrichment (v1.0.12) ---------- */
+  // Loose single links learn WHICH channel they came from, so 2+ from the same
+  // channel can be grouped into one folder. Free: the channel rides along in the
+  // same videos.list(snippet) call titles use (or in keyless oEmbed's author_url).
+  // Bounded per run + weekly retry, and idempotent (only untried records).
+  try {
+    const SRC_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+    const need = [];
+    for (const rec of (await loadMergeIndex(scope)).values()) {
+      if (rec.state !== 'live' || rec.type !== 'youtube' || rec.channelId) continue;
+      if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue;
+      if (rec.srcChannelId) continue;
+      if (rec.srcChannelTriedAt && Date.now() - rec.srcChannelTriedAt < SRC_RETRY_MS) continue;
+      need.push(rec.id);
+      if (need.length >= 100) break; // ≤2 quota units per sync
+    }
+    if (need.length) {
+      report('titles', 85, 'מזהים ערוצים של סרטונים…');
+      const meta = await yt.fetchVideoMeta(need, key);
+      for (const id of need) {
+        const m = meta.get(id);
+        await setVideoFields(scope, 'yt:' + id, {
+          srcChannelId: (m && m.channelId) || null,
+          srcChannelTitle: (m && m.channelTitle) || '',
+          srcChannelTriedAt: Date.now()
+        });
+      }
+    }
+  } catch { /* enrichment is cosmetic — never break a sync over it */ }
 
   /* ---------- stage: folder-image fallback (v1.0.6) ---------- */
   // A channel with no obtainable logo gets a PERSISTED fallback image: the thumbnail

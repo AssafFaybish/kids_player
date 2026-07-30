@@ -40,6 +40,16 @@ export function buildSheetRow({ srcUrl, title = '', flag = '' }) {
   return [String(srcUrl || ''), String(title || ''), String(flag || '')];
 }
 
+/**
+ * v1.0.12 — the removal row for a video INSIDE a channel (it has no row of its own).
+ * Comment form: older app versions skip it; new ones read it as "deny this key".
+ * The title rides along so a human scanning the sheet sees what was removed.
+ */
+export function buildRemovalRow({ srcUrl, title = '' }) {
+  const note = `# הוסר: ${String(srcUrl || '')}${title ? ' — ' + String(title) : ''}`;
+  return [note, '', ''];
+}
+
 const qKey = (lib) => 'sheetq:' + lib;
 const stateKey = (lib) => 'sheetqState:' + lib;
 
@@ -119,6 +129,22 @@ export function enqueueSheetVideoDelete(profileId, key) {
   return enqueueOp(profileId, { op: 'delvideo', key });
 }
 
+/**
+ * v1.0.12: queue a REMOVAL ROW for a channel video (no row of its own to delete).
+ * Keyed 'rm:<videoKey>' so reconcileOps and the sheet-presence dedupe treat it as
+ * its own identity — appending it twice is impossible.
+ */
+export function enqueueSheetRemovalRow(profileId, { key, srcUrl, title = '' }) {
+  const row = buildRemovalRow({ srcUrl, title });
+  // Never write a DEAD row: the note must parse back to exactly this key, or the
+  // sheet would carry a removal nobody can act on (e.g. a record with no usable link).
+  const back = classifySourceRow(row[0]);
+  if (!back || back.kind !== 'removed' || back.key !== key) {
+    return Promise.resolve({ ok: false, error: 'unrepresentable' });
+  }
+  return enqueueOp(profileId, { op: 'append', key: 'rm:' + key, row });
+}
+
 /** v1.0.10: queue the removal of a CHANNEL row (matched by resolved channel id). */
 export function enqueueSheetChannelDelete(profileId, channelId) {
   return enqueueOp(profileId, { op: 'delchannel', channelId });
@@ -175,6 +201,12 @@ export function starterRows() {
 /** PURE: does this look like a connectable Google Sheets link? */
 export function isSheetsUrl(url) {
   return /docs\.google\.com\/spreadsheets\//.test(String(url || ''));
+}
+
+/** PURE (v1.0.12): the name of a sheet created for a profile — "<שם>_רשימת סרטונים". */
+export function sheetNameFor(profileName) {
+  const name = String(profileName || '').replace(/\s+/g, ' ').trim() || 'ילד/ה';
+  return `${name}_רשימת סרטונים`;
 }
 
 /**
@@ -300,7 +332,8 @@ export async function flushSheetQueue(profileId) {
   colA.forEach((raw, i) => {
     if (deleted.has(i)) return;
     const row = classifySourceRow(raw);
-    if (row.kind === 'video') presentIds.add(row.key);
+    if (row.kind === 'removed') presentIds.add('rm:' + row.key); // v1.0.12 removal rows
+    else if (row.kind === 'video') presentIds.add(row.key);
     else if (row.kind === 'channel') {
       const ref = row.channelRef;
       const id = ref.by === 'id' ? ref.value : handleMap[ref.by + ':' + String(ref.value).toLowerCase()];

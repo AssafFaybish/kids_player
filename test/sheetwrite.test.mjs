@@ -103,3 +103,39 @@ test('matchRowsForDeletion: keys match across URL variants, channels via handleM
   // unresolvable handle without the map → that row is left alone
   assert.deepEqual(matchRowsForDeletion(colA, [ops[1]], {}), []);
 });
+
+/* ---------------- v1.0.12: removal rows + per-profile sheet name ---------------- */
+
+test('buildRemovalRow: a comment row old versions skip and new ones read back', async () => {
+  const { buildRemovalRow } = await import('../www/js/sheetwrite.js');
+  const { classifySourceRow } = await import('../www/js/classify.js');
+  const row = buildRemovalRow({ srcUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'שיר' });
+  assert.equal(row.length, 3);
+  assert.ok(row[0].startsWith('#'));
+  const parsed = classifySourceRow(row[0]);
+  assert.equal(parsed.kind, 'removed');
+  assert.equal(parsed.key, 'yt:dQw4w9WgXcQ');
+  // titleless form still round-trips
+  assert.equal(classifySourceRow(buildRemovalRow({ srcUrl: 'https://youtu.be/dQw4w9WgXcQ' })[0]).key, 'yt:dQw4w9WgXcQ');
+});
+
+test('sheetNameFor: "<profile>_רשימת סרטונים", whitespace-normalized, never empty', async () => {
+  const { sheetNameFor } = await import('../www/js/sheetwrite.js');
+  assert.equal(sheetNameFor('דני'), 'דני_רשימת סרטונים');
+  assert.equal(sheetNameFor('  נועה   לוי '), 'נועה לוי_רשימת סרטונים');
+  assert.equal(sheetNameFor(''), 'ילד/ה_רשימת סרטונים');
+  assert.equal(sheetNameFor(null), 'ילד/ה_רשימת סרטונים');
+});
+
+test('a removal row that cannot round-trip is REFUSED before it reaches the queue', async () => {
+  const { enqueueSheetRemovalRow, buildRemovalRow } = await import('../www/js/sheetwrite.js');
+  // Both are rejected purely (no DB touched): a record with no usable link, and a
+  // key that would not parse back — either would leave a dead row in the sheet.
+  assert.equal((await enqueueSheetRemovalRow('p1', { key: 'yt:dQw4w9WgXcQ', srcUrl: '' })).error, 'unrepresentable');
+  assert.equal((await enqueueSheetRemovalRow('p1', { key: 'yt:MISMATCHKEY', srcUrl: 'https://youtu.be/dQw4w9WgXcQ' })).error, 'unrepresentable');
+  // the accepted shape (verified purely — the enqueue itself needs IndexedDB):
+  const { classifySourceRow } = await import('../www/js/classify.js');
+  const ok = classifySourceRow(buildRemovalRow({ srcUrl: 'https://x.com/a.mp4' })[0]);
+  assert.equal(ok.kind, 'removed');
+  assert.equal(ok.key, 'file:https://x.com/a.mp4', 'direct-file links round-trip too');
+});

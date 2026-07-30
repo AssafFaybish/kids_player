@@ -15,6 +15,7 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
+import { groupSinglesByChannel } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -50,6 +51,11 @@ let folderId = null;                  // open folder in #view-folder
 let folderPage = 0;
 let folderPagerObj = null;
 let giftStates = new Map();           // key -> profileVideoState record (gifts, F9)
+// v1.0.12 grouping of loose singles — record arrays built by ONE bulk read in
+// buildFolders and paginated directly (no per-key IDB reads on render).
+let singleGroups = new Map();         // channelId -> records of its grouped singles
+let absorbedSingles = new Map();      // channelId -> singles shown inside its 📺 folder
+let looseSingles = [];                // what stayed in the flat "סרטונים נוספים" list
 let watchCtx = { scope: null, folderId: null }; // which folder the watch grid pages
 
 // PIN flow state
@@ -425,11 +431,12 @@ function folderTile(f) {
   btn.appendChild(nm);
   btn.appendChild(cnt);
   // v1.0.4: channel folders carry an explicit chip — the child (and parent) must
-  // never mistake a folder for a playable video tile.
-  if (String(f.id).startsWith('ch:')) {
+  // never mistake a folder for a playable video tile. v1.0.12: grouped singles get
+  // their OWN chip (🎞️ אוסף) so the two folder kinds never look alike.
+  if (String(f.id).startsWith('ch:') || String(f.id).startsWith('grp:')) {
     const chip = document.createElement('span');
     chip.className = 'folder-chip';
-    chip.textContent = '📺 ערוץ';
+    chip.textContent = String(f.id).startsWith('grp:') ? '🎞️ אוסף' : '📺 ערוץ';
     btn.appendChild(chip);
   }
   if (f.isNew) {
@@ -490,7 +497,10 @@ async function buildFolders() {
 
   const src = await db.getSources(activeProfileId);
   libScope = (src && src.libraryId) || null;
+  singleGroups = new Map();
+  absorbedSingles = new Map();
   if (libScope) {
+    const subscribedIds = new Set((await db.listLibraryChannels(libScope)).map((c) => c.channelId));
     for (const lc of await db.listLibraryChannels(libScope)) {
       if (lc.hidden) continue;
       const ch = (await db.getChannel(lc.channelId)) || {};
@@ -503,9 +513,47 @@ async function buildFolders() {
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
       });
     }
-    // the merged shared list (sheet rows + manual adds + approved shares, v1.0.6)
-    const sheetCount = await db.countFolder(libScope, 'sheet');
-    if (sheetCount) out.push({ id: 'sheet', scope: libScope, title: 'סרטונים נוספים', emoji: '⭐', count: sheetCount });
+    // v1.0.12: loose single links from the SAME channel collapse into one 🎞️ folder
+    // (2+ = a group; a lone single stays in the flat list, so deleting down to one
+    // un-groups it by itself). Singles of an already-subscribed channel are shown
+    // inside that channel's 📺 folder instead of a second same-named folder.
+    // All of it rides ONE bulk read — the record arrays feed pagination directly.
+    const { compareForDisplay } = await import('./order.js');
+    const sheetRecords = [...(await db.loadMergeIndex(libScope)).values()]
+      .filter((r) => r.state === 'live' && (r.homeFolderId || r.folderId) === 'sheet');
+    const grouping = groupSinglesByChannel(sheetRecords.filter((r) => !r.channelId), subscribedIds);
+    const byKey = new Map(sheetRecords.map((r) => [r.key, r]));
+    const recsOf = (keys) => keys.map((k) => byKey.get(k)).filter(Boolean).sort(compareForDisplay);
+
+    singleGroups = new Map(grouping.groups.map((g) => [g.channelId, recsOf(g.keys)]));
+    absorbedSingles = new Map([...grouping.absorb].map(([id, keys]) => [id, recsOf(keys)]));
+    for (const [chId, recs] of absorbedSingles) {
+      const f = out.find((x) => x.id === 'ch:' + chId);
+      if (f) { f.count += recs.length; continue; }
+      // subscribed but nothing imported yet — the singles still need a home
+      const ch = (await db.getChannel(chId)) || {};
+      out.push({
+        id: 'ch:' + chId, scope: libScope, title: ch.title || 'ערוץ',
+        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count: recs.length
+      });
+    }
+    for (const g of grouping.groups) {
+      const ch = (await db.getChannel(g.channelId)) || {};
+      out.push({
+        id: 'grp:' + g.channelId, scope: libScope, title: g.title,
+        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '🎞️',
+        count: g.keys.length, grouped: true
+      });
+    }
+    // the merged shared list — only what stayed loose after grouping (v1.0.12)
+    const claimed = new Set([
+      ...grouping.groups.flatMap((g) => g.keys),
+      ...[...grouping.absorb.values()].flat()
+    ]);
+    looseSingles = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
+    if (looseSingles.length) {
+      out.push({ id: 'sheet', scope: libScope, title: 'סרטונים נוספים', emoji: '⭐', count: looseSingles.length });
+    }
   }
   // legacy safety: pre-absorb profile-scope items (e.g. before the first sync creates
   // sources) stay reachable until absorbMineIntoShared picks them up
@@ -563,6 +611,27 @@ function updateHomePager(total) {
   }
 }
 
+/**
+ * One pagination entry point for every folder kind (v1.0.12):
+ *   grp:<id> — a virtual folder of loose singles sharing a channel (array slice);
+ *   sheet    — the flat list MINUS whatever grouping claimed (array slice);
+ *   ch:<id>  — the channel's indexed range, with absorbed singles PREPENDED
+ *              (they come first, then the channel's own videos, paged correctly);
+ *   anything else — the plain by_folder_sort range.
+ */
+async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {}) {
+  const slice = (arr) => ({ items: arr.slice(offset, offset + limit), total: arr.length });
+  if (String(fid).startsWith('grp:')) return slice(singleGroups.get(String(fid).slice(4)) || []);
+  if (fid === 'sheet' && looseSingles.length) return slice(looseSingles);
+
+  const extras = (String(fid).startsWith('ch:') && absorbedSingles.get(String(fid).slice(3))) || [];
+  if (!extras.length) return db.pageFolder(scope, fid, { offset, limit });
+  const eSlice = extras.slice(offset, offset + limit);
+  const consumed = Math.min(extras.length, offset);        // extras already shown
+  const res = await db.pageFolder(scope, fid, { offset: offset - consumed, limit: limit - eSlice.length });
+  return { items: [...eSlice, ...res.items], total: res.total + extras.length };
+}
+
 /** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
 async function renderGridPage(grid, scope, fid, which) {
   const pg = which === 'home' ? page : folderPage;
@@ -586,7 +655,7 @@ async function renderGridPage(grid, scope, fid, which) {
       }
     }
   } else {
-    const res = await db.pageFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
+    const res = await pageAnyFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
     total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
     items15 = res.items;
   }
@@ -708,7 +777,7 @@ async function renderWatchGrid(current) {
   const fid = watchCtx.folderId;
   if (!scope || !fid) { grid.innerHTML = ''; watchPager.update(0, 1); return; }
 
-  const res = await db.pageFolder(scope, fid, { offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH });
+  const res = await pageAnyFolder(scope, fid, { offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH });
   const total = Math.max(1, Math.ceil(res.total / PAGE_WATCH));
   if (watchPage >= total) watchPage = total - 1;
 
@@ -739,9 +808,15 @@ async function openWatch(item) {
   // where the 🏠 button lives.
   enterPlayerFullscreen();
   // watch-grid context: the record's own folder (or where the child was browsing)
+  // v1.0.12: when the child came from a FOLDER view, browse THAT folder — virtual
+  // 🎞️ group folders aren't stored on the record, so item.folderId can't express
+  // them. video→video from the under-player grid keeps the existing context.
+  const cameFromFolder = nav.isActive('folder') && folderId;
   watchCtx = {
     scope: item.scopeId || scopeForFolder(folderId) || libScope || db.profScope(activeProfileId),
-    folderId: (item.folderId && item.folderId !== '~pending') ? item.folderId : folderId
+    folderId: nav.isActive('watch') ? watchCtx.folderId
+      : (cameFromFolder ? folderId
+        : ((item.folderId && item.folderId !== '~pending') ? item.folderId : folderId))
   };
   // replace() when already watching: back always returns to the gallery, never
   // through the chain of watched videos. nav scrolls to top — the F4 fix: the
@@ -843,10 +918,12 @@ async function confirmDeleteWatch(item) {
         activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean));
       let deleted = false;
       let sheetBacked = false;
+      let channelVideo = null;
       for (const scope of scopes) {
         const rec = await db.getVideo(scope, item.key);
         if (rec) {
           if ((rec.homeFolderId || rec.folderId) === 'sheet') sheetBacked = true;
+          if (rec.channelId) channelVideo = rec;
           await db.deleteVideo(scope, item.key); // atomic delete + deny tombstone
           deleted = true;
         }
@@ -854,9 +931,11 @@ async function confirmDeleteWatch(item) {
       if (deleted) {
         giftStates.delete(item.key);
         if (activeProfileId) { try { await db.deleteVideoState(activeProfileId, item.key); } catch {} }
-        // v1.0.10: a sheet-backed video loses its ROW too — every sheet participant
-        // converges. (Channel videos have no row; their deletion stays per-account.)
+        // The sheet carries the deletion to every participant (v1.0.10/12):
+        // a sheet-backed single loses its ROW; a video inside a CHANNEL has no row
+        // of its own, so it gets a '# הוסר' removal row instead.
         if (sheetBacked) enqueueSheetDeleteVideo(item.key);
+        else if (channelVideo) enqueueSheetRemoval(item.key, channelVideo.srcUrl || channelVideo.url || '', channelVideo.title || item.title || '');
         maybeSchedulePush();
       }
     } catch { /* a failed delete must never strand the child outside the gallery */ }
@@ -913,6 +992,13 @@ function enqueueSheetDeleteVideo(key) {
 function enqueueSheetDeleteChannel(channelId) {
   import('./sheetwrite.js')
     .then((sw) => sw.enqueueSheetChannelDelete(activeProfileId, channelId))
+    .then(() => refreshSheetWriteStatus().catch(() => {}))
+    .catch(() => {});
+}
+/** v1.0.12: '# הוסר' row for a video that lives inside a channel (no row of its own). */
+function enqueueSheetRemoval(key, srcUrl, title) {
+  import('./sheetwrite.js')
+    .then((sw) => sw.enqueueSheetRemovalRow(activeProfileId, { key, srcUrl, title }))
     .then(() => refreshSheetWriteStatus().catch(() => {}))
     .catch(() => {});
 }
@@ -1129,8 +1215,10 @@ async function refreshParentList() {
       rec,
       onDelete: async () => {
         await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
-        // v1.0.10: sheet-backed rows are removed from the sheet for everyone
+        // the sheet carries it to everyone: singles lose their row, channel videos
+        // get a '# הוסר' removal row (v1.0.10/12)
         if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
+        else if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
         await refreshParentList();
         renderHome();
         maybeSchedulePush();
@@ -1181,6 +1269,10 @@ async function refreshPendingList() {
       },
       onDelete: async () => {
         await db.rejectPending(rec.scopeId, [rec.key]); // tombstoned — never comes back
+        // v1.0.12: a deliberate single rejection of a CHANNEL video travels via a
+        // '# הוסר' row (bulk reject-all deliberately does NOT — hundreds of rows
+        // would wreck the sheet; that stays a local queue cleanup).
+        if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
         await refreshPendingList();
       }
     }));
@@ -1441,38 +1533,62 @@ async function finishTour() {
 let wizardProfile = null; // the freshly-created profile awaiting activation
 
 /**
- * The wizard shows ONLY when the family truly starts from nothing (user decision):
- * - profiles restored from the Drive backup arrive with their sheet already wired
- *   (profileSources) and never pass through here;
- * - a NEW sibling profile on a device that already has a sheet quietly ADOPTS the
- *   same sheet (v1.0.6 made the library shared per-sheet anyway) — no wizard.
+ * v1.0.12 — the wizard ALWAYS asks (it used to silently adopt the family file):
+ * join an existing profile's file / create a new one / paste a link / skip.
+ * Restored profiles still bypass it — they arrive with their sheet already wired
+ * through the Drive doc's profileSources.
  */
 async function openSheetSetup(p) {
-  try {
-    for (const other of await getProfiles()) {
-      if (other.id === p.id) continue;
-      const src = await db.getSources(other.id);
-      if (src && src.sheetUrl) {
-        wizardProfile = p;
-        await connectWizardSheet(src.sheetUrl);
-        wizardProfile = null;
-        await alertKid({
-          emoji: '📄', title: 'חיברנו את הקובץ המשפחתי ✅',
-          text: `${p.name} יקבל את אותה רשימת סרטונים של שאר המשפחה. אפשר לשנות במסך ההורים ← מקורות.`,
-          ok: 'מעולה'
-        });
-        await activateProfile(p.id);
-        return;
-      }
-    }
-  } catch {}
   wizardProfile = p;
   $('sheetsetup-name').textContent = p.name;
   $('sheetsetup-msg').textContent = '';
   $('sheetsetup-msg').className = 'form-msg';
   $('sheetsetup-paste').classList.add('hidden');
   $('sheetsetup-url').value = '';
+
+  // one "join <name>'s file" button per OTHER profile that already has one,
+  // deduped by URL so two siblings on the same file show a single choice
+  const join = $('sheetsetup-join');
+  join.innerHTML = '';
+  const seen = new Set();
+  try {
+    for (const other of await getProfiles()) {
+      if (other.id === p.id) continue;
+      const src = await db.getSources(other.id);
+      if (!src || !src.sheetUrl || seen.has(src.sheetUrl)) continue;
+      seen.add(src.sheetUrl);
+      const b = document.createElement('button');
+      b.className = 'btn btn-primary';
+      b.type = 'button';
+      b.textContent = `👨‍👩‍👧 להצטרף לקובץ של ${other.name}`;
+      b.addEventListener('click', () => joinExistingSheet(src.sheetUrl, other.name));
+      join.appendChild(b);
+    }
+  } catch {}
+  join.classList.toggle('hidden', join.children.length === 0);
   nav.reset('sheet-setup');
+}
+
+/** Join a sibling's sheet — same library scope, so the whole family shares one list. */
+async function joinExistingSheet(url, ownerName) {
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    title: 'קוד הורים לחיבור הקובץ',
+    onSuccess: async () => {
+      if (!nav.back()) nav.reset('sheet-setup');
+      try {
+        await connectWizardSheet(url);
+        await alertKid({
+          emoji: '👨‍👩‍👧', title: 'הצטרפנו לקובץ המשפחתי ✅',
+          text: `${wizardProfile ? wizardProfile.name : 'הפרופיל'} יראה את אותה רשימה של ${ownerName}.`,
+          ok: 'מעולה'
+        });
+        await finishSheetSetup();
+      } catch {
+        $('sheetsetup-msg').textContent = 'החיבור נכשל — אפשר לנסות שוב או לדלג';
+        $('sheetsetup-msg').className = 'form-msg err';
+      }
+    }
+  });
 }
 
 async function finishSheetSetup() {
@@ -1498,8 +1614,8 @@ async function wizardCreateSheet() {
   msg.textContent = 'מתחברים לחשבון Google ויוצרים את הקובץ…';
   msg.className = 'form-msg';
   try {
-    const { createSourceSheet } = await import('./sheetwrite.js');
-    const r = await createSourceSheet(`רשימת הסרטונים של ${wizardProfile.name}`);
+    const { createSourceSheet, sheetNameFor } = await import('./sheetwrite.js');
+    const r = await createSourceSheet(sheetNameFor(wizardProfile.name));
     if (!r.ok) {
       const { lastAuthError } = await import('./gauth.js');
       msg.textContent = r.error === 'no-token'

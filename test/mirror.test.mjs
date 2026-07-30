@@ -82,3 +82,55 @@ test('empty local state never deletes and never valves (fresh install)', () => {
   assert.deepEqual(m.deleteVideoKeys, []);
   assert.equal(m.valve, false);
 });
+
+/* ---------------- v1.0.12: grouping loose singles by channel ---------------- */
+
+import { groupSinglesByChannel } from '../www/js/plan.js';
+
+const s = (key, srcChannelId, srcChannelTitle = '') => ({ key, srcChannelId, srcChannelTitle });
+
+test('2+ singles of one channel group; a lone single stays loose', () => {
+  const g = groupSinglesByChannel([
+    s('yt:a1', 'UCkids', 'ערוץ הילדים'),
+    s('yt:a2', 'UCkids', 'ערוץ הילדים'),
+    s('yt:b1', 'UCsolo', 'ערוץ בודד'),
+    s('yt:c1', null)
+  ], []);
+  assert.equal(g.groups.length, 1);
+  assert.equal(g.groups[0].channelId, 'UCkids');
+  assert.equal(g.groups[0].title, 'ערוץ הילדים');
+  assert.deepEqual(g.groups[0].keys.sort(), ['yt:a1', 'yt:a2']);
+  assert.deepEqual(g.loose.sort(), ['yt:b1', 'yt:c1']); // lone single + unknown channel
+});
+
+test('deleting down to ONE un-groups automatically (no migration)', () => {
+  const before = groupSinglesByChannel([s('yt:a1', 'UCk'), s('yt:a2', 'UCk')], []);
+  assert.equal(before.groups.length, 1);
+  const after = groupSinglesByChannel([s('yt:a1', 'UCk')], []); // one was deleted
+  assert.equal(after.groups.length, 0);
+  assert.deepEqual(after.loose, ['yt:a1']);
+});
+
+test('singles of an ALREADY-SUBSCRIBED channel are absorbed, never a second folder', () => {
+  const g = groupSinglesByChannel(
+    [s('yt:a1', 'UCsub'), s('yt:a2', 'UCsub'), s('yt:z1', 'UCfree'), s('yt:z2', 'UCfree')],
+    ['UCsub']
+  );
+  assert.deepEqual(g.groups.map((x) => x.channelId), ['UCfree']);
+  assert.deepEqual(g.absorb.get('UCsub').sort(), ['yt:a1', 'yt:a2']);
+  // even ONE single of a subscribed channel is absorbed (it belongs in that folder)
+  const one = groupSinglesByChannel([s('yt:a1', 'UCsub')], ['UCsub']);
+  assert.deepEqual(one.absorb.get('UCsub'), ['yt:a1']);
+  assert.deepEqual(one.loose, []);
+});
+
+test('grouping is deterministic and junk-safe', () => {
+  const g1 = groupSinglesByChannel([s('yt:a', 'UC1'), s('yt:b', 'UC1'), s('yt:c', 'UC2'), s('yt:d', 'UC2'), s('yt:e', 'UC2')], []);
+  const g2 = groupSinglesByChannel([s('yt:e', 'UC2'), s('yt:d', 'UC2'), s('yt:b', 'UC1'), s('yt:c', 'UC2'), s('yt:a', 'UC1')], []);
+  assert.deepEqual(g1.groups.map((x) => x.channelId), g2.groups.map((x) => x.channelId)); // biggest first
+  assert.equal(g1.groups[0].channelId, 'UC2');
+  const junk = groupSinglesByChannel([null, undefined, {}, s(null, 'UC1')], []);
+  assert.deepEqual(junk.groups, []);
+  assert.deepEqual(junk.loose, []);
+  assert.deepEqual(groupSinglesByChannel(null, null).groups, []);
+});
