@@ -142,6 +142,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   // PRESENCE-based on every successful parse (never diff-vs-baseline: a baseline
   // forgets, and content resurrected by a stale Drive-doc merge would stay forever).
   if (sheetParsed) {
+    report('mirror', 8, 'משווים מול הגיליון…');
     try {
       // v1.0.12: '# הוסר' rows deny their key for EVERY participant — that is how a
       // deletion of a video INSIDE a channel travels (it has no row of its own).
@@ -213,12 +214,19 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   // Logo fallback (v1.0.4): keyless mode (and API misses) left channels logo-less on
   // the tablet — folder tiles fell back to the 📺 emoji and read like videos. Scrape
   // the public channel page (0 quota), retry weekly so a transient failure heals.
+  // Each scrape is a full page fetch, one channel at a time, and this loop sits
+  // between pct 12 and pct 30 — on a fresh library it can dominate the whole run.
+  // Reporting per channel is what stops it from looking like a hang (v1.0.18).
   const LOGO_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+  let logoDone = 0;
   for (const lc of libChannels) {
     if (aborted()) return { ok: false, error: 'aborted' };
     const ch = (await getChannel(lc.channelId)) || { channelId: lc.channelId };
+    logoDone += 1;
     if (ch.logoUrl) continue;
     if (ch.logoTriedAt && Date.now() - ch.logoTriedAt < LOGO_RETRY_MS) continue;
+    report('logos', 12 + Math.round((logoDone / Math.max(1, libChannels.length)) * 16),
+      `מביאים תמונות ערוצים… ${logoDone}/${libChannels.length}`);
     const logoUrl = await yt.scrapeChannelLogo(lc.channelId);
     await putChannel({ ...ch, logoUrl: logoUrl || '', logoTriedAt: Date.now() });
   }
@@ -270,6 +278,10 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         if (shouldThrottle(await yt.quotaSpentToday(), 1, QUOTA_DAILY_SOFT_CAP)) break;
         const page = await yt.fetchUploadsPage(ch.uploadsPlaylistId, token, key);
         backfillPages += 1;
+        // Up to BACKFILL_PAGE_BUDGET (40) network round-trips reported ONCE before
+        // the loop used to read as a freeze; count the pages instead (v1.0.18).
+        report('backfill', 45 + Math.round((backfillPages / BACKFILL_PAGE_BUDGET) * 20),
+          `מושכים את כל הסרטונים… ${candidates.length}`);
         if (page.error) break;
         for (const v of page.videos) {
           candidates.push({
@@ -388,13 +400,16 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   await planProfileGifts(profileId, scope, lib);
 
   await putMeta('sync:' + lib + ':lastFullSyncAt', Date.now());
-  report('done', 100, '');
 
   // v1.0.6: opportunistic sheet write-back — quiet no-op without a queue/token.
+  // Reported BEFORE 'done': this is real network work, and announcing 100% while
+  // it still runs is precisely what made the app look hung at the finish line.
+  report('write', 95, 'רושמים בגיליון…');
   try {
     const { flushSheetQueue } = await import('./sheetwrite.js');
     await flushSheetQueue(profileId);
   } catch {}
+  report('done', 100, '');
 
   return { ok: true, added: plan.newLiveKeys.length, pending: plan.pendingKeys.length, merged: plan.mergeReport.length };
 }

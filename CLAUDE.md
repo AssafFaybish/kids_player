@@ -78,6 +78,11 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - Gift state lives in `profileVideoState`, NOT on video records (siblings share libraries);
   `unwrappedAt` is forever (min-merged everywhere).
 - Scoping (decision 20): `lib:<fnv1a(sheet)>` = shared per input-sheet; `prof:<id>` = personal.
+  A profile with NO sheet gets `lib:p:<profileId>`. CONNECTING or CHANGING a sheet therefore
+  CHANGES the scope — always route it through `adoptLibraryScope()` (→ `db.moveScope`, which
+  moves videos + channel subs and UNIONS tombstones) and register the moved items as sheet
+  rows. Skipping the migration silently orphans everything the parent added (v1.0.17 fix);
+  the queued rows are also what stops the presence-mirror from tombstoning them.
 
 **Platform/native:**
 - `platform.exitApp()` prefers `KidsNative.exitApp` (finishAndRemoveTask + delayed kill) —

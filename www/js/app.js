@@ -545,8 +545,12 @@ async function buildFolders() {
 
   const src = await db.getSources(activeProfileId);
   libScope = (src && src.libraryId) || null;
+  // ALL grouping state resets here, before the libScope guard: a profile without
+  // sources used to keep the PREVIOUS profile's looseSingles, so any future code
+  // rendering the flat list would show another child's videos (latent leak).
   singleGroups = new Map();
   absorbedSingles = new Map();
+  looseSingles = [];
   if (libScope) {
     const subscribedIds = new Set((await db.listLibraryChannels(libScope)).map((c) => c.channelId));
     for (const lc of await db.listLibraryChannels(libScope)) {
@@ -739,6 +743,18 @@ async function buildSearchIndex() {
         id: 'ch:' + lc.channelId, scope: libScope, key: 'folder:' + lc.channelId,
         title, normTitle: normalizeTitle(title),
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
+      });
+    }
+    // v1.0.17: the 🎞️ collections of grouped singles are folders on the home screen,
+    // so a child searching their channel name must find them too (they were missing).
+    for (const [channelId, recs] of singleGroups) {
+      const f = folders.find((x) => x.id === 'grp:' + channelId);
+      const title = (f && f.title) || (recs[0] && recs[0].srcChannelTitle) || '';
+      if (!title) continue;
+      folderEntries.push({
+        id: 'grp:' + channelId, scope: libScope, key: 'group:' + channelId,
+        title, normTitle: normalizeTitle(title),
+        logoUrl: (f && f.logoUrl) || '', emoji: '🎞️', count: recs.length
       });
     }
   }
@@ -1467,6 +1483,37 @@ async function refreshChannelsList() {
   }
 }
 
+/**
+ * v1.0.17 — the library scope is derived from the SHEET URL, so connecting a sheet
+ * (or switching to another one) moves the profile to a different scope. Everything
+ * the parent had already added lived in the old scope and simply DISAPPEARED from
+ * the UI. Now the content follows the profile, and the moved items are registered
+ * in the new sheet — which is also what keeps the presence-mirror from tombstoning
+ * them (queued appends count as "not yet in the sheet, on purpose").
+ */
+async function adoptLibraryScope(profileId, oldLib, newLib) {
+  if (!oldLib || !newLib || oldLib === newLib) return { videoKeys: [], channelIds: [] };
+  const moved = await db.moveScope(oldLib, newLib);
+  if (!moved.videoKeys.length && !moved.channelIds.length) return moved;
+  try {
+    const sw = await import('./sheetwrite.js');
+    for (const key of moved.videoKeys) {
+      const rec = await db.getVideo(newLib, key);
+      if (!rec || rec.state !== 'live') continue;
+      if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
+      await sw.enqueueSheetRow(profileId, { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+    }
+    for (const channelId of moved.channelIds) {
+      await sw.enqueueSheetRow(profileId, {
+        key: 'ch:' + channelId,
+        srcUrl: 'https://www.youtube.com/channel/' + channelId,
+        flag: 'manual'
+      });
+    }
+  } catch { /* the move already happened; rows retry on the next flush */ }
+  return moved;
+}
+
 /** The profile's sources record, created on first use (stable library even without a sheet). */
 async function ensureSources() {
   let src = await db.getSources(activeProfileId);
@@ -1545,12 +1592,17 @@ async function parentAdd() {
     }
     msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
     $('add-url').value = '';
-    syncLibrary(activeProfileId, { force: true }).then(async () => {
+    // A brand-new channel backfills up to ~2000 videos — by far the longest wait a
+    // parent triggers by hand, and it used to run behind a one-line message (v1.0.18).
+    loading.show({ title: 'מושכים את הסרטונים של הערוץ', step: 'מתחילים…', pct: 0 });
+    syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) }).then(async () => {
       await loadGiftStates();
       await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
       renderHome();
       msg.textContent = 'הערוץ סונכרן ✅'; msg.className = 'form-msg ok';
-    }).catch(() => { msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err'; });
+    }).catch(() => {
+      msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err';
+    }).finally(() => loading.hide());
     await refreshChannelsList();
     return;
   }
@@ -1562,10 +1614,14 @@ async function parentAdd() {
 async function doSyncAndRefresh() {
   const status = $('remote-status');
   status.textContent = 'טוען…'; status.className = 'form-msg';
+  // v1.0.18: a forced sync re-reads the whole sheet, every channel feed and every
+  // logo — minutes on a big library. The .form-msg line stays (it holds the RESULT
+  // once we are done); the full-screen view is what carries the wait itself.
+  loading.show({ title: 'בודקים את רשימת הסרטונים', step: 'טוען…', pct: 0 });
   try {
     const res = await syncLibrary(activeProfileId, {
       force: true,
-      onProgress: (p) => { status.textContent = p.label || 'טוען…'; }
+      onProgress: (p) => { status.textContent = p.label || 'טוען…'; loading.progress(p); }
     });
     if (res.ok) {
       status.textContent = `עודכן ✅ ${res.added ? `נוספו ${res.added}` : ''} ${res.pending ? `• ממתינים לאישור: ${res.pending}` : ''}`;
@@ -1578,9 +1634,14 @@ async function doSyncAndRefresh() {
     status.textContent = 'שגיאה בסנכרון';
     status.className = 'form-msg err';
   }
-  await loadGiftStates();
-  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
-  renderHome();
+  try {
+    loading.setStep('מרעננים את הרשימות…');
+    await loadGiftStates();
+    await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+    renderHome();
+  } finally {
+    await loading.hide(); // the caller must ALWAYS reach hide()
+  }
   maybeSchedulePush();
 }
 
@@ -1714,21 +1775,36 @@ async function finishSheetSetup() {
 async function connectWizardSheet(url) {
   const { libraryIdFor } = await import('./util.js');
   let src = (await db.getSources(wizardProfile.id)) || { profileId: wizardProfile.id, schema: 1 };
+  const oldLib = src.libraryId || null;
   src = {
     shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
     maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
     ...src, sheetUrl: url, libraryId: libraryIdFor(url), sheetHash: null, updatedAt: Date.now()
   };
   await db.putSources(src);
+  // same scope-change hazard as the sources tab (a wizard-created profile is usually
+  // empty, but "skip now, connect later" and re-runs are not)
+  await adoptLibraryScope(wizardProfile.id, oldLib, src.libraryId);
 }
 
 async function wizardCreateSheet() {
   const msg = $('sheetsetup-msg');
   msg.textContent = 'מתחברים לחשבון Google ויוצרים את הקובץ…';
   msg.className = 'form-msg';
+  let r;
+  loading.show({ title: 'יוצרים את הקובץ בגוגל', step: 'מתחברים לחשבון…' });
   try {
     const { createSourceSheet, sheetNameFor } = await import('./sheetwrite.js');
-    const r = await createSourceSheet(sheetNameFor(wizardProfile.name));
+    r = await createSourceSheet(sheetNameFor(wizardProfile.name));
+  } catch {
+    msg.textContent = 'משהו השתבש — אפשר לנסות שוב או לדלג';
+    msg.className = 'form-msg err';
+    return;
+  } finally {
+    // hide BEFORE the dialogs below — a modal must never stack on the loading view
+    await loading.hide();
+  }
+  try {
     if (!r.ok) {
       const { lastAuthError } = await import('./gauth.js');
       msg.textContent = r.error === 'no-token'
@@ -1818,6 +1894,7 @@ async function connectGoogleFirstLaunch() {
   const btn = $('connect-google');
   btn.disabled = true;
   msg.textContent = 'מתחברים…'; msg.className = 'form-msg';
+  let pulled = null;
   try {
     const { signIn, lastAuthError } = await import('./gauth.js');
     const { pullDrive, pushDrive } = await import('./drive.js');
@@ -1826,27 +1903,35 @@ async function connectGoogleFirstLaunch() {
       msg.className = 'form-msg err';
       return;
     }
+    // v1.0.18: reading and merging the Drive backup is the LONGEST blocking wait in
+    // the app, and it used to report itself only through this 22px line at the very
+    // bottom of the screen — parents read that as a freeze. Give it the full-screen
+    // animation, and hide it again before any modal so the two never stack.
     msg.textContent = 'בודקים אם יש גיבוי קיים…';
-    const pulled = await pullDrive(activeProfileId);
+    loading.show({ title: 'בודקים את הגיבוי בגוגל', step: 'מחפשים גיבוי קיים…' });
+    pulled = await pullDrive(activeProfileId);
+    loading.setStep('שומרים את הפרופילים…');
     profiles = await getProfiles(); // pullDrive may have restored profiles
     await pushDrive(profiles);      // enables the backup even without a prior file
     await prefSet('gauth.introDone', 'connected');
-    if (pulled.ok && !pulled.empty) {
-      await alertKid({
-        emoji: '☁️', title: 'הגיבוי חובר ✅',
-        text: pulled.profilesRestored
-          ? `נמצא גיבוי קיים: שוחזרו ${pulled.profilesRestored} פרופילים והספרייה סונכרנה.`
-          : 'נמצא גיבוי קיים והספרייה סונכרנה למכשיר.',
-        ok: 'מעולה'
-      });
-    }
-    startAtProfiles();
   } catch {
     msg.textContent = 'שגיאה בהתחברות — אפשר לדלג ולנסות שוב מאוחר יותר דרך מסך ההורים';
     msg.className = 'form-msg err';
+    return;
   } finally {
+    await loading.hide();
     btn.disabled = false;
   }
+  if (pulled && pulled.ok && !pulled.empty) {
+    await alertKid({
+      emoji: '☁️', title: 'הגיבוי חובר ✅',
+      text: pulled.profilesRestored
+        ? `נמצא גיבוי קיים: שוחזרו ${pulled.profilesRestored} פרופילים והספרייה סונכרנה.`
+        : 'נמצא גיבוי קיים והספרייה סונכרנה למכשיר.',
+      ok: 'מעולה'
+    });
+  }
+  startAtProfiles();
 }
 
 /* ---------------- Profiles ---------------- */
@@ -1948,7 +2033,9 @@ async function activateProfile(id) {
   const hasContent = folders.length > 0;
   if (!hasContent) {
     // Nothing cached (fresh profile with a sheet): the child needs the loading screen.
-    loading.show({ step: 'מביאים סרטונים חדשים…' });
+    // A child who DOES have cached content keeps browsing while the sync runs behind
+    // them — covering a populated grid every 3 minutes would be the worse bug.
+    loading.show({ title: 'מכינים את הסרטונים', step: 'מביאים סרטונים חדשים…', pct: 0 });
   }
   nav.reset('gallery');
 
@@ -1958,7 +2045,7 @@ async function activateProfile(id) {
 
   // Background sync — never blocks the grid; re-renders when new content lands.
   if (await shouldSync(id)) {
-    syncLibrary(id, { onProgress: (p) => loading.setStep(p.label || '') })
+    syncLibrary(id, { onProgress: (p) => loading.progress(p) })
       .then(async (r) => {
         await absorbMineIntoShared(id); // first sync may have just created sources
         await loadGiftStates();
@@ -2152,11 +2239,20 @@ function wire() {
       maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
       ...src, sheetUrl: url || null, updatedAt: Date.now()
     };
+    const oldLib = src.libraryId || null;
     if (url) src.libraryId = libraryIdFor(url);
     src.sheetHash = null; // force a full re-parse of the new sheet
     await db.putSources(src);
     libScope = src.libraryId || null;
+    // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
+    const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
     await doSyncAndRefresh();
+    // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
+    if (moved.videoKeys.length || moved.channelIds.length) {
+      $('remote-status').textContent =
+        `הועברו לקובץ החדש: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בו אוטומטית.`;
+      $('remote-status').className = 'form-msg ok';
+    }
   });
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
@@ -2240,8 +2336,11 @@ function wire() {
         return;
       }
       msg.textContent = 'בודקים אם יש גיבוי קיים…';
+      loading.show({ title: 'בודקים את הגיבוי בגוגל', step: 'מחפשים גיבוי קיים…' });
       const pulled = await pullDrive(activeProfileId);
+      loading.setStep('מגבים את המצב הנוכחי…');
       await pushDrive(profiles);
+      loading.setStep('מרעננים את הרשימות…');
       await loadGiftStates();
       await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
       renderHome();
@@ -2251,16 +2350,23 @@ function wire() {
     } catch {
       msg.textContent = 'שגיאה בהפעלת הגיבוי';
       msg.className = 'form-msg err';
+    } finally {
+      await loading.hide();
     }
   });
   $('drive-push').addEventListener('click', async () => {
     const msg = $('drive-msg');
     msg.textContent = 'מגבים…'; msg.className = 'form-msg';
-    const { pushDrive } = await import('./drive.js');
-    const r = await pushDrive(profiles);
-    msg.textContent = r.ok ? 'גובה ✅' : 'הגיבוי נכשל — ננסה שוב אוטומטית';
-    msg.className = r.ok ? 'form-msg ok' : 'form-msg err';
-    await refreshDriveStatus();
+    loading.show({ title: 'מגבים לגוגל דרייב', step: 'שולחים את הספרייה…' });
+    try {
+      const { pushDrive } = await import('./drive.js');
+      const r = await pushDrive(profiles);
+      msg.textContent = r.ok ? 'גובה ✅' : 'הגיבוי נכשל — ננסה שוב אוטומטית';
+      msg.className = r.ok ? 'form-msg ok' : 'form-msg err';
+      await refreshDriveStatus();
+    } finally {
+      await loading.hide();
+    }
   });
 
   // v1.0.5: share a download link for the latest release (OS share sheet; the
