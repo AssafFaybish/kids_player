@@ -24,6 +24,10 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
 
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebChromeClient;
@@ -42,6 +46,32 @@ public class MainActivity extends BridgeActivity {
         webView.getSettings().setSupportMultipleWindows(false);
         webView.setWebViewClient(new KidsWebViewClient(bridge));
         webView.setWebChromeClient(new KidsWebChromeClient(bridge));
+
+        applyImmersive();
+    }
+
+    /**
+     * v1.0.16 — GAME-STYLE IMMERSIVE MODE: the app always runs without the status and
+     * navigation bars, and a swipe from the edge reveals them TRANSIENTLY (they hide
+     * themselves again). Rationale: the child gets the whole screen, and the system
+     * back/home buttons stop being one accidental tap away from leaving the app.
+     * BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE is the sanctioned way — an app may not
+     * block the home button (screen pinning, the exit-lock feature, is that mechanism).
+     */
+    private void applyImmersive() {
+        WindowInsetsControllerCompat c =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (c == null) return;
+        c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        c.hide(WindowInsetsCompat.Type.systemBars());
+    }
+
+    /** Dialogs, the keyboard, screen pinning and app switches all restore the bars —
+        re-hide whenever we own the window again (the standard immersive contract). */
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) applyImmersive();
     }
 
     // F12b share target. VERIFIED: BridgeActivity.load() ends with

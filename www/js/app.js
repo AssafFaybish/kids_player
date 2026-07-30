@@ -838,6 +838,22 @@ async function renderWatchGrid(current) {
   watchPager.update(watchPage, total);
 }
 
+/**
+ * v1.0.16: a video that ENDED returns the child to where they came from — the
+ * folder, the search results, or home — never unconditionally to home (that was the
+ * bug: a video finishing inside a folder dumped the child on the home screen).
+ * Fullscreen is always released first, so the folder is actually visible.
+ */
+function leaveWatch() {
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) {
+    try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch {}
+  }
+  // nav.back() pops the watch entry and restores the previous view's scroll;
+  // if watch is somehow the only entry, home is the safe floor.
+  if (!nav.back()) goGallery();
+}
+
 /** Enter fullscreen on the player. MUST be called synchronously inside the tap's
     user-activation window — after an await the browser may deny the request. */
 function enterPlayerFullscreen() {
@@ -878,7 +894,7 @@ async function openWatch(item) {
   renderWatchGrid(item);
 
   await playItem(item, $('player-host'), {
-    onExit: () => { if ($('view-watch').classList.contains('active')) goGallery(); },
+    onExit: () => { if ($('view-watch').classList.contains('active')) leaveWatch(); },
     onStatus: (s) => {
       if (!s) { status.classList.add('hidden'); status.textContent = ''; return; }
       status.textContent = s === 'downloading' ? 'טוען את הסרטון… רגע אחד ⏳'
@@ -2344,7 +2360,6 @@ function wire() {
     $('donate-nudge').classList.add('hidden');
   });
   $('help-share').addEventListener('click', () => { $('share-app').click(); });
-  $('help-feedback').addEventListener('click', () => { $('contact-dev').click(); });
 
   $('wn-ok').addEventListener('click', () => { closeWhatsNew(true); if (nav.isActive('whatsnew')) nav.back(); });
   $('wn-cancel').addEventListener('click', () => { closeWhatsNew(false); if (nav.isActive('whatsnew')) nav.back(); });
