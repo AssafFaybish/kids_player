@@ -8,11 +8,18 @@
 //   hide()           — once VISIBLE, honors a minimum display of MIN_SHOW_MS so a
 //                      slow-ish path doesn't blink; resolves when done.
 // The caller must ALWAYS reach hide() — wrap the awaited work in try/finally.
+//
+// v1.0.18: this screen is no longer kids-only. Every BLOCKING wait — the child's
+// first sync, and the parent-facing Google checks that used to show nothing but a
+// 22px line of text at the bottom of the screen — routes through here, so "the app
+// is working" is never mistaken for "the app is stuck". `title` says WHICH wait it
+// is; `setPct` draws the real progress sync2.js already computes.
 
 import * as nav from '../nav.js';
 
 const MIN_SHOW_MS = 1200;
 const CYCLE_MS = 2600;
+const DEFAULT_TITLE = 'בטעינה…';
 const $ = (id) => document.getElementById(id);
 
 const SCENES = [
@@ -67,8 +74,10 @@ function reveal() {
 }
 
 /** Show after `defer` ms unless hide() lands first. Safe to call repeatedly. */
-export function show({ defer = 250, step = '' } = {}) {
+export function show({ defer = 250, step = '', title = DEFAULT_TITLE, pct = null } = {}) {
+  setTitle(title);
   setStep(step);
+  setPct(pct);
   if (shownAt || deferTimer) return;
   if (defer <= 0) { reveal(); return; }
   deferTimer = setTimeout(() => { deferTimer = null; reveal(); }, defer);
@@ -79,17 +88,51 @@ export function setStep(text) {
   if (el) el.textContent = text || '';
 }
 
+/** The headline — says which wait this is ("בודקים את הגיבוי בגוגל…"). */
+export function setTitle(text) {
+  const el = $('load-title');
+  if (el) el.textContent = text || DEFAULT_TITLE;
+}
+
+/**
+ * 0-100 draws the bar; null/undefined HIDES it. An indeterminate step must hide
+ * the bar rather than freeze it — a bar parked at 45% is read as a hang.
+ */
+export function setPct(pct) {
+  const bar = $('load-bar');
+  const fill = $('load-bar-fill');
+  if (!bar || !fill) return;
+  if (typeof pct !== 'number' || !Number.isFinite(pct)) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+}
+
+/** Convenience sink for sync2's onProgress: `{ stage, pct, label }`. */
+export function progress(p) {
+  if (!p) return;
+  setStep(p.label || '');
+  setPct(typeof p.pct === 'number' ? p.pct : null);
+}
+
 /** Resolves after the minimum display time (if the view ever appeared). */
 export async function hide() {
   clearTimeout(deferTimer);
   deferTimer = null;
-  if (!shownAt) return; // never appeared — nothing to wait for
+  if (!shownAt) { resetChrome(); return; } // never appeared — nothing to wait for
   const left = Math.max(0, MIN_SHOW_MS - (Date.now() - shownAt));
   if (left) await new Promise((r) => setTimeout(r, left));
   clearInterval(cycleTimer);
   cycleTimer = null;
   shownAt = 0;
+  resetChrome();
   if (nav.isActive('loading')) nav.back() || nav.reset('gallery');
+}
+
+/** Leave no state behind: the next show() must not inherit this one's title/bar. */
+function resetChrome() {
+  setTitle(DEFAULT_TITLE);
+  setStep('');
+  setPct(null);
 }
 
 /** Registered once from app.js: back is swallowed — a child can't escape mid-load. */
