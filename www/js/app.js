@@ -2300,13 +2300,25 @@ function wire() {
 
   // v1.0.8: About tab — contact the developer (opens the mail app; the address is
   // visible in the hint if no mail app handles mailto) + tour replay.
-  $('contact-dev').addEventListener('click', () => {
-    const subject = encodeURIComponent('הסרטונים שלי — הצעה לשיפור');
-    $('contact-msg').textContent = 'dev.fassaf@gmail.com';
+  $('contact-dev').addEventListener('click', async () => {
+    // v1.0.15: addresses come from links.js (one config file for every external link)
+    const { LINKS } = await import('./links.js');
+    const { email, cc, subject } = LINKS.contact;
+    $('contact-msg').textContent = email; // visible fallback if no mail app handles mailto
     $('contact-msg').className = 'form-msg';
     try {
-      window.location.href = `mailto:dev.fassaf@gmail.com?cc=${encodeURIComponent('fassaf.f@gmail.com')}&subject=${subject}`;
+      window.location.href = `mailto:${email}?cc=${encodeURIComponent(cc || '')}&subject=${encodeURIComponent(subject || '')}`;
     } catch {}
+  });
+  // v1.0.15: parents can read the privacy policy (the same page Google verification uses)
+  $('privacy-btn').addEventListener('click', async () => {
+    const { LINKS } = await import('./links.js');
+    const { openExternal } = await import('./platform.js');
+    const ok = await openExternal(LINKS.site.privacy);
+    if (!ok) {
+      $('contact-msg').textContent = LINKS.site.privacy;
+      $('contact-msg').className = 'form-msg';
+    }
   });
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
   // v1.0.13: re-read what changed, any time (About tab)

@@ -98,6 +98,16 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 3. Device (`npm run apk` → the `.dev` app): back button, native fullscreen, keep-awake,
    share-from-YouTube, Drive sign-in, updater. NEVER install a debug build over the release app.
 
+## Configuration — one file
+
+[www/js/links.js](www/js/links.js) (`LINKS`) is the SINGLE place for every external
+address: donation links (`donate.paybox` / `donate.paypal` — empty string = method not
+offered, both empty = donation block hidden), developer contact mail + cc + subject,
+the public site (GitHub Pages from `docs/`, used by Google OAuth verification AND the
+About tab's privacy button), and `updateRepo` for the updater. `donate.js`, `update.js`
+(`UPDATE_REPO`) and `app.js` all read from it — never hardcode an address again; a test
+pins that the consumers follow the config and that every address is well-formed.
+
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).

@@ -1,21 +1,19 @@
-// donate.js — the OPTIONAL "support the developer" link set (v1.0.14).
+// donate.js — the OPTIONAL "support the developer" LOGIC (v1.0.14).
 //
-// ONE place to edit: paste the real payment links below. An empty string means
-// "not configured" — that method is simply not offered, and when BOTH are empty the
-// whole donation block hides itself. Nothing here is required for the app to work:
-// donating is voluntary by design, and the block lives in the PIN-protected parent
-// screen so a child can never reach a payment page.
+// The links themselves live in links.js (v1.0.15) — ONE config file for every
+// external address, so changing a payment link never means hunting through code.
+// An empty string there means "not configured": that method isn't offered, and when
+// BOTH are empty the whole donation block hides itself. Nothing here is required for
+// the app to work — donating is voluntary by design, and the block lives in the
+// PIN-protected parent screen so a child can never reach a payment page.
 //
 // Links are opened in the SYSTEM browser (platform.openExternal → native intent):
 // the in-app WebView deliberately blocks external navigation and popups.
 
-/** EDIT ME — the parent-facing payment links. */
-export const DONATE_LINKS = {
-  // PayBox "קופה" (collection) link — the familiar Hebrew flow for Israeli parents.
-  paybox: '',
-  // PayPal.me link — the credit-card / international fallback.
-  paypal: ''
-};
+import { LINKS } from './links.js';
+
+/** The configured payment links — EDIT THEM IN links.js, not here. */
+export const DONATE_LINKS = LINKS.donate;
 
 /** How long the app must be in use before the one-time gentle reminder may appear. */
 export const NUDGE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
