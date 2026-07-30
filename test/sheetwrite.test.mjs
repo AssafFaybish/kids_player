@@ -3,7 +3,7 @@
 // token, NOT the spreadsheet id — extraction must refuse it, never mis-extract.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractSpreadsheetId, extractGid, buildSheetRow } from '../www/js/sheetwrite.js';
+import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME } from '../www/js/sheetwrite.js';
 
 const ID = '1AbC_dEf-9xYz0123456789abcdefghijklmnopqrst';
 
@@ -138,4 +138,69 @@ test('a removal row that cannot round-trip is REFUSED before it reaches the queu
   const ok = classifySourceRow(buildRemovalRow({ srcUrl: 'https://x.com/a.mp4' })[0]);
   assert.equal(ok.kind, 'removed');
   assert.equal(ok.key, 'file:https://x.com/a.mp4', 'direct-file links round-trip too');
+});
+
+/* ---- v1.0.18: a flush must clear ONLY what it wrote ---- */
+
+test('remainingAfterFlush keeps ops enqueued while the flush was in the air', () => {
+  // THE BUG: flush#1 snapshots [A], goes to the network; the parent deletes a
+  // video so the queue becomes [A,B]; flush#1 finishes and used to set the queue
+  // to []. B was destroyed — its row survived in the sheet, the next mirror pass
+  // read that as presence, revoked the tombstone, and the deleted video came back
+  // on every device.
+  const A = { op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 100 };
+  const B = { op: 'delvideo', key: 'yt:bbbbbbbbbb2', at: 200 };
+  assert.deepEqual(remainingAfterFlush([A, B], [A]), [B]);
+});
+
+test('remainingAfterFlush drops exactly the flushed ops', () => {
+  const A = { op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 100 };
+  const B = { op: 'delchannel', channelId: 'UCchan111111111111111111', at: 150 };
+  assert.deepEqual(remainingAfterFlush([A, B], [A, B]), []);
+  assert.deepEqual(remainingAfterFlush([], [A]), []);
+});
+
+test('remainingAfterFlush: a NEWER intent for a flushed key survives', () => {
+  // Parent adds a video, flush starts, parent deletes it before the flush lands.
+  // The delete must outlive the flush or the row stays in the sheet forever.
+  const add = { op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 100 };
+  const del = { op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 300 };
+  assert.deepEqual(remainingAfterFlush([add, del], [add]), [del]);
+  // ...but a re-delivery of the SAME op (same identity, same at) is not kept
+  assert.deepEqual(remainingAfterFlush([add], [add]), []);
+});
+
+test('remainingAfterFlush tolerates junk and legacy op-less rows', () => {
+  const legacy = { key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 50 }; // pre-op-field
+  assert.deepEqual(remainingAfterFlush([legacy], [legacy]), []);   // normalized to 'append'
+  assert.deepEqual(remainingAfterFlush([null, undefined], []), []);
+  assert.deepEqual(remainingAfterFlush(null, null), []);
+});
+
+test('reconcileOps collapses per entity, so the 200-op cap counts ENTITIES', () => {
+  // enqueueOp reconciles BEFORE slice(-CAP). Without that, re-editing one video
+  // 300 times pushed 300 entries and evicted 100 unrelated ops off the head —
+  // and slice() drops the OLDEST, i.e. the parent's earliest deletions.
+  const churn = Array.from({ length: 300 }, (_, i) => ({ op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: i }));
+  const older = { op: 'delvideo', key: 'yt:bbbbbbbbbb2', at: -1 };
+  const out = reconcileOps([older, ...churn]);
+  assert.equal(out.length, 2, 'one op per entity');
+  assert.ok(out.some((o) => o.key === 'yt:bbbbbbbbbb2'), 'the old deletion is not evicted');
+  assert.equal(out.find((o) => o.key === 'yt:aaaaaaaaaa1').at, 299, 'latest intent wins');
+});
+
+/* ---- v1.0.19: drive.file only — the app writes solely to sheets it created ---- */
+
+test('the Drive folder name is the one users are told to look for', () => {
+  // Named in the onboarding guide, the sources panel and the docs. If this string
+  // changes, ensureSheetsFolder creates a SECOND folder and the parent's existing
+  // lists appear to vanish from where they were told to find them.
+  assert.equal(SHEETS_FOLDER_NAME, 'רשימת השמעה לאפליקציה הסרטונים שלי');
+});
+
+test('extractSpreadsheetId still refuses the published /d/e/ form', () => {
+  // Reads are authenticated now and go through this id. A published link carries an
+  // opaque token, NOT a spreadsheet id — extracting it would build a bogus API call.
+  assert.equal(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/e/2PACX-1vABC/pubhtml'), null);
+  assert.equal(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/1AbC_dEf-123/edit#gid=0'), '1AbC_dEf-123');
 });

@@ -22,6 +22,24 @@
     footer { text-align: center; color: var(--muted); font-size: 14px; padding: 24px; }
     a { color: var(--brand); }
     code { background: #efecff; padding: 1px 6px; border-radius: 6px; }
+    /* Download block — the site had no way to actually get the app (v1.0.18). */
+    .dl { text-align: center; margin: -30px auto 8px; max-width: 760px; padding: 0 22px; }
+    .dl-btn {
+      display: inline-block; background: var(--brand); color: #fff; text-decoration: none;
+      font-size: 21px; font-weight: 700; padding: 16px 40px; border-radius: 999px;
+      box-shadow: 0 8px 22px rgba(108,99,255,.38);
+    }
+    .dl-btn:hover { background: #5a52e0; }
+    .dl-meta { color: var(--muted); font-size: 14px; margin-top: 10px; }
+    .steps { counter-reset: s; list-style: none; padding-inline-start: 0; }
+    .steps li { counter-increment: s; position: relative; padding-inline-start: 42px; margin: 14px 0; }
+    .steps li::before {
+      content: counter(s); position: absolute; inset-inline-start: 0; top: 0;
+      width: 28px; height: 28px; border-radius: 50%; background: var(--brand); color: #fff;
+      font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 15px;
+    }
+    .note { background: #fff8e6; border-inline-start: 4px solid #f0b429; border-radius: 10px;
+            padding: 12px 16px; margin: 14px 0; font-size: 15px; }
   </style>
 </head>
 <body>
@@ -30,7 +48,46 @@
     <h1>הסרטונים שלי</h1>
     <p>נגן וידאו בטוח לילדים — ההורים בוחרים בדיוק מה רואים</p>
   </header>
+
+  <div class="dl">
+    <div class="card">
+      <a class="dl-btn" href="https://github.com/devfassaf/kids_player/releases/latest">⬇️ הורדה לאנדרואיד</a>
+      <div class="dl-meta">חינם • ~4MB • אנדרואיד 7 ומעלה • גם לאנדרואיד TV</div>
+    </div>
+  </div>
+
   <main>
+    <h2 id="install">איך מתקינים? (2 דקות)</h2>
+    <div class="card">
+      <p>
+        האפליקציה לא מופצת דרך חנות Play, אלא כקובץ התקנה ישיר. זה בטוח לחלוטין —
+        אבל אנדרואיד מציגה בדרך כמה אזהרות שנראות מפחידות, ולכן חשוב לדעת מראש
+        מה הולך לקרות. <b>ההורדה עצמה אורכת שניות ספורות</b>; רוב הזמן הולך על
+        האישורים והסריקה שלמטה, וזה נורמלי.
+      </p>
+      <ol class="steps">
+        <li>לוחצים על <b>⬇️ הורדה לאנדרואיד</b> למעלה, ובוחרים את הקובץ
+            <code>kids-player-v&lt;גרסה&gt;.apk</code>.</li>
+        <li>Chrome ישאל אם להמשיך כי <b>"קבצים מסוג זה עלולים להזיק למכשיר"</b> —
+            זו הודעה גנרית לכל קובץ התקנה. בוחרים <b>הורדה בכל זאת</b>.</li>
+        <li>פותחים את הקובץ שהורד. בפעם הראשונה אנדרואיד תבקש להרשות
+            <b>התקנה ממקורות לא ידועים</b> עבור Chrome — מאשרים, וחוזרים אחורה.</li>
+        <li><b>Play Protect</b> יסרוק את הקובץ. הסריקה לוקחת כמה שניות, ואז
+            מופיעה הודעה על "אפליקציה לא מוכרת" — בוחרים <b>התקן בכל זאת</b>.</li>
+        <li>זהו. פותחים את האפליקציה, ומסך ההסבר הראשון ידריך אתכם משם.</li>
+      </ol>
+      <div class="note">
+        <b>למה כל האזהרות האלה?</b> הן מופיעות לכל אפליקציה שלא הותקנה דרך חנות
+        Play, ולא אומרות דבר על האפליקציה עצמה. הקוד כאן פתוח לחלוטין וניתן
+        לבדיקה, והאפליקציה לא אוספת שום מידע — הכול נשאר במכשיר ובחשבון Google
+        שלכם. פירוט ב<a href="privacy.html">מדיניות הפרטיות</a>.
+      </div>
+      <div class="note">
+        <b>עדכונים.</b> אחרי ההתקנה הראשונה אין צורך לחזור לכאן: האפליקציה בודקת
+        עדכונים בעצמה, מורידה אותם עם מד התקדמות ומציגה מה חדש לפני ההתקנה.
+      </div>
+    </div>
+
     <p>
       <b>הסרטונים שלי</b> היא אפליקציית אנדרואיד חינמית ופרטית שנועדה לתת מענה בטוח
       לילדים צעירים. יוטיוב הוא אוקיינוס בלתי-נשלט של תוכן, פרסומות והמלצות אקראיות;

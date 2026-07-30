@@ -19,7 +19,54 @@ import { getMeta, putMeta, getSources } from './db.js';
 import { classifySourceRow } from './classify.js';
 
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+const DRIVE = 'https://www.googleapis.com/drive/v3';
 const QUEUE_CAP = 200;
+
+/**
+ * v1.0.19 — every sheet the app creates lives in ONE visible Drive folder, so a
+ * parent can find their lists instead of hunting a bare file in Drive root.
+ *
+ * The Drive DB (kids-player-db.json) deliberately stays OUT of this folder: the
+ * folder is the thing a parent is likely to share with a partner, and sharing it
+ * would hand over the database — profiles, child names, the whole library.
+ * Per-file sharing is safe; folder sharing is not.
+ */
+export const SHEETS_FOLDER_NAME = 'רשימת השמעה לאפליקציה הסרטונים שלי';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/**
+ * The folder's id, creating it on first use. Under `drive.file` a files.list only
+ * ever returns files THIS app created, so searching by name cannot collide with
+ * something of the parent's — and if they delete the folder we simply make a new
+ * one. Returns null on any failure; callers must treat the folder as optional
+ * (a sheet in Drive root still works).
+ */
+export async function ensureSheetsFolder(token) {
+  if (!token) return null;
+  const auth = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+  try {
+    const q = encodeURIComponent(
+      `mimeType='${FOLDER_MIME}' and name='${SHEETS_FOLDER_NAME.replace(/'/g, "\\'")}' and trashed=false`
+    );
+    const found = await httpRequest({
+      url: `${DRIVE}/files?q=${q}&spaces=drive&fields=files(id,name)`,
+      headers: { Authorization: 'Bearer ' + token }, responseType: 'json'
+    });
+    if (found.status === 200 && found.data) {
+      const d = typeof found.data === 'string' ? JSON.parse(found.data) : found.data;
+      const hit = (d.files || [])[0];
+      if (hit && hit.id) return hit.id;
+    }
+    const made = await httpRequest({
+      method: 'POST', url: `${DRIVE}/files?fields=id`, headers: auth,
+      body: JSON.stringify({ name: SHEETS_FOLDER_NAME, mimeType: FOLDER_MIME }),
+      responseType: 'json'
+    });
+    if (made.status !== 200 || !made.data) return null;
+    const md = typeof made.data === 'string' ? JSON.parse(made.data) : made.data;
+    return md.id || null;
+  } catch { return null; }
+}
 
 /* ---------------- pure (node-tested) ---------------- */
 
@@ -105,14 +152,23 @@ export function matchRowsForDeletion(colA, ops, handleMap = {}) {
 
 /* ---------------- queue ---------------- */
 
-async function enqueueOp(profileId, op) {
+async function enqueueOp(profileId, op, { flush = true } = {}) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, noSheet: true };
-  const q = normalizeOps((await getMeta(qKey(src.libraryId))) || []);
-  q.push({ ...op, at: Date.now() });
-  await putMeta(qKey(src.libraryId), q.slice(-QUEUE_CAP));
-  await patchState(src.libraryId, { pending: Math.min(q.length, QUEUE_CAP) });
-  return flushSheetQueue(profileId);
+  // v1.0.18: RECONCILE BEFORE CAPPING. `slice(-QUEUE_CAP)` drops the HEAD, so an
+  // offline bulk cleanup silently discarded the oldest ops — a dropped delvideo
+  // leaves the row in the sheet, the next mirror pass reads that as presence and
+  // revokes the tombstone, and the deleted video comes back on every device.
+  // Reconciling first collapses per entity, so only 200 DISTINCT entities overflow.
+  const q = reconcileOps([...normalizeOps((await getMeta(qKey(src.libraryId))) || []), { ...op, at: Date.now() }]);
+  const kept = q.slice(-QUEUE_CAP);
+  await putMeta(qKey(src.libraryId), kept);
+  // Overflow is data loss, not a queue detail — say so instead of dropping quietly.
+  await patchState(src.libraryId, {
+    pending: kept.length,
+    ...(q.length > QUEUE_CAP ? { error: 'queue-overflow' } : {})
+  });
+  return flush ? flushSheetQueue(profileId) : { ok: true, queued: true };
 }
 
 /**
@@ -120,8 +176,8 @@ async function enqueueOp(profileId, op) {
  * over: reconcileOps keeps the latest intent per key, and the flush skips appends
  * whose key already exists in the sheet.
  */
-export function enqueueSheetRow(profileId, { key, srcUrl, title = '', flag = '' }) {
-  return enqueueOp(profileId, { op: 'append', key, row: buildSheetRow({ srcUrl, title, flag }) });
+export function enqueueSheetRow(profileId, { key, srcUrl, title = '', flag = '' }, opts = {}) {
+  return enqueueOp(profileId, { op: 'append', key, row: buildSheetRow({ srcUrl, title, flag }) }, opts);
 }
 
 /** v1.0.10: queue the removal of a VIDEO row (matched by classified key). */
@@ -237,13 +293,53 @@ export async function createSourceSheet(title) {
     headers: auth, body: JSON.stringify({ values: starterRows() }), responseType: 'json'
   });
 
-  const perm = await httpRequest({
-    method: 'POST', url: `https://www.googleapis.com/drive/v3/files/${id}/permissions`,
-    headers: auth, body: JSON.stringify({ role: 'reader', type: 'anyone' }), responseType: 'json'
+  // v1.0.19 — NO "anyone with the link" permission any more. Reads go through the
+  // authenticated Sheets API now, so the sheet stays PRIVATE to the parent's
+  // account. Previously every family's playlist was world-readable to anyone
+  // holding the URL, purely because the reader was an unauthenticated CSV fetch.
+  // File it in the app's folder; a failure there is cosmetic, not fatal.
+  const folderId = await ensureSheetsFolder(token);
+  if (folderId) {
+    try {
+      await httpRequest({
+        method: 'PATCH',
+        url: `${DRIVE}/files/${id}?addParents=${folderId}&fields=id,parents`,
+        headers: auth, body: JSON.stringify({}), responseType: 'json'
+      });
+    } catch { /* the sheet still works from Drive root */ }
+  }
+  return { ok: true, id, url, folderId: folderId || null };
+}
+
+/**
+ * v1.0.19 — read the source sheet through the authenticated Sheets API.
+ * -> array of row arrays (what parseSourceRows in sync2.js consumes)
+ *
+ * THROWS on anything that is not a clean 200. That is deliberate and load-bearing:
+ * the caller uses the throw to leave `sheetParsed` false, and the v1.0.10
+ * presence-mirror deletes content only on a SUCCESSFUL parse. Returning [] on a
+ * failed read would tell the mirror the parent emptied the sheet, and it would
+ * tombstone the whole library. Never soften this to a silent empty result.
+ */
+export async function readSourceSheet(sheetUrl) {
+  const spreadsheetId = extractSpreadsheetId(sheetUrl);
+  if (!spreadsheetId) throw new Error('sheet-bad-url');
+  const token = await getAccessToken({ interactive: false });
+  if (!token) throw new Error('sheet-no-token');
+  const auth = { Authorization: 'Bearer ' + token };
+
+  const tab = await resolveTab(token, spreadsheetId, extractGid(sheetUrl));
+  if (tab.error) throw new Error('sheet-' + tab.error);
+  const range = encodeURIComponent(`'${tab.title.replace(/'/g, "''")}'!A:C`);
+  const res = await httpRequest({
+    url: `${SHEETS}/${spreadsheetId}/values/${range}`, headers: auth, responseType: 'json'
   });
-  // Permission failure isn't fatal for creation — but the app won't be able to READ
-  // the sheet until the parent shares it manually; the caller must surface this.
-  return { ok: true, id, url, permissionWarning: perm.status !== 200 };
+  if (res.status !== 200 || !res.data) throw new Error('sheet-http-' + res.status);
+  const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+  // An empty sheet legitimately returns no `values` key at all. That IS an empty
+  // sheet (not a failure) — and the mirror's total-disappearance valve is what
+  // asks the parent about it, so returning [] here is correct.
+  return (data.values || []).map((r) => (Array.isArray(r) ? r : []));
 }
 
 /* ---------------- flush ---------------- */
@@ -274,8 +370,54 @@ export async function flushSheetQueue(profileId) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, empty: true };
   const lib = src.libraryId;
+
+  // v1.0.18 — SERIALIZE PER LIBRARY. enqueueOp flushes on every enqueue and sync2
+  // flushes at the end of every sync, so overlapping flushes were routine. Two of
+  // them both read column A before either append lands (duplicate rows), and the
+  // loser's unconditional queue-clear used to destroy the winner's un-sent ops.
+  const running = flushInFlight.get(lib);
+  if (running) { flushAgain.add(lib); return running; }
+
+  const p = (async () => {
+    let res;
+    try { res = await doFlush(profileId, src, lib); } finally { flushInFlight.delete(lib); }
+    // ops enqueued mid-flight were deliberately left in the queue — drain them now
+    if (flushAgain.delete(lib)) { try { res = await flushSheetQueue(profileId); } catch {} }
+    return res;
+  })();
+  flushInFlight.set(lib, p);
+  return p;
+}
+
+const flushInFlight = new Map(); // libraryId -> in-flight flush promise
+const flushAgain = new Set();    // libraryId -> a follow-up run is owed
+
+/**
+ * Remove ONLY what we just wrote. Anything enqueued while the network calls were
+ * in the air carries a newer `at` for its identity (or an identity we never saw)
+ * and must survive — clearing the whole queue silently dropped a parent's delete,
+ * which then resurrected the video everywhere on the next mirror pass.
+ */
+async function clearFlushed(lib, flushed) {
+  const remaining = remainingAfterFlush((await getMeta(qKey(lib))) || [], flushed);
+  await putMeta(qKey(lib), remaining);
+  return remaining.length;
+}
+
+/**
+ * PURE — which queued ops survive a flush that wrote `flushed`?
+ * An op survives when its identity carries a STRICTLY newer timestamp than the one
+ * we just wrote (it was enqueued mid-flight), or when we never wrote that identity
+ * at all. Everything we did write is dropped.
+ */
+export function remainingAfterFlush(currentQueue, flushed) {
+  const flushedAt = new Map(normalizeOps(flushed).map((o) => [opIdentity(o), o.at || 0]));
+  return normalizeOps(currentQueue).filter((o) => (o.at || 0) > (flushedAt.get(opIdentity(o)) ?? -1));
+}
+
+async function doFlush(profileId, src, lib) {
   const q = reconcileOps((await getMeta(qKey(lib))) || []);
-  if (!q.length) { await putMeta(qKey(lib), []); return { ok: true, empty: true }; }
+  if (!q.length) { await clearFlushed(lib, []); return { ok: true, empty: true }; }
 
   const spreadsheetId = extractSpreadsheetId(src.sheetUrl);
   if (!spreadsheetId) {
@@ -356,7 +498,7 @@ export async function flushSheetQueue(profileId) {
     }
   }
 
-  await putMeta(qKey(lib), []);
-  await patchState(lib, { error: null, pending: 0, lastWriteAt: Date.now(), written: q.length });
+  const stillPending = await clearFlushed(lib, q);
+  await patchState(lib, { error: null, pending: stillPending, lastWriteAt: Date.now(), written: q.length });
   return { ok: true, written: q.length, deletedRows: delRows.length };
 }

@@ -235,7 +235,12 @@ export function planSheetMirror({
 
   const localTotal = sheetBackedKeys.length + localChannelIds.length;
   const disappeared = deleteVideoKeys.length + deleteChannelIds.length;
-  const valve = localTotal > 0 && disappeared > Math.max(valveMin, Math.ceil(localTotal * valvePct));
+  // v1.0.18: a TOTAL disappearance always asks, however small the library. The
+  // >max(10, 5%) rule meant a child with ≤10 items — the common case for a
+  // five-year-old — had their whole library wiped without the parent ever being
+  // asked. Losing everything is exactly the case a safety valve exists for.
+  const valve = localTotal > 0 &&
+    (disappeared === localTotal || disappeared > Math.max(valveMin, Math.ceil(localTotal * valvePct)));
 
   return { deleteVideoKeys, deleteChannelIds, unDenyKeys, valve, disappeared, localTotal };
 }

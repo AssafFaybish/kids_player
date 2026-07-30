@@ -348,6 +348,20 @@ export async function putLibraryChannel(rec) {
 }
 export async function deleteLibraryChannel(libraryId, channelId) {
   await tx(['libraryChannels'], 'readwrite', (s) => { s.delete([libraryId, channelId]); });
+  // v1.0.18 — REARM THE BACKFILL. Unsubscribing removes the libraryChannels row,
+  // but the GLOBAL channels record survives with `backfillDone: true`, so on a
+  // re-subscribe planChannelFetch (quota.js) returns 'rss' and only the ~15 videos
+  // in the feed window ever come back — the whole back catalogue is gone for good,
+  // while the confirm dialog explicitly promises "אפשר להוסיף אותו שוב בעתיד".
+  // Only rearm once NO library still subscribes: another profile's sheet may share
+  // this channel, and re-backfilling a live subscription burns YouTube quota.
+  const db = await openDb();
+  const rows = await preq(db.transaction('libraryChannels').objectStore('libraryChannels').getAll());
+  if ((rows || []).some((r) => r.channelId === channelId)) return;
+  const ch = await getChannel(channelId);
+  // uploadsPlaylistId and the logo are kept — they cost a lookup/scrape to rebuild
+  // and never go stale; only the cursor is state that must not outlive the sub.
+  if (ch) await putChannel({ ...ch, backfillCursor: null, backfillDone: false });
 }
 
 /* ---------------- thumbs (Blob cache) ---------------- */
@@ -459,10 +473,15 @@ export async function moveScope(fromScope, toScope) {
     puts.push({ ...rec, scopeId: toScope, updatedAt: Date.now() });
   }
   if (puts.length) await putVideos(puts);
+  // v1.0.18 — TOMBSTONES FIRST. This used to run after the delete below, so a crash
+  // or reload in between lost the old scope's deny-list for good: adoptLibraryScope
+  // only fires on a scope CHANGE and src.libraryId is already rewritten by then, so
+  // nothing ever retries, and every deleted video came back on the next sheet parse.
+  // A union is idempotent, so doing it first is safe to repeat and safe to interrupt.
+  await copyDenies(fromScope, toScope);
   await tx(['videos'], 'readwrite', (videos) => {
     for (const rec of recs) videos.delete([fromScope, rec.key]);
   });
-  await copyDenies(fromScope, toScope);
 
   const movedChannels = [];
   const targetChannels = new Set((await listLibraryChannels(toScope)).map((c) => c.channelId));

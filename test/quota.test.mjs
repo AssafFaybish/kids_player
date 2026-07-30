@@ -43,3 +43,20 @@ test('planChannelFetch truth table', () => {
   assert.equal(planChannelFetch({ uploadsPlaylistId: 'UUx', backfillDone: true, lastRssCheckedAt: now - 31 * 60 * 1000 }, now, true), 'rss');
   assert.equal(planChannelFetch({ uploadsPlaylistId: 'UUx', backfillDone: true, lastRssCheckedAt: now - 5 * 60 * 1000 }, now, true), 'skip');
 });
+
+test('v1.0.18: rearming the cursor on unsubscribe restores a full backfill', () => {
+  const now = Date.now();
+  // The state db.deleteLibraryChannel leaves behind once no library subscribes.
+  // Before the fix the record kept backfillDone:true, so a re-subscribe planned
+  // 'rss' and only the ~15 videos in the feed window ever returned — the rest of
+  // the channel's back catalogue was unreachable forever.
+  const exhausted = { uploadsPlaylistId: 'UUx', backfillDone: true, backfillCursor: 'CAUQAA', lastRssCheckedAt: now };
+  assert.equal(planChannelFetch(exhausted, now, true), 'skip');
+
+  const rearmed = { ...exhausted, backfillDone: false, backfillCursor: null };
+  assert.equal(planChannelFetch(rearmed, now, true), 'backfill');
+  // keyless installs still fall back to the free RSS path
+  assert.equal(planChannelFetch(rearmed, now, false), 'rss');
+  // the playlist id is deliberately KEPT, so re-subscribing costs no resolve call
+  assert.notEqual(planChannelFetch(rearmed, now, true), 'resolve');
+});

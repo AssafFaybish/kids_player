@@ -103,8 +103,24 @@ export function convertFileSrc(uri) {
   const c = cap();
   return c && c.convertFileSrc ? c.convertFileSrc(uri) : uri;
 }
+/**
+ * v1.0.18 — mkdir FIRST. `downloadFile` ignores `recursive:true` on Android (see
+ * the note under the EXTERNAL helpers below), and nothing ever created DATA/videos,
+ * so media.js's whole stream→download→cache fallback threw FileNotFoundException on
+ * every device, on every fresh install, for every direct-file video. It survived
+ * this long because fsAvailable() is false in the browser preview, where the path
+ * is never exercised. Doing it here rather than in media.js also covers clearCache()
+ * removing the directory mid-session.
+ */
+export async function fsMkdir(path) {
+  const FS = plugin('Filesystem');
+  if (!FS || !path) return;
+  try { await FS.mkdir({ path, directory: DIRECTORY, recursive: true }); } catch {} // exists → throws
+}
 export async function fsDownload(url, path) {
   const FS = plugin('Filesystem');
+  const dir = String(path || '').replace(/\/[^/]*$/, '');
+  if (dir && dir !== path) await fsMkdir(dir);
   const res = await FS.downloadFile({ url, path, directory: DIRECTORY, recursive: true });
   return res.path || null; // native file URI
 }
@@ -123,7 +139,8 @@ export async function fsRemoveDir(path) {
 /* ---------- EXTERNAL dir (updater downloads; survives the unknown-sources detour) ---------- */
 // ⚠ Filesystem.downloadFile IGNORES recursive:true on Android (verified in
 // @capacitor/filesystem source) — mkdir first or the first download throws
-// FileNotFoundException. This likely also affects the videos/ cache in media.js.
+// FileNotFoundException. It DID also affect the videos/ cache in media.js; fixed
+// in v1.0.18 by making fsDownload above mkdir its own parent directory.
 export async function fsMkdirExternal(path) {
   const FS = plugin('Filesystem');
   if (!FS) return;

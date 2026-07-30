@@ -41,6 +41,8 @@
     <section id="view-tour" class="view">
       <div class="tour-wrap">
         <button id="tour-skip" class="text-btn tour-skip" type="button">דלג</button>
+      <!-- shown only on the LAST slide of the onboarding deck (v1.0.18) -->
+      <button id="tour-more" class="btn btn-small tour-more hidden" type="button">➕ איך מוסיפים סרטונים?</button>
         <div class="tour-stage">
           <img id="tour-img" class="tour-img" alt="" />
         </div>
@@ -83,13 +85,10 @@
         <!-- v1.0.12: joining an existing family file is now an explicit CHOICE
              (one button per profile that already has a file), not automatic -->
         <div id="sheetsetup-join" class="sheetsetup-join hidden"></div>
-        <button id="sheetsetup-create" class="btn btn-primary connect-btn" type="button">✨ צרו לי קובץ חדש</button>
-        <button id="sheetsetup-paste-btn" class="btn connect-btn" type="button">🔗 יש לי קובץ — הדבקת לינק</button>
-        <div id="sheetsetup-paste" class="sheetsetup-paste hidden">
-          <input id="sheetsetup-url" class="input" type="url" inputmode="url" dir="ltr"
-                 placeholder="https://docs.google.com/spreadsheets/d/..." />
-          <button id="sheetsetup-connect" class="btn btn-primary" type="button">חיבור הקובץ</button>
-        </div>
+        <!-- v1.0.19: pasting a link to an EXTERNAL sheet is gone. The app can only
+             write to files it created itself (drive.file), so a pasted sheet would
+             be read-only and every add would silently fail to reach it. -->
+        <button id="sheetsetup-create" class="btn btn-primary connect-btn" type="button">✨ צרו לי רשימה חדשה</button>
         <button id="sheetsetup-skip" class="text-btn connect-skip" type="button">דילוג — אגדיר אחר-כך</button>
         <p class="connect-hint">אפשר תמיד לחבר קובץ דרך מסך ההורים ← מקורות</p>
         <div id="sheetsetup-msg" class="form-msg"></div>
@@ -334,13 +333,16 @@
 
       <!-- Sources: the input sheet + subscribed channels + API key -->
       <div id="panel-sources" class="panel hidden">
-        <div class="field">
-          <label for="remote-url">קישור לגיליון הרשימה (Google Sheet משותף לצפייה)</label>
-          <input id="remote-url" class="input" type="url" inputmode="url" dir="ltr"
-                 placeholder="https://docs.google.com/spreadsheets/d/..." />
-        </div>
+        <!-- v1.0.19: no link input. The app writes only to sheets it created
+             itself, so the parent picks between creating a list and joining one
+             that already exists on this device. -->
+        <div id="remote-current" class="field remote-current"></div>
         <div class="row-btns">
-          <button id="remote-save" class="btn btn-primary" type="button">שמירה</button>
+          <button id="remote-copy" class="btn btn-primary" type="button">📋 העתקת הלינק לרשימה</button>
+          <button id="remote-create" class="btn" type="button">✨ יצירת רשימה חדשה</button>
+        </div>
+        <div id="remote-join" class="row-btns"></div>
+        <div class="row-btns">
           <button id="remote-refresh" class="btn" type="button">🔄 רענון עכשיו</button>
           <button id="remote-clear" class="btn btn-small" type="button">ניתוק</button>
         </div>
@@ -456,6 +458,7 @@
         <div class="row-btns">
           <button id="contact-dev" class="btn btn-small" type="button">💡 שלח הצעות לשיפור</button>
           <button id="tour-replay" class="btn btn-small" type="button">🎓 הדרכה מחדש</button>
+          <button id="guide-add" class="btn btn-small" type="button">➕ איך מוסיפים סרטונים</button>
           <button id="whatsnew-btn" class="btn btn-small" type="button">🎉 מה חדש בגירסה</button>
           <button id="privacy-btn" class="btn btn-small" type="button">🔒 מדיניות פרטיות</button>
         </div>

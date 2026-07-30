@@ -32,12 +32,25 @@ import java.util.List;
 public class GoogleAuthPlugin extends Plugin {
 
     static final int REQ_AUTHORIZE = 7834;
-    // drive.file: the app's own backup file. spreadsheets (v1.0.6): append manual
-    // adds back to the parent's input sheet — the sheet stays the single master
-    // list. Adding a scope re-triggers the one-time consent dialog; expected.
+    // v1.0.19 — drive.file ONLY, and that is a deliberate product decision.
+    //
+    // `spreadsheets` is classified SENSITIVE by Google, and it alone was what put
+    // the "Google hasn't verified this app" warning in front of every parent. Its
+    // removal is why the app now writes only to sheets IT created: drive.file grants
+    // per-file access to exactly those, which covers spreadsheets.create,
+    // values.get/append and batchUpdate on them. A sheet the parent made themselves
+    // and pasted a link to is NOT covered (403 appNotAuthorizedToFile), which is
+    // precisely why the paste-a-link option was removed from the UI.
+    //
+    // Escaping the warning by verification instead was not available: Google requires
+    // a DNS-level Search Console Domain Property, and the site is on github.io whose
+    // DNS we do not control.
+    //
+    // ⚠️ Do NOT re-add `spreadsheets` to make a pasted sheet work — it brings the
+    // warning screen back for everyone. drive.file is non-sensitive and needs no
+    // verification at all.
     private static final List<Scope> SCOPES = Arrays.asList(
-            new Scope("https://www.googleapis.com/auth/drive.file"),
-            new Scope("https://www.googleapis.com/auth/spreadsheets"));
+            new Scope("https://www.googleapis.com/auth/drive.file"));
 
     private PluginCall pendingCall;
 

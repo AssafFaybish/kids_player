@@ -25,6 +25,7 @@ import { normalizeTitle } from './normalize.js';
 import { burst } from './ui/confetti.js';
 import { playUnwrap } from './ui/sound.js';
 import { initShareTarget, drainShareQueue } from './share.js';
+import { TOUR_SLIDES, ADD_GUIDE_SLIDES, nextIndex, slideState, backAction } from './tour.js';
 
 const PAGE_SIZE = PAGE_VIDEOS;
 const $ = (id) => document.getElementById(id);
@@ -306,7 +307,7 @@ function registerViews() {
   // tour back = previous slide (or skip on the first one) — never exits the app
   nav.register('tour', {
     onBack: () => {
-      if (tourIdx > 0) { tourIdx -= 1; renderTourSlide(); } else { finishTour(); }
+      if (backAction(tourIdx) === 'prev') tourStep(-1); else finishTour();
       return true;
     }
   });
@@ -731,30 +732,33 @@ async function buildSearchIndex() {
       if (rec.state === 'live') videos.push(rec);
     }
   }
+  // v1.0.18 — DERIVED FROM `folders`, THE SAME LIST THE HOME SCREEN RENDERS.
+  //
+  // This used to re-derive channel folders from listLibraryChannels + countFolder and
+  // skip any whose count was 0. But buildFolders deliberately PUBLISHES such a folder
+  // when absorbedSingles has entries for it ("subscribed, nothing imported yet, but
+  // loose singles live here"), and it adds those singles to the count of the folders
+  // that do have imports. So a folder could sit on the child's home screen holding two
+  // videos and be unfindable by name, and every absorbed count was understated — the
+  // v1.0.17 fix closed this for 🎞️ groups but left it open for 📺 channels.
+  // One source of truth removes the whole class: if it is on the home screen, it is
+  // searchable, with the count the child can see. `folders` already excludes hidden
+  // channels (buildFolders), and non-channel tiles (🎁 חדשים, the shared 'sheet'
+  // folder) are filtered out here because they are not channel names to search for.
   const folderEntries = [];
   if (libScope) {
-    for (const lc of await db.listLibraryChannels(libScope)) {
-      if (lc.hidden) continue;
-      const ch = (await db.getChannel(lc.channelId)) || {};
-      const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
-      if (!count) continue;
-      const title = lc.titleOverride || ch.title || '';
-      folderEntries.push({
-        id: 'ch:' + lc.channelId, scope: libScope, key: 'folder:' + lc.channelId,
-        title, normTitle: normalizeTitle(title),
-        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
-      });
-    }
-    // v1.0.17: the 🎞️ collections of grouped singles are folders on the home screen,
-    // so a child searching their channel name must find them too (they were missing).
-    for (const [channelId, recs] of singleGroups) {
-      const f = folders.find((x) => x.id === 'grp:' + channelId);
-      const title = (f && f.title) || (recs[0] && recs[0].srcChannelTitle) || '';
+    for (const f of folders) {
+      const id = String(f.id || '');
+      const isGroup = id.startsWith('grp:');
+      if (!isGroup && !id.startsWith('ch:')) continue;
+      const title = f.title || '';
       if (!title) continue;
       folderEntries.push({
-        id: 'grp:' + channelId, scope: libScope, key: 'group:' + channelId,
+        id, scope: f.scope || libScope,
+        key: (isGroup ? 'group:' : 'folder:') + id.slice(id.indexOf(':') + 1),
         title, normTitle: normalizeTitle(title),
-        logoUrl: (f && f.logoUrl) || '', emoji: '🎞️', count: recs.length
+        logoUrl: f.logoUrl || '', emoji: f.emoji || (isGroup ? '🎞️' : '📺'),
+        count: f.count || 0
       });
     }
   }
@@ -1197,9 +1201,81 @@ function setParentTab(name) {
   }
 }
 
+/**
+ * v1.0.19 — attaching a sheet is no longer "paste a URL". The app can only write to
+ * files it created itself (drive.file), so the two legal sources are a list created
+ * now, or one this app already created for another profile on this device. This is
+ * the single place that rewrites the library scope.
+ */
+async function connectSheetUrl(url) {
+  const { libraryIdFor } = await import('./util.js');
+  let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
+  src = {
+    shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+    maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
+    ...src, sheetUrl: url || null, updatedAt: Date.now()
+  };
+  const oldLib = src.libraryId || null;
+  if (url) src.libraryId = libraryIdFor(url);
+  src.sheetHash = null; // force a full re-parse of the new sheet
+  await db.putSources(src);
+  libScope = src.libraryId || null;
+  // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
+  const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
+  await doSyncAndRefresh();
+  // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
+  if (moved.videoKeys.length || moved.channelIds.length) {
+    $('remote-status').textContent =
+      `הועברו לרשימה החדשה: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בה אוטומטית.`;
+    $('remote-status').className = 'form-msg ok';
+  }
+  await refreshSourcesPanel();
+}
+
+/**
+ * The sources panel's sheet section. Replaces the URL input: shows WHICH list is
+ * attached, and offers to join a list this app already created for another profile.
+ */
+async function refreshSourcesPanel() {
+  const src = await db.getSources(activeProfileId);
+  const cur = $('remote-current');
+  if (cur) {
+    cur.textContent = src && src.sheetUrl
+      ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
+      : 'אין רשימה מחוברת. אפשר ליצור אחת — או להצטרף לרשימה של פרופיל אחר.';
+    cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
+  }
+  const join = $('remote-join');
+  if (!join) return;
+  join.innerHTML = '';
+  const seen = new Set([(src && src.sheetUrl) || '']);
+  try {
+    for (const other of await getProfiles()) {
+      if (other.id === activeProfileId) continue;
+      const os = await db.getSources(other.id);
+      if (!os || !os.sheetUrl || seen.has(os.sheetUrl)) continue;
+      seen.add(os.sheetUrl);
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.type = 'button';
+      b.textContent = `👨‍👩‍👧 להצטרף לרשימה של ${other.name}`;
+      b.addEventListener('click', async () => {
+        const yes = await confirmKid({
+          emoji: '👨‍👩‍👧', title: `להצטרף לרשימה של ${other.name}?`,
+          text: 'שני הפרופילים ישתמשו באותה רשימה, וכל שינוי יופיע אצל שניהם.',
+          ok: 'הצטרפות', cancel: 'ביטול'
+        });
+        if (yes) await connectSheetUrl(os.sheetUrl);
+      });
+      join.appendChild(b);
+    }
+  } catch {}
+  join.classList.toggle('hidden', join.children.length === 0);
+}
+
 async function refreshParent() {
   const src = await db.getSources(activeProfileId);
-  $('remote-url').value = (src && src.sheetUrl) || '';
+  await refreshSourcesPanel();
   $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
   $('share-approval-toggle').checked = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
@@ -1360,14 +1436,35 @@ async function refreshParentList() {
  * v1.0.6: approved shares / manual items become sheet rows — channel videos do NOT
  * (their channel row already represents them in the sheet).
  */
+/**
+ * v1.0.18 — QUEUE ALL, THEN FLUSH ONCE.
+ *
+ * These records are already LIVE in the 'sheet' folder by the time we get here, so
+ * until each one has a queued row it is sheet-backed, absent from the sheet, and
+ * absent from pendingAppendKeys — which is exactly the shape the presence-mirror
+ * deletes (with a tombstone, on every device). The old loop flushed inside every
+ * enqueue, so approving N shares held that window open for N network round trips,
+ * and one rejection mid-loop skipped every remaining record permanently.
+ *
+ * Enqueuing is local IndexedDB work, so the window now closes in one tick; the
+ * single flush at the end does the network. Per-item catch: one bad record must
+ * never cost the others their row.
+ */
 async function enqueueApprovedForSheet(recs) {
   const rows = (recs || []).filter((r) => r.origin === 'share-intent' || r.origin === 'manual');
   if (!rows.length) return;
   try {
-    const { enqueueSheetRow } = await import('./sheetwrite.js');
+    const { enqueueSheetRow, flushSheetQueue } = await import('./sheetwrite.js');
     for (const r of rows) {
-      await enqueueSheetRow(activeProfileId, { key: r.key, srcUrl: r.srcUrl || r.url || '', title: r.title || '' });
+      try {
+        await enqueueSheetRow(
+          activeProfileId,
+          { key: r.key, srcUrl: r.srcUrl || r.url || '', title: r.title || '' },
+          { flush: false }
+        );
+      } catch {}
     }
+    await flushSheetQueue(activeProfileId);
   } catch {}
 }
 
@@ -1493,24 +1590,60 @@ async function refreshChannelsList() {
  */
 async function adoptLibraryScope(profileId, oldLib, newLib) {
   if (!oldLib || !newLib || oldLib === newLib) return { videoKeys: [], channelIds: [] };
+
+  // v1.0.18 — NEVER EMPTY A SHARED SCOPE.
+  //
+  // `lib:<fnv1a(sheet)>` is shared by EVERY profile on that sheet — the wizard's
+  // "join <profile>'s file" button creates exactly that. moveScope *moves*: it
+  // deletes the source scope. So changing one child's sheet used to carry the whole
+  // family library away, blanking the sibling's home screen and surfacing their
+  // pending shares in this child's approval list (the very leak v1.0.17 fixed).
+  //
+  // When someone else still lives there, the content is not ours to take: it is
+  // sheet-derived from the OLD sheet and stays with the profiles still reading it.
+  // This profile simply starts from its new sheet, which is the correct semantic —
+  // the orphaning bug v1.0.17 fixed was about a scope with NO remaining owner.
+  const stillOwned = [];
+  for (const p of await getProfiles()) {
+    if (p.id === profileId) continue;
+    const s = await db.getSources(p.id);
+    if (s && s.libraryId === oldLib) stillOwned.push(p.id);
+  }
+  if (stillOwned.length) return { videoKeys: [], channelIds: [], sharedWith: stillOwned };
+
   const moved = await db.moveScope(oldLib, newLib);
   if (!moved.videoKeys.length && !moved.channelIds.length) return moved;
+  // Queue every row BEFORE any network call, then flush once. These records are
+  // already live in the new scope, so until their row is queued they are
+  // sheet-backed, absent from the sheet and absent from pendingAppendKeys — the
+  // exact shape the presence-mirror tombstones. Flushing inside the loop (the old
+  // shape) held that window open for one round trip per item, and a single throw
+  // skipped every remaining record with nothing recording that it was owed.
   try {
     const sw = await import('./sheetwrite.js');
     for (const key of moved.videoKeys) {
-      const rec = await db.getVideo(newLib, key);
-      if (!rec || rec.state !== 'live') continue;
-      if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
-      await sw.enqueueSheetRow(profileId, { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+      try {
+        const rec = await db.getVideo(newLib, key);
+        if (!rec || rec.state !== 'live') continue;
+        if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
+        await sw.enqueueSheetRow(
+          profileId,
+          { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' },
+          { flush: false }
+        );
+      } catch { /* one bad record must not cost the others their row */ }
     }
     for (const channelId of moved.channelIds) {
-      await sw.enqueueSheetRow(profileId, {
-        key: 'ch:' + channelId,
-        srcUrl: 'https://www.youtube.com/channel/' + channelId,
-        flag: 'manual'
-      });
+      try {
+        await sw.enqueueSheetRow(profileId, {
+          key: 'ch:' + channelId,
+          srcUrl: 'https://www.youtube.com/channel/' + channelId,
+          flag: 'manual'
+        }, { flush: false });
+      } catch {}
     }
-  } catch { /* the move already happened; rows retry on the next flush */ }
+    await sw.flushSheetQueue(profileId);
+  } catch { /* queued rows survive in IndexedDB; the next sync flushes them */ }
   return moved;
 }
 
@@ -1645,58 +1778,70 @@ async function doSyncAndRefresh() {
   maybeSchedulePush();
 }
 
-/* ---------------- Onboarding tour (v1.0.8, once per install) ---------------- */
-const TOUR_SLIDES = [
-  {
-    img: 'assets/tour/01-profiles.jpg', title: 'לכל ילד פרופיל משלו',
-    text: 'בכניסה בוחרים פרופיל — שם ותמונה. לכל פרופיל ספריית סרטונים, מתנות והתקדמות משלו.'
-  },
-  {
-    img: 'assets/tour/02-home.jpg', title: 'מסך הבית של הילד',
-    text: 'ערוצים כתיקיות עם הלוגו שלהם, "סרטונים נוספים" לכל השאר, חיפוש 🔍 למעלה — וסרטונים חדשים מגיעים עטופים כמתנה 🎁.'
-  },
-  {
-    img: 'assets/tour/03-watch.jpg', title: 'צפייה בטוחה',
-    text: 'בלי פרסומות, בלי המלצות, בלי יציאה ליוטיוב. הבית 🏠 ומחיקת סרטון 🗑️ (עם קוד הורים) — בפינות למעלה.'
-  },
-  {
-    img: 'assets/tour/04-parent.jpg', title: 'מסך ההורים 🔒',
-    text: 'נכנסים עם קוד. מוסיפים סרטון בודד או ערוץ שלם, מחברים קובץ מקורות בגוגל — וכל הוספה נרשמת בקובץ אוטומטית.'
-  },
-  {
-    img: 'assets/tour/05-approve.jpg', title: 'הכול באישור שלכם',
-    text: 'סרטונים חדשים בערוצים ממתינים לאישור. נקודה אדומה על כפתור ההורים אומרת שמשהו מחכה לכם.'
-  }
-];
+/* ---------------- Onboarding tour (v1.0.8; two decks since v1.0.18) ----------------
+   Slide content and all bounds arithmetic live in tour.js (pure + unit-tested).
+   This half is only the DOM. `tourDeck` is whichever deck is on screen, so the
+   first-run tour and the "how do I add videos" guide share one view and one
+   renderer. `tour.done` is written only by the FIRST-RUN deck — replaying the
+   guide must never look like the onboarding was completed. */
+let tourDeck = TOUR_SLIDES;
 let tourIdx = 0;
 let tourOnDone = null;
+let tourIsOnboarding = true;
 
 function renderTourSlide() {
-  const s = TOUR_SLIDES[tourIdx];
+  const s = tourDeck[tourIdx];
+  if (!s) return;
+  const st = slideState(tourIdx, tourDeck.length);
   $('tour-img').src = s.img;
+  $('tour-img').alt = s.title;
   $('tour-title').textContent = s.title;
   $('tour-text').textContent = s.text;
-  $('tour-next').textContent = tourIdx === TOUR_SLIDES.length - 1 ? '✔' : '◀';
-  $('tour-prev').disabled = tourIdx === 0;
+  $('tour-next').textContent = st.nextLabel;
+  $('tour-prev').disabled = st.prevDisabled;
+  // The first-run deck hands off to the guide instead of just ending: a parent who
+  // never learns how to add a link cannot use the app at all.
+  const more = $('tour-more');
+  if (more) more.classList.toggle('hidden', !(st.isLast && tourIsOnboarding));
   const dots = $('tour-dots');
   dots.innerHTML = '';
-  TOUR_SLIDES.forEach((_, i) => {
+  for (const on of st.dots) {
     const d = document.createElement('span');
-    if (i === tourIdx) d.classList.add('on');
+    if (on) d.classList.add('on');
     dots.appendChild(d);
-  });
+  }
 }
 
-/** Boot shows it once ever (tour.done); the About tab replays on demand. */
-function startTour({ replay = false, onDone = null } = {}) {
+/**
+ * Boot shows the onboarding deck once ever (tour.done); the About tab replays it,
+ * and the parent screen opens the add-videos guide directly.
+ * @param deck        which slide deck to show
+ * @param onboarding  does finishing this deck mark the onboarding as done?
+ */
+function startTour({ replay = false, onDone = null, deck = TOUR_SLIDES, onboarding = true } = {}) {
+  tourDeck = Array.isArray(deck) && deck.length ? deck : TOUR_SLIDES;
+  tourIsOnboarding = onboarding;
   tourIdx = 0;
   tourOnDone = onDone;
   renderTourSlide();
   if (replay) nav.go('tour'); else nav.reset('tour');
 }
 
+/** The add-videos chapter — from the last tour slide, the parent screen, About. */
+function startAddGuide({ replay = true } = {}) {
+  startTour({ replay, deck: ADD_GUIDE_SLIDES, onboarding: false });
+}
+
+function tourStep(delta) {
+  const n = nextIndex(tourIdx, tourDeck.length, delta);
+  if (n === tourIdx) return;
+  tourIdx = n;
+  renderTourSlide();
+}
+
 async function finishTour() {
-  await prefSet('tour.done', '1');
+  // Only the onboarding deck may retire the first-run tour.
+  if (tourIsOnboarding) await prefSet('tour.done', '1');
   const done = tourOnDone;
   tourOnDone = null;
   if (done) { done(); return; }     // boot flow continues (connect / profiles)
@@ -1717,8 +1862,6 @@ async function openSheetSetup(p) {
   $('sheetsetup-name').textContent = p.name;
   $('sheetsetup-msg').textContent = '';
   $('sheetsetup-msg').className = 'form-msg';
-  $('sheetsetup-paste').classList.add('hidden');
-  $('sheetsetup-url').value = '';
 
   // one "join <name>'s file" button per OTHER profile that already has one,
   // deduped by URL so two siblings on the same file show a single choice
@@ -1809,18 +1952,11 @@ async function wizardCreateSheet() {
       const { lastAuthError } = await import('./gauth.js');
       msg.textContent = r.error === 'no-token'
         ? gauthErrorText(lastAuthError())
-        : 'יצירת הקובץ נכשלה — אפשר לנסות שוב, להדביק לינק לקובץ קיים, או לדלג';
+        : 'יצירת הרשימה נכשלה — אפשר לנסות שוב או לדלג';
       msg.className = 'form-msg err';
       return;
     }
     await connectWizardSheet(r.url);
-    if (r.permissionWarning) {
-      await alertKid({
-        emoji: '⚠️', title: 'הקובץ נוצר, אבל…',
-        text: 'לא הצלחנו להגדיר שיתוף לקריאה. פתחו את הקובץ בדרייב ← שיתוף ← "כל מי שיש לו את הקישור — צפייה", אחרת האפליקציה לא תוכל לקרוא אותו.',
-        ok: 'הבנתי'
-      });
-    }
     const copy = await confirmKid({
       emoji: '📄', title: 'הקובץ נוצר וחובר! ✅',
       text: 'מוסיפים סרטונים בהדבקת לינקים בקובץ (שורה = סרטון או ערוץ). אפשר להעתיק את הלינק לקובץ עכשיו.',
@@ -1839,21 +1975,6 @@ async function wizardCreateSheet() {
     msg.textContent = 'משהו השתבש — אפשר לנסות שוב או לדלג';
     msg.className = 'form-msg err';
   }
-}
-
-async function wizardConnectPasted() {
-  const url = $('sheetsetup-url').value.trim();
-  const msg = $('sheetsetup-msg');
-  const { isSheetsUrl } = await import('./sheetwrite.js');
-  if (!isSheetsUrl(url)) {
-    msg.textContent = 'זה לא נראה כמו לינק לגיליון Google Sheets — העתיקו את הלינק מהדפדפן';
-    msg.className = 'form-msg err';
-    return;
-  }
-  msg.textContent = 'מחברים…';
-  msg.className = 'form-msg';
-  await connectWizardSheet(url);
-  await finishSheetSetup();
 }
 
 /* ---------------- First-launch Google connect (v1.0.4) ---------------- */
@@ -2099,13 +2220,23 @@ async function deleteCurrentProfile() {
 function wire() {
   // v1.0.8: onboarding tour
   $('tour-next').addEventListener('click', () => {
-    if (tourIdx < TOUR_SLIDES.length - 1) { tourIdx += 1; renderTourSlide(); }
-    else finishTour();
+    if (slideState(tourIdx, tourDeck.length).isLast) finishTour();
+    else tourStep(1);
   });
-  $('tour-prev').addEventListener('click', () => {
-    if (tourIdx > 0) { tourIdx -= 1; renderTourSlide(); }
-  });
+  $('tour-prev').addEventListener('click', () => tourStep(-1));
   $('tour-skip').addEventListener('click', finishTour);
+  // v1.0.18: last slide of the onboarding deck → straight into the add-videos
+  // guide, without losing the "onboarding finished" mark on the way.
+  $('tour-more').addEventListener('click', async () => {
+    await prefSet('tour.done', '1');
+    const done = tourOnDone;
+    tourOnDone = null;
+    tourDeck = ADD_GUIDE_SLIDES;
+    tourIsOnboarding = false;
+    tourIdx = 0;
+    tourOnDone = done; // the boot flow still continues once the guide ends
+    renderTourSlide();
+  });
 
   // v1.0.8: sheet setup wizard (PIN required for create/paste — user-specified)
   $('sheetsetup-skip').addEventListener('click', finishSheetSetup);
@@ -2115,17 +2246,6 @@ function wire() {
       onSuccess: () => { if (!nav.back()) nav.reset('sheet-setup'); wizardCreateSheet(); }
     });
   });
-  $('sheetsetup-paste-btn').addEventListener('click', async () => {
-    startPin((await hasPin()) ? 'verify' : 'setup', {
-      title: 'קוד הורים לחיבור הקובץ',
-      onSuccess: () => {
-        if (!nav.back()) nav.reset('sheet-setup');
-        $('sheetsetup-paste').classList.remove('hidden');
-        setTimeout(() => { try { $('sheetsetup-url').focus(); } catch {} }, 60);
-      }
-    });
-  });
-  $('sheetsetup-connect').addEventListener('click', () => { wizardConnectPasted().catch(() => {}); });
 
   $('connect-google').addEventListener('click', connectGoogleFirstLaunch);
   $('connect-skip').addEventListener('click', async () => {
@@ -2230,30 +2350,52 @@ function wire() {
     e.target.value = '';
   });
 
-  $('remote-save').addEventListener('click', async () => {
-    const url = $('remote-url').value.trim();
-    const { libraryIdFor } = await import('./util.js');
-    let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
-    src = {
-      shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
-      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
-      ...src, sheetUrl: url || null, updatedAt: Date.now()
-    };
-    const oldLib = src.libraryId || null;
-    if (url) src.libraryId = libraryIdFor(url);
-    src.sheetHash = null; // force a full re-parse of the new sheet
-    await db.putSources(src);
-    libScope = src.libraryId || null;
-    // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
-    const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
-    await doSyncAndRefresh();
-    // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
-    if (moved.videoKeys.length || moved.channelIds.length) {
-      $('remote-status').textContent =
-        `הועברו לקובץ החדש: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בו אוטומטית.`;
+  $('remote-copy').addEventListener('click', async () => {
+    const src = await db.getSources(activeProfileId);
+    const url = src && src.sheetUrl;
+    if (!url) {
+      $('remote-status').textContent = 'אין עדיין רשימה — אפשר ליצור אחת עכשיו.';
+      $('remote-status').className = 'form-msg err';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      $('remote-status').textContent = 'הלינק הועתק ✅ אפשר להדביק בדפדפן ולערוך את הרשימה.';
       $('remote-status').className = 'form-msg ok';
+    } catch {
+      await alertKid({ emoji: '🔗', title: 'הלינק לרשימה', text: url, ok: 'סגירה' });
     }
   });
+
+  $('remote-create').addEventListener('click', async () => {
+    const yes = await confirmKid({
+      emoji: '✨', title: 'ליצור רשימה חדשה?',
+      text: 'ניצור קובץ חדש בגוגל דרייב שלכם. מה שכבר קיים כאן יעבור אליו אוטומטית.',
+      ok: 'יצירה', cancel: 'ביטול'
+    });
+    if (!yes) return;
+    const msg = $('remote-status');
+    msg.textContent = 'יוצרים את הרשימה…'; msg.className = 'form-msg';
+    loading.show({ title: 'יוצרים רשימה חדשה בגוגל', step: 'מתחברים לחשבון…' });
+    let r;
+    try {
+      const { createSourceSheet, sheetNameFor } = await import('./sheetwrite.js');
+      const p = await getActiveProfile();
+      r = await createSourceSheet(sheetNameFor((p && p.name) || 'הרשימה שלי'));
+    } catch {
+      r = { ok: false, error: 'threw' };
+    } finally {
+      await loading.hide();
+    }
+    if (!r || !r.ok) {
+      const { lastAuthError } = await import('./gauth.js');
+      msg.textContent = r && r.error === 'no-token' ? gauthErrorText(lastAuthError()) : 'יצירת הרשימה נכשלה — אפשר לנסות שוב';
+      msg.className = 'form-msg err';
+      return;
+    }
+    await connectSheetUrl(r.url);
+  });
+
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
   // v1.0.10: safety-valve resolution — the parent decides what a mass row
@@ -2282,7 +2424,6 @@ function wire() {
   $('remote-clear').addEventListener('click', async () => {
     const src = await db.getSources(activeProfileId);
     if (src) await db.putSources({ ...src, sheetUrl: null, sheetHash: null, updatedAt: Date.now() });
-    $('remote-url').value = '';
     $('remote-status').textContent = 'הגיליון נותק. הערוצים והסרטונים הקיימים נשארים.';
     $('remote-status').className = 'form-msg';
   });
@@ -2443,6 +2584,7 @@ function wire() {
     }
   });
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
+  $('guide-add').addEventListener('click', () => { startAddGuide(); });
   // v1.0.13: re-read what changed, any time (About tab)
   $('whatsnew-btn').addEventListener('click', async () => {
     const upd = await import('./update.js');

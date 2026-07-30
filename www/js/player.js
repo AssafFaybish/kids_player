@@ -58,14 +58,24 @@ export function stop() {
   current = null;
 }
 
+// v1.0.18 — supersession token. playYouTube can only register itself in `current`
+// AFTER `await loadYouTubeApi()`, so a second tap while that script is still loading
+// found current === null, made stop() a no-op, and mounted a SECOND player and HUD.
+// That breaks the "never run setupHud twice without teardown()" invariant: the first
+// HUD's window listeners leak for the session, and the orphaned player keeps its
+// poll alive until it hits the near-end check and fires a stale onExit — yanking the
+// child out of the video they are actually watching, with no way for stop() to kill it.
+let playSeq = 0;
+
 export async function playItem(item, host, opts = {}) {
   // Fast path: YouTube → YouTube switches reuse the live player (no black flash).
   if (item.type === 'youtube' && current && current.kind === 'youtube' && current.reuse) {
     try { current.reuse(item, opts); return; } catch { /* fall through to full restart */ }
   }
+  const seq = ++playSeq;
   stop();
   host.innerHTML = '';
-  if (item.type === 'youtube') return playYouTube(item, host, opts);
+  if (item.type === 'youtube') return playYouTube(item, host, opts, seq);
   return playFile(item, host, opts);
 }
 
@@ -197,8 +207,11 @@ function setupHud(ctl) {
 }
 
 /* ---------------- YouTube ---------------- */
-async function playYouTube(item, host, opts = {}) {
+async function playYouTube(item, host, opts = {}, seq = playSeq) {
   await loadYouTubeApi();
+  // Superseded while the API script loaded: a newer playItem already owns the host.
+  // Bail BEFORE mounting anything — there is no `current` entry for stop() to reach.
+  if (seq !== playSeq) return;
   const mount = document.createElement('div');
   mount.id = 'yt-player-' + Date.now();
   host.appendChild(mount);
