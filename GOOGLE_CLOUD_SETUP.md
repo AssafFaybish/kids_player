@@ -50,18 +50,17 @@
 (`spreadsheets`) ללא אימות. עבור scope רגיש (בניגוד ל"מוגבל") האימות **קל יחסית**
 ולרוב אינו דורש ביקורת אבטחה בתשלום. השלבים:
 
-1. **דף בית ומדיניות פרטיות פומביים** — כבר מוכנים בריפו תחת `docs/site/`
+1. **דף בית ומדיניות פרטיות פומביים** — כבר מוכנים בריפו תחת `docs/`
    (`index.html` + `privacy.html`). פרסמו אותם ב-GitHub Pages:
    - ב-repo של devfassaf: **Settings ← Pages ← Source: Deploy from a branch ←
-     branch `main`, folder `/docs`** (או העתיקו את `docs/site/` לריפו נפרד
-     `<user>.github.io`). הכתובת תהיה למשל
-     `https://devfassaf.github.io/kids_player/site/`.
-   - ⚠️ ה-Pages צריך לשרת את `docs/site/index.html` בשורש הכתובת — אם GitHub
-     מגיש מ-`/docs`, ה-URL יכלול `/site/`. פשוט השתמשו בכתובת המלאה בשדות למטה.
+     branch `main`, folder `/docs` ← Save**. אחרי דקה-שתיים הכתובות יהיו:
+     - דף בית: `https://devfassaf.github.io/kids_player/`
+     - מדיניות פרטיות: `https://devfassaf.github.io/kids_player/privacy.html`
+   - הקבצים יושבים בשורש `docs/` בכוונה — כך אין `/site/` בכתובת.
 2. **OAuth consent screen ← Edit App** ומלאו:
-   - **Application home page:** כתובת ה-`index.html` שפרסמתם.
-   - **Application privacy policy link:** כתובת ה-`privacy.html`.
-   - **Authorized domains:** `github.io` (או הדומיין שבחרתם).
+   - **Application home page:** `https://devfassaf.github.io/kids_player/`
+   - **Application privacy policy link:** `https://devfassaf.github.io/kids_player/privacy.html`
+   - **Authorized domains:** `github.io`
    - **App logo:** אפשר להעלות את `www/assets/icon.svg` כ-PNG.
 3. **Publishing status ← Prepare for verification / Submit for verification**.
    נוסח מוכן ל"Scope justification" (הדביקו):
