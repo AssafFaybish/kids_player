@@ -243,6 +243,33 @@ pins that the consumers follow the config and that every address is well-formed.
   `tour.done`. Guide illustrations are hand-authored SVGs in www/assets/guide/, all
   `viewBox="0 0 1280 800"` to match the screenshots (the slide CSS has no max-height,
   so a different ratio pushes the nav off-screen).
+- v1.0.19 — **`drive.file` IS THE ONLY OAUTH SCOPE.** `spreadsheets` is classified
+  SENSITIVE and was the sole cause of the "Google hasn't verified this app" screen.
+  Verification was not an option: it needs a DNS-level Search Console Domain
+  Property and the site is on `github.io`, whose DNS we don't control. Consequences,
+  all load-bearing:
+  - The app writes ONLY to sheets it created itself — `drive.file` is per-file and a
+    pasted third-party sheet returns `403 appNotAuthorizedToFile`. **Pasting a sheet
+    link is therefore GONE** from both the wizard and the sources tab. Never re-add
+    it, and never re-add the `spreadsheets` scope to make it work: that brings the
+    warning screen back for every family.
+  - The only two writable sources: create a new list, or join a list this app
+    already created for another profile ON THIS DEVICE/ACCOUNT. A different Google
+    account cannot write to it (read-only), by design.
+  - READS ARE AUTHENTICATED (`sheetwrite.readSourceSheet` → Sheets API `values.get`),
+    not a public CSV export. So sheets are **no longer shared "anyone with the link"**
+    — previously every family's playlist was world-readable to anyone with the URL.
+    `readSourceSheet` THROWS on any non-200 and that is load-bearing: the throw keeps
+    `sheetParsed` false so the presence-mirror can't read "unreadable" as "emptied".
+    Never soften it to a silent `[]`.
+  - `parseSourceRows(rows)` is the parser; `parseSourceSheet(text)` is the CSV front
+    door kept for snapshot import. Sheets-API rows are RAGGED (trailing empty cells
+    omitted) — both must tolerate that without throwing.
+  - App-created sheets live in the Drive folder `רשימת השמעה לאפליקציה הסרטונים שלי`
+    (`sheetwrite.SHEETS_FOLDER_NAME` / `ensureSheetsFolder`). The Drive DB
+    (`kids-player-db.json`) deliberately stays OUT of it: the folder is what a parent
+    would share with a partner, and sharing it would hand over the whole database.
+    Share per FILE, never the folder.
 - v1.0.18 data-loss fixes — these are INVARIANTS now, not just fixes:
   - A sheet body that `looksLikeHtml` (csv.js) is a FETCH FAILURE, never an empty
     sheet: an unshared sheet 302s to a permission page that returns HTTP 200 + HTML,

@@ -109,7 +109,7 @@ test('the guide covers all three ways to add content', () => {
   const all = ADD_GUIDE_SLIDES.map((s) => s.title + ' ' + s.text).join(' ');
   assert.ok(/שיתוף מיוטיוב/.test(all), 'sharing from the YouTube app');
   assert.ok(/הדבקת לינק בתוך האפליקציה/.test(all), 'pasting inside the app');
-  assert.ok(/גיליון/.test(all), 'the Google Sheet');
+  assert.ok(/דרייב|הרשימה בגוגל|קובץ הרשימה/.test(all), 'the Google Sheet list');
   // and it must say what happens after — approval is the step parents miss
   assert.ok(/אישור|מאשרים/.test(all), 'the approval step');
 });

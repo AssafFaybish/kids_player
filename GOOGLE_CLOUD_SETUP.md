@@ -31,142 +31,61 @@
 3. מלא רק את שדות החובה:
    - App name: `הסרטונים שלי`
    - User support email + Developer contact: המייל שלך.
-4. **Scopes** ← Add or Remove Scopes ← סמן **בדיוק** את השניים:
+4. **Scopes** (היום: **Data Access**, `console.cloud.google.com/auth/scopes`) ←
+   Add or Remove Scopes ← סמן **בדיוק אחד**:
    - `https://www.googleapis.com/auth/drive.file`
      ("See, edit, create, and delete only the specific Google Drive files you use with this app")
-   - `https://www.googleapis.com/auth/spreadsheets` — נדרש מ-v1.0.6 כדי שסרטונים
-     שנוספים באפליקציה יירשמו חזרה בגיליון (מקור אמת יחיד).
-   ⚠️ אל תוסיף scopes נוספים מעבר לשניים האלה.
-5. סיים את האשף ← בעמוד הסיכום לחץ **Publish App** ← Confirm.
-   ⚠️ scope של Sheets מסווג אצל גוגל כ"רגיש": <b>עד שהאפליקציה תעבור verification</b>
-   מסך ההסכמה יציג פעם אחת אזהרת "Google hasn't verified this app" — לוחצים
-   **Advanced** ← **Go to הסרטונים שלי (unsafe)**. אחרי אימות (שלב 3א) האזהרה נעלמת
-   לכל המשתמשים. בנוסף, חשבון ה-Google שמתחברים איתו חייב **הרשאת עריכה** על הגיליון
-   — אחרת האפליקציה תציג "אין הרשאת עריכה לגיליון" והרישום לגיליון יידלג.
 
-## שלב 3א — אימות האפליקציה (verification) — כדי שהמשפחות לא יראו אזהרה
+   ⚠️ **אל תוסיף `spreadsheets`** ואל תוסיף שום scope אחר. מ-v1.0.19 האפליקציה
+   כותבת רק לקבצים שהיא עצמה יצרה, ו-`drive.file` מכסה אותם — כולל קריאה וכתיבה
+   דרך Sheets API. הוספת `spreadsheets` תחזיר את מסך האזהרה לכל המשתמשים ללא
+   שום תועלת. ההסבר המלא בשלב 3א.
+5. סיים את האשף ← **Publish App** ← Confirm (היום: דף **Audience**).
+   עם `drive.file` בלבד — **אין אזהרת "unverified"**, כי הוא scope לא-רגיש.
 
-### למה האזהרה בכלל מופיעה
+## שלב 3א — אין צורך באימות (v1.0.19)
 
-גוגל מסווגת כל scope לאחת משלוש רמות, וזה **כל** ההסבר למסך המפחיד:
+**האפליקציה כבר לא מבקשת scope רגיש, ולכן מסך האזהרה לא אמור להופיע כלל.**
 
-| scope שאנחנו מבקשים | סיווג | מפעיל אזהרה? |
-|---|---|---|
-| `drive.file` | **לא-רגיש** ("Recommended") | ❌ לא |
-| `spreadsheets` | **רגיש** (Sensitive) | ✅ כן |
+מ-v1.0.19 ה-scope היחיד הוא `https://www.googleapis.com/auth/drive.file`, שגוגל
+מסווגת כ**לא-רגיש** ("Recommended"). scope לא-רגיש אינו מחייב אימות, ומסך
+"Google hasn't verified this app" מופיע רק ל-scopes רגישים או מוגבלים.
 
-כלומר `spreadsheets` לבדו אחראי למסך. מסך האזהרה מופיע כשאפליקציה מבקשת scope
-**רגיש או מוגבל** ולא עברה אימות — ורק אז.
+מה שצריך לעשות בקונסולה, פעם אחת:
 
-נקודה חשובה שכדאי להכיר לפני שמשקיעים: האפליקציה **קוראת** את הגיליון בלי שום
-הזדהות (ייצוא CSV ציבורי — ראו `sync2.js`). ה-scope הרגיש נחוץ אך ורק כדי
-**לכתוב** חזרה לגיליון. תיאורטית אפשר לוותר עליו ולהישאר עם `drive.file` בלבד,
-והאזהרה הייתה נעלמת מיד וללא כל הגשה — אבל אז הכתיבה תעבוד רק לגיליון
-שהאפליקציה **יצרה בעצמה**, וגיליון שההורה יצר והדביק כלינק יהפוך לקריאה-בלבד
-(גוגל מחזירה `403 appNotAuthorizedToFile`). בחרנו במסלול האימות כדי לשמור על
-סנכרון דו-כיווני מלא בשני המקרים.
+1. **Data Access** (`console.cloud.google.com/auth/scopes`) — לוודא ש**רק**
+   `drive.file` מסומן. אם `spreadsheets` עדיין שם — להסיר אותו.
+2. **Audience** (`console.cloud.google.com/auth/audience`) — **Publish app**
+   (מעבר מ-Testing ל-In production). זה חשוב: במצב Testing ההרשאה פגה כל 7 ימים
+   וכל הורה נאלץ להתחבר מחדש שבועית, וגם יש תקרה של 100 משתמשים.
+3. **Branding** (`console.cloud.google.com/auth/branding`) — אופציונלי. אם רוצים
+   ששם האפליקציה והלוגו יוצגו במסך ההסכמה צריך "brand verification" (אוטומטי,
+   דקות עד 2-3 ימי עסקים). בלעדיו מסך ההסכמה פשוט לא יראה לוגו — **אין אזהרה**.
 
-### מה נדרש בפועל (נכון ל-2026)
+> ⚠️ הנתיב הישן `APIs & Services ← OAuth consent screen` כבר לא קיים. גוגל העבירה
+> הכול לקטע עליון בשם **Google Auth Platform** באפריל 2025.
 
-לטובת scope **רגיש** — בניגוד ל"מוגבל" — **אין צורך בביקורת אבטחה בתשלום**
-(CASA). היא נדרשת רק ל-scopes מוגבלים, וגם חידוש שנתי לא נדרש כאן.
+### למה ויתרנו על scope הגיליונות
 
-1. ✅ **דף בית ומדיניות פרטיות פומביים** — כבר עלו ופעילים:
-   - דף בית: `https://devfassaf.github.io/kids_player/`
-   - מדיניות פרטיות: `https://devfassaf.github.io/kids_player/privacy.html`
+`spreadsheets` שימש רק לכתיבה חזרה לגיליון. מסלול האימות נחסם: גוגל דורשת אימות
+בעלות על הדומיין מסוג **Domain Property ברמת DNS** ב-Search Console, ואנחנו על
+`github.io` — הדומיין של GitHub, שאין לנו גישה ל-DNS שלו.
 
-   (מקורם ב-`docs/` בריפו, מוגשים ב-GitHub Pages. הקבצים בשורש `docs/` בכוונה —
-   כך אין `/site/` בכתובת.) גוגל דורשת שמדיניות הפרטיות תתארח **באותו דומיין**
-   של דף הבית ותקושר ממסך ההסכמה — שני התנאים מתקיימים.
+לכן האפליקציה כותבת עכשיו **רק לקבצים שהיא עצמה יצרה**, וזה מה ש-`drive.file`
+מתיר. השלכות שחשוב להכיר:
 
-2. ⛔ **אימות בעלות על הדומיין — כאן המסלול נחסם עם `github.io`.**
+- **אי אפשר להדביק לינק לגיליון קיים.** קובץ שההורה יצר בעצמו מחזיר
+  `403 appNotAuthorizedToFile`. האפשרות הוסרה מהאשף וממסך ההורים.
+- **קריאה מאומתת.** הגיליונות כבר לא משותפים "לכל מי שיש את הקישור" — בעבר רשימת
+  הסרטונים של כל משפחה הייתה גלויה לכל מי שהחזיק בכתובת.
+- **חשבון גוגל אחר לא יוכל לכתוב** לרשימה (רק לקרוא). שיתוף בין פרופילים עובד
+  כשמדובר באותו חשבון.
+- כל הקבצים שהאפליקציה יוצרת נמצאים בתיקיית
+  **"רשימת השמעה לאפליקציה הסרטונים שלי"** בגוגל דרייב. קובץ הגיבוי
+  `kids-player-db.json` נשאר **מחוץ** לתיקייה בכוונה: שיתוף התיקייה היה חושף אותו.
 
-   גוגל דורשת במפורש **Domain Property (ברמת DNS)** ב-Search Console, ולא
-   "URL prefix": *"You must verify the Domain Property (DNS-level), rather than a
-   'URL prefix' or 'Site,' property."* Domain Property מחייב רשומת **TXT ב-DNS**
-   של הדומיין — ו-`github.io` הוא דומיין של GitHub. **אין לנו גישה ל-DNS שלו,
-   ולכן אי אפשר לאמת אותו.**
-
-   מצטבר לזה: `github.io` הוא דומיין משותף (Public Suffix List), וגוגל ממליצה
-   במפורש נגד אירוח דף הבית "on a third-party platform where you can't verify
-   that you own your subdomain". יש דיווחים מ-2025-2026 של מפתחים שאימתו
-   `*.github.io` ב-Search Console ועדיין נדחו עם *"The website of your home page
-   URL is not registered to you"*.
-
-   > הערה: גם ההוראה הקודמת כאן ("Authorized domains: `github.io`") הייתה שגויה —
-   > היחידה הנכונה היא `devfassaf.github.io`. זה ממילא לא עוזר כל עוד אין DNS.
-
-   **הפתרון: דומיין משלנו.** קונים דומיין זול (~40-60 ₪ לשנה), מפנים אותו
-   ל-GitHub Pages (קובץ `CNAME` בריפו + רשומות DNS אצל הרשם). האחסון נשאר חינם,
-   אבל עכשיו יש DNS אמיתי לרשומת ה-TXT, והאתר נחשב "first-party". אחרי המעבר
-   צריך לעדכן את `site.home` ו-`site.privacy` ב-[www/js/links.js](www/js/links.js).
-
-   ⚠️ החשבון שמאמת ב-Search Console חייב להיות **Owner** על ה-property **וגם**
-   Owner על פרויקט ה-Cloud. "Full User" לא מספיק.
-
-3. **מסך ההסכמה.** ⚠️ מאפריל 2025 גוגל העבירה את כל הדף הזה למקום חדש בשם
-   **Google Auth Platform** — הנתיב הישן `APIs & Services ← OAuth consent screen`
-   כבר לא קיים. כתובות ישירות (הכי בטוח לגשת דרכן):
-
-   | דף | כתובת | למה הוא משמש |
-   |---|---|---|
-   | Branding | `console.cloud.google.com/auth/branding` | שם, לוגו, דף בית, פרטיות, Authorized domains |
-   | Audience | `console.cloud.google.com/auth/audience` | Testing / In production, test users |
-   | Data Access | `console.cloud.google.com/auth/scopes` | הוספה והסרה של scopes |
-   | Verification Center | `console.cloud.google.com/auth/verification` | ההגשה עצמה ומעקב אחריה |
-   | Clients | `console.cloud.google.com/auth/clients` | ה-OAuth Client IDs |
-
-   בדף **Branding** ממלאים: **Application home page** ו-**privacy policy link**
-   (הכתובות מסעיף 1), ו-**App logo** — ריבוע 120×120 פיקסלים, עד 1MB
-   (`www/assets/icon.svg` מומר ל-PNG). חשוב: **מוסיפים Authorized domains לפני**
-   שממלאים את כתובות דף הבית והפרטיות, אחרת הן נדחות.
-
-   ⚠️ **האימות הוא שני מסלולים נפרדים, וזה מה שרוב המדריכים מפספסים:**
-   - **Brand verification** — כפתור **"Verify Branding"** בדף Branding. אוטומטי
-     ברובו (דקות; אם עובר לבדיקה ידנית — 2-3 ימי עסקים).
-   - **Data access verification** (ה-scope הרגיש) — ב-**Verification Center**.
-     **חייבים לסיים את ה-brand verification קודם** — אחרת אי אפשר בכלל להגיש.
-
-4. **סרטון הדגמה** (חובה ל-scope רגיש). מעלים אותו ל-**YouTube כ-Unlisted**
-   ומוסרים **לינק** — לא מעלים קובץ. גוגל בודקת בו דברים ספציפיים, אז ודאו
-   שכולם נראים בבירור:
-   - הסרטון **באנגלית** (כולל החלפת שפת מסך ההסכמה לאנגלית — הבורר בפינה
-     השמאלית התחתונה של המסך).
-   - שם האפליקציה במסך ההסכמה **זהה** לשם ב-Cloud Console.
-   - **ה-OAuth client ID גלוי בשורת הכתובת** בזמן ההסכמה.
-   - כל scope רגיש **מודגם בשימוש אמיתי** — לא מספיק מסך ההתחברות: צריך להראות
-     סרטון שמתווסף באפליקציה ואז **נרשם בפועל בגיליון**.
-
-   תסריט מוצע (2-3 דקות): פתיחת האפליקציה → מסך ההורים → חיבור לגוגל → מסך
-   ההסכמה (עוצרים עליו כמה שניות עם ה-client ID גלוי) → הדבקת לינק לסרטון →
-   מעבר לגיליון בדפדפן ומראים את השורה החדשה שנוספה.
-
-5. **Submit for verification**. נוסח מוכן ל-Scope justification (הדביקו):
-   > The app is a private, parent-managed video player for young children. It
-   > uses `drive.file` to store a single backup file it creates (profiles and the
-   > curated library), and `spreadsheets` to read and update the parent's own
-   > source sheet that defines which videos/channels the child may watch. Reading
-   > the sheet needs no OAuth at all (public CSV export); the `spreadsheets` scope
-   > is required only so that videos added inside the app are written back to the
-   > parent's own sheet, keeping a single source of truth. A narrower scope does
-   > not work here because the parent may paste a link to a sheet they created
-   > themselves, which `drive.file` cannot authorize. No data is shared with third
-   > parties; everything stays in the user's own Google account and device.
-
-6. **זמן טיפול: עד 10 ימים.** עד האישור הכול עובד — רק עם האזהרה החד-פעמית.
-
-### ⚠️ המלכודת של מצב Testing
-
-`Publishing status: Testing` + הוספת חשבונות ההורים תחת **Test users** אכן מסיר
-את האזהרה עבורם **מיד**, וזה פתרון גישור לגיטימי עד שהאימות מאושר. אבל שימו לב
-למחיר האמיתי:
-
-- מוגבל ל-**100 משתמשים**.
-- **ההרשאה פגה אחרי 7 ימים** — לא רק ה-refresh token, אלא ההסכמה עצמה. כלומר כל
-  הורה יצטרך להתחבר מחדש **מדי שבוע**. באנדרואיד אנחנו עובדים מול
-  AuthorizationClient שאין בו refresh token בכלל, אז אין שום דרך לעקוף את זה.
-
-לכן Testing מתאים רק כפתרון זמני; להפצה למשפחות — אימות.
+> אם אי פעם יירכש דומיין משלנו, אפשר יהיה לשקול מחדש את `spreadsheets` + אימות —
+> ואז גם הדבקת לינק לגיליון חיצוני תחזור להיות אפשרית.
 
 ## שלב 4 — שני OAuth Client IDs (אנדרואיד)
 

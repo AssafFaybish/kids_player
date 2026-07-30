@@ -7,10 +7,12 @@
 // backfill (budgeted, resumable, API) → planMutations (pure) → persist →
 // titles (batched; persist twice) → gifts (per profile) → [pushDrive hook].
 
-import { httpGetText, prefGet } from './platform.js';
-import { parseCsv, looksLikeHtml } from './csv.js';
+import { prefGet } from './platform.js';
+// v1.0.19: reads moved to the authenticated Sheets API, so the CSV-export fetch
+// (httpGetText + resolveListUrl) and its HTML-error-page guard are gone from this
+// path. parseCsv still backs parseSourceSheet, which snapshot import still uses.
+import { parseCsv } from './csv.js';
 import { classifySourceRow } from './classify.js';
-import { resolveListUrl } from './sync.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import { planMutations, planGifts, planSheetMirror } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
@@ -33,13 +35,27 @@ const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
  * comments/blank lines/channels never reshuffle video ordinals (tested).
  */
 export function parseSourceSheet(text) {
+  return parseSourceRows(parseCsv(text));
+}
+
+/**
+ * v1.0.19 — the same parser over ALREADY-TOKENIZED rows (array of arrays), which is
+ * what the authenticated Sheets API returns. Reads used to go through a public CSV
+ * export, which forced every family's playlist to be shared "anyone with the link".
+ * `parseSourceSheet` stays as the CSV front door so the tokenizer keeps its tests.
+ */
+export function parseSourceRows(rows) {
   const videoRows = [];
   const channelRows = [];
   const removedKeys = []; // v1.0.12: '# הוסר: <link>' rows — deny these for everyone
   const invalid = [];
   let videoOrdinal = 0;
-  for (const fields of parseCsv(text)) {
-    const parts = fields.map((s) => String(s ?? '').trim().replace(/^"+|"+$/g, ''));
+  for (const fields of (Array.isArray(rows) ? rows : [])) {
+    // The Sheets API omits trailing empty cells, so rows arrive ragged — and a
+    // malformed payload can hand us a non-array row. Neither may throw here: this
+    // runs inside the try that decides `sheetParsed`, and a throw would be read as
+    // "the sheet is unreadable" on input that is merely untidy.
+    const parts = (Array.isArray(fields) ? fields : []).map((s) => String(s ?? '').trim().replace(/^"+|"+$/g, ''));
     const row = classifySourceRow(parts[0] || '');
     if (row.kind === 'removed') { removedKeys.push(row.key); continue; }
     if (row.kind === 'blank' || row.kind === 'comment') continue;
@@ -97,14 +113,16 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   if (src.sheetUrl) {
     report('sheet', 5, 'מביאים את הרשימה…');
     try {
-      const text = await httpGetText(resolveListUrl(src.sheetUrl));
-      // A sheet that lost "anyone with the link" answers the CSV-export URL with a
-      // 302 to a permission page — HTTP 200, full of HTML. Parsing that as an empty
-      // sheet let the mirror delete the whole library (v1.0.18). Treat it as offline.
-      if (looksLikeHtml(text)) throw new Error('sheet-not-readable');
-      const hash = fnv1a(text);
+      // v1.0.19: AUTHENTICATED read. The sheet is the app's own file (drive.file)
+      // and is no longer shared publicly, so it is fetched with the parent's token.
+      // readSourceSheet THROWS on any non-200 — which is what we want: a failure
+      // must leave sheetParsed false so the presence-mirror never reads "unreadable"
+      // as "the parent emptied the sheet" and deletes the library.
+      const { readSourceSheet } = await import('./sheetwrite.js');
+      const rows = await readSourceSheet(src.sheetUrl);
+      const hash = fnv1a(JSON.stringify(rows));
       sheetChanged = force || hash !== src.sheetHash;
-      const parsed = parseSourceSheet(text);
+      const parsed = parseSourceRows(rows);
       videoRows = parsed.videoRows;
       channelRows = parsed.channelRows;
       removedKeys = parsed.removedKeys || [];

@@ -1201,9 +1201,81 @@ function setParentTab(name) {
   }
 }
 
+/**
+ * v1.0.19 — attaching a sheet is no longer "paste a URL". The app can only write to
+ * files it created itself (drive.file), so the two legal sources are a list created
+ * now, or one this app already created for another profile on this device. This is
+ * the single place that rewrites the library scope.
+ */
+async function connectSheetUrl(url) {
+  const { libraryIdFor } = await import('./util.js');
+  let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
+  src = {
+    shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
+    maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
+    ...src, sheetUrl: url || null, updatedAt: Date.now()
+  };
+  const oldLib = src.libraryId || null;
+  if (url) src.libraryId = libraryIdFor(url);
+  src.sheetHash = null; // force a full re-parse of the new sheet
+  await db.putSources(src);
+  libScope = src.libraryId || null;
+  // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
+  const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
+  await doSyncAndRefresh();
+  // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
+  if (moved.videoKeys.length || moved.channelIds.length) {
+    $('remote-status').textContent =
+      `הועברו לרשימה החדשה: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בה אוטומטית.`;
+    $('remote-status').className = 'form-msg ok';
+  }
+  await refreshSourcesPanel();
+}
+
+/**
+ * The sources panel's sheet section. Replaces the URL input: shows WHICH list is
+ * attached, and offers to join a list this app already created for another profile.
+ */
+async function refreshSourcesPanel() {
+  const src = await db.getSources(activeProfileId);
+  const cur = $('remote-current');
+  if (cur) {
+    cur.textContent = src && src.sheetUrl
+      ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
+      : 'אין רשימה מחוברת. אפשר ליצור אחת — או להצטרף לרשימה של פרופיל אחר.';
+    cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
+  }
+  const join = $('remote-join');
+  if (!join) return;
+  join.innerHTML = '';
+  const seen = new Set([(src && src.sheetUrl) || '']);
+  try {
+    for (const other of await getProfiles()) {
+      if (other.id === activeProfileId) continue;
+      const os = await db.getSources(other.id);
+      if (!os || !os.sheetUrl || seen.has(os.sheetUrl)) continue;
+      seen.add(os.sheetUrl);
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.type = 'button';
+      b.textContent = `👨‍👩‍👧 להצטרף לרשימה של ${other.name}`;
+      b.addEventListener('click', async () => {
+        const yes = await confirmKid({
+          emoji: '👨‍👩‍👧', title: `להצטרף לרשימה של ${other.name}?`,
+          text: 'שני הפרופילים ישתמשו באותה רשימה, וכל שינוי יופיע אצל שניהם.',
+          ok: 'הצטרפות', cancel: 'ביטול'
+        });
+        if (yes) await connectSheetUrl(os.sheetUrl);
+      });
+      join.appendChild(b);
+    }
+  } catch {}
+  join.classList.toggle('hidden', join.children.length === 0);
+}
+
 async function refreshParent() {
   const src = await db.getSources(activeProfileId);
-  $('remote-url').value = (src && src.sheetUrl) || '';
+  await refreshSourcesPanel();
   $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
   $('share-approval-toggle').checked = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
@@ -1790,8 +1862,6 @@ async function openSheetSetup(p) {
   $('sheetsetup-name').textContent = p.name;
   $('sheetsetup-msg').textContent = '';
   $('sheetsetup-msg').className = 'form-msg';
-  $('sheetsetup-paste').classList.add('hidden');
-  $('sheetsetup-url').value = '';
 
   // one "join <name>'s file" button per OTHER profile that already has one,
   // deduped by URL so two siblings on the same file show a single choice
@@ -1882,18 +1952,11 @@ async function wizardCreateSheet() {
       const { lastAuthError } = await import('./gauth.js');
       msg.textContent = r.error === 'no-token'
         ? gauthErrorText(lastAuthError())
-        : 'יצירת הקובץ נכשלה — אפשר לנסות שוב, להדביק לינק לקובץ קיים, או לדלג';
+        : 'יצירת הרשימה נכשלה — אפשר לנסות שוב או לדלג';
       msg.className = 'form-msg err';
       return;
     }
     await connectWizardSheet(r.url);
-    if (r.permissionWarning) {
-      await alertKid({
-        emoji: '⚠️', title: 'הקובץ נוצר, אבל…',
-        text: 'לא הצלחנו להגדיר שיתוף לקריאה. פתחו את הקובץ בדרייב ← שיתוף ← "כל מי שיש לו את הקישור — צפייה", אחרת האפליקציה לא תוכל לקרוא אותו.',
-        ok: 'הבנתי'
-      });
-    }
     const copy = await confirmKid({
       emoji: '📄', title: 'הקובץ נוצר וחובר! ✅',
       text: 'מוסיפים סרטונים בהדבקת לינקים בקובץ (שורה = סרטון או ערוץ). אפשר להעתיק את הלינק לקובץ עכשיו.',
@@ -1912,21 +1975,6 @@ async function wizardCreateSheet() {
     msg.textContent = 'משהו השתבש — אפשר לנסות שוב או לדלג';
     msg.className = 'form-msg err';
   }
-}
-
-async function wizardConnectPasted() {
-  const url = $('sheetsetup-url').value.trim();
-  const msg = $('sheetsetup-msg');
-  const { isSheetsUrl } = await import('./sheetwrite.js');
-  if (!isSheetsUrl(url)) {
-    msg.textContent = 'זה לא נראה כמו לינק לגיליון Google Sheets — העתיקו את הלינק מהדפדפן';
-    msg.className = 'form-msg err';
-    return;
-  }
-  msg.textContent = 'מחברים…';
-  msg.className = 'form-msg';
-  await connectWizardSheet(url);
-  await finishSheetSetup();
 }
 
 /* ---------------- First-launch Google connect (v1.0.4) ---------------- */
@@ -2198,17 +2246,6 @@ function wire() {
       onSuccess: () => { if (!nav.back()) nav.reset('sheet-setup'); wizardCreateSheet(); }
     });
   });
-  $('sheetsetup-paste-btn').addEventListener('click', async () => {
-    startPin((await hasPin()) ? 'verify' : 'setup', {
-      title: 'קוד הורים לחיבור הקובץ',
-      onSuccess: () => {
-        if (!nav.back()) nav.reset('sheet-setup');
-        $('sheetsetup-paste').classList.remove('hidden');
-        setTimeout(() => { try { $('sheetsetup-url').focus(); } catch {} }, 60);
-      }
-    });
-  });
-  $('sheetsetup-connect').addEventListener('click', () => { wizardConnectPasted().catch(() => {}); });
 
   $('connect-google').addEventListener('click', connectGoogleFirstLaunch);
   $('connect-skip').addEventListener('click', async () => {
@@ -2313,30 +2350,52 @@ function wire() {
     e.target.value = '';
   });
 
-  $('remote-save').addEventListener('click', async () => {
-    const url = $('remote-url').value.trim();
-    const { libraryIdFor } = await import('./util.js');
-    let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
-    src = {
-      shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
-      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
-      ...src, sheetUrl: url || null, updatedAt: Date.now()
-    };
-    const oldLib = src.libraryId || null;
-    if (url) src.libraryId = libraryIdFor(url);
-    src.sheetHash = null; // force a full re-parse of the new sheet
-    await db.putSources(src);
-    libScope = src.libraryId || null;
-    // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
-    const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
-    await doSyncAndRefresh();
-    // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
-    if (moved.videoKeys.length || moved.channelIds.length) {
-      $('remote-status').textContent =
-        `הועברו לקובץ החדש: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בו אוטומטית.`;
+  $('remote-copy').addEventListener('click', async () => {
+    const src = await db.getSources(activeProfileId);
+    const url = src && src.sheetUrl;
+    if (!url) {
+      $('remote-status').textContent = 'אין עדיין רשימה — אפשר ליצור אחת עכשיו.';
+      $('remote-status').className = 'form-msg err';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      $('remote-status').textContent = 'הלינק הועתק ✅ אפשר להדביק בדפדפן ולערוך את הרשימה.';
       $('remote-status').className = 'form-msg ok';
+    } catch {
+      await alertKid({ emoji: '🔗', title: 'הלינק לרשימה', text: url, ok: 'סגירה' });
     }
   });
+
+  $('remote-create').addEventListener('click', async () => {
+    const yes = await confirmKid({
+      emoji: '✨', title: 'ליצור רשימה חדשה?',
+      text: 'ניצור קובץ חדש בגוגל דרייב שלכם. מה שכבר קיים כאן יעבור אליו אוטומטית.',
+      ok: 'יצירה', cancel: 'ביטול'
+    });
+    if (!yes) return;
+    const msg = $('remote-status');
+    msg.textContent = 'יוצרים את הרשימה…'; msg.className = 'form-msg';
+    loading.show({ title: 'יוצרים רשימה חדשה בגוגל', step: 'מתחברים לחשבון…' });
+    let r;
+    try {
+      const { createSourceSheet, sheetNameFor } = await import('./sheetwrite.js');
+      const p = await getActiveProfile();
+      r = await createSourceSheet(sheetNameFor((p && p.name) || 'הרשימה שלי'));
+    } catch {
+      r = { ok: false, error: 'threw' };
+    } finally {
+      await loading.hide();
+    }
+    if (!r || !r.ok) {
+      const { lastAuthError } = await import('./gauth.js');
+      msg.textContent = r && r.error === 'no-token' ? gauthErrorText(lastAuthError()) : 'יצירת הרשימה נכשלה — אפשר לנסות שוב';
+      msg.className = 'form-msg err';
+      return;
+    }
+    await connectSheetUrl(r.url);
+  });
+
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
   // v1.0.10: safety-valve resolution — the parent decides what a mass row
@@ -2365,7 +2424,6 @@ function wire() {
   $('remote-clear').addEventListener('click', async () => {
     const src = await db.getSources(activeProfileId);
     if (src) await db.putSources({ ...src, sheetUrl: null, sheetHash: null, updatedAt: Date.now() });
-    $('remote-url').value = '';
     $('remote-status').textContent = 'הגיליון נותק. הערוצים והסרטונים הקיימים נשארים.';
     $('remote-status').className = 'form-msg';
   });

@@ -3,7 +3,7 @@
 // token, NOT the spreadsheet id — extraction must refuse it, never mis-extract.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps } from '../www/js/sheetwrite.js';
+import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME } from '../www/js/sheetwrite.js';
 
 const ID = '1AbC_dEf-9xYz0123456789abcdefghijklmnopqrst';
 
@@ -187,4 +187,20 @@ test('reconcileOps collapses per entity, so the 200-op cap counts ENTITIES', () 
   assert.equal(out.length, 2, 'one op per entity');
   assert.ok(out.some((o) => o.key === 'yt:bbbbbbbbbb2'), 'the old deletion is not evicted');
   assert.equal(out.find((o) => o.key === 'yt:aaaaaaaaaa1').at, 299, 'latest intent wins');
+});
+
+/* ---- v1.0.19: drive.file only — the app writes solely to sheets it created ---- */
+
+test('the Drive folder name is the one users are told to look for', () => {
+  // Named in the onboarding guide, the sources panel and the docs. If this string
+  // changes, ensureSheetsFolder creates a SECOND folder and the parent's existing
+  // lists appear to vanish from where they were told to find them.
+  assert.equal(SHEETS_FOLDER_NAME, 'רשימת השמעה לאפליקציה הסרטונים שלי');
+});
+
+test('extractSpreadsheetId still refuses the published /d/e/ form', () => {
+  // Reads are authenticated now and go through this id. A published link carries an
+  // opaque token, NOT a spreadsheet id — extracting it would build a bogus API call.
+  assert.equal(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/e/2PACX-1vABC/pubhtml'), null);
+  assert.equal(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/1AbC_dEf-123/edit#gid=0'), '1AbC_dEf-123');
 });
