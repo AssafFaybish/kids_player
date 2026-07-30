@@ -7,8 +7,10 @@
 // prevention (keystore discipline), not something this code can fix at runtime.
 
 import { httpRequest, prefGet, prefSet, appPlugin, fsMkdirExternal, fsStatExternal, fsDeleteExternal, fsDownloadExternal } from './platform.js';
+import { LINKS } from './links.js';
 
-export const UPDATE_REPO = 'devfassaf/kids_player';
+// v1.0.15: configured in links.js (the single place for every external address)
+export const UPDATE_REPO = LINKS.updateRepo;
 // 1h (was 6h): a released update reaches devices within the hour. Field lesson:
 // a release published minutes after a device's check stayed invisible for hours.
 // Still tiny vs GitHub's unauthenticated 60 req/h/IP budget.

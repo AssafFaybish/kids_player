@@ -7,10 +7,23 @@ import {
   donateOptions, donateAvailable, shouldShowDonateNudge, NUDGE_AFTER_MS, DONATE_LINKS
 } from '../www/js/donate.js';
 
-test('ships with NO links configured → nothing is offered anywhere', () => {
-  assert.deepEqual(donateOptions(DONATE_LINKS), []);
-  assert.equal(donateAvailable(DONATE_LINKS), false);
-  assert.equal(shouldShowDonateNudge({ firstSeenAt: 1, now: 1 + NUDGE_AFTER_MS }), false);
+test('the SHIPPED config is valid: every configured method has an https link', async () => {
+  const { LINKS } = await import('../www/js/links.js');
+  assert.equal(DONATE_LINKS, LINKS.donate, 'donate.js reads the links from links.js');
+  // Whatever is configured must be usable — a typo here would silently hide a button
+  // (or, worse, be refused by platform.openExternal at the moment a parent taps it).
+  for (const [id, url] of Object.entries(DONATE_LINKS)) {
+    if (!url) continue; // empty = intentionally not offered
+    assert.match(url, /^https:\/\/\S+$/, `${id} must be a plain https URL`);
+  }
+  assert.deepEqual(donateOptions().map((o) => o.id), donateOptions(DONATE_LINKS).map((o) => o.id));
+});
+
+test('an EMPTY config offers nothing anywhere (supported state)', () => {
+  const none = { paybox: '', paypal: '' };
+  assert.deepEqual(donateOptions(none), []);
+  assert.equal(donateAvailable(none), false);
+  assert.equal(shouldShowDonateNudge({ firstSeenAt: 1, now: 1 + NUDGE_AFTER_MS, links: none }), false);
 });
 
 test('donateOptions: only http(s) links count, PayBox first, junk rejected', () => {
@@ -50,4 +63,22 @@ test('the nudge never fires on unknown/garbage//future install stamps', () => {
 test('no link configured → no nudge even after years of use', () => {
   const first = 1_600_000_000_000;
   assert.equal(shouldShowDonateNudge({ firstSeenAt: first, now: first + 40 * NUDGE_AFTER_MS, links: { paybox: '', paypal: '' } }), false);
+});
+
+/* ---------------- v1.0.15: links.js is the single config surface ---------------- */
+
+test('links.js: every address is well-formed and the consumers read it', async () => {
+  const { LINKS } = await import('../www/js/links.js');
+  const { UPDATE_REPO, releasesPageUrl } = await import('../www/js/update.js');
+
+  for (const url of [LINKS.site.home, LINKS.site.privacy]) {
+    assert.match(url, /^https:\/\/\S+$/, url);
+  }
+  assert.match(LINKS.contact.email, /^[^@\s]+@[^@\s]+\.[^@\s]+$/);
+  if (LINKS.contact.cc) assert.match(LINKS.contact.cc, /^[^@\s]+@[^@\s]+\.[^@\s]+$/);
+  assert.match(LINKS.updateRepo, /^[\w.-]+\/[\w.-]+$/, 'owner/repo');
+
+  // the updater must follow the config, not a second hardcoded copy
+  assert.equal(UPDATE_REPO, LINKS.updateRepo);
+  assert.ok(releasesPageUrl().includes(LINKS.updateRepo));
 });
