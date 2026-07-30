@@ -23,7 +23,7 @@ download/cache, durable storage).
 |---|---|
 | Web app (all features) | ✅ Done, verified in browser |
 | Profiles (multi-user) | ✅ Done |
-| Remote list sync (Google Sheet / Drive / CSV) | ✅ Done |
+| Remote list sync (app-created Google Sheet, authenticated) | ✅ Done |
 | YouTube + direct-file players | ✅ Done |
 | Native code applied + compiled into the APK | ✅ Done |
 | Android **APK build** | ✅ Built → `android/app/build/outputs/apk/debug/app-debug.apk` (~3.6 MB) |
@@ -129,6 +129,20 @@ Fullscreen requests `#player-wrap`. In the APK the custom `WebChromeClient` in `
 makes HTML5 fullscreen actually work (Capacitor's default is a no-op) and blocks pop-up windows.
 
 ## 8. Remote list sync (`sync.js`)
+
+> ⚠️ **SUPERSEDED as the main path (v1.0.19).** Everything in this section describes the
+> ORIGINAL model: the parent pastes a link to a sheet they own, and the app fetches it as a
+> public CSV export. That model is gone from the product.
+>
+> Today the app creates the sheet itself, reads it through the **authenticated Sheets API**
+> (`sheetwrite.readSourceSheet` → `sync2.parseSourceRows`), and the sheet is **not shared
+> publicly at all**. Pasting a link was removed because the only OAuth scope is now
+> `drive.file`, which grants access solely to files the app created — an external sheet
+> returns `403 appNotAuthorizedToFile`. See CLAUDE.md's v1.0.19 block and
+> GOOGLE_CLOUD_SETUP.md שלב 3א.
+>
+> `sync.js` itself still exists and `resolveListUrl` still has a caller: the legacy
+> snapshot-import path. Read the rest of this section as history, not as current behaviour.
 
 - `resolveListUrl(url)` makes a pasted link fetchable: a Google **Sheet** `/edit` link → CSV export
   (`/export?format=csv&gid=…`); a Google **Drive** file link → `uc?export=download`; already-CSV or

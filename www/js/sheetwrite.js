@@ -246,18 +246,38 @@ async function patchState(lib, patch) {
 
 /* ---------------- create a fresh source sheet (v1.0.8 wizard) ---------------- */
 
-/** PURE: the welcome row of a new sheet — a # comment (the parser skips it, humans read it). */
+/**
+ * PURE (v1.0.19) — the opening rows of a new sheet: a real COLUMN HEADER plus a
+ * short how-to, so a parent who opens the file cold understands it without docs.
+ *
+ * Every one of these rows starts column A with `#`, which `classifySourceRow`
+ * classifies as `comment` and the pipeline skips — that is what lets row 1 read as
+ * a header while remaining invisible to the parser. Columns B and C carry their own
+ * captions so the header lines up UNDER the columns it describes, instead of being
+ * one long sentence crammed into A (which is what this used to be).
+ *
+ * Three properties these rows must keep, all pinned by tests:
+ *  - column A always starts with '#' — otherwise a header line becomes content;
+ *  - none of them may contain a removal marker (הוסר / removed / deleted), or
+ *    parseRemovalRow would read the example link as a deletion and DENY that key
+ *    for every device on the sheet;
+ *  - they never affect `rowIndex`, because videoOrdinal counts video rows only.
+ */
 export function starterRows() {
-  return [[
-    '# ברוכים הבאים! כל שורה = סרטון או ערוץ. עמודה A: לינק (סרטון יוטיוב / ערוץ / @שם). עמודה B: שם לתצוגה (לא חובה). עמודה C בשורת ערוץ: auto או manual',
-    '', ''
-  ]];
+  return [
+    ['# עמודה A · לינק (חובה)', 'עמודה B · שם להצגה (רשות)', 'עמודה C · auto / manual (לערוץ בלבד)'],
+    ['# כל שורה = סרטון אחד או ערוץ אחד. מדביקים לינק בעמודה A ושומרים — האפליקציה תתעדכן בסנכרון הבא.', '', ''],
+    ['# לינק לסרטון: https://youtu.be/VIDEO_ID   ·   לינק לערוץ: https://www.youtube.com/@ChannelName', '', ''],
+    ['# עמודה C רלוונטית רק לשורת ערוץ: manual (ברירת מחדל) = סרטון חדש ממתין לאישורכם, auto = מופיע לילד מיד.', '', ''],
+    ['# שורות שמתחילות ב-# הן הערות בלבד והאפליקציה מתעלמת מהן. אפשר למחוק אותן.', '', '']
+  ];
 }
 
-/** PURE: does this look like a connectable Google Sheets link? */
-export function isSheetsUrl(url) {
-  return /docs\.google\.com\/spreadsheets\//.test(String(url || ''));
-}
+// v1.0.19: `isSheetsUrl` was deleted with the paste-a-link flow it validated. It
+// had no caller left, and dead URL-validation for a removed flow is exactly the
+// kind of helper that gets resurrected later to re-enable pasting — which cannot
+// work under drive.file. If you need it back, read the scope note in
+// GoogleAuthPlugin.java first.
 
 /** PURE (v1.0.12): the name of a sheet created for a profile — "<שם>_רשימת סרטונים". */
 export function sheetNameFor(profileName) {

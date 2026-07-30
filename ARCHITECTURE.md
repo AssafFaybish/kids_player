@@ -18,7 +18,7 @@ live and how does data flow".
 | `db.js` | IndexedDB I/O ONLY (no business logic) — see schema below | — |
 | `migrate.js` | one-time resumable Preferences→IDB migration (never deletes the legacy blob) | platform, db, order, util |
 | `plan.js` | PURE sync brain: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental) | normalize, order |
-| `sync2.js` | the staged pipeline (below); parseSourceSheet | csv, classify, plan, yt, db, quota |
+| `sync2.js` | the staged pipeline (below); parseSourceRows (+parseSourceSheet, the CSV front door kept for snapshot import) | csv, classify, plan, yt, db, quota |
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
 | `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, UU-derivation | — |
 | `ytrss.js` | pure keyless parsers (never throw): Atom feed + channel-page logo extractor | — |
@@ -72,7 +72,10 @@ mergedFrom?,updatedAt}` — ~400B, NO base64.
 
 ```
 hydrate (views read IDB directly — the ONLY thing on the critical path)
-└─ background: sheet GET → FNV-1a hash-skip → parseSourceSheet (video rows get ordinals;
+└─ background: sheet GET (v1.0.19: AUTHENTICATED Sheets API values.get via
+   sheetwrite.readSourceSheet — NOT a public CSV export; it THROWS on any non-200 so
+   sheetParsed stays false and the mirror below cannot mistake "unreadable" for
+   "emptied") → FNV-1a hash-skip → parseSourceRows (video rows get ordinals;
    channels rows carry auto/manual flag) → resolve channels (handle cache → API → HTML
    scrape; ids with a queued sheet-delete are NOT re-subscribed) → MIRROR (v1.0.10,
    PRESENCE-based each parse: live sheet-backed records absent from the sheet →
