@@ -72,6 +72,17 @@ export function openDb() {
   return dbPromise;
 }
 
+/**
+ * Monotonic count of COMMITTED writes (v1.0.20) — the invalidation signal for derived
+ * UI state. The home re-derives its folder list on every entry and every page flip, and
+ * that derivation must read the whole library (the full records feed the tiles). Keying
+ * a cache on this counter turns that read into once-per-CHANGE instead of
+ * once-per-render, and because the bump lives inside tx() itself, no future write path
+ * can forget to invalidate. Reads never bump it.
+ */
+let writeSeq = 0;
+export const dataVersion = () => writeSeq;
+
 /** Run fn(stores…) inside one transaction; resolves on oncomplete (contract #1). */
 export async function tx(storeNames, mode, fn) {
   const db = await openDb();
@@ -79,7 +90,7 @@ export async function tx(storeNames, mode, fn) {
     const t = db.transaction(storeNames, mode);
     const stores = storeNames.map((n) => t.objectStore(n));
     let result;
-    t.oncomplete = () => resolve(result);
+    t.oncomplete = () => { if (mode === 'readwrite') writeSeq += 1; resolve(result); };
     t.onerror = () => reject(t.error);
     t.onabort = () => reject(t.error || new Error('tx-aborted'));
     try {

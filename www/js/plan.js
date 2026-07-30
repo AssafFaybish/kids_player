@@ -246,6 +246,47 @@ export function planSheetMirror({
 }
 
 /**
+ * v1.0.20 — PURE: may this sync spend the "gifts baselined" flag?
+ *
+ * The baseline records what already existed before a child started, so the newest 12
+ * become gifts and the rest never do. Spending the flag on an EMPTY library is a bug
+ * with two visible halves: adding a channel runs a sync where every candidate is still
+ * pending (in-app adds require approval), so nothing is live yet — and then approving
+ * produced no gifts at all, while the sync after that took the incremental path and
+ * gifted the ENTIRE backfill at once.
+ */
+export function shouldRecordGiftBaseline(firstSync, liveCount) {
+  return !!firstSync && Number(liveCount || 0) > 0;
+}
+
+/** Folder ids that are just "everything loose" — no identity of their own. */
+const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
+
+/**
+ * v1.0.20 — PURE: may the home render its ONE folder's videos flat, with no tile?
+ *
+ * The rule exists for the sheet-only setup: when the only folder is the shared
+ * "סרטונים נוספים" list, making the child tap into it first is a pointless step, so
+ * the home shows the videos directly.
+ *
+ * FIELD BUG it fixes: the old test was "exactly one folder, whatever it is", so a
+ * library whose only content was ONE subscribed channel flattened too — the parent
+ * added a channel and got a 100-page flat wall of its backfill instead of the 📺
+ * folder with the channel's logo, which is the whole point of subscribing. A channel
+ * (or a 🎞️ collection) has an IDENTITY the child navigates by; it always gets a tile.
+ *
+ * @param folders the built folder list (`{ id, isNew }` is all this needs)
+ */
+export function shouldFlattenHome(folders) {
+  const list = Array.isArray(folders) ? folders : [];
+  if (list.length !== 1) return false;
+  const only = list[0];
+  // 🎁 "חדשים" is a view over other folders' videos, never the home in its own right
+  if (!only || only.isNew) return false;
+  return FLAT_FOLDER_IDS.has(only.id);
+}
+
+/**
  * v1.0.12 — PURE: group loose single links by their SOURCE channel.
  * Singles (manual adds / sheet rows / shares — records with no channelId) that come
  * from the same YouTube channel are collected into one virtual folder so the child's

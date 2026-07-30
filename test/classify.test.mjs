@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseChannelRef, classifySourceRow, stripTimeHints, classifyFromSharedText, classifyLink
+  parseChannelRef, classifySourceRow, stripTimeHints, classifyFromSharedText, classifyLink,
+  classifyShared
 } from '../www/js/classify.js';
 
 test('parseChannelRef handles all channel URL shapes', () => {
@@ -23,6 +24,38 @@ test('parseChannelRef rejects invalid UC ids and non-channels', () => {
   assert.equal(parseChannelRef('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), null);
   assert.equal(parseChannelRef('https://example.com/@notyt'), null);
   assert.equal(parseChannelRef(''), null);
+  assert.equal(parseChannelRef('https://www.youtube.com/@ab'), null, 'handles are 3+ chars');
+  assert.equal(parseChannelRef('https://www.youtube.com/@' + 'a'.repeat(31)), null, 'and at most 30');
+});
+
+/* ---- v1.0.20 FIELD BUG: a Hebrew channel handle was rejected as "unsupported" ---- */
+
+test('parseChannelRef accepts a NON-ASCII handle, percent-encoded or not', () => {
+  // What the YouTube app actually puts on the clipboard for @חלומותחסידיים. The old
+  // ASCII-only character class matched neither form, so classifySourceRow returned
+  // kind:'invalid' and the parent was told the link is not supported (reported live).
+  const encoded = 'https://m.youtube.com/@%D7%97%D7%9C%D7%95%D7%9E%D7%95%D7%AA%D7%97%D7%A1%D7%99%D7%93%D7%99%D7%99%D7%9D';
+  const pretty = 'https://m.youtube.com/@חלומותחסידיים';
+  for (const url of [encoded, pretty, decodeURIComponent(encoded)]) {
+    assert.deepEqual(parseChannelRef(url), { by: 'handle', value: 'חלומותחסידיים' }, url);
+  }
+  // the DECODED value is what gets stored/resolved — never the %D7%97… soup, which
+  // would be double-encoded into the resolution URL and cached under a junk key
+  assert.deepEqual(parseChannelRef('@חלומותחסידיים'), { by: 'handle', value: 'חלומותחסידיים' });
+  // and the row-level entry points must agree, or the add still gets rejected
+  assert.deepEqual(classifySourceRow(encoded), { kind: 'channel', channelRef: { by: 'handle', value: 'חלומותחסידיים' } });
+  const shared = classifyShared('תראו איזה ערוץ ' + encoded);
+  assert.equal(shared.kind, 'channel');
+  assert.deepEqual(shared.channelRef, { by: 'handle', value: 'חלומותחסידיים' });
+});
+
+test('a video link still WINS over the channel it lives on, encoded or not', () => {
+  // The safety boundary must not shift with the handle fix: a watch URL is a video.
+  const r = classifySourceRow('https://m.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.equal(r.kind, 'video');
+  assert.equal(classifyShared('https://youtu.be/dQw4w9WgXcQ https://m.youtube.com/@חלומותחסידיים').kind, 'video');
+  // a non-YouTube host with an @path stays rejected even with Unicode
+  assert.equal(parseChannelRef('https://example.com/@חלומותחסידיים'), null);
 });
 
 test('classifySourceRow: watch link with &list= is a VIDEO (the watch link wins)', () => {

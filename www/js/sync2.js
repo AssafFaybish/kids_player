@@ -15,7 +15,7 @@ import { prefGet } from './platform.js';
 import { parseCsv } from './csv.js';
 import { classifySourceRow } from './classify.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
-import { planMutations, planGifts, planSheetMirror } from './plan.js';
+import { planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle } from './quota.js';
@@ -181,9 +181,13 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     try {
       // v1.0.12: '# הוסר' rows deny their key for EVERY participant — that is how a
       // deletion of a video INSIDE a channel travels (it has no row of its own).
+      // The deny set is read ONCE, not per key: it is a full getAll over the scope's
+      // tombstones, it only grows as parents delete things, and the branch below is
+      // taken exactly for keys that are already gone (v1.0.20 — it was quadratic).
+      const denied = removedKeys.length ? await loadDenySet(lib) : null;
       for (const key of removedKeys) {
         if (await getVideo(lib, key)) await deleteVideo(lib, key, 'sheet-removed');
-        else if (!(await loadDenySet(lib)).has(key)) await deleteVideo(lib, key, 'sheet-removed');
+        else if (!denied.has(key)) await deleteVideo(lib, key, 'sheet-removed');
       }
       const libIndex = await loadMergeIndex(lib);
       // LIVE records only: a PENDING share (parked with homeFolderId 'sheet') gets
@@ -504,7 +508,13 @@ export async function planProfileGifts(profileId, scope, lib) {
   const newLiveKeys = liveRecords.filter((r) => !existingStates.has(r.key)).map((r) => r.key);
   const statePuts = planGifts({ profileId, liveRecords, newLiveKeys, existingStates, firstSync });
   if (statePuts.length) await putVideoStates(statePuts.map((s) => ({ ...existingStates.get(s.key), ...s })));
-  if (firstSync) await putMeta(flag, Date.now());
+  // v1.0.20: burn the baseline flag only if there was something to baseline. Adding a
+  // channel runs a sync where EVERYTHING is still pending (in-app adds default to
+  // approval-required), so liveRecords was empty — the flag got spent on nothing, and
+  // the next sync took the incremental path and gifted every single approved video at
+  // once (a "חדשים" folder with the whole backfill in it, and no gifts right after
+  // the parent approved). An empty library has no "before I arrived" to record.
+  if (shouldRecordGiftBaseline(firstSync, liveRecords.length)) await putMeta(flag, Date.now());
 }
 
 /** All live records of a scope (every folder), lightweight fields via merge index. */

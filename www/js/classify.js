@@ -68,15 +68,33 @@ export function stripTimeHints(url) {
  *       'custom' — /c/Name   (legacy custom URL; needs resolution)
  *       'user'   — /user/Name (legacy username; needs resolution)
  */
+/**
+ * A handle's characters (v1.0.20 fix). Handles are NOT ASCII-only — `@חלומותחסידיים`
+ * is a real channel — and the URL a parent copies out of the YouTube app arrives
+ * PERCENT-ENCODED: `m.youtube.com/@%D7%97%D7%9C…`. The old `[A-Za-z0-9._-]` class
+ * matched neither form, so both fell through to `kind:'invalid'` and the parent was
+ * told "הלינק לא נתמך" for a perfectly good channel (reported from the field).
+ * YouTube's own rule is 3-30 characters, letters/digits/underscore/hyphen/period.
+ */
+const HANDLE_CHARS = /^[\p{L}\p{N}._-]{3,30}$/u;
+
+/** Percent-decoded when that yields a valid handle, otherwise the raw segment. */
+function asHandle(segment) {
+  const raw = String(segment || '');
+  const dec = safeDecode(raw);
+  if (HANDLE_CHARS.test(dec)) return dec;
+  return HANDLE_CHARS.test(raw) ? raw : null;
+}
+
 export function parseChannelRef(url) {
   const s = String(url || '').trim().replace(/^"+|"+$/g, '');
   if (!s) return null;
-  let m = s.match(/^@([A-Za-z0-9._-]{3,30})$/);
-  if (m) return { by: 'handle', value: m[1] };
+  let m = s.match(/^@([^/?#\s]+)$/);
+  if (m) { const h = asHandle(m[1]); if (h) return { by: 'handle', value: h }; }
   m = s.match(/youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})(?:[/?#]|$)/i);
   if (m) return { by: 'id', value: m[1] };
-  m = s.match(/youtube\.com\/@([A-Za-z0-9._-]{3,30})(?:[/?#]|$)/i);
-  if (m) return { by: 'handle', value: m[1] };
+  m = s.match(/youtube\.com\/@([^/?#]+)/i);
+  if (m) { const h = asHandle(m[1]); if (h) return { by: 'handle', value: h }; }
   m = s.match(/youtube\.com\/c\/([^/?#]+)/i);
   if (m) return { by: 'custom', value: safeDecode(m[1]) };
   m = s.match(/youtube\.com\/user\/([^/?#]+)/i);

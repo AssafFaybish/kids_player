@@ -44,6 +44,24 @@ async function apiGet(path, params, key) {
 
 /* ---------------- handle / custom-url resolution ---------------- */
 
+/**
+ * The public channel page a ref resolves through when keyless. Pure, so the ENCODING
+ * is test-pinned: a non-ASCII handle (`@חלומותחסידיים` — a real channel a parent tried
+ * to add, v1.0.20) must be percent-encoded exactly ONCE and keep its literal '@'.
+ * Note `encodeURI` also escapes '%', which is why parseChannelRef stores the DECODED
+ * handle — feeding it `%D7%97…` here would produce `%25D7%2597…` and a 404.
+ * Returns null for `by:'id'` (nothing to resolve) and for junk.
+ */
+export function channelPageUrl(ref) {
+  const by = ref && ref.by;
+  const value = String((ref && ref.value) || '');
+  if (!value) return null;
+  const path = by === 'handle' ? '@' + value
+    : by === 'user' ? 'user/' + value
+      : by === 'custom' ? 'c/' + value : null;
+  return path ? 'https://www.youtube.com/' + encodeURI(path) : null;
+}
+
 /** handle -> channelId, cached FOREVER in meta (forHandle is not batchable). */
 export async function resolveChannelRef(ref, key) {
   if (ref.by === 'id') return ref.value;
@@ -65,9 +83,8 @@ export async function resolveChannelRef(ref, key) {
   if (!channelId) {
     // Keyless (and /c/ custom URLs, which the API can't resolve): scrape the public
     // channel page for the canonical id. Zero quota; CapacitorHttp is CORS-free.
-    const path = ref.by === 'handle' ? '@' + ref.value : (ref.by === 'user' ? 'user/' + ref.value : 'c/' + ref.value);
     try {
-      const html = await httpGetText(`https://www.youtube.com/${encodeURI(path)}`);
+      const html = await httpGetText(channelPageUrl(ref));
       const m = String(html).match(/"channelId":"(UC[A-Za-z0-9_-]{22})"/)
         || String(html).match(/channel\/(UC[A-Za-z0-9_-]{22})/);
       channelId = m ? m[1] : null;

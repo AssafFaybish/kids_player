@@ -2,7 +2,9 @@
 // suite: running the plan twice yields an EMPTY second diff (no churn, no re-gifting).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planMutations, planGifts } from '../www/js/plan.js';
+import {
+  planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline
+} from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
 const cand = (over = {}) => ({
@@ -117,4 +119,52 @@ test('planGifts incremental: only NEW live keys gift; unwrapped never re-gifts; 
   assert.equal(puts.length, 1);
   assert.equal(puts[0].key, 'yt:new00000000');
   assert.equal(puts[0].giftRank, 5); // continues after the existing max
+});
+
+/* ---- v1.0.20 FIELD BUGS: the home flattened a lone channel, and the gift baseline
+        was spent on an empty library ---- */
+
+test('shouldFlattenHome: only the LOOSE list may render flat — a channel keeps its tile', () => {
+  // Reported live: the parent added one channel and the child's home became a
+  // hundred-page flat wall of its backfill, with no 📺 tile and no channel logo.
+  assert.equal(shouldFlattenHome([{ id: 'ch:UCabcdefghijklmnopqrstuv', count: 300 }]), false);
+  assert.equal(shouldFlattenHome([{ id: 'grp:UCabcdefghijklmnopqrstuv', count: 4, grouped: true }]), false);
+  // the case the rule exists for: the shared loose list as the ONLY folder
+  assert.equal(shouldFlattenHome([{ id: 'sheet', count: 12 }]), true);
+  assert.equal(shouldFlattenHome([{ id: 'mine', count: 3 }]), true, 'legacy profile-scope list too');
+});
+
+test('shouldFlattenHome: never flattens when there is something to organize', () => {
+  assert.equal(shouldFlattenHome([{ id: 'sheet' }, { id: 'ch:UC1' }]), false);
+  // 🎁 is a view over other folders — alone it must not become the whole home, and
+  // next to the loose list it means there ARE two tiles to show
+  assert.equal(shouldFlattenHome([{ id: 'new', isNew: true, count: 5 }]), false);
+  assert.equal(shouldFlattenHome([{ id: 'new', isNew: true }, { id: 'sheet' }]), false);
+  // junk in, no crash out (an empty home renders its empty state, not a flat page)
+  for (const junk of [[], null, undefined, [null], [{}]]) {
+    assert.equal(shouldFlattenHome(junk), false, JSON.stringify(junk));
+  }
+});
+
+test('shouldRecordGiftBaseline: an EMPTY first sync must not spend the baseline', () => {
+  // Adding a channel syncs while every video is still pending, so liveRecords is empty.
+  // Spending the flag there gave the child no gifts after approval, and made the NEXT
+  // sync gift the entire backfill at once.
+  assert.equal(shouldRecordGiftBaseline(true, 0), false);
+  assert.equal(shouldRecordGiftBaseline(true, 1), true);
+  assert.equal(shouldRecordGiftBaseline(true, 2000), true);
+  assert.equal(shouldRecordGiftBaseline(false, 0), false, 'already baselined stays baselined');
+  assert.equal(shouldRecordGiftBaseline(false, 50), false);
+  for (const junk of [undefined, null, NaN, 'x']) assert.equal(shouldRecordGiftBaseline(true, junk), false);
+});
+
+test('the gift baseline still works the moment content becomes live', () => {
+  // End-to-end of the fix: sync #1 (all pending) records nothing, sync #2 after the
+  // parent approves takes the BASELINE path — newest 12 gifted, the rest never gift.
+  const live = Array.from({ length: 30 }, (_, i) => ({ key: 'yt:k' + i, sortKey: i, thumbUrl: 'x' }));
+  assert.equal(shouldRecordGiftBaseline(true, 0), false);
+  const puts = planGifts({ profileId: 'p1', liveRecords: live, newLiveKeys: live.map((r) => r.key), existingStates: new Map(), firstSync: true });
+  assert.equal(puts.filter((p) => p.giftRank).length, 12, 'twelve gifts, not thirty');
+  assert.equal(puts.filter((p) => p.unwrappedAt).length, 18);
+  assert.equal(shouldRecordGiftBaseline(true, live.length), true);
 });

@@ -15,7 +15,7 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
-import { groupSinglesByChannel } from './plan.js';
+import { groupSinglesByChannel, shouldFlattenHome } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -538,7 +538,26 @@ async function absorbMineIntoShared(profileId) {
   } catch { /* absorbing must never block activation; next activation retries */ }
 }
 
+/**
+ * Derived-home cache (v1.0.20 performance fix). buildFolders() has to read the WHOLE
+ * library — the grouping needs full records, which then feed the tiles directly — and
+ * renderHome() runs on every gallery entry, every return from a video and every home
+ * page flip. On a real library that was a full-store deserialize per interaction, which
+ * is what made the app feel sticky. `db.dataVersion()` changes on every committed write,
+ * so a hit here is only possible when NOTHING has changed since the last derivation.
+ */
+let foldersCache = null;
+
 async function buildFolders() {
+  const cache = foldersCache;
+  if (cache && cache.profileId === activeProfileId && cache.seq === db.dataVersion()) {
+    libScope = cache.libScope;
+    singleGroups = cache.singleGroups;
+    absorbedSingles = cache.absorbedSingles;
+    looseSingles = cache.looseSingles;
+    return cache.folders.slice();
+  }
+  const seq = db.dataVersion();
   const out = [];
   if (!activeProfileId) return out;
   const giftCount = await db.countGifts(activeProfileId);
@@ -553,8 +572,9 @@ async function buildFolders() {
   absorbedSingles = new Map();
   looseSingles = [];
   if (libScope) {
-    const subscribedIds = new Set((await db.listLibraryChannels(libScope)).map((c) => c.channelId));
-    for (const lc of await db.listLibraryChannels(libScope)) {
+    const libChannels = await db.listLibraryChannels(libScope); // read ONCE — this used
+    const subscribedIds = new Set(libChannels.map((c) => c.channelId)); // to run twice
+    for (const lc of libChannels) {
       if (lc.hidden) continue;
       const ch = (await db.getChannel(lc.channelId)) || {};
       const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
@@ -612,6 +632,13 @@ async function buildFolders() {
   // sources) stay reachable until absorbMineIntoShared picks them up
   const mineCount = await db.countFolder(db.profScope(activeProfileId), 'mine');
   if (mineCount) out.push({ id: 'mine', scope: db.profScope(activeProfileId), title: 'סרטונים נוספים', emoji: '💜', count: mineCount });
+  // Cache against the write counter READ AT ENTRY: if anything committed while we were
+  // deriving, `seq` is already stale and the next render redoes the work (never serves
+  // a list that never matched the store).
+  foldersCache = {
+    seq, profileId: activeProfileId, libScope, folders: out.slice(),
+    singleGroups, absorbedSingles, looseSingles
+  };
   return out;
 }
 
@@ -621,9 +648,10 @@ function scopeForFolder(fid) {
 }
 
 /**
- * Home = folder tiles. UX rule: with a SINGLE content folder (the common sheet-only
- * setup) the home renders that folder's videos flat — exactly today's experience —
- * and folders appear only once there's something to organize.
+ * Home = folder tiles. UX rule (pure `shouldFlattenHome`): when the only folder is the
+ * shared loose list the home renders its videos flat — folders appear once there is
+ * something to organize. A CHANNEL folder always keeps its tile, even alone (v1.0.20):
+ * flattening it hid the channel's logo behind a 100-page flat list.
  */
 async function renderHome() {
   folders = await buildFolders();
@@ -637,7 +665,7 @@ async function renderHome() {
   grid.classList.toggle('hidden', empty);
   if (empty) { $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
-  if (contentFolders.length === 1 && folders.length === 1) {
+  if (shouldFlattenHome(folders)) {
     await renderGridPage(grid, contentFolders[0].scope, contentFolders[0].id, 'home');
     return;
   }

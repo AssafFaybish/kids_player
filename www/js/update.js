@@ -172,10 +172,15 @@ export function buildWhatsNew(releases, local, { max = 8, above = true } = {}) {
 
 /* ---------------- runtime ---------------- */
 
+let versionCache; // the installed version cannot change while the app is running
 export async function currentVersion() {
+  if (versionCache !== undefined) return versionCache;
   const App = appPlugin();
   if (!App || !App.getInfo) return null; // browser preview: "installed app only"
-  try { return (await App.getInfo()).version || null; } catch { return null; }
+  // Memoized because the red attention dot recomputes on EVERY home render, and this
+  // was a native bridge round trip each time (v1.0.20).
+  try { versionCache = (await App.getInfo()).version || null; } catch { return null; }
+  return versionCache;
 }
 
 /**
