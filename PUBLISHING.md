@@ -63,11 +63,14 @@ npm run apk:verify                          # חייב להציג CN=Kids Player
 # 5) שם קובץ לפי המוסכמה שהמעדכן מחפש, בתיקיית האיסוף apk_versions/ (מוחרגת מגיט)
 mkdir -p apk_versions
 cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player-v<X.Y.Z>.apk
+# v1.0.19: a second copy under a STABLE name — the website's download button uses
+# /releases/latest/download/kids-player.apk, which matches by exact asset name.
+cp android/app/build/outputs/apk/release/app-release.apk apk_versions/kids-player.apk
 
 # 6) פרסום ל-GitHub Releases (ה-repo הציבורי devfassaf/kids_player)
 #    גוף ה-release הוא מה שההורים קוראים במסך "מה חדש" באפליקציה — עברית, קצר,
 #    בולט לכל שינוי, תחת הכותרת "## מה חדש" (release.sh עושה זאת אוטומטית).
-gh release create v<X.Y.Z> apk_versions/kids-player-v<X.Y.Z>.apk \
+gh release create v<X.Y.Z> apk_versions/kids-player-v<X.Y.Z>.apk apk_versions/kids-player.apk \
   --repo devfassaf/kids_player -t "v<X.Y.Z>" \
   -n "## מה חדש
 

@@ -79,6 +79,11 @@ if ($Bump) {
 }
 $Tag = "v$V"
 $Apk = Join-Path $ApkDir "kids-player-$Tag.apk"
+# v1.0.19: a SECOND asset under a version-less name. GitHub resolves
+# /releases/latest/download/<name> only for an exactly-named asset, so this stable
+# name is what lets the website's download button hit the newest APK directly.
+# Keep it identical to the href in docs/index.html (a test pins the two together).
+$ApkLatest = Join-Path $ApkDir "kids-player.apk"
 
 # ---- tests -------------------------------------------------------------------
 Say "Running tests..."
@@ -105,6 +110,7 @@ if (-not ($Verify | Select-String -Quiet "^Verifies")) { Die "Signature verifica
 
 New-Item -ItemType Directory -Force -Path $ApkDir -ErrorAction Stop | Out-Null
 Copy-Item $ReleaseApk $Apk -Force -ErrorAction Stop
+Copy-Item $ReleaseApk $ApkLatest -Force -ErrorAction Stop
 $SizeMb = [math]::Round((Get-Item $Apk).Length / 1MB, 1)
 Say "Built and verified: $Apk (${SizeMb}M)"
 
@@ -116,13 +122,14 @@ $Body = "## מה חדש`n`n$Notes"
 Say "Publishing GitHub release..."
 $Published = $false
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    gh release create $Tag $Apk --repo $Repo -t $Tag -n $Body 2>$null
+    gh release create $Tag $Apk $ApkLatest --repo $Repo -t $Tag -n $Body 2>$null
     $Published = ($LASTEXITCODE -eq 0)
 }
 if ($Published) {
     Write-Host "`nOK: Published! Devices will see the update via the `"check for update`" button." -ForegroundColor Green
 } else {
     $FullPath = Join-Path (Get-Location) $Apk
+    $FullPathLatest = Join-Path (Get-Location) $ApkLatest
     Write-Host @"
 
 WARNING: could not publish with the current gh account (missing gh, not logged
@@ -130,7 +137,9 @@ in, or no write access). Publish manually (2 minutes):
    1. https://github.com/$Repo/releases/new
    2. Tag: $Tag  <- type it by hand with an ENGLISH keyboard (invisible bidi
       marks from a Hebrew-context copy-paste broke version detection once)
-   3. Drag the file:  $FullPath
+   3. Drag BOTH files:  $FullPath
+                        $FullPathLatest   <- the website download button needs
+                        this exact name, or it 404s
    4. Publish release
 
    (or: gh auth login with the devfassaf account and run again)

@@ -51,8 +51,16 @@
 
   <div class="dl">
     <div class="card">
-      <a class="dl-btn" href="https://github.com/devfassaf/kids_player/releases/latest">⬇️ הורדה לאנדרואיד</a>
+      <!-- /releases/latest/download/<asset> is a GitHub redirect straight to the file
+           in the NEWEST release — no repo page, no JavaScript, no API call and no
+           rate limit. It resolves by EXACT asset name, which is why release.sh
+           uploads a version-less kids-player.apk alongside the versioned one. -->
+      <a class="dl-btn" href="https://github.com/devfassaf/kids_player/releases/latest/download/kids-player.apk">⬇️ הורדה לאנדרואיד</a>
       <div class="dl-meta">חינם • ~4MB • אנדרואיד 7 ומעלה • גם לאנדרואיד TV</div>
+      <div class="dl-meta">
+        תמיד הגרסה העדכנית ביותר ·
+        <a href="https://github.com/devfassaf/kids_player/releases">כל הגרסאות</a>
+      </div>
     </div>
   </div>
 
@@ -66,8 +74,8 @@
         האישורים והסריקה שלמטה, וזה נורמלי.
       </p>
       <ol class="steps">
-        <li>לוחצים על <b>⬇️ הורדה לאנדרואיד</b> למעלה, ובוחרים את הקובץ
-            <code>kids-player-v&lt;גרסה&gt;.apk</code>.</li>
+        <li>לוחצים על <b>⬇️ הורדה לאנדרואיד</b> למעלה. ההורדה מתחילה מיד — תמיד
+            הגרסה העדכנית ביותר.</li>
         <li>Chrome ישאל אם להמשיך כי <b>"קבצים מסוג זה עלולים להזיק למכשיר"</b> —
             זו הודעה גנרית לכל קובץ התקנה. בוחרים <b>הורדה בכל זאת</b>.</li>
         <li>פותחים את הקובץ שהורד. בפעם הראשונה אנדרואיד תבקש להרשות
