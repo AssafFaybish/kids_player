@@ -5,6 +5,7 @@ import {
   parseVersion, compareVersions, isNewer, pickApkAsset,
   resolveUpdateStatus, buildAppShareMessage, releasesPageUrl, UPDATE_REPO
 } from '../www/js/update.js';
+import { LINKS } from '../www/js/links.js';
 
 test('numeric per-component compare — the 1.0.10 > 1.0.9 trap', () => {
   assert.equal(isNewer('v1.0.10', '1.0.9'), true);
@@ -69,7 +70,15 @@ test('buildAppShareMessage: direct asset link when known, releases page otherwis
   const direct = buildAppShareMessage({ version: '1.0.5', assetUrl: 'https://github.com/x/y/releases/download/v1.0.5/kids-player-v1.0.5.apk' });
   assert.ok(direct.includes('https://github.com/x/y/releases/download/v1.0.5/kids-player-v1.0.5.apk'));
   assert.ok(direct.includes('1.0.5'));
-  assert.ok(direct.includes('לא ידועות'), 'must include the unknown-sources one-liner');
+  assert.ok(direct.includes('אזהרות'), 'must warn that Android will show warnings');
+
+  // v1.0.19: the explainer page LEADS and the APK follows. A bare .apk link arriving
+  // from a friend reads as something you should not tap, and whoever taps it meets
+  // Chrome's "may harm your device", unknown-sources and Play Protect with nobody
+  // having explained them — which is exactly what the site's install steps do.
+  assert.ok(direct.includes(LINKS.site.home), 'the explainer page must be in the message');
+  assert.ok(direct.indexOf(LINKS.site.home) < direct.indexOf('kids-player-v1.0.5.apk'),
+    'the explainer page must come BEFORE the direct download');
 
   for (const latest of [null, {}, { version: '1.0.5' }]) {
     const fallback = buildAppShareMessage(latest);

@@ -60,9 +60,19 @@ export function releasesPageUrl() {
 }
 
 /**
- * The "share the app" message (v1.0.5) — pure, node-tested. Direct APK link when the
- * latest release is known (one tap → download); the releases page otherwise. Either
- * way the installed app updates itself afterwards, so a stale link still ends current.
+ * The "share the app" message (v1.0.5) — pure, node-tested.
+ *
+ * v1.0.19: the HOME PAGE leads, the APK follows. A bare `.apk` link arriving from a
+ * friend in WhatsApp has no context and reads as something you should not tap — and
+ * whoever does tap it walks straight into Chrome's "this file may harm your device",
+ * the unknown-sources prompt and a Play Protect scan, with nobody having warned them.
+ * The site explains what the app is, carries the same download button, and walks
+ * through those three warnings step by step; it also links the privacy policy, which
+ * is what a parent actually wants before installing something for their child.
+ *
+ * The direct link stays, second and clearly labelled, for whoever just wants the file.
+ * Either way the installed app updates itself afterwards, so a stale link still ends
+ * current.
  */
 export function buildAppShareMessage(latest) {
   const url = (latest && latest.assetUrl) || releasesPageUrl();
@@ -70,9 +80,10 @@ export function buildAppShareMessage(latest) {
   return [
     `היי! מוזמנים להתקין את "הסרטונים שלי"${ver} — נגן וידאו בטוח לילדים, שבו ההורים בוחרים בדיוק מה רואים.`,
     '',
-    `הורדה לאנדרואיד: ${url}`,
+    `📖 מה זה ואיך מתקינים: ${LINKS.site.home}`,
+    `⬇️ הורדה ישירה לאנדרואיד: ${url}`,
     '',
-    'איך מתקינים? מורידים, מקישים על הקובץ, ומאשרים חד-פעמית "התקנה מאפליקציות לא ידועות". מהרגע הזה האפליקציה מתעדכנת מעצמה.'
+    'בהתקנה אנדרואיד מציגה כמה אזהרות — הן רגילות לכל אפליקציה שלא הותקנה מחנות Play. בדף ההסבר יש צעד-אחר-צעד. אחרי ההתקנה האפליקציה מתעדכנת מעצמה.'
   ].join('\n');
 }
 
