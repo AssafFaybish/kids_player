@@ -35,8 +35,52 @@ async function forceSheetReparse() {
   }
 }
 
+/**
+ * v2 (v1.0.20): retire a runaway 🎁 folder.
+ *
+ * Before the baseline fix, adding a channel spent the "gifts baselined" flag on a
+ * library where everything was still pending, and the following sync gifted the whole
+ * backfill — devices in the field now show a "חדשים" folder holding their entire
+ * library. `planGiftRunawayRepair` keeps the newest 12 and retires the rest, which is
+ * what the first sync should have done. Idempotent: once repaired the pile is small,
+ * so a rerun decides to do nothing.
+ */
+async function retireRunawayGifts() {
+  const { planGiftRunawayRepair } = await import('./plan.js');
+  const { openDb, putVideoStates } = await import('./db.js');
+  const db = await openDb();
+  for (const p of await getProfiles()) {
+    const states = [];
+    await new Promise((resolve, reject) => {
+      const range = IDBKeyRange.bound([p.id, ''], [p.id, '￿']);
+      const req = db.transaction('profileVideoState').objectStore('profileVideoState').openCursor(range);
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (!cur) return resolve();
+        states.push(cur.value);
+        cur.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+    const { retire } = planGiftRunawayRepair(states);
+    if (!retire.length) continue;
+    const byKey = new Map(states.map((s) => [s.key, s]));
+    const now = Date.now();
+    // giftRank must be DELETED, not zeroed: profileVideoState's compound by_gift index
+    // drops a record when a component is missing — that is what makes the 🎁 folder a
+    // pure range scan (db.js "GIFT INDEX TRICK").
+    const puts = retire.map((key) => {
+      const rec = { ...byKey.get(key), profileId: p.id, key, unwrappedAt: now };
+      delete rec.giftRank;
+      return rec;
+    });
+    await putVideoStates(puts);
+  }
+}
+
 const STEPS = [
-  { v: 1, run: forceSheetReparse }
+  { v: 1, run: forceSheetReparse },
+  { v: 2, run: retireRunawayGifts }
 ];
 
 export const DATA_VERSION = STEPS.length ? Math.max(...STEPS.map((s) => s.v)) : 0;

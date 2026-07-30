@@ -15,7 +15,7 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
-import { groupSinglesByChannel, shouldFlattenHome } from './plan.js';
+import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -1626,27 +1626,24 @@ async function refreshChannelsList() {
  * them (queued appends count as "not yet in the sheet, on purpose").
  */
 async function adoptLibraryScope(profileId, oldLib, newLib) {
-  if (!oldLib || !newLib || oldLib === newLib) return { videoKeys: [], channelIds: [] };
-
-  // v1.0.18 — NEVER EMPTY A SHARED SCOPE.
-  //
-  // `lib:<fnv1a(sheet)>` is shared by EVERY profile on that sheet — the wizard's
-  // "join <profile>'s file" button creates exactly that. moveScope *moves*: it
-  // deletes the source scope. So changing one child's sheet used to carry the whole
-  // family library away, blanking the sibling's home screen and surfacing their
-  // pending shares in this child's approval list (the very leak v1.0.17 fixed).
-  //
-  // When someone else still lives there, the content is not ours to take: it is
-  // sheet-derived from the OLD sheet and stays with the profiles still reading it.
-  // This profile simply starts from its new sheet, which is the correct semantic —
-  // the orphaning bug v1.0.17 fixed was about a scope with NO remaining owner.
-  const stillOwned = [];
+  // v1.0.18 — NEVER EMPTY A SHARED SCOPE. `lib:<fnv1a(sheet)>` is shared by EVERY
+  // profile on that sheet (the wizard's "join <profile>'s file" button creates exactly
+  // that) and moveScope *moves*: it deletes the source. Changing one child's sheet used
+  // to carry the whole family library away — a blank home for the sibling and their
+  // pending shares surfacing in this child's approval list. The decision itself is pure
+  // `planScopeAdoption` (v1.0.20), so it is unit-tested rather than re-read by eye.
+  const others = [];
   for (const p of await getProfiles()) {
     if (p.id === profileId) continue;
     const s = await db.getSources(p.id);
-    if (s && s.libraryId === oldLib) stillOwned.push(p.id);
+    others.push({ profileId: p.id, libraryId: (s && s.libraryId) || null });
   }
-  if (stillOwned.length) return { videoKeys: [], channelIds: [], sharedWith: stillOwned };
+  const decision = planScopeAdoption(profileId, oldLib, newLib, others);
+  if (decision.action !== 'move') {
+    return decision.sharedWith.length
+      ? { videoKeys: [], channelIds: [], sharedWith: decision.sharedWith }
+      : { videoKeys: [], channelIds: [] };
+  }
 
   const moved = await db.moveScope(oldLib, newLib);
   if (!moved.videoKeys.length && !moved.channelIds.length) return moved;

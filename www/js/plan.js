@@ -246,6 +246,53 @@ export function planSheetMirror({
 }
 
 /**
+ * PURE (extracted v1.0.20): which of a library's records does the SHEET account for?
+ *
+ * The presence-mirror deletes sheet-backed records the sheet no longer lists, so this
+ * filter is a safety boundary, not a convenience:
+ *  - `state === 'live'` — a PENDING share is parked with `homeFolderId:'sheet'` but gets
+ *    its row only at APPROVAL. Including it tombstones the share before the parent has
+ *    even seen the request (a real bug, caught in the v1.0.10 audit).
+ *  - the folder test reads `homeFolderId` FIRST, because a parked record's `folderId` is
+ *    '~pending' and its real home is the field behind it.
+ * Channel videos are deliberately absent: they have no row of their own (the channel row
+ * represents them), so the sheet can never "not list" them.
+ */
+export function sheetBackedKeysOf(records) {
+  const out = [];
+  for (const r of records || []) {
+    if (!r || r.state !== 'live') continue;
+    if ((r.homeFolderId || r.folderId) !== 'sheet') continue;
+    out.push(r.key);
+  }
+  return out;
+}
+
+/**
+ * PURE (extracted v1.0.20): what should connecting/changing a sheet do to the old scope?
+ *
+ * `lib:<fnv1a(sheet)>` is SHARED by every profile reading that sheet, and `moveScope`
+ * MOVES — it deletes the source. So migrating one child's library while a sibling still
+ * points at the old scope carried the whole family library away: a blank home for the
+ * sibling and their pending shares surfacing in this child's approval list.
+ *
+ * @param others [{ profileId, libraryId }] — the OTHER profiles' sources
+ * @returns { action: 'none'|'move', sharedWith: string[] }
+ */
+export function planScopeAdoption(profileId, oldLib, newLib, others = []) {
+  if (!oldLib || !newLib || oldLib === newLib) return { action: 'none', sharedWith: [] };
+  const sharedWith = [];
+  for (const o of others || []) {
+    if (!o || o.profileId === profileId) continue;
+    if (o.libraryId && o.libraryId === oldLib) sharedWith.push(o.profileId);
+  }
+  // Someone else still lives there: the content is sheet-derived from the OLD sheet and
+  // stays with the profiles still reading it. This profile just starts from its new one.
+  if (sharedWith.length) return { action: 'none', sharedWith };
+  return { action: 'move', sharedWith: [] };
+}
+
+/**
  * v1.0.20 — PURE: may this sync spend the "gifts baselined" flag?
  *
  * The baseline records what already existed before a child started, so the newest 12
@@ -257,6 +304,33 @@ export function planSheetMirror({
  */
 export function shouldRecordGiftBaseline(firstSync, liveCount) {
   return !!firstSync && Number(liveCount || 0) > 0;
+}
+
+/**
+ * v1.0.20 — PURE: repair a 🎁 folder that the burned-baseline bug inflated.
+ *
+ * On devices that added a channel before the fix, the baseline flag was spent on an
+ * empty library and the next sync gifted the ENTIRE backfill: a "חדשים" folder holding
+ * the whole library, which the child would have to tap through one by one. This decides
+ * the repair — keep the `baseline` newest ranks (rank 1 IS the newest), retire the rest —
+ * which is exactly the state the first sync should have produced.
+ *
+ * Deliberately conservative: a child who simply never opens gifts accumulates ranks
+ * legitimately, so only an implausible pile is touched. Even a false positive is benign
+ * (a retired gift is a normal video in its folder, never a deleted one).
+ *
+ * @param states iterable of profileVideoState records for ONE profile
+ * @returns { keep: string[], retire: string[] } — retire = give up its rank
+ */
+export function planGiftRunawayRepair(states, { baseline = 12, floor = 60 } = {}) {
+  const ranked = [];
+  for (const st of states || []) if (st && st.giftRank && !st.unwrappedAt) ranked.push(st);
+  if (ranked.length <= Math.max(floor, baseline)) return { keep: [], retire: [] };
+  ranked.sort((a, b) => a.giftRank - b.giftRank); // rank 1 = newest
+  return {
+    keep: ranked.slice(0, baseline).map((s) => s.key),
+    retire: ranked.slice(baseline).map((s) => s.key)
+  };
 }
 
 /** Folder ids that are just "everything loose" — no identity of their own. */

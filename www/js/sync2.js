@@ -15,7 +15,9 @@ import { prefGet } from './platform.js';
 import { parseCsv } from './csv.js';
 import { classifySourceRow } from './classify.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
-import { planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline } from './plan.js';
+import {
+  planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf
+} from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle } from './quota.js';
@@ -190,12 +192,10 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         else if (!denied.has(key)) await deleteVideo(lib, key, 'sheet-removed');
       }
       const libIndex = await loadMergeIndex(lib);
-      // LIVE records only: a PENDING share (parked with homeFolderId 'sheet') gets
-      // its row at APPROVAL time — it has no sheet presence yet, and mirroring it
-      // would tombstone it before the parent ever saw the approval request.
-      const sheetBackedKeys = [...libIndex.values()]
-        .filter((r) => r.state === 'live' && (r.homeFolderId || r.folderId) === 'sheet')
-        .map((r) => r.key);
+      // LIVE records only — see sheetBackedKeysOf: a PENDING share is parked with
+      // homeFolderId 'sheet' but gets its row at APPROVAL time, and mirroring it
+      // would tombstone the share before the parent ever saw the request.
+      const sheetBackedKeys = sheetBackedKeysOf(libIndex.values());
       const mirror = planSheetMirror({
         sheetBackedKeys,
         localChannelIds: (await listLibraryChannels(lib)).map((c) => c.channelId),

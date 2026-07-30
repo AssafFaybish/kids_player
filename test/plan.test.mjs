@@ -3,7 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline
+  planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
+  sheetBackedKeysOf, planScopeAdoption, planGiftRunawayRepair
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -167,4 +168,87 @@ test('the gift baseline still works the moment content becomes live', () => {
   assert.equal(puts.filter((p) => p.giftRank).length, 12, 'twelve gifts, not thirty');
   assert.equal(puts.filter((p) => p.unwrappedAt).length, 18);
   assert.equal(shouldRecordGiftBaseline(true, live.length), true);
+});
+
+/* ---- the two extracted safety boundaries (v1.0.20) ---- */
+
+test('sheetBackedKeysOf: a PENDING share is NEVER sheet-backed', () => {
+  // The mirror deletes sheet-backed records the sheet no longer lists. A share waiting
+  // for approval is parked with homeFolderId 'sheet' but has no row yet — counting it
+  // tombstones the share before the parent ever sees the request.
+  const recs = [
+    { key: 'yt:live0000000', state: 'live', folderId: 'sheet' },
+    { key: 'yt:parked00000', state: 'pending', folderId: '~pending', homeFolderId: 'sheet' },
+    { key: 'yt:chvideo0000', state: 'live', folderId: 'ch:UCabcdefghijklmnopqrstuv' },
+    { key: 'yt:approved000', state: 'live', folderId: '~pending', homeFolderId: 'sheet' }
+  ];
+  assert.deepEqual(sheetBackedKeysOf(recs), ['yt:live0000000', 'yt:approved000']);
+  // channel videos have no row of their own, so the sheet can never "not list" them
+  assert.ok(!sheetBackedKeysOf(recs).includes('yt:chvideo0000'));
+  // works straight off a Map's values (that is how sync2 calls it) and survives junk
+  assert.deepEqual(sheetBackedKeysOf(new Map([['a', recs[0]]]).values()), ['yt:live0000000']);
+  assert.deepEqual(sheetBackedKeysOf([null, undefined, {}, 0]), []);
+  assert.deepEqual(sheetBackedKeysOf(null), []);
+});
+
+test('planScopeAdoption refuses to move a scope a SIBLING still reads', () => {
+  const LIB_A = 'lib:aaaa', LIB_B = 'lib:bbbb';
+  // the bug this prevents: moveScope DELETES the source scope, so migrating one child
+  // used to carry the shared family library away from the other one
+  const shared = planScopeAdoption('kid1', LIB_A, LIB_B, [
+    { profileId: 'kid2', libraryId: LIB_A },
+    { profileId: 'kid3', libraryId: 'lib:zzzz' }
+  ]);
+  assert.equal(shared.action, 'none');
+  assert.deepEqual(shared.sharedWith, ['kid2']);
+
+  // nobody left behind -> migrate, so the parent's content follows the profile
+  const alone = planScopeAdoption('kid1', LIB_A, LIB_B, [{ profileId: 'kid3', libraryId: 'lib:zzzz' }]);
+  assert.equal(alone.action, 'move');
+  assert.deepEqual(alone.sharedWith, []);
+  assert.equal(planScopeAdoption('kid1', LIB_A, LIB_B, []).action, 'move');
+  // this profile's OWN entry must never count as another owner
+  assert.equal(planScopeAdoption('kid1', LIB_A, LIB_B, [{ profileId: 'kid1', libraryId: LIB_A }]).action, 'move');
+});
+
+test('planScopeAdoption: nothing to do is never a move', () => {
+  for (const [a, b] of [[null, 'lib:b'], ['lib:a', null], ['lib:a', 'lib:a'], [undefined, undefined]]) {
+    const r = planScopeAdoption('kid1', a, b, [{ profileId: 'kid2', libraryId: a }]);
+    assert.equal(r.action, 'none', `${a} -> ${b}`);
+  }
+  // junk in the others list must not crash the decision
+  assert.equal(planScopeAdoption('kid1', 'lib:a', 'lib:b', [null, {}, { profileId: 'x' }]).action, 'move');
+});
+
+test('planGiftRunawayRepair keeps the newest 12 and retires an implausible pile', () => {
+  // The state devices are in after the burned-baseline bug: the whole library gifted.
+  const states = Array.from({ length: 1020 }, (_, i) => ({ profileId: 'p1', key: 'yt:k' + i, giftRank: i + 1 }));
+  const { keep, retire } = planGiftRunawayRepair(states);
+  assert.equal(keep.length, 12);
+  assert.equal(retire.length, 1008);
+  assert.deepEqual(keep.slice(0, 3), ['yt:k0', 'yt:k1', 'yt:k2'], 'rank 1 is the NEWEST — it stays');
+  assert.equal(new Set([...keep, ...retire]).size, 1020, 'every ranked gift is accounted for exactly once');
+});
+
+test('planGiftRunawayRepair leaves a plausible gift pile completely alone', () => {
+  // A child who simply has not opened their gifts must not be "repaired".
+  for (const n of [0, 1, 12, 13, 40, 60]) {
+    const states = Array.from({ length: n }, (_, i) => ({ key: 'yt:k' + i, giftRank: i + 1 }));
+    assert.deepEqual(planGiftRunawayRepair(states), { keep: [], retire: [] }, `${n} gifts`);
+  }
+  // already-unwrapped items are not gifts and never count toward the pile
+  const mixed = Array.from({ length: 300 }, (_, i) => ({ key: 'yt:u' + i, giftRank: i + 1, unwrappedAt: 5 }));
+  assert.deepEqual(planGiftRunawayRepair(mixed), { keep: [], retire: [] });
+  for (const junk of [null, undefined, [], [null, {}, 0]]) {
+    assert.deepEqual(planGiftRunawayRepair(junk), { keep: [], retire: [] }, JSON.stringify(junk));
+  }
+});
+
+test('planGiftRunawayRepair is idempotent — the repaired state repairs to nothing', () => {
+  const states = Array.from({ length: 500 }, (_, i) => ({ key: 'yt:k' + i, giftRank: i + 1 }));
+  const first = planGiftRunawayRepair(states);
+  const after = states
+    .filter((s) => first.keep.includes(s.key))
+    .concat(states.filter((s) => first.retire.includes(s.key)).map((s) => ({ key: s.key, unwrappedAt: 9 })));
+  assert.deepEqual(planGiftRunawayRepair(after), { keep: [], retire: [] });
 });
