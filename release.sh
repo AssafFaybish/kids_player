@@ -50,6 +50,13 @@ else
 fi
 TAG="v$V"
 APK="$APK_DIR/kids-player-$TAG.apk"
+# v1.0.19: a SECOND asset under a version-less name. GitHub resolves
+# /releases/latest/download/<name> only for an exactly-named asset, so a stable name
+# is what lets the website's download button hit the newest APK directly — no GitHub
+# page, no JavaScript, no API call. The versioned copy stays for humans and for
+# update.js's pickApkAsset exact match (it prefers kids-player-<tag>.apk, and only
+# falls back to "any .apk", so two assets never confuse it).
+APK_LATEST="$APK_DIR/kids-player.apk"
 
 # ---- tests -------------------------------------------------------------------
 say "Running tests…"
@@ -61,6 +68,7 @@ npm run apk:release >/dev/null 2>&1 || die "Build failed — run npm run apk:rel
 npm run apk:verify 2>/dev/null | grep -q '^Verifies' || die "Signature verification failed — do NOT publish!"
 mkdir -p "$APK_DIR"
 cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+cp android/app/build/outputs/apk/release/app-release.apk "$APK_LATEST"
 say "Built and verified: $APK ($(du -h "$APK" | cut -f1 | tr -d ' '))"
 
 # ---- publish -------------------------------------------------------------------
@@ -72,7 +80,7 @@ BODY="## מה חדש
 
 $NOTES"
 say "Publishing GitHub release…"
-if gh release create "$TAG" "$APK" --repo "$REPO" -t "$TAG" -n "$BODY" 2>/dev/null; then
+if gh release create "$TAG" "$APK" "$APK_LATEST" --repo "$REPO" -t "$TAG" -n "$BODY" 2>/dev/null; then
   printf '\n\033[1;32m✓ Published! Devices will see the update via the "check for update" button.\033[0m\n'
 else
   cat <<EOT
@@ -81,7 +89,9 @@ else
    1. https://github.com/$REPO/releases/new
    2. Tag: $TAG  <- type it by hand with an ENGLISH keyboard (invisible bidi
       marks from a Hebrew-context copy-paste broke version detection once)
-   3. Drag the file:  $(pwd)/$APK
+   3. Drag BOTH files:  $(pwd)/$APK
+                        $(pwd)/$APK_LATEST   <- the website's download button
+                        needs this exact name, or it 404s
    4. Publish release
 
    (or: gh auth login with the devfassaf account and run again)
