@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>הסרטונים שלי — נגן וידאו בטוח לילדים</title>
+  <style>
+    :root { --brand: #6c63ff; --ink: #2d2a4a; --muted: #6b6890; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, "Segoe UI", "Noto Sans Hebrew", sans-serif;
+           color: var(--ink); line-height: 1.7; background: #faf8ff; }
+    header { background: linear-gradient(135deg, #6c63ff 0%, #8a84c8 100%); color: #fff;
+             text-align: center; padding: 64px 20px 56px; }
+    header .logo { font-size: 72px; }
+    header h1 { margin: 8px 0 4px; font-size: 34px; }
+    header p { margin: 0; font-size: 18px; opacity: .92; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px 22px 60px; }
+    h2 { color: var(--brand); margin-top: 34px; }
+    ul { padding-inline-start: 22px; }
+    .card { background: #fff; border-radius: 16px; padding: 18px 22px; margin: 16px 0;
+            box-shadow: 0 4px 16px rgba(45,42,74,.08); }
+    footer { text-align: center; color: var(--muted); font-size: 14px; padding: 24px; }
+    a { color: var(--brand); }
+    code { background: #efecff; padding: 1px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">🌳</div>
+    <h1>הסרטונים שלי</h1>
+    <p>נגן וידאו בטוח לילדים — ההורים בוחרים בדיוק מה רואים</p>
+  </header>
+  <main>
+    <p>
+      <b>הסרטונים שלי</b> היא אפליקציית אנדרואיד חינמית ופרטית שנועדה לתת מענה בטוח
+      לילדים צעירים. יוטיוב הוא אוקיינוס בלתי-נשלט של תוכן, פרסומות והמלצות אקראיות;
+      האפליקציה הזו הופכת את הכיוון — <b>ההורים</b> בוחרים אילו ערוצים ואילו סרטונים
+      קיימים בעולם של הילד, והילד מקבל מסך בית פשוט, נקי ובטוח שלו בלבד.
+    </p>
+
+    <h2>מה האפליקציה עושה</h2>
+    <div class="card">
+      <ul>
+        <li>ההורה מנהל רשימת סרטונים/ערוצים מאושרים דרך קובץ Google Sheets פרטי.</li>
+        <li>סרטונים חדשים בערוצים ממתינים לאישור ההורה לפני שהילד רואה אותם.</li>
+        <li>אין פרסומות, אין המלצות, ואין דרך לצאת מהתוכן שההורה בחר.</li>
+        <li>גיבוי אופציונלי בגוגל דרייב שומר את הספרייה וההגדרות בין מכשירים.</li>
+      </ul>
+    </div>
+
+    <h2>למה האפליקציה מבקשת גישה ל-Google</h2>
+    <div class="card">
+      <p>הגישה היא בהתנדבות מלאה, לחשבון ה<b>הורה</b> בלבד, ומשמשת אך ורק לשתי מטרות:</p>
+      <ul>
+        <li>
+          <b>Google Drive (drive.file):</b> ליצור ולנהל <b>קובץ גיבוי אחד</b>
+          שהאפליקציה עצמה יוצרת — הפרופילים והספרייה. ההרשאה הזו לא נותנת גישה
+          לשום קובץ אחר בדרייב שלכם.
+        </li>
+        <li>
+          <b>Google Sheets (spreadsheets):</b> לרשום ולעדכן את רשימת הסרטונים
+          בקובץ המקורות שאתם מגדירים — כדי שהקובץ יישאר מקור-האמת היחיד לתוכן.
+        </li>
+      </ul>
+      <p>
+        האפליקציה אינה מוכרת, משתפת או מעבירה מידע לצד שלישי. כל הנתונים נשארים
+        בחשבון Google ובמכשיר שלכם. פירוט מלא ב<a href="privacy.html">מדיניות הפרטיות</a>.
+      </p>
+    </div>
+
+    <h2>יצירת קשר</h2>
+    <div class="card">
+      <p>שאלות, בקשות או דיווח על תקלה: <a href="mailto:dev.fassaf@gmail.com">dev.fassaf@gmail.com</a></p>
+    </div>
+  </main>
+  <footer>© הסרטונים שלי · פרויקט משפחתי, קוד פתוח</footer>
+</body>
+</html>

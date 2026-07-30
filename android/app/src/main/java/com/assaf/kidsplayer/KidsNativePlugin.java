@@ -71,6 +71,47 @@ public class KidsNativePlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /* ---------------- exit lock via screen pinning (v1.0.11) ---------------- */
+    // Android does NOT let apps intercept the HOME button — the sanctioned kiosk
+    // mechanism is lock-task ("screen pinning"): home/recents/back are contained by
+    // the OS. Without device-owner provisioning the FIRST startLockTask shows a
+    // one-time system confirmation; our own stopLockTask() (parent-PIN gated in JS)
+    // exits it without device credentials.
+
+    @PluginMethod
+    public void lockTask(PluginCall call) {
+        Activity a = getActivity();
+        if (a == null) { call.reject("no-activity"); return; }
+        a.runOnUiThread(() -> {
+            try { a.startLockTask(); call.resolve(); }
+            catch (Exception e) { call.reject("lock-failed: " + e.getMessage()); }
+        });
+    }
+
+    @PluginMethod
+    public void unlockTask(PluginCall call) {
+        Activity a = getActivity();
+        if (a == null) { call.reject("no-activity"); return; }
+        a.runOnUiThread(() -> {
+            try { a.stopLockTask(); } catch (Exception ignored) {}
+            call.resolve();
+        });
+    }
+
+    @PluginMethod
+    public void isTaskLocked(PluginCall call) {
+        boolean locked = false;
+        try {
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) getContext().getSystemService(Context.ACTIVITY_SERVICE);
+            locked = am != null
+                    && am.getLockTaskModeState() != android.app.ActivityManager.LOCK_TASK_MODE_NONE;
+        } catch (Exception ignored) {}
+        JSObject ret = new JSObject();
+        ret.put("value", locked);
+        call.resolve(ret);
+    }
+
     /* ---------------- real exit (v1.0.4) ---------------- */
 
     /**
@@ -84,6 +125,7 @@ public class KidsNativePlugin extends Plugin {
         Activity a = getActivity();
         if (a == null) { System.exit(0); return; }
         a.runOnUiThread(() -> {
+            try { a.stopLockTask(); } catch (Exception ignored) {} // pinned task can't finish
             a.finishAndRemoveTask();
             new android.os.Handler(android.os.Looper.getMainLooper())
                     .postDelayed(() -> System.exit(0), 250);

@@ -79,12 +79,38 @@ function goGallery() {
   nav.reset('gallery');
 }
 
+/* ---------------- Exit lock (v1.0.11, per-device) ---------------- */
+// When ON: the app is OS-pinned (home/recents/back contained by Android — the only
+// sanctioned way to catch the HOME button), the exit button disappears, and every
+// exit path runs confirm → parent PIN → unpin + exit.
+async function exitLockOn() {
+  try { return (await prefGet('exitLock')) === '1'; } catch { return false; }
+}
+
+async function applyExitLockUi() {
+  const on = await exitLockOn();
+  $('exit-btn').classList.toggle('hidden', on);
+}
+
 async function askExit() {
   const leave = await confirmKid({
     emoji: '👋', title: 'לצאת מהאפליקציה?', text: 'תמיד אפשר לחזור!',
     ok: 'צא', cancel: 'השאר', danger: true
   });
-  if (leave) exitApp();
+  if (!leave) return;
+  if (await exitLockOn()) {
+    // the exit itself is the protected resource — PIN before unpinning
+    startPin((await hasPin()) ? 'verify' : 'setup', {
+      title: 'קוד הורים ליציאה מהאפליקציה',
+      onSuccess: async () => {
+        const { unlockTask } = await import('./platform.js');
+        await unlockTask();
+        exitApp();
+      }
+    });
+    return;
+  }
+  exitApp();
 }
 
 /* ---------------- Attention (v1.0.4): red dots for the parent ---------------- */
@@ -962,6 +988,7 @@ async function refreshParent() {
   $('remote-url').value = (src && src.sheetUrl) || '';
   $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
   $('share-approval-toggle').checked = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
+  $('exit-lock-toggle').checked = await exitLockOn();
   $('add-msg').textContent = '';
   $('remote-status').textContent = '';
   $('approve-msg').textContent = '';
@@ -1944,6 +1971,26 @@ function wire() {
     $('apikey-msg').className = 'form-msg ok';
   });
 
+  // v1.0.11: exit lock — applying is immediate (Android may show its own one-time
+  // pinning confirmation); turning it off unpins right away (we're behind the PIN).
+  $('exit-lock-toggle').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    await prefSet('exitLock', on ? '1' : '');
+    const { lockTask, unlockTask, isNative } = await import('./platform.js');
+    let note = on ? 'נעילת היציאה הופעלה ✅' : 'נעילת היציאה כובתה';
+    if (on) {
+      const locked = await lockTask();
+      if (!locked && !isNative) note = 'נשמר ✅ (הנעילה עצמה פועלת רק באפליקציה המותקנת)';
+      else if (!locked) note = 'נשמר, אך ההצמדה נכשלה — ננסה שוב בכניסה הבאה';
+      else note = 'נעילת היציאה הופעלה ✅ — יציאה תדרוש קוד הורים';
+    } else {
+      await unlockTask();
+    }
+    await applyExitLockUi();
+    $('settings-msg').textContent = note;
+    $('settings-msg').className = 'form-msg ok';
+  });
+
   $('share-approval-toggle').addEventListener('change', async (e) => {
     const src = (await db.getSources(activeProfileId));
     if (!src) return;
@@ -2087,6 +2134,15 @@ async function init() {
       document.documentElement.classList.add('tv');
       (await import('./ui/dpad.js')).initDpad();
     }
+  } catch {}
+
+  // v1.0.11: re-arm the exit lock on every launch (pinning does not survive restarts)
+  try {
+    if (await exitLockOn()) {
+      const { lockTask } = await import('./platform.js');
+      lockTask().catch(() => {});
+    }
+    await applyExitLockUi();
   } catch {}
 
   onAppResume(async () => {
