@@ -18,6 +18,10 @@ import { httpRequest } from './platform.js';
 import { getAccessToken } from './gauth.js';
 import { getMeta, putMeta, getSources } from './db.js';
 import { classifySourceRow } from './classify.js';
+// csv.js sits BELOW db in the import order (platform → store/classify/csv/util → db →
+// plan/sync2/drive), so pulling looksLikeHtml in here cannot create a cycle. It is
+// imported for the READ path: a markup body wearing an HTTP 200 is a failed fetch.
+import { looksLikeHtml } from './csv.js';
 
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
 const DRIVE = 'https://www.googleapis.com/drive/v3';
@@ -153,21 +157,47 @@ export function matchRowsForDeletion(colA, ops, handleMap = {}) {
 
 /* ---------------- queue ---------------- */
 
+/**
+ * PURE — the queue after enqueuing `newOp`, plus whether the cap dropped anything.
+ * -> { queue, overflow }
+ *
+ * Two rules, both paid for in lost data before they were rules:
+ *
+ *  - RECONCILE BEFORE CAPPING (v1.0.18). Re-editing one video 300 times used to push
+ *    300 entries and shove 100 unrelated ops out of the queue. Collapsing per entity
+ *    first means the cap counts DISTINCT ENTITIES, so churn on one video can never
+ *    evict another video's pending delete.
+ *  - KEEP THE OLDEST INTENTS. `slice(-cap)` drops the HEAD, and the head is where the
+ *    parent's EARLIEST deletions live: an offline bulk cleanup of 300 videos silently
+ *    discarded the first 100 delvideo ops, their rows stayed in the sheet, the next
+ *    mirror pass read that presence as a deliberate re-add, revoked the tombstones,
+ *    and every deleted video came back on every device. Head-slicing also means an op
+ *    could vanish with no action of its own — purely because unrelated later activity
+ *    pushed it out. FIFO instead: what is already queued stays queued and drains in
+ *    order, and the op that cannot fit is the one being enqueued RIGHT NOW, at the
+ *    same moment `error: 'queue-overflow'` reaches the parent's sources tab.
+ *
+ * Junk in (null, holes, legacy op-less rows) must never throw — this runs on a
+ * durable queue read back from storage, possibly written by an older version.
+ */
+export function planQueue(existingOps, newOp, cap = QUEUE_CAP) {
+  const limit = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : QUEUE_CAP;
+  const merged = reconcileOps([...normalizeOps(existingOps), ...(newOp ? [newOp] : [])]);
+  return { queue: merged.slice(0, limit), overflow: merged.length > limit };
+}
+
 async function enqueueOp(profileId, op, { flush = true } = {}) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, noSheet: true };
-  // v1.0.18: RECONCILE BEFORE CAPPING. `slice(-QUEUE_CAP)` drops the HEAD, so an
-  // offline bulk cleanup silently discarded the oldest ops — a dropped delvideo
-  // leaves the row in the sheet, the next mirror pass reads that as presence and
-  // revokes the tombstone, and the deleted video comes back on every device.
-  // Reconciling first collapses per entity, so only 200 DISTINCT entities overflow.
-  const q = reconcileOps([...normalizeOps((await getMeta(qKey(src.libraryId))) || []), { ...op, at: Date.now() }]);
-  const kept = q.slice(-QUEUE_CAP);
-  await putMeta(qKey(src.libraryId), kept);
+  // The clock stays HERE so planQueue can be pure (and testable).
+  const { queue, overflow } = planQueue(
+    (await getMeta(qKey(src.libraryId))) || [], { ...op, at: Date.now() }, QUEUE_CAP
+  );
+  await putMeta(qKey(src.libraryId), queue);
   // Overflow is data loss, not a queue detail — say so instead of dropping quietly.
   await patchState(src.libraryId, {
-    pending: kept.length,
-    ...(q.length > QUEUE_CAP ? { error: 'queue-overflow' } : {})
+    pending: queue.length,
+    ...(overflow ? { error: 'queue-overflow' } : {})
   });
   return flush ? flushSheetQueue(profileId) : { ok: true, queued: true };
 }
@@ -367,12 +397,57 @@ export async function readSourceSheet(sheetUrl) {
   const res = await httpRequest({
     url: `${SHEETS}/${spreadsheetId}/values/${range}`, headers: auth, responseType: 'json'
   });
-  if (res.status !== 200 || !res.data) throw new Error('sheet-http-' + res.status);
-  const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
-  // An empty sheet legitimately returns no `values` key at all. That IS an empty
-  // sheet (not a failure) — and the mirror's total-disappearance valve is what
-  // asks the parent about it, so returning [] here is correct.
-  return (data.values || []).map((r) => (Array.isArray(r) ? r : []));
+  return interpretSheetResponse(res.status, res.data);
+}
+
+/**
+ * PURE — the ONE place that decides whether an HTTP response is rows or a failure.
+ * -> array of row arrays, or THROWS.
+ *
+ * EMPTINESS MAY COME FROM EXACTLY ONE PLACE: a clean 200 whose payload carries no
+ * `values` (the Sheets API omits the key for an empty range). Everything else throws,
+ * because the caller turns a throw into "leave `sheetParsed` false" and the v1.0.10
+ * presence-mirror deletes content only on a SUCCESSFUL parse — an `[]` from a failed
+ * read tells the mirror the parent emptied the sheet, and it tombstones the whole
+ * library. Every branch below is therefore a refusal to guess:
+ *
+ *  - non-200 → 'sheet-http-<status>' (status 0 = no network). The string is what
+ *    `sheetErrorMessage` pattern-matches, so it must keep carrying the code.
+ *  - a MARKUP body on a 200 is a fetch failure, not an empty sheet (csv.js
+ *    looksLikeHtml): a lost grant redirects to a sign-in / "request access" page
+ *    that answers 200 with HTML. This once deleted whole libraries through the CSV
+ *    reader; the authenticated reader can meet the same interstitial.
+ *  - a JSON ERROR ENVELOPE on a 200 (Google's `{error:{code,…}}`, which a proxy can
+ *    hand back with the status flattened) has no `values` and would otherwise read
+ *    as "empty". The code rides along so the message stays specific.
+ *  - `values` present but not an array = a payload we do not understand. Guessing []
+ *    is the one answer that can destroy data, so refuse.
+ *
+ * Rows are RAGGED — the API omits trailing empty cells and can send a bare `[]` for
+ * a blank line. That is normal input, never an error.
+ */
+export function interpretSheetResponse(status, data) {
+  if (status !== 200) throw new Error('sheet-http-' + (status || 0));
+  // A 200 with no body at all: the browser path yields null when the body was not
+  // JSON (i.e. exactly the HTML interstitial above), so this is a failure too.
+  if (!data) throw new Error('sheet-http-' + status);
+
+  let payload = data;
+  if (typeof payload === 'string') {
+    // CapacitorHttp hands back the raw string when responseType:'json' cannot parse.
+    if (looksLikeHtml(payload)) throw new Error('sheet-html');
+    try { payload = JSON.parse(payload); } catch { throw new Error('sheet-not-json'); }
+  }
+  // A bare array is not a values.get payload either — only `{…}` can carry `values`.
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('sheet-not-json');
+  if (payload.error && payload.values == null) {
+    const err = payload.error;
+    throw new Error('sheet-api-' + (err.code || err.status || 'error'));
+  }
+  const values = payload.values;
+  if (values == null) return []; // the ONLY empty result: a genuinely empty sheet
+  if (!Array.isArray(values)) throw new Error('sheet-not-json');
+  return values.map((r) => (Array.isArray(r) ? r : []));
 }
 
 /**
@@ -395,6 +470,12 @@ export function sheetErrorMessage(err) {
     return 'אין גישה לקובץ הרשימה. אם חיברתם קובץ ידנית בגרסה ישנה — צרו רשימה חדשה כאן, והתוכן הקיים יעבור אליה.';
   }
   if (/bad-url/.test(e)) return 'הקישור לרשימה אינו תקין — צרו רשימה חדשה.';
+  // interpretSheetResponse's "this is not data" cases: a sign-in / request-access page
+  // wearing a 200, or a payload we cannot read. Almost always a lost grant, so point
+  // at reconnecting — and say the library is intact, because it is.
+  if (/html|not-json/.test(e)) {
+    return 'התקבלה תשובה לא צפויה מגוגל בקריאת הרשימה. התחברו מחדש לחשבון Google בהגדרות ונסו לרענן — התוכן הקיים נשמר.';
+  }
   return 'לא הצלחנו לקרוא את הרשימה (אולי אין חיבור לאינטרנט). התוכן הקיים נשמר.';
 }
 

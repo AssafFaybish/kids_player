@@ -5,7 +5,9 @@
 // SECURITY: import treats the file as UNTRUSTED (like the sheet): every video is
 // re-classified from its srcUrl through classifyLink — the one legacy path that
 // bypassed the safety boundary (old importJson) is closed. localPath is validated
-// against the cache-file shape. Import MERGES, never overwrites.
+// against the cache-file shape. Import MERGES, never overwrites. Those per-row rules live
+// in the PURE sanitizeSnapshotVideo below precisely so they can be pinned by tests — this
+// module talks to IndexedDB, and an untested safety boundary is not a boundary.
 
 import { classifyLink } from './classify.js';
 import { normalizeTitle } from './normalize.js';
@@ -60,6 +62,68 @@ export async function exportProfileSnapshot(profileId, profileMeta = null) {
   });
 }
 
+const inScope = (validScopes, id) => Array.isArray(validScopes)
+  ? validScopes.includes(id)
+  : !!(validScopes && typeof validScopes.has === 'function' && validScopes.has(id));
+
+/**
+ * Sanitize ONE exported video row into a storable record. Pure on purpose: the rules
+ * below are the whole security value of the import path, and they are only worth
+ * anything if they can be pinned by a test without an IndexedDB.
+ *
+ *  - classifyLink(srcUrl) is THE safety boundary: key/type/id/url are REBUILT from the
+ *    link, never copied out of the file. A hand-edited snapshot therefore cannot smuggle
+ *    in a `javascript:` url, an arbitrary web page, or a key that lies about its url.
+ *    null back = the caller counts the row as rejected.
+ *  - scopeId is honoured only when it names one of THIS profile's scopes; anything else
+ *    falls back to the profile scope. A snapshot from another family must never write
+ *    into a `lib:` library that other profiles on this device share.
+ *  - a PENDING row stays PARKED in '~pending' (the kid-facing folder index has no state
+ *    component, so an unparked pending record would be visible to the child) and keeps
+ *    the homeFolderId it was exported with — that is the folder approval returns it to,
+ *    and `homeFolderId === 'sheet'` is also what marks a record sheet-backed later on.
+ *  - localPath must match the cache-file shape we write ourselves: a path from the file
+ *    is untrusted input and must never point the player outside the cache directory.
+ *  - thumbId is dropped (blobs don't travel) and thumbUrl must be https — an http
+ *    thumbnail is both a mixed-content failure and an unverifiable source.
+ */
+export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.now() } = {}) {
+  const c = classifyLink(v && v.srcUrl);
+  if (!c) return null;
+
+  const scopeId = inScope(validScopes, v.scopeId) ? v.scopeId : profScope(profileId);
+  // '~pending' is a parking slot, never a folder to return to
+  const folderId = typeof v.folderId === 'string' && v.folderId !== '~pending' ? v.folderId : 'mine';
+  const homeFolderId = typeof v.homeFolderId === 'string' && v.homeFolderId !== '~pending'
+    ? v.homeFolderId : null;
+  const pending = v.state === 'pending';
+
+  return {
+    scopeId, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
+    srcUrl: c.srcUrl, driveId: c.driveId ?? null,
+    title: typeof v.title === 'string' ? v.title.slice(0, 300) : '',
+    titleSource: v.titleSource || null,
+    normTitle: normalizeTitle(v.title),
+    folderId: pending ? '~pending' : folderId,
+    // an exported pending row already carries its real home; only a row that was never
+    // parked (or lost its home) falls back to the folder it was filed under
+    homeFolderId: pending ? (homeFolderId || folderId) : homeFolderId,
+    channelId: typeof v.channelId === 'string' ? v.channelId : null,
+    sortKey: typeof v.sortKey === 'number' ? v.sortKey
+      : sortKeyFor({ origin: v.origin || 'manual', publishedAt: v.publishedAt, rowIndex: v.rowIndex, addedAt: v.addedAt }),
+    publishedAt: v.publishedAt ?? null, rowIndex: v.rowIndex ?? null,
+    origin: v.origin || 'manual',
+    state: pending ? 'pending' : 'live',
+    addedAt: v.addedAt || now, approvedAt: v.approvedAt ?? null,
+    thumbId: null, // blobs don't travel in the snapshot
+    thumbUrl: typeof v.thumbUrl === 'string' && /^https:/.test(v.thumbUrl) ? v.thumbUrl : null,
+    // typeof FIRST: RegExp.test stringifies, so `["videos/x.mp4"]` used to pass the shape
+    // check and then be STORED as an array — the record must hold a string or nothing
+    localPath: typeof v.localPath === 'string' && LOCALPATH_RE.test(v.localPath) ? v.localPath : null,
+    updatedAt: now
+  };
+}
+
 /** Merge an exported snapshot into (possibly fresh) local state. Never throws on bad rows. */
 export async function importProfileSnapshot(profileId, text) {
   let snap;
@@ -79,30 +143,8 @@ export async function importProfileSnapshot(profileId, text) {
   let rejected = 0;
   const puts = [];
   for (const v of snap.videos) {
-    const c = classifyLink(v && v.srcUrl);         // THE safety boundary — rebuilt, not trusted
-    if (!c) { rejected += 1; continue; }
-    const scopeId = validScopes.has(v.scopeId) ? v.scopeId : profScope(profileId);
-    const rec = {
-      scopeId, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
-      srcUrl: c.srcUrl, driveId: c.driveId ?? null,
-      title: typeof v.title === 'string' ? v.title.slice(0, 300) : '',
-      titleSource: v.titleSource || null,
-      normTitle: normalizeTitle(v.title),
-      folderId: typeof v.folderId === 'string' && v.folderId !== '~pending' ? v.folderId : 'mine',
-      homeFolderId: v.homeFolderId,
-      channelId: typeof v.channelId === 'string' ? v.channelId : null,
-      sortKey: typeof v.sortKey === 'number' ? v.sortKey
-        : sortKeyFor({ origin: v.origin || 'manual', publishedAt: v.publishedAt, rowIndex: v.rowIndex, addedAt: v.addedAt }),
-      publishedAt: v.publishedAt ?? null, rowIndex: v.rowIndex ?? null,
-      origin: v.origin || 'manual',
-      state: v.state === 'pending' ? 'pending' : 'live',
-      addedAt: v.addedAt || Date.now(), approvedAt: v.approvedAt ?? null,
-      thumbId: null, // blobs don't travel in the snapshot
-      thumbUrl: typeof v.thumbUrl === 'string' && /^https:/.test(v.thumbUrl) ? v.thumbUrl : null,
-      localPath: LOCALPATH_RE.test(v.localPath || '') ? v.localPath : null,
-      updatedAt: Date.now()
-    };
-    if (rec.state === 'pending') { rec.homeFolderId = rec.folderId; rec.folderId = '~pending'; }
+    const rec = sanitizeSnapshotVideo(v, { validScopes, profileId }); // THE safety boundary
+    if (!rec) { rejected += 1; continue; }
     puts.push(rec);
     imported += 1;
   }

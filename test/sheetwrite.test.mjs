@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME,
-  starterRows, matchRowsForDeletion, sheetErrorMessage } from '../www/js/sheetwrite.js';
+  starterRows, matchRowsForDeletion, sheetErrorMessage, interpretSheetResponse, planQueue } from '../www/js/sheetwrite.js';
 import { classifySourceRow, parseRemovalRow } from '../www/js/classify.js';
 import { parseSourceRows } from '../www/js/sync2.js';
 
@@ -284,4 +284,182 @@ test('sheetErrorMessage: 403/404 points at creating a new list, not at pasting',
 
 test('sheetErrorMessage: an offline read reassures that nothing was lost', () => {
   assert.match(sheetErrorMessage('sheet-http-0'), /התוכן הקיים נשמר/);
+});
+
+/* ---- the READ path: an unreadable sheet must NEVER look like an emptied one ----
+ *
+ * interpretSheetResponse is the single gate between an HTTP response and rows. The
+ * caller turns its throw into "leave sheetParsed false", and the presence-mirror
+ * deletes content only on a successful parse — so any [] it returns by mistake reads
+ * as "the parent emptied the sheet" and tombstones the whole library. These tests
+ * exist to keep exactly ONE input capable of producing []. */
+
+/** The thrown error, or null when the call unexpectedly returned. */
+const thrown = (fn) => { try { fn(); return null; } catch (e) { return e; } };
+
+test('interpretSheetResponse: EVERY non-200 throws, and the code survives into sheetErrorMessage', () => {
+  const rows = { values: [['https://youtu.be/aaaaaaaaaa1', 'שיר', '']] };
+  for (const status of [401, 403, 404, 429, 500, 0]) {
+    const e = thrown(() => interpretSheetResponse(status, rows));
+    assert.ok(e, `status ${status} must throw — returning [] would delete the library`);
+    assert.match(e.message, new RegExp(`^sheet-http-${status}$`), 'the status must ride in the message');
+    const m = sheetErrorMessage(e.message);
+    assert.ok(m && m.length > 20, `no parent-facing message for ${status}`);
+    assert.doesNotMatch(m, /✅/, 'a failed read must never render as success');
+  }
+  // and the specific statuses stay specific instead of falling to the generic copy
+  assert.match(sheetErrorMessage(thrown(() => interpretSheetResponse(401, rows)).message), /התחברו מחדש/);
+  assert.match(sheetErrorMessage(thrown(() => interpretSheetResponse(403, rows)).message), /צרו רשימה חדשה/);
+  assert.match(sheetErrorMessage(thrown(() => interpretSheetResponse(404, rows)).message), /צרו רשימה חדשה/);
+});
+
+test('interpretSheetResponse: a 200 with no `values` is the ONLY empty result', () => {
+  // The Sheets API omits the key entirely for an empty range. THAT is an empty sheet,
+  // and the mirror's total-disappearance valve is what asks the parent about it.
+  assert.deepEqual(interpretSheetResponse(200, { range: "'גיליון1'!A1:C1000", majorDimension: 'ROWS' }), []);
+  assert.deepEqual(interpretSheetResponse(200, { values: [] }), []);
+  assert.deepEqual(interpretSheetResponse(200, '{"range":"A:C","majorDimension":"ROWS"}'), []);
+});
+
+test('interpretSheetResponse: an HTML permission page wearing a 200 is a FAILURE, not an empty sheet', () => {
+  // THE BUG THIS CLOSES (v1.0.18, via the CSV reader): losing the grant does not fail
+  // the request — Google answers 200 with a sign-in / "request access" page. Parsing
+  // that as "the parent emptied the sheet" deleted whole libraries.
+  const pages = [
+    '<!DOCTYPE html><html><head><title>Sign in - Google Accounts</title></head><body>…',
+    '<html lang="en"><body>Request access</body></html>',
+    '\n  \t<!doctype HTML>\n<html>',
+    '﻿<!DOCTYPE html>',                 // BOM-prefixed
+    '<?xml version="1.0"?><Error/>'
+  ];
+  for (const page of pages) {
+    const e = thrown(() => interpretSheetResponse(200, page));
+    assert.ok(e, `treated markup as rows: ${page.slice(0, 30)}`);
+    const m = sheetErrorMessage(e.message);
+    assert.match(m, /התחברו מחדש/, 'the parent needs a next step, not a shrug');
+    assert.match(m, /התוכן הקיים נשמר/, 'nothing was deleted — say so');
+  }
+  // The browser path never even sees the HTML: fetch().json() yields null on a 200.
+  assert.ok(thrown(() => interpretSheetResponse(200, null)), 'a bodyless 200 is a failure too');
+});
+
+test('interpretSheetResponse: a JSON error envelope on a 200 keeps its code', () => {
+  // A proxy (or a flattening client) can hand back Google's {error:{…}} with the
+  // status lost. It has no `values`, so it would otherwise read as an empty sheet.
+  const perm = thrown(() => interpretSheetResponse(200, {
+    error: { code: 403, status: 'PERMISSION_DENIED', message: 'The caller does not have permission' }
+  }));
+  assert.ok(perm);
+  assert.match(sheetErrorMessage(perm.message), /צרו רשימה חדשה/);
+  const auth = thrown(() => interpretSheetResponse(200, { error: { code: 401, status: 'UNAUTHENTICATED' } }));
+  assert.match(sheetErrorMessage(auth.message), /התחברו מחדש/);
+  // an envelope WITH rows is still rows (a partial-warning shape must not delete)
+  assert.deepEqual(interpretSheetResponse(200, { error: { code: 0 }, values: [['a']] }), [['a']]);
+});
+
+test('interpretSheetResponse: ragged rows survive untouched (the API omits trailing cells)', () => {
+  const values = [
+    ['# עמודה A · לינק', 'שם', 'auto/manual'],
+    ['https://youtu.be/aaaaaaaaaa1', 'שיר'],          // C omitted
+    ['https://youtu.be/bbbbbbbbbb2'],                 // B and C omitted
+    [],                                               // a blank line
+    ['https://www.youtube.com/@somekids', '', 'auto']
+  ];
+  const rows = interpretSheetResponse(200, { values });
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows[2], ['https://youtu.be/bbbbbbbbbb2']);
+  assert.deepEqual(rows[3], []);
+  // and the downstream parser tolerates the same raggedness
+  const out = parseSourceRows(rows);
+  assert.equal(out.videoRows.length, 2);
+  assert.equal(out.channelRows.length, 1);
+  // a non-array row becomes an empty row rather than throwing mid-parse
+  assert.deepEqual(interpretSheetResponse(200, { values: ['nope', null, 7] }), [[], [], []]);
+});
+
+test('interpretSheetResponse: an unparseable payload refuses to guess []', () => {
+  // Guessing "empty" is the single answer that can destroy data, so anything we do
+  // not recognize throws: garbage strings, non-objects, and a values of the wrong type.
+  for (const junk of ['not json at all', '{"values":', 42, true, [], [['a']], { values: 'oops' }, { values: 5 }]) {
+    assert.ok(thrown(() => interpretSheetResponse(200, junk)), `silently accepted: ${JSON.stringify(junk)}`);
+  }
+  // the native path (CapacitorHttp returns a STRING when responseType:'json' fails to
+  // parse for it) still reads real JSON correctly
+  assert.deepEqual(
+    interpretSheetResponse(200, '{"values":[["https://youtu.be/aaaaaaaaaa1","שיר",""]]}'),
+    [['https://youtu.be/aaaaaaaaaa1', 'שיר', '']]
+  );
+});
+
+/* ---- the WRITE queue: the cap must not eat un-sent deletes ---- */
+
+test('planQueue: 300 DISTINCT deletes against a cap of 200 keep the OLDEST intents', () => {
+  // THE BUG: `slice(-cap)` drops the HEAD, and the head is the parent's EARLIEST
+  // deletions. An offline bulk cleanup of 300 videos discarded the first 100
+  // delvideo ops; their rows stayed in the sheet, the next mirror pass read that
+  // presence as a deliberate re-add, revoked the tombstones, and every deleted
+  // video came back on every device. FIFO: what is queued stays queued.
+  const existing = Array.from({ length: 299 }, (_, i) => ({
+    op: 'delvideo', key: 'yt:v' + String(i).padStart(9, '0'), at: i + 1
+  }));
+  const newest = { op: 'delvideo', key: 'yt:v000000299', at: 300 };
+  const { queue, overflow } = planQueue(existing, newest, 200);
+  assert.equal(queue.length, 200);
+  assert.equal(overflow, true, 'overflow is data loss — the parent must be told');
+  assert.equal(queue[0].key, 'yt:v000000000', 'the earliest delete is never evicted');
+  assert.equal(queue[199].key, 'yt:v000000199');
+  assert.equal(new Set(queue.map((o) => o.key)).size, 200, 'no identity kept twice');
+});
+
+test('planQueue: two ops for the SAME entity collapse and consume ONE slot', () => {
+  // Reconcile BEFORE capping: re-editing one video 300 times must not push anything
+  // else out of the queue.
+  const churn = Array.from({ length: 300 }, (_, i) => ({ op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: i }));
+  const older = { op: 'delvideo', key: 'yt:bbbbbbbbbb2', at: -1 };
+  const { queue, overflow } = planQueue([older, ...churn], { op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u2', '', ''], at: 1000 }, 200);
+  assert.equal(queue.length, 2, 'one slot per ENTITY, not per op');
+  assert.equal(overflow, false);
+  assert.ok(queue.some((o) => o.key === 'yt:bbbbbbbbbb2'), 'the old deletion survives the churn');
+  assert.equal(queue.find((o) => o.key === 'yt:aaaaaaaaaa1').row[0], 'u2', 'latest intent wins');
+});
+
+test('planQueue: at capacity, an update to an ALREADY-queued entity still lands', () => {
+  const full = Array.from({ length: 200 }, (_, i) => ({ op: 'append', key: 'yt:k' + i, row: ['u' + i, '', ''], at: i + 1 }));
+  const { queue, overflow } = planQueue(full, { op: 'delvideo', key: 'yt:k7', at: 9999 }, 200);
+  assert.equal(overflow, false, 'no new slot was needed');
+  assert.equal(queue.length, 200);
+  assert.equal(queue.find((o) => o.key === 'yt:k7').op, 'delvideo');
+});
+
+test('planQueue: append-then-delete and delete-then-append both resolve to the latest intent', () => {
+  const add = { op: 'append', key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 100 };
+  const del = { op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 200 };
+  assert.deepEqual(planQueue([add], del, 200).queue, [del], 'the delete is what the sheet must see');
+  const readd = planQueue([del], { ...add, at: 300 }, 200).queue;
+  assert.equal(readd.length, 1);
+  assert.equal(readd[0].op, 'append', 're-adding after a delete keeps the row');
+  // a channel is ONE entity across both op shapes (delchannel carries channelId, the
+  // append carries key 'ch:<id>') — otherwise it would consume two slots and the
+  // superseded op would still reach the sheet.
+  const chDel = { op: 'delchannel', channelId: 'UCchan111111111111111111', at: 10 };
+  const chAdd = { op: 'append', key: 'ch:UCchan111111111111111111', row: ['u', '', 'manual'], at: 20 };
+  const out = planQueue([chDel], chAdd, 200).queue;
+  assert.equal(out.length, 1);
+  assert.equal(out[0].op, 'append');
+  const chGone = { ...chDel, at: 30 }; // the parent removed it AFTER re-adding it
+  assert.deepEqual(planQueue([chAdd], chGone, 200).queue, [chGone], 'and the reverse order too');
+});
+
+test('planQueue: junk never throws — the queue is durable storage an older version wrote', () => {
+  assert.deepEqual(planQueue(null, null, 200), { queue: [], overflow: false });
+  assert.deepEqual(planQueue(undefined, undefined), { queue: [], overflow: false });
+  const legacy = { key: 'yt:aaaaaaaaaa1', row: ['u', '', ''], at: 50 }; // pre-op-field entry
+  const r = planQueue([null, legacy, undefined], null, 200);
+  assert.equal(r.queue.length, 1);
+  assert.equal(r.queue[0].op, 'append', 'legacy entries normalize to appends');
+  assert.equal(planQueue([{}], {}, 200).queue.length, 1, 'shapeless ops collapse instead of throwing');
+  // A nonsense cap must fall back to the real one — never empty the queue.
+  for (const cap of [0, -5, NaN, null, 'many', undefined]) {
+    assert.equal(planQueue([legacy], null, cap).queue.length, 1, `cap ${cap} emptied the queue`);
+  }
 });

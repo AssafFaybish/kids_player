@@ -246,6 +246,121 @@ export function planSheetMirror({
 }
 
 /**
+ * PURE (extracted v1.0.20): which of a library's records does the SHEET account for?
+ *
+ * The presence-mirror deletes sheet-backed records the sheet no longer lists, so this
+ * filter is a safety boundary, not a convenience:
+ *  - `state === 'live'` — a PENDING share is parked with `homeFolderId:'sheet'` but gets
+ *    its row only at APPROVAL. Including it tombstones the share before the parent has
+ *    even seen the request (a real bug, caught in the v1.0.10 audit).
+ *  - the folder test reads `homeFolderId` FIRST, because a parked record's `folderId` is
+ *    '~pending' and its real home is the field behind it.
+ * Channel videos are deliberately absent: they have no row of their own (the channel row
+ * represents them), so the sheet can never "not list" them.
+ */
+export function sheetBackedKeysOf(records) {
+  const out = [];
+  for (const r of records || []) {
+    if (!r || r.state !== 'live') continue;
+    if ((r.homeFolderId || r.folderId) !== 'sheet') continue;
+    out.push(r.key);
+  }
+  return out;
+}
+
+/**
+ * PURE (extracted v1.0.20): what should connecting/changing a sheet do to the old scope?
+ *
+ * `lib:<fnv1a(sheet)>` is SHARED by every profile reading that sheet, and `moveScope`
+ * MOVES — it deletes the source. So migrating one child's library while a sibling still
+ * points at the old scope carried the whole family library away: a blank home for the
+ * sibling and their pending shares surfacing in this child's approval list.
+ *
+ * @param others [{ profileId, libraryId }] — the OTHER profiles' sources
+ * @returns { action: 'none'|'move', sharedWith: string[] }
+ */
+export function planScopeAdoption(profileId, oldLib, newLib, others = []) {
+  if (!oldLib || !newLib || oldLib === newLib) return { action: 'none', sharedWith: [] };
+  const sharedWith = [];
+  for (const o of others || []) {
+    if (!o || o.profileId === profileId) continue;
+    if (o.libraryId && o.libraryId === oldLib) sharedWith.push(o.profileId);
+  }
+  // Someone else still lives there: the content is sheet-derived from the OLD sheet and
+  // stays with the profiles still reading it. This profile just starts from its new one.
+  if (sharedWith.length) return { action: 'none', sharedWith };
+  return { action: 'move', sharedWith: [] };
+}
+
+/**
+ * v1.0.20 — PURE: may this sync spend the "gifts baselined" flag?
+ *
+ * The baseline records what already existed before a child started, so the newest 12
+ * become gifts and the rest never do. Spending the flag on an EMPTY library is a bug
+ * with two visible halves: adding a channel runs a sync where every candidate is still
+ * pending (in-app adds require approval), so nothing is live yet — and then approving
+ * produced no gifts at all, while the sync after that took the incremental path and
+ * gifted the ENTIRE backfill at once.
+ */
+export function shouldRecordGiftBaseline(firstSync, liveCount) {
+  return !!firstSync && Number(liveCount || 0) > 0;
+}
+
+/**
+ * v1.0.20 — PURE: repair a 🎁 folder that the burned-baseline bug inflated.
+ *
+ * On devices that added a channel before the fix, the baseline flag was spent on an
+ * empty library and the next sync gifted the ENTIRE backfill: a "חדשים" folder holding
+ * the whole library, which the child would have to tap through one by one. This decides
+ * the repair — keep the `baseline` newest ranks (rank 1 IS the newest), retire the rest —
+ * which is exactly the state the first sync should have produced.
+ *
+ * Deliberately conservative: a child who simply never opens gifts accumulates ranks
+ * legitimately, so only an implausible pile is touched. Even a false positive is benign
+ * (a retired gift is a normal video in its folder, never a deleted one).
+ *
+ * @param states iterable of profileVideoState records for ONE profile
+ * @returns { keep: string[], retire: string[] } — retire = give up its rank
+ */
+export function planGiftRunawayRepair(states, { baseline = 12, floor = 60 } = {}) {
+  const ranked = [];
+  for (const st of states || []) if (st && st.giftRank && !st.unwrappedAt) ranked.push(st);
+  if (ranked.length <= Math.max(floor, baseline)) return { keep: [], retire: [] };
+  ranked.sort((a, b) => a.giftRank - b.giftRank); // rank 1 = newest
+  return {
+    keep: ranked.slice(0, baseline).map((s) => s.key),
+    retire: ranked.slice(baseline).map((s) => s.key)
+  };
+}
+
+/** Folder ids that are just "everything loose" — no identity of their own. */
+const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
+
+/**
+ * v1.0.20 — PURE: may the home render its ONE folder's videos flat, with no tile?
+ *
+ * The rule exists for the sheet-only setup: when the only folder is the shared
+ * "סרטונים נוספים" list, making the child tap into it first is a pointless step, so
+ * the home shows the videos directly.
+ *
+ * FIELD BUG it fixes: the old test was "exactly one folder, whatever it is", so a
+ * library whose only content was ONE subscribed channel flattened too — the parent
+ * added a channel and got a 100-page flat wall of its backfill instead of the 📺
+ * folder with the channel's logo, which is the whole point of subscribing. A channel
+ * (or a 🎞️ collection) has an IDENTITY the child navigates by; it always gets a tile.
+ *
+ * @param folders the built folder list (`{ id, isNew }` is all this needs)
+ */
+export function shouldFlattenHome(folders) {
+  const list = Array.isArray(folders) ? folders : [];
+  if (list.length !== 1) return false;
+  const only = list[0];
+  // 🎁 "חדשים" is a view over other folders' videos, never the home in its own right
+  if (!only || only.isNew) return false;
+  return FLAT_FOLDER_IDS.has(only.id);
+}
+
+/**
  * v1.0.12 — PURE: group loose single links by their SOURCE channel.
  * Singles (manual adds / sheet rows / shares — records with no channelId) that come
  * from the same YouTube channel are collected into one virtual folder so the child's

@@ -167,3 +167,20 @@ test('deny LWW merge stays commutative and idempotent', () => {
   // at 70 > removedAt 60 → the re-deny wins → video dropped
   assert.ok(!ab.libraries['lib:x'].videos.some((v) => v.key === 'yt:aaaaaaaaaaa'));
 });
+
+/* ---- the READ side of the deny list (v1.0.20) ---- */
+
+test('denyActive: the read gate agrees with the merge rule, tie → revoked', async () => {
+  // The merge rule above decides which deny record survives; this one-liner decides
+  // whether a surviving record still BLOCKS. If they ever disagree, deleted videos come
+  // back (too lenient) or a sheet re-add can never revive anything (too strict).
+  const { denyActive } = await import('../www/js/db.js');
+  assert.equal(denyActive({ key: 'yt:a', at: 5 }), true, 'a plain tombstone blocks');
+  assert.equal(denyActive({ key: 'yt:a', at: 5, removedAt: 4 }), true, 'an OLDER revoke loses');
+  assert.equal(denyActive({ key: 'yt:a', at: 5, removedAt: 6 }), false, 'a LATER revoke wins');
+  assert.equal(denyActive({ key: 'yt:a', at: 5, removedAt: 5 }), false, 'a TIE goes to revoked');
+  // junk must read as "not blocking" — a corrupt row may not silently hide content
+  for (const junk of [null, undefined, 0, '', false]) assert.equal(denyActive(junk), false, String(junk));
+  // a record with no timestamp at all still blocks (at||0 = 0, no removedAt)
+  assert.equal(denyActive({ key: 'yt:a' }), true);
+});

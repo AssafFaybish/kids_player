@@ -256,6 +256,41 @@ pins that the consumers follow the config and that every address is well-formed.
   `viewBox="0 0 1280 800"` to match the screenshots (the slide CSS has no max-height,
   so a different ratio pushes the nav off-screen). See v1.0.20 for the guide deck's
   current form.
+- v1.0.20 field fixes — these are INVARIANTS now:
+  - **A LONE CHANNEL IS STILL A FOLDER.** `renderHome` flattens its single folder into a
+    flat video list only for the loose lists (`plan.shouldFlattenHome` → `'sheet'`/`'mine'`).
+    The old rule was "exactly one folder, whatever it is", so a library whose only content
+    was ONE subscribed channel rendered the whole backfill flat — no 📺 tile, no logo,
+    which is exactly what the parent subscribed for. 🎁 alone is never the whole home.
+  - **HANDLES ARE NOT ASCII.** `parseChannelRef` accepts `\p{L}\p{N}._-` (YouTube's own
+    3-30 rule) and percent-DECODES the segment first: `m.youtube.com/@חלומותחסידיים` and
+    the `%D7%97…` form the YouTube app puts on the clipboard both used to be rejected as
+    "unsupported link". The stored value is the readable handle, and `yt.channelPageUrl()`
+    encodes it exactly once (encodeURI escapes `%`, so a still-encoded handle would become
+    `%25D7%2597…` and 404 forever). Keep the literal `@`.
+  - **THE GIFT BASELINE NEEDS SOMETHING TO BASELINE.** `plan.shouldRecordGiftBaseline`
+    refuses to burn the flag when no record is live yet. Adding a channel syncs while
+    everything is still pending, so the flag was spent on nothing: the child got NO gifts
+    after approval, and the next sync took the incremental path and gifted the ENTIRE
+    backfill. `dataver` step 2 (`plan.planGiftRunawayRepair`) retires such a pile on
+    already-affected devices — keeps the newest 12, only above an implausible floor (60),
+    and `giftRank` must be DELETED not zeroed (the sparse by_gift index is the 🎁 folder).
+  - **THE HOME NO LONGER RE-READS THE LIBRARY PER RENDER.** `buildFolders` needs full
+    records (they feed the tiles), and `renderHome` runs on every gallery entry, every
+    return from a video and every page flip — a full-store deserialize each time. `db.dataVersion()`
+    counts committed writes (bumped inside `tx()` itself, so no write path can forget)
+    and `buildFolders` caches its whole derivation against it. Measured with 1020 videos:
+    22ms → 1.8ms per render. NEVER cache derived home state against anything else.
+  - Also: the sync's deny set is read once per run instead of once per removed key (it was
+    quadratic in accumulated deletions), and `update.currentVersion()` is memoized — the
+    attention dot was making a native bridge round trip on every render.
+  - Snapshot import: a PENDING record keeps its exported `homeFolderId`. It used to be
+    overwritten with the parked `'~pending'`→`'mine'` fallback, so approval refiled the
+    video into "הסרטונים שלי" and it silently stopped being sheet-backed.
+  - New test files: `invariants.test.mjs` (import graph acyclic, `tour.js` imports nothing,
+    no `search.list`, no `spreadsheets` scope, no paste-a-sheet control, keys.local.js
+    gitignored, `parseSourceSheet` has no production caller), `pin.test.mjs`, `yt.test.mjs`,
+    `snapshot.test.mjs`.
 - v1.0.20 — the ADD-CONTENT GUIDE is the app's real manual: **18 slides, chaptered.**
   Without it the app is worthless to a parent, so it gets the detail it needs.
   Same `view-tour` mechanism; every `ADD_GUIDE_SLIDES` slide now carries a `chapter`
@@ -293,7 +328,11 @@ pins that the consumers follow the config and that every address is well-formed.
     — previously every family's playlist was world-readable to anyone with the URL.
     `readSourceSheet` THROWS on any non-200 and that is load-bearing: the throw keeps
     `sheetParsed` false so the presence-mirror can't read "unreadable" as "emptied".
-    Never soften it to a silent `[]`.
+    Never soften it to a silent `[]`. Since v1.0.20 the whole decision is pure
+    `interpretSheetResponse(status, data)`: **emptiness may come from exactly ONE input**
+    — a clean 200 with no `values` key. A markup body (`looksLikeHtml`, a lost grant
+    answering 200 with a sign-in page), a JSON error envelope on a 200, a non-array
+    `values` and an unparseable body all THROW instead of guessing `[]`.
   - `parseSourceRows(rows)` is the parser. `parseSourceSheet(text)` has NO production
     caller (verified) and is kept only for the tokenizer tests — do not wire it back
     to a fetch. `sync.js` is likewise dead in production. Sheets-API rows are RAGGED (trailing empty cells
@@ -320,8 +359,12 @@ pins that the consumers follow the config and that every address is well-formed.
   - `flushSheetQueue` is serialized per library and clears ONLY the ops it wrote
     (pure `remainingAfterFlush`). Clearing the whole queue destroyed un-sent deletes,
     which resurrected deleted videos everywhere via the mirror's `unDenyKeys`.
-  - `enqueueOp` reconciles BEFORE `slice(-QUEUE_CAP)` so the cap counts distinct
-    ENTITIES; `slice` used to drop the OLDEST ops. Bulk callers pass `{flush:false}`
+  - `enqueueOp` reconciles BEFORE capping so the cap counts distinct ENTITIES, and the
+    cap keeps the OLDEST intents (`planQueue`, pure): head-dropping discarded the
+    parent's earliest deletions — their rows stayed in the sheet, the next mirror read
+    that presence as a deliberate re-add and `unDenyKeys` resurrected everything, on
+    every device. At capacity the op being REFUSED is the newest one, at the same moment
+    `queue-overflow` reaches the sources tab. Bulk callers pass `{flush:false}`
     and flush ONCE at the end — a record that is live + sheet-backed + rowless is
     exactly what the mirror tombstones, so that window must close in one tick.
   - `adoptLibraryScope` refuses to migrate when ANOTHER profile still points at the
