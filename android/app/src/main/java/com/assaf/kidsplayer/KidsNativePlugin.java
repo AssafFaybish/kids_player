@@ -71,6 +71,31 @@ public class KidsNativePlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /* ---------------- open a link outside the app (v1.0.14) ---------------- */
+
+    /**
+     * Hands an https link to the system browser. The in-app WebView deliberately
+     * blocks external navigation and popups (child safety), so parent-facing links
+     * (donation pages) can only leave through an explicit intent like this one.
+     * Refuses anything that isn't http(s) — no intent:// or file:// smuggling.
+     */
+    @PluginMethod
+    public void openUrl(PluginCall call) {
+        String url = call.getString("url");
+        if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) {
+            call.reject("bad-url");
+            return;
+        }
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("no-browser");
+        }
+    }
+
     /* ---------------- exit lock via screen pinning (v1.0.11) ---------------- */
     // Android does NOT let apps intercept the HOME button — the sanctioned kiosk
     // mechanism is lock-task ("screen pinning"): home/recents/back are contained by

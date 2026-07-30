@@ -218,6 +218,20 @@ export async function isTv() {
   return tvCached;
 }
 
+/**
+ * Open an https link OUTSIDE the app (v1.0.14) — the WebView blocks external
+ * navigation/popups by design, so parent-facing links need the native intent.
+ * Returns true when something actually opened.
+ */
+export async function openExternal(url) {
+  if (!/^https?:\/\//i.test(String(url || ''))) return false;
+  const kids = plugin('KidsNative');
+  if (kids && kids.openUrl) {
+    try { await kids.openUrl({ url }); return true; } catch { return false; }
+  }
+  try { return !!window.open(url, '_blank', 'noopener'); } catch { return false; }
+}
+
 /* ---------------- exit lock / screen pinning (v1.0.11) ---------------- */
 // Kiosk mode: HOME cannot be intercepted by apps — OS lock-task is the mechanism.
 // All three are graceful no-ops in the browser preview / without the plugin.

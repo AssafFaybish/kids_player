@@ -301,6 +301,15 @@ body {
   flex-wrap: wrap; /* v1.0.8: five tabs — wrap instead of overflowing on narrow screens */
 }
 
+/* ---------- Donation nudge (v1.0.14): one-time, gentle, dismissible ---------- */
+.donate-nudge {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+  background: #f3f0ff; border: 1px solid #d9d4f7; border-radius: 16px;
+  padding: 12px 16px; margin: 4px 0 12px;
+}
+.donate-nudge-text { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.5; }
+.donate-nudge-btns { display: flex; align-items: center; gap: 10px; }
+
 /* ---------- About tab (v1.0.8) ---------- */
 .about-hero { text-align: center; margin: 6px 0 2px; }
 .about-emoji { font-size: 44px; }

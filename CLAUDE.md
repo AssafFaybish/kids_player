@@ -112,6 +112,15 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.14: parent screen LANDS on "אודות" (`PARENT_TABS[0]`; the panel's initial markup
+  must match it or the screen flashes empty). Voluntary support block: two FREE ways to
+  help (share / feedback) + `❤️ תרומה למפתח` → `askKid` payment-method choice (an
+  accidental dismiss picks nothing) → `platform.openExternal` → `KidsNative.openUrl`
+  (http(s) only; the WebView blocks external navigation by design). ALL links live in
+  `www/js/donate.js` (`DONATE_LINKS`) — empty string = method not offered, both empty =
+  donate button hidden entirely; pure `donateOptions`/`shouldShowDonateNudge` are tested.
+  ONE-TIME nudge in the parent screen after 30 days of use (`install.firstSeenAt` stamped
+  at first launch, `donate.nudgeDismissed` kills it forever). Never shown to the child.
 - v1.0.13: what's-new is a real SCROLLING view (`view-whatsnew`), not the modal (the old
   `alertKid` card had no max-height, so long English bodies overflowed it). Only `.wn-body`
   scrolls — header and button stay put. Notes are PARENT-FACING Hebrew:

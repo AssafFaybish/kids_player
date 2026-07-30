@@ -272,12 +272,22 @@
         <h2 class="parent-title">מסך הורים</h2>
       </header>
 
+      <!-- v1.0.14: "אודות" comes FIRST (user request) -->
       <div class="mode-toggle">
+        <button id="tab-about" class="mode-btn active" type="button">אודות <span id="about-dot" class="attn-dot attn-dot-inline hidden" aria-hidden="true"></span></button>
         <button id="tab-approve" class="mode-btn" type="button">ממתינים <span id="pending-badge" class="tab-badge hidden">0</span></button>
-        <button id="tab-add" class="mode-btn active" type="button">הוספה</button>
+        <button id="tab-add" class="mode-btn" type="button">הוספה</button>
         <button id="tab-sources" class="mode-btn" type="button">מקורות</button>
         <button id="tab-settings" class="mode-btn" type="button">הגדרות</button>
-        <button id="tab-about" class="mode-btn" type="button">אודות <span id="about-dot" class="attn-dot attn-dot-inline hidden" aria-hidden="true"></span></button>
+      </div>
+
+      <!-- v1.0.14: the ONE-TIME gentle reminder (after a month of use, dismissible forever) -->
+      <div id="donate-nudge" class="donate-nudge hidden">
+        <span class="donate-nudge-text">💜 האפליקציה עוזרת לכם? אפשר לתמוך בפיתוח — לגמרי אופציונלי.</span>
+        <div class="donate-nudge-btns">
+          <button id="nudge-donate" class="btn btn-small btn-primary" type="button">לתרום</button>
+          <button id="nudge-dismiss" class="text-btn" type="button">לא תודה</button>
+        </div>
       </div>
 
       <!-- Pending approval (F10/F12): new channel/shared content waits here -->
@@ -291,7 +301,7 @@
       </div>
 
       <!-- Add a single video / a whole channel -->
-      <div id="panel-add" class="panel">
+      <div id="panel-add" class="panel hidden">
         <div class="field">
           <label for="add-url">הדביקו לינק — סרטון YouTube, ערוץ שלם (@ערוץ), או קובץ mp4</label>
           <input id="add-url" class="input" type="url" inputmode="url" dir="ltr"
@@ -413,7 +423,9 @@
       </div>
 
       <!-- About (v1.0.8): what the app is + version/update + contact + tour replay -->
-      <div id="panel-about" class="panel hidden">
+      <!-- v1.0.14: About is the landing tab, so it starts VISIBLE — the initial markup
+           must match PARENT_TABS[0] or the screen flashes with no panel at all -->
+      <div id="panel-about" class="panel">
         <div class="about-hero">
           <div class="about-emoji">🌳</div>
           <h3 class="about-title">הסרטונים שלי</h3>
@@ -446,6 +458,21 @@
           <button id="whatsnew-btn" class="btn btn-small" type="button">🎉 מה חדש בגירסה</button>
         </div>
         <div id="contact-msg" class="form-msg"></div>
+
+        <!-- v1.0.14: voluntary support. Hidden entirely when no link is configured. -->
+        <div id="help-block">
+          <div class="list-head"><span class="list-count">💜 נהניתם? אפשר לעזור</span></div>
+          <p class="hint">
+            האפליקציה חינמית, בלי פרסומות ובלי מעקב — ותישאר כזו. אם היא עושה טוב
+            לילדים שלכם, יש שלוש דרכים לעזור — <b>כולן לגמרי אופציונליות</b>:
+          </p>
+          <div class="row-btns">
+            <button id="help-share" class="btn btn-small" type="button">📤 לספר להורים אחרים</button>
+            <button id="help-feedback" class="btn btn-small" type="button">💡 לשלוח רעיון לשיפור</button>
+            <button id="donate-btn" class="btn btn-primary btn-small hidden" type="button">❤️ תרומה למפתח</button>
+          </div>
+          <div id="donate-msg" class="form-msg"></div>
+        </div>
       </div>
 
       <footer class="parent-footer">

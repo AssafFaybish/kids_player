@@ -1103,11 +1103,59 @@ function onKey(k) {
   if (pinBuffer.length === 4) setTimeout(onPinComplete, 130);
 }
 
-/* ---------------- Parent screen (tabs: approve / add / sources / settings) ---------------- */
+/* ---------------- Voluntary support (v1.0.14) ---------------- */
+// Everything here lives behind the parent PIN: a child can never reach a payment
+// page. Links open in the SYSTEM browser (the WebView blocks external navigation).
+
+/** Tap "תרומה" → choose HOW to pay (only configured methods are offered). */
+async function openDonateFlow() {
+  const msg = $('donate-msg');
+  msg.textContent = ''; msg.className = 'form-msg';
+  const { donateOptions } = await import('./donate.js');
+  const opts = donateOptions();
+  if (!opts.length) return;
+
+  let chosen = opts[0];
+  if (opts.length > 1) {
+    // confirmKid gives exactly two big choices — enough for PayBox vs PayPal, and
+    // an accidental dismiss must NOT pick a payment method (askKid tells them apart).
+    const answer = await askKid({
+      emoji: '💜', title: 'איך נוח לכם לתרום?',
+      text: `${opts[0].label} — ${opts[0].hint}\n${opts[1].label} — ${opts[1].hint}`,
+      ok: opts[0].label, cancel: opts[1].label
+    });
+    if (answer === 'dismiss') return;
+    chosen = answer === 'ok' ? opts[0] : opts[1];
+  }
+  const { openExternal } = await import('./platform.js');
+  const opened = await openExternal(chosen.url);
+  msg.textContent = opened
+    ? 'נפתח דף התרומה בדפדפן — תודה מכל הלב 💜'
+    : 'לא הצלחנו לפתוח את הדפדפן. הקישור: ' + chosen.url;
+  msg.className = opened ? 'form-msg ok' : 'form-msg err';
+}
+
+/** Show the donate button only when a link is actually configured. */
+async function refreshDonateUi() {
+  try {
+    const { donateAvailable, shouldShowDonateNudge } = await import('./donate.js');
+    const available = donateAvailable();
+    $('donate-btn').classList.toggle('hidden', !available);
+    $('help-block').classList.toggle('hidden', false); // free ways to help always apply
+    const show = shouldShowDonateNudge({
+      firstSeenAt: Number(await prefGet('install.firstSeenAt')) || 0,
+      dismissed: (await prefGet('donate.nudgeDismissed')) === '1'
+    });
+    $('donate-nudge').classList.toggle('hidden', !show);
+  } catch {}
+}
+
+/* ---------------- Parent screen (tabs: about / approve / add / sources / settings) ---------------- */
 function enterParent() { refreshParent(); nav.replace('parent'); } // replaces 'pin' on the stack
 
-const PARENT_TABS = ['approve', 'add', 'sources', 'settings', 'about'];
-let parentTab = 'add';
+// v1.0.14: "אודות" is the first tab AND the landing tab of the parent screen
+const PARENT_TABS = ['about', 'approve', 'add', 'sources', 'settings'];
+let parentTab = 'about';
 
 function setParentTab(name) {
   parentTab = name;
@@ -1127,6 +1175,7 @@ async function refreshParent() {
   $('remote-status').textContent = '';
   $('approve-msg').textContent = '';
   setParentTab(parentTab);
+  refreshDonateUi().catch(() => {});
   refreshDriveStatus();
   refreshSheetWriteStatus().catch(() => {});
   runUpdateCheck().catch(() => {});
@@ -2271,6 +2320,20 @@ function wire() {
     await showWhatsNew(data, { installMode: false });
     if (nav.isActive('whatsnew')) nav.back();
   });
+  // v1.0.14: voluntary support — donate + the two free ways to help
+  $('donate-btn').addEventListener('click', () => { openDonateFlow().catch(() => {}); });
+  $('nudge-donate').addEventListener('click', async () => {
+    await prefSet('donate.nudgeDismissed', '1'); // shown once, whatever the answer
+    $('donate-nudge').classList.add('hidden');
+    openDonateFlow().catch(() => {});
+  });
+  $('nudge-dismiss').addEventListener('click', async () => {
+    await prefSet('donate.nudgeDismissed', '1');
+    $('donate-nudge').classList.add('hidden');
+  });
+  $('help-share').addEventListener('click', () => { $('share-app').click(); });
+  $('help-feedback').addEventListener('click', () => { $('contact-dev').click(); });
+
   $('wn-ok').addEventListener('click', () => { closeWhatsNew(true); if (nav.isActive('whatsnew')) nav.back(); });
   $('wn-cancel').addEventListener('click', () => { closeWhatsNew(false); if (nav.isActive('whatsnew')) nav.back(); });
 
@@ -2333,6 +2396,9 @@ async function init() {
       }).catch(() => {});
     }
   });
+
+  // v1.0.14: stamp the first launch once — the gentle support reminder waits a month
+  try { if (!(await prefGet('install.firstSeenAt'))) await prefSet('install.firstSeenAt', String(Date.now())); } catch {}
 
   await migrateLegacyIfNeeded();
   // Preferences → IndexedDB (idempotent, resumable, non-destructive).
