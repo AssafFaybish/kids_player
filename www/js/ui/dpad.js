@@ -42,7 +42,10 @@ function onKeyDown(e) {
   if (!dir && !isEnter) return;
 
   const active = document.activeElement;
-  const inText = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+  // TEXT-like fields only: checkboxes/radios are INPUTs too, but the remote's OK
+  // must toggle them (handled below), not be swallowed as "editing"
+  const inText = active && (active.tagName === 'TEXTAREA'
+    || (active.tagName === 'INPUT' && active.type !== 'checkbox' && active.type !== 'radio'));
   // inside a text field the remote edits text; only up/down leave it
   if (inText && (dir === 'left' || dir === 'right' || isEnter)) return;
 
@@ -72,7 +75,15 @@ function onKeyDown(e) {
     }
   }
 
-  if (isEnter) return; // a focused button activates natively on Enter
+  if (isEnter) {
+    // buttons activate natively on Enter; checkboxes/radios only toggle on SPACE —
+    // the remote's OK must toggle them too (parent-screen switches on TV, v1.0.11)
+    if (active && active.tagName === 'INPUT' && (active.type === 'checkbox' || active.type === 'radio')) {
+      e.preventDefault();
+      active.click();
+    }
+    return;
+  }
 
   if (!els.length) return;
   e.preventDefault();

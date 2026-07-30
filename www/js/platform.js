@@ -218,6 +218,26 @@ export async function isTv() {
   return tvCached;
 }
 
+/* ---------------- exit lock / screen pinning (v1.0.11) ---------------- */
+// Kiosk mode: HOME cannot be intercepted by apps — OS lock-task is the mechanism.
+// All three are graceful no-ops in the browser preview / without the plugin.
+export async function lockTask() {
+  const kids = plugin('KidsNative');
+  if (kids && kids.lockTask) { try { await kids.lockTask(); return true; } catch {} }
+  return false;
+}
+export async function unlockTask() {
+  const kids = plugin('KidsNative');
+  if (kids && kids.unlockTask) { try { await kids.unlockTask(); } catch {} }
+}
+export async function isTaskLocked() {
+  const kids = plugin('KidsNative');
+  if (kids && kids.isTaskLocked) {
+    try { return (await kids.isTaskLocked()).value === true; } catch {}
+  }
+  return false;
+}
+
 export function exitApp() {
   // Prefer the native KidsNative.exitApp: App.exitApp() only calls finish(), which on
   // real devices leaves the task in recents — "exit" looked like minimize (v1.0.4 fix).

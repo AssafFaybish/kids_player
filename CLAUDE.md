@@ -112,6 +112,14 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share
   the app from parent settings (`KidsNative.shareText` chooser → Web Share → clipboard;
   message built by pure `update.buildAppShareMessage`, direct assetUrl or releases page).
+- v1.0.11: exit lock (`exitLock` pref, PER-DEVICE, settings toggle) — OS screen-pinning
+  kiosk via `KidsNative.lockTask/unlockTask` (HOME is uninterceptable by apps; lock-task
+  is the sanctioned mechanism; native exitApp stopLockTask()s defensively first). Exit
+  flow when on: confirm → PIN ("קוד הורים ליציאה") → unpin + exit; exit button hidden;
+  re-armed at every launch. TV parent screens are D-pad-complete (OK toggles
+  checkboxes — the text-field guard exempts checkbox/radio inputs). Google-verification
+  kit: docs/site/ homepage+privacy for GitHub Pages + submission walkthrough in
+  GOOGLE_CLOUD_SETUP.md שלב 3א (the unverified warning is scope-sensitivity, not code).
 - v1.0.10: the sheet is the truth in BOTH directions — deletions too. sheetwrite ops
   queue (append/delvideo/delchannel, reconcileOps latest-intent, flush deletes rows
   bottom-up via batchUpdate then appends with sheet-presence dedupe); sync mirror stage

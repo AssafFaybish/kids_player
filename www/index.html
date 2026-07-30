@@ -31,6 +31,8 @@
         <button id="connect-google" class="btn btn-primary connect-btn" type="button">חיבור חשבון Google</button>
         <button id="connect-skip" class="text-btn connect-skip" type="button">דילוג — אתחבר אחר-כך</button>
         <p class="connect-hint">אפשר להתחבר בכל שלב דרך מסך ההורים ← הגדרות ← גיבוי וסנכרון</p>
+        <p class="connect-hint">ℹ️ אם גוגל מציגה אזהרת "האפליקציה לא אומתה" — זה תקין: זו אפליקציה
+          משפחתית פרטית, והנתונים נשארים בחשבון שלכם. לחצו "מתקדם" ← "המשך".</p>
         <div id="connect-msg" class="form-msg"></div>
       </div>
     </section>
@@ -365,6 +367,11 @@
         <label class="switch-row">
           <input id="share-approval-toggle" type="checkbox" checked />
           <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס</span>
+        </label>
+        <!-- v1.0.11: OS screen-pinning kiosk — exiting requires the parent PIN -->
+        <label class="switch-row">
+          <input id="exit-lock-toggle" type="checkbox" />
+          <span>יציאה מהאפליקציה רק עם קוד הורים (נעילת מסך מלאה — גם כפתור הבית)</span>
         </label>
         <div id="settings-msg" class="form-msg"></div>
 

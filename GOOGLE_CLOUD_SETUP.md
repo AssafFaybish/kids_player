@@ -38,12 +38,46 @@
      שנוספים באפליקציה יירשמו חזרה בגיליון (מקור אמת יחיד).
    ⚠️ אל תוסיף scopes נוספים מעבר לשניים האלה.
 5. סיים את האשף ← בעמוד הסיכום לחץ **Publish App** ← Confirm.
-   ⚠️ scope של Sheets מסווג אצל גוגל כ"רגיש": באפליקציה שלא עברה verification,
+   ⚠️ scope של Sheets מסווג אצל גוגל כ"רגיש": <b>עד שהאפליקציה תעבור verification</b>
    מסך ההסכמה יציג פעם אחת אזהרת "Google hasn't verified this app" — לוחצים
-   **Advanced** ← **Go to הסרטונים שלי (unsafe)**. זה צפוי ובסדר: זה הפרויקט
-   הפרטי שלכם והנתונים שלכם; אין צורך בתהליך verification לאפליקציה משפחתית.
-   בנוסף, חשבון ה-Google שמתחברים איתו חייב **הרשאת עריכה** על הגיליון —
-   אחרת האפליקציה תציג "אין הרשאת עריכה לגיליון" והרישום לגיליון יידלג.
+   **Advanced** ← **Go to הסרטונים שלי (unsafe)**. אחרי אימות (שלב 3א) האזהרה נעלמת
+   לכל המשתמשים. בנוסף, חשבון ה-Google שמתחברים איתו חייב **הרשאת עריכה** על הגיליון
+   — אחרת האפליקציה תציג "אין הרשאת עריכה לגיליון" והרישום לגיליון יידלג.
+
+## שלב 3א — אימות האפליקציה (verification) — כדי שהמשפחות לא יראו אזהרה
+
+האזהרה "Google לא אימתה את האפליקציה הזו" מופיעה כי אנחנו מבקשים scope רגיש
+(`spreadsheets`) ללא אימות. עבור scope רגיש (בניגוד ל"מוגבל") האימות **קל יחסית**
+ולרוב אינו דורש ביקורת אבטחה בתשלום. השלבים:
+
+1. **דף בית ומדיניות פרטיות פומביים** — כבר מוכנים בריפו תחת `docs/site/`
+   (`index.html` + `privacy.html`). פרסמו אותם ב-GitHub Pages:
+   - ב-repo של devfassaf: **Settings ← Pages ← Source: Deploy from a branch ←
+     branch `main`, folder `/docs`** (או העתיקו את `docs/site/` לריפו נפרד
+     `<user>.github.io`). הכתובת תהיה למשל
+     `https://devfassaf.github.io/kids_player/site/`.
+   - ⚠️ ה-Pages צריך לשרת את `docs/site/index.html` בשורש הכתובת — אם GitHub
+     מגיש מ-`/docs`, ה-URL יכלול `/site/`. פשוט השתמשו בכתובת המלאה בשדות למטה.
+2. **OAuth consent screen ← Edit App** ומלאו:
+   - **Application home page:** כתובת ה-`index.html` שפרסמתם.
+   - **Application privacy policy link:** כתובת ה-`privacy.html`.
+   - **Authorized domains:** `github.io` (או הדומיין שבחרתם).
+   - **App logo:** אפשר להעלות את `www/assets/icon.svg` כ-PNG.
+3. **Publishing status ← Prepare for verification / Submit for verification**.
+   נוסח מוכן ל"Scope justification" (הדביקו):
+   > The app is a private, parent-managed video player for young children. It
+   > uses `drive.file` to store a single backup file it creates (profiles and the
+   > curated library), and `spreadsheets` to read and update the parent's own
+   > source sheet that defines which videos/channels the child may watch. No data
+   > is shared with third parties; everything stays in the user's own Google
+   > account and device.
+   - הקלטת וידאו קצרה של זרימת ההסכמה נדרשת לעיתים — צלמו את מסך החיבור באפליקציה.
+4. ההמתנה לאישור היא בדרך כלל ימים עד שבועות. **עד האישור** הכול עובד — רק עם
+   אזהרת ה"unverified" החד-פעמית. אחרי האישור היא נעלמת לכולם.
+
+> חלופה מהירה ללא אימות: **Publishing status: Testing** + הוספת חשבונות ההורים
+> תחת **Test users**. מסיר את האזהרה עבורם מיד, אך מוגבל ל-100 משתמשים וייתכן
+> שיחייב הסכמה מחדש מדי פעם. מתאים לשלב ניסוי; לשיתוף רחב עדיף אימות.
 
 ## שלב 4 — שני OAuth Client IDs (אנדרואיד)
 
