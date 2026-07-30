@@ -4,6 +4,29 @@
 // Handles: quoted fields, "" escapes, newlines inside quotes, CRLF, the UTF-8 BOM
 // that Google Sheets' CSV export prepends, and a tab-separated fallback per row.
 
+/**
+ * v1.0.18 — is this body actually a CSV export, or an HTML page wearing a 200?
+ *
+ * THE BUG THIS CLOSES: when a source sheet loses "anyone with the link", Google's
+ * CSV-export URL does not fail — it 302s to a sign-in / "request access" page and
+ * CapacitorHttp follows the redirect, so the app receives a perfectly successful
+ * HTTP 200 full of HTML. parseSourceSheet finds no rows in it, and the v1.0.10
+ * presence-mirror concludes the parent emptied the sheet and deletes the library.
+ * A revoked share must read as a FETCH FAILURE (keep what we have), never as an
+ * instruction to delete.
+ *
+ * Deliberately narrow: it only rejects a body that opens like a markup document.
+ * A genuinely empty sheet still parses (and is then caught by the mirror's valve,
+ * which asks the parent) — silence and emptiness must stay distinguishable.
+ */
+export function looksLikeHtml(text) {
+  let t = String(text ?? '');
+  if (t.charCodeAt(0) === 0xfeff) t = t.slice(1);
+  const head = t.trimStart().slice(0, 400).toLowerCase();
+  return head.startsWith('<!doctype html') || head.startsWith('<html') ||
+    head.startsWith('<?xml') || /^<(head|body|meta|title|script)\b/.test(head);
+}
+
 /** Parse CSV text into rows of raw string fields. Never throws. */
 export function parseCsv(text) {
   let t = String(text ?? '');

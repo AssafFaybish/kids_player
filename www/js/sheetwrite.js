@@ -105,14 +105,23 @@ export function matchRowsForDeletion(colA, ops, handleMap = {}) {
 
 /* ---------------- queue ---------------- */
 
-async function enqueueOp(profileId, op) {
+async function enqueueOp(profileId, op, { flush = true } = {}) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, noSheet: true };
-  const q = normalizeOps((await getMeta(qKey(src.libraryId))) || []);
-  q.push({ ...op, at: Date.now() });
-  await putMeta(qKey(src.libraryId), q.slice(-QUEUE_CAP));
-  await patchState(src.libraryId, { pending: Math.min(q.length, QUEUE_CAP) });
-  return flushSheetQueue(profileId);
+  // v1.0.18: RECONCILE BEFORE CAPPING. `slice(-QUEUE_CAP)` drops the HEAD, so an
+  // offline bulk cleanup silently discarded the oldest ops — a dropped delvideo
+  // leaves the row in the sheet, the next mirror pass reads that as presence and
+  // revokes the tombstone, and the deleted video comes back on every device.
+  // Reconciling first collapses per entity, so only 200 DISTINCT entities overflow.
+  const q = reconcileOps([...normalizeOps((await getMeta(qKey(src.libraryId))) || []), { ...op, at: Date.now() }]);
+  const kept = q.slice(-QUEUE_CAP);
+  await putMeta(qKey(src.libraryId), kept);
+  // Overflow is data loss, not a queue detail — say so instead of dropping quietly.
+  await patchState(src.libraryId, {
+    pending: kept.length,
+    ...(q.length > QUEUE_CAP ? { error: 'queue-overflow' } : {})
+  });
+  return flush ? flushSheetQueue(profileId) : { ok: true, queued: true };
 }
 
 /**
@@ -120,8 +129,8 @@ async function enqueueOp(profileId, op) {
  * over: reconcileOps keeps the latest intent per key, and the flush skips appends
  * whose key already exists in the sheet.
  */
-export function enqueueSheetRow(profileId, { key, srcUrl, title = '', flag = '' }) {
-  return enqueueOp(profileId, { op: 'append', key, row: buildSheetRow({ srcUrl, title, flag }) });
+export function enqueueSheetRow(profileId, { key, srcUrl, title = '', flag = '' }, opts = {}) {
+  return enqueueOp(profileId, { op: 'append', key, row: buildSheetRow({ srcUrl, title, flag }) }, opts);
 }
 
 /** v1.0.10: queue the removal of a VIDEO row (matched by classified key). */
@@ -274,8 +283,54 @@ export async function flushSheetQueue(profileId) {
   const src = await getSources(profileId);
   if (!src || !src.sheetUrl || !src.libraryId) return { ok: true, empty: true };
   const lib = src.libraryId;
+
+  // v1.0.18 — SERIALIZE PER LIBRARY. enqueueOp flushes on every enqueue and sync2
+  // flushes at the end of every sync, so overlapping flushes were routine. Two of
+  // them both read column A before either append lands (duplicate rows), and the
+  // loser's unconditional queue-clear used to destroy the winner's un-sent ops.
+  const running = flushInFlight.get(lib);
+  if (running) { flushAgain.add(lib); return running; }
+
+  const p = (async () => {
+    let res;
+    try { res = await doFlush(profileId, src, lib); } finally { flushInFlight.delete(lib); }
+    // ops enqueued mid-flight were deliberately left in the queue — drain them now
+    if (flushAgain.delete(lib)) { try { res = await flushSheetQueue(profileId); } catch {} }
+    return res;
+  })();
+  flushInFlight.set(lib, p);
+  return p;
+}
+
+const flushInFlight = new Map(); // libraryId -> in-flight flush promise
+const flushAgain = new Set();    // libraryId -> a follow-up run is owed
+
+/**
+ * Remove ONLY what we just wrote. Anything enqueued while the network calls were
+ * in the air carries a newer `at` for its identity (or an identity we never saw)
+ * and must survive — clearing the whole queue silently dropped a parent's delete,
+ * which then resurrected the video everywhere on the next mirror pass.
+ */
+async function clearFlushed(lib, flushed) {
+  const remaining = remainingAfterFlush((await getMeta(qKey(lib))) || [], flushed);
+  await putMeta(qKey(lib), remaining);
+  return remaining.length;
+}
+
+/**
+ * PURE — which queued ops survive a flush that wrote `flushed`?
+ * An op survives when its identity carries a STRICTLY newer timestamp than the one
+ * we just wrote (it was enqueued mid-flight), or when we never wrote that identity
+ * at all. Everything we did write is dropped.
+ */
+export function remainingAfterFlush(currentQueue, flushed) {
+  const flushedAt = new Map(normalizeOps(flushed).map((o) => [opIdentity(o), o.at || 0]));
+  return normalizeOps(currentQueue).filter((o) => (o.at || 0) > (flushedAt.get(opIdentity(o)) ?? -1));
+}
+
+async function doFlush(profileId, src, lib) {
   const q = reconcileOps((await getMeta(qKey(lib))) || []);
-  if (!q.length) { await putMeta(qKey(lib), []); return { ok: true, empty: true }; }
+  if (!q.length) { await clearFlushed(lib, []); return { ok: true, empty: true }; }
 
   const spreadsheetId = extractSpreadsheetId(src.sheetUrl);
   if (!spreadsheetId) {
@@ -356,7 +411,7 @@ export async function flushSheetQueue(profileId) {
     }
   }
 
-  await putMeta(qKey(lib), []);
-  await patchState(lib, { error: null, pending: 0, lastWriteAt: Date.now(), written: q.length });
+  const stillPending = await clearFlushed(lib, q);
+  await patchState(lib, { error: null, pending: stillPending, lastWriteAt: Date.now(), written: q.length });
   return { ok: true, written: q.length, deletedRows: delRows.length };
 }

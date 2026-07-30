@@ -731,30 +731,33 @@ async function buildSearchIndex() {
       if (rec.state === 'live') videos.push(rec);
     }
   }
+  // v1.0.18 — DERIVED FROM `folders`, THE SAME LIST THE HOME SCREEN RENDERS.
+  //
+  // This used to re-derive channel folders from listLibraryChannels + countFolder and
+  // skip any whose count was 0. But buildFolders deliberately PUBLISHES such a folder
+  // when absorbedSingles has entries for it ("subscribed, nothing imported yet, but
+  // loose singles live here"), and it adds those singles to the count of the folders
+  // that do have imports. So a folder could sit on the child's home screen holding two
+  // videos and be unfindable by name, and every absorbed count was understated — the
+  // v1.0.17 fix closed this for 🎞️ groups but left it open for 📺 channels.
+  // One source of truth removes the whole class: if it is on the home screen, it is
+  // searchable, with the count the child can see. `folders` already excludes hidden
+  // channels (buildFolders), and non-channel tiles (🎁 חדשים, the shared 'sheet'
+  // folder) are filtered out here because they are not channel names to search for.
   const folderEntries = [];
   if (libScope) {
-    for (const lc of await db.listLibraryChannels(libScope)) {
-      if (lc.hidden) continue;
-      const ch = (await db.getChannel(lc.channelId)) || {};
-      const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
-      if (!count) continue;
-      const title = lc.titleOverride || ch.title || '';
-      folderEntries.push({
-        id: 'ch:' + lc.channelId, scope: libScope, key: 'folder:' + lc.channelId,
-        title, normTitle: normalizeTitle(title),
-        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
-      });
-    }
-    // v1.0.17: the 🎞️ collections of grouped singles are folders on the home screen,
-    // so a child searching their channel name must find them too (they were missing).
-    for (const [channelId, recs] of singleGroups) {
-      const f = folders.find((x) => x.id === 'grp:' + channelId);
-      const title = (f && f.title) || (recs[0] && recs[0].srcChannelTitle) || '';
+    for (const f of folders) {
+      const id = String(f.id || '');
+      const isGroup = id.startsWith('grp:');
+      if (!isGroup && !id.startsWith('ch:')) continue;
+      const title = f.title || '';
       if (!title) continue;
       folderEntries.push({
-        id: 'grp:' + channelId, scope: libScope, key: 'group:' + channelId,
+        id, scope: f.scope || libScope,
+        key: (isGroup ? 'group:' : 'folder:') + id.slice(id.indexOf(':') + 1),
         title, normTitle: normalizeTitle(title),
-        logoUrl: (f && f.logoUrl) || '', emoji: '🎞️', count: recs.length
+        logoUrl: f.logoUrl || '', emoji: f.emoji || (isGroup ? '🎞️' : '📺'),
+        count: f.count || 0
       });
     }
   }
@@ -1360,14 +1363,35 @@ async function refreshParentList() {
  * v1.0.6: approved shares / manual items become sheet rows — channel videos do NOT
  * (their channel row already represents them in the sheet).
  */
+/**
+ * v1.0.18 — QUEUE ALL, THEN FLUSH ONCE.
+ *
+ * These records are already LIVE in the 'sheet' folder by the time we get here, so
+ * until each one has a queued row it is sheet-backed, absent from the sheet, and
+ * absent from pendingAppendKeys — which is exactly the shape the presence-mirror
+ * deletes (with a tombstone, on every device). The old loop flushed inside every
+ * enqueue, so approving N shares held that window open for N network round trips,
+ * and one rejection mid-loop skipped every remaining record permanently.
+ *
+ * Enqueuing is local IndexedDB work, so the window now closes in one tick; the
+ * single flush at the end does the network. Per-item catch: one bad record must
+ * never cost the others their row.
+ */
 async function enqueueApprovedForSheet(recs) {
   const rows = (recs || []).filter((r) => r.origin === 'share-intent' || r.origin === 'manual');
   if (!rows.length) return;
   try {
-    const { enqueueSheetRow } = await import('./sheetwrite.js');
+    const { enqueueSheetRow, flushSheetQueue } = await import('./sheetwrite.js');
     for (const r of rows) {
-      await enqueueSheetRow(activeProfileId, { key: r.key, srcUrl: r.srcUrl || r.url || '', title: r.title || '' });
+      try {
+        await enqueueSheetRow(
+          activeProfileId,
+          { key: r.key, srcUrl: r.srcUrl || r.url || '', title: r.title || '' },
+          { flush: false }
+        );
+      } catch {}
     }
+    await flushSheetQueue(activeProfileId);
   } catch {}
 }
 
@@ -1493,24 +1517,60 @@ async function refreshChannelsList() {
  */
 async function adoptLibraryScope(profileId, oldLib, newLib) {
   if (!oldLib || !newLib || oldLib === newLib) return { videoKeys: [], channelIds: [] };
+
+  // v1.0.18 — NEVER EMPTY A SHARED SCOPE.
+  //
+  // `lib:<fnv1a(sheet)>` is shared by EVERY profile on that sheet — the wizard's
+  // "join <profile>'s file" button creates exactly that. moveScope *moves*: it
+  // deletes the source scope. So changing one child's sheet used to carry the whole
+  // family library away, blanking the sibling's home screen and surfacing their
+  // pending shares in this child's approval list (the very leak v1.0.17 fixed).
+  //
+  // When someone else still lives there, the content is not ours to take: it is
+  // sheet-derived from the OLD sheet and stays with the profiles still reading it.
+  // This profile simply starts from its new sheet, which is the correct semantic —
+  // the orphaning bug v1.0.17 fixed was about a scope with NO remaining owner.
+  const stillOwned = [];
+  for (const p of await getProfiles()) {
+    if (p.id === profileId) continue;
+    const s = await db.getSources(p.id);
+    if (s && s.libraryId === oldLib) stillOwned.push(p.id);
+  }
+  if (stillOwned.length) return { videoKeys: [], channelIds: [], sharedWith: stillOwned };
+
   const moved = await db.moveScope(oldLib, newLib);
   if (!moved.videoKeys.length && !moved.channelIds.length) return moved;
+  // Queue every row BEFORE any network call, then flush once. These records are
+  // already live in the new scope, so until their row is queued they are
+  // sheet-backed, absent from the sheet and absent from pendingAppendKeys — the
+  // exact shape the presence-mirror tombstones. Flushing inside the loop (the old
+  // shape) held that window open for one round trip per item, and a single throw
+  // skipped every remaining record with nothing recording that it was owed.
   try {
     const sw = await import('./sheetwrite.js');
     for (const key of moved.videoKeys) {
-      const rec = await db.getVideo(newLib, key);
-      if (!rec || rec.state !== 'live') continue;
-      if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
-      await sw.enqueueSheetRow(profileId, { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+      try {
+        const rec = await db.getVideo(newLib, key);
+        if (!rec || rec.state !== 'live') continue;
+        if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
+        await sw.enqueueSheetRow(
+          profileId,
+          { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' },
+          { flush: false }
+        );
+      } catch { /* one bad record must not cost the others their row */ }
     }
     for (const channelId of moved.channelIds) {
-      await sw.enqueueSheetRow(profileId, {
-        key: 'ch:' + channelId,
-        srcUrl: 'https://www.youtube.com/channel/' + channelId,
-        flag: 'manual'
-      });
+      try {
+        await sw.enqueueSheetRow(profileId, {
+          key: 'ch:' + channelId,
+          srcUrl: 'https://www.youtube.com/channel/' + channelId,
+          flag: 'manual'
+        }, { flush: false });
+      } catch {}
     }
-  } catch { /* the move already happened; rows retry on the next flush */ }
+    await sw.flushSheetQueue(profileId);
+  } catch { /* queued rows survive in IndexedDB; the next sync flushes them */ }
   return moved;
 }
 

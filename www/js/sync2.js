@@ -8,7 +8,7 @@
 // titles (batched; persist twice) → gifts (per profile) → [pushDrive hook].
 
 import { httpGetText, prefGet } from './platform.js';
-import { parseCsv } from './csv.js';
+import { parseCsv, looksLikeHtml } from './csv.js';
 import { classifySourceRow } from './classify.js';
 import { resolveListUrl } from './sync.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
@@ -98,6 +98,10 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     report('sheet', 5, 'מביאים את הרשימה…');
     try {
       const text = await httpGetText(resolveListUrl(src.sheetUrl));
+      // A sheet that lost "anyone with the link" answers the CSV-export URL with a
+      // 302 to a permission page — HTTP 200, full of HTML. Parsing that as an empty
+      // sheet let the mirror delete the whole library (v1.0.18). Treat it as offline.
+      if (looksLikeHtml(text)) throw new Error('sheet-not-readable');
       const hash = fnv1a(text);
       sheetChanged = force || hash !== src.sheetHash;
       const parsed = parseSourceSheet(text);
