@@ -172,3 +172,51 @@ test('every module app.js imports actually exists on disk', () => {
     }
   }
 });
+
+test('every grid pages through pageAnyFolder — including the 🎁 folder', () => {
+  // v1.0.21 FIELD BUG: renderGridPage had its own `fid === 'new'` branch (db.pageGifts)
+  // and renderWatchGrid did not, so opening a gift left the UNDER-PLAYER GRID EMPTY —
+  // 🎁 is not a stored folder, so pageAnyFolder fell through to db.pageFolder(scope,
+  // 'new'), whose folderRange is an exact bound that no record can match. The child lost
+  // every way to reach the next video. CLAUDE.md calls pageAnyFolder "the ONE pagination
+  // entry point"; this pins that, so a second renderer cannot grow a private branch.
+  const app = MODULES.get('www/js/app.js');
+  const lines = app.split('\n');
+  const idx = (needle) => lines.findIndex((l) => l.includes(needle));
+
+  // the two low-level pagers may be called only from pageAnyFolder / its 🎁 helper
+  const giftHelper = idx('async function pageGiftFolder');
+  const entry = idx('async function pageAnyFolder');
+  const afterEntry = lines.findIndex((l, i) => i > entry && l === '}');
+  assert.ok(giftHelper > 0 && entry > giftHelper, 'pageGiftFolder must sit above pageAnyFolder');
+
+  for (const [n, line] of lines.entries()) {
+    for (const raw of ['db.pageGifts(', 'db.pageFolder(']) {
+      if (!line.includes(raw)) continue;
+      const inHelper = n > giftHelper && n < entry;
+      const inEntry = n > entry && n <= afterEntry;
+      assert.ok(inHelper || inEntry,
+        `app.js:${n + 1} calls ${raw} outside pageAnyFolder — every grid must page through it`);
+    }
+  }
+  // and pageAnyFolder must actually HANDLE the gift folder, or it silently returns []
+  const body = lines.slice(entry, afterEntry + 1).join('\n');
+  assert.match(body, /fid === 'new'/, "pageAnyFolder lost its 🎁 ('new') branch");
+});
+
+test('adding content triggers the sync that makes it a gift and files it', () => {
+  // v1.0.21 FIELD BUG: a video shared from YouTube (or pasted in the parent screen)
+  // is written straight to the store, where it is INERT — `srcChannelId` is filled only
+  // by the sync's enrichment stage (and that is what groups a single into its channel
+  // folder) and `giftRank` only by planProfileGifts. So the video landed in the loose
+  // list and was not a 🎁 until the parent happened to press "רענון נתונים".
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /function refreshAfterAdd\(/, 'the post-add refresh helper is gone');
+  // every path that makes a record LIVE must call it: manual add, share, both approvals
+  const calls = (app.match(/refreshAfterAdd\(/g) || []).length;
+  assert.ok(calls >= 5, `only ${calls} refreshAfterAdd sites — an add path stopped refreshing`);
+  // it must force: the 3-min shouldSync throttle is exactly what made the bug invisible
+  const fn = app.slice(app.indexOf('function refreshAfterAdd('));
+  assert.match(fn.slice(0, 400), /syncLibrary\(activeProfileId,\s*\{\s*force:\s*true\s*\}/,
+    'refreshAfterAdd must force the sync, or the 3-min throttle swallows it');
+});

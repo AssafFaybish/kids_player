@@ -143,22 +143,57 @@ async function computeAttention() {
 /**
  * v1.0.7: fresh-on-home — fired on every gallery entry, never blocking the render.
  * Content sync self-throttles (shouldSync, 3 min); the update check self-throttles
- * (6h) and the prompt fires at most once per session.
+ * (6h) and the prompt fires at most once per session. v1.0.21: the first pass of each
+ * LAUNCH bypasses both throttles — see below.
  */
+let launchSyncDone = false; // the forced launch refresh happens once per process
 function homeEntryRefresh() {
   if (!activeProfileId) return;
+  // v1.0.21: the FIRST refresh of a launch is forced. The 3-min throttle exists so a
+  // child flipping between home and a video doesn't resync every few seconds — but it
+  // also meant reopening the app minutes after the parent edited the sheet showed stale
+  // content until something else happened to trip a sync. One forced pass per launch is
+  // the fix; every later home entry keeps the throttle.
+  const force = !launchSyncDone;
+  launchSyncDone = true;
   (async () => {
-    if (await shouldSync(activeProfileId)) {
-      syncLibrary(activeProfileId).then(async () => {
+    if (force || await shouldSync(activeProfileId)) {
+      syncLibrary(activeProfileId, force ? { force: true } : {}).then(async () => {
         await loadGiftStates();
         if (nav.isActive('gallery')) renderHome();
       }).catch(() => {});
     }
   })().catch(() => {});
+  // …and so is the version check: the 6h throttle could hide a release for a whole day
+  // of launches. `silent` still honors update.skip, so a version the parent declined
+  // does not nag again — only the red dot stays lit.
   import('./update.js')
-    .then((u) => u.checkForUpdate({ silent: true }))
+    .then((u) => u.checkForUpdate({ silent: true, force }))
     .then((r) => maybePromptUpdate(r))
     .catch(() => {});
+}
+
+/**
+ * v1.0.21 — run after ANY content the parent just added (a share, a manual link, an
+ * approval). A freshly written record is INERT until a sync touches it:
+ *  - `srcChannelId` is filled only by the sync's enrichment stage, and that field is
+ *    what `groupSinglesByChannel` folds a single into its 🎞️ collection / 📺 channel
+ *    folder by — so without it the video sits in the loose "סרטונים נוספים" list;
+ *  - `giftRank` is assigned only by `planProfileGifts`, so the video is not a 🎁 either.
+ * Both used to appear only after the parent happened to press "רענון נתונים" (field bug).
+ * Silent and non-blocking on purpose: the child may be looking at a populated grid, and
+ * covering it with the loading screen is the worse bug (v1.0.18).
+ */
+function refreshAfterAdd({ parent = false } = {}) {
+  if (!activeProfileId) return;
+  syncLibrary(activeProfileId, { force: true }).then(async () => {
+    await loadGiftStates();
+    if (nav.isActive('gallery')) renderHome();
+    if (parent && nav.isActive('parent')) {
+      await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]).catch(() => {});
+    }
+    refreshGateDot();
+  }).catch(() => {});
 }
 
 /** The red dot on the 🔒 gate button — the parent's cue to come look. */
@@ -706,15 +741,46 @@ function updateHomePager(total) {
 }
 
 /**
+ * 🎁 "חדשים" — the sparse by_gift index resolved to live records, rank order.
+ * Kept out of pageAnyFolder's body only for readability; it is reached ONLY through it.
+ */
+async function pageGiftFolder({ offset, limit }) {
+  const res = await db.pageGifts(activeProfileId, { offset, limit });
+  const items = [];
+  const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  for (const st of res.items) {
+    // by-key lookup across ALL scopes: immune to library-id drift (a re-saved sheet
+    // URL used to orphan gift states — badge counted them, the folder came up empty)
+    const rec = await db.findLiveByKey(st.key, prefer);
+    if (rec) {
+      items.push(rec);
+    } else {
+      // self-heal: the video is gone everywhere — drop the orphaned state so the
+      // "חדשים" badge converges with what the child actually sees
+      try { await db.deleteVideoState(activeProfileId, st.key); giftStates.delete(st.key); } catch {}
+    }
+  }
+  return { items, total: res.total };
+}
+
+/**
  * One pagination entry point for every folder kind (v1.0.12):
+ *   new      — 🎁 "חדשים": the sparse gift index, resolved to live records (v1.0.21);
  *   grp:<id> — a virtual folder of loose singles sharing a channel (array slice);
  *   sheet    — the flat list MINUS whatever grouping claimed (array slice);
  *   ch:<id>  — the channel's indexed range, with absorbed singles PREPENDED
  *              (they come first, then the channel's own videos, paged correctly);
  *   anything else — the plain by_folder_sort range.
+ *
+ * 🎁 lives HERE, not in renderGridPage, because it is not a stored folder: no record
+ * carries `folderId:'new'`, so `folderRange(scope,'new')` is an exact bound that matches
+ * nothing. renderGridPage had its own gift branch and renderWatchGrid did not, so opening
+ * a gift left the UNDER-PLAYER GRID EMPTY (v1.0.21 field bug) — the child lost every way
+ * to pick the next video. One entry point means one gift implementation.
  */
 async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {}) {
   const slice = (arr) => ({ items: arr.slice(offset, offset + limit), total: arr.length });
+  if (fid === 'new') return pageGiftFolder({ offset, limit });
   if (String(fid).startsWith('grp:')) return slice(singleGroups.get(String(fid).slice(4)) || []);
   if (fid === 'sheet' && looseSingles.length) return slice(looseSingles);
 
@@ -729,32 +795,10 @@ async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {})
 /** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
 async function renderGridPage(grid, scope, fid, which) {
   const pg = which === 'home' ? page : folderPage;
-  let items15;
-  let total;
-  if (fid === 'new') {
-    const res = await db.pageGifts(activeProfileId, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
-    total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
-    items15 = [];
-    const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
-    for (const st of res.items) {
-      // by-key lookup across ALL scopes: immune to library-id drift (a re-saved sheet
-      // URL used to orphan gift states — badge counted them, the folder came up empty)
-      const rec = await db.findLiveByKey(st.key, prefer);
-      if (rec) {
-        items15.push(rec);
-      } else {
-        // self-heal: the video is gone everywhere — drop the orphaned state so the
-        // "חדשים" badge converges with what the child actually sees
-        try { await db.deleteVideoState(activeProfileId, st.key); giftStates.delete(st.key); } catch {}
-      }
-    }
-  } else {
-    const res = await pageAnyFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
-    total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
-    items15 = res.items;
-  }
+  const res = await pageAnyFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
+  const total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
   grid.innerHTML = '';
-  for (const rec of items15) grid.appendChild(tileEl(rec));
+  for (const rec of res.items) grid.appendChild(tileEl(rec));
   if (which === 'home') updateHomePager(total);
   else folderPagerObj.update(folderPage, total);
 }
@@ -1549,6 +1593,9 @@ async function refreshPendingList() {
         await enqueueApprovedForSheet([rec]);
         await refreshPendingList();
         renderHome();
+        // approval is what makes the record LIVE, so this is the moment it becomes
+        // eligible for enrichment and for a gift rank — see refreshAfterAdd
+        refreshAfterAdd({ parent: true });
         maybeSchedulePush();
       },
       onDelete: async () => {
@@ -1753,6 +1800,8 @@ async function parentAdd() {
     }
     $('add-url').value = ''; $('add-title').value = ''; $('add-thumb').value = '';
     msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
+    // the record is live but not yet enriched or gifted — see refreshAfterAdd
+    refreshAfterAdd({ parent: true });
     await refreshParentList();
     renderHome();
     maybeSchedulePush();
@@ -2383,6 +2432,7 @@ function wire() {
     await loadGiftStates();
     await Promise.all([refreshPendingList(), refreshParentList()]);
     renderHome();
+    refreshAfterAdd({ parent: true }); // newly-live records need enrichment + gift ranks
   });
   $('reject-all').addEventListener('click', async () => {
     const pend = await refreshPendingList();
@@ -2773,6 +2823,14 @@ async function init() {
         if (isGalleryActive()) renderHome();
       }).catch(() => {});
     }
+    // v1.0.21: also re-check for a release here. Coming back from the background does
+    // NOT re-fire the gallery's onEnter, so a device left running for days never looked.
+    if (activeProfileId && isGalleryActive()) {
+      import('./update.js')
+        .then((u) => u.checkForUpdate({ silent: true }))
+        .then((r) => maybePromptUpdate(r))
+        .catch(() => {});
+    }
   });
 
   // v1.0.14: stamp the first launch once — the gentle support reminder waits a month
@@ -2798,6 +2856,11 @@ async function init() {
         await alertKid({ emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — מושכים את הסרטונים שלו; חדשים ימתינו לאישור במסך ההורים.`, ok: 'מעולה' });
       }
       if (nav.isActive('gallery')) renderHome();
+      // A video shared from YouTube lands with no srcChannelId and no gift rank, so it
+      // showed up in the loose list and was not a 🎁 until the parent happened to press
+      // "רענון נתונים" (v1.0.21 field bug). A channel share already syncs itself; a
+      // PENDING video waits for approval, which syncs then.
+      if (!channelAdded && !pending) refreshAfterAdd();
     }
   });
   await loadActiveId();

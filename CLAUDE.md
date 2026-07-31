@@ -126,6 +126,34 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.21 field fixes — these are INVARIANTS now:
+  - **`pageAnyFolder` PAGES 🎁 TOO.** 🎁 "חדשים" is not a stored folder — no record carries
+    `folderId:'new'`, so `folderRange(scope,'new')` is an exact bound matching nothing.
+    `renderGridPage` had its own gift branch and `renderWatchGrid` did not, so opening a
+    gift left the UNDER-PLAYER GRID EMPTY: the child lost every way to reach the next
+    video. The gift case now lives in `pageGiftFolder`, reached ONLY through
+    `pageAnyFolder` (still THE one pagination entry point), and `renderGridPage` has no
+    special case left. A test pins that nothing calls `db.pageGifts`/`db.pageFolder`
+    outside it — a second renderer must never grow a private branch again.
+  - **A FRESHLY ADDED RECORD IS INERT UNTIL A SYNC TOUCHES IT.** `srcChannelId` is written
+    only by the sync's enrichment stage, and that field is what `groupSinglesByChannel`
+    folds a single into its 🎞️/📺 folder by; `giftRank` is assigned only by
+    `planProfileGifts`. So a video shared from YouTube (or pasted in the parent screen)
+    sat in the loose "סרטונים נוספים" list and was NOT a 🎁 until the parent happened to
+    press "רענון נתונים". Every path that makes a record live now calls
+    `refreshAfterAdd()` — manual add, share, single approve, approve-all — which forces
+    the sync (the 3-min `shouldSync` throttle is exactly what hid this), reloads gift
+    state and re-renders. It is SILENT and non-blocking: covering a populated grid with
+    the loading screen is the worse bug (v1.0.18). A channel share already synced itself;
+    a PENDING share deliberately waits for approval, which syncs then.
+  - **THE FIRST REFRESH OF EACH LAUNCH IS FORCED** (`launchSyncDone`, per process). The
+    3-min content throttle and the 6h update-check throttle both exist for good reasons
+    mid-session, but together they meant reopening the app minutes after the parent edited
+    the sheet showed stale content, and a release could stay hidden for a whole day of
+    launches. Later home entries keep both throttles. The update check stays `silent`, so
+    `update.skip` still suppresses a version the parent declined — only the red dot shows.
+    App RESUME also re-checks for a release now: coming back from the background does not
+    re-fire the gallery's `onEnter`, so a device left running for days never looked.
 - v1.0.4: launch update PROMPT (decline stores `update.skip` per version — the throttled
   check path honors it); one-time Google-connect screen before profiles (`gauth.introDone`
   pref; restores profiles + per-profile sheet via the Drive doc's additive `profileSources`);
