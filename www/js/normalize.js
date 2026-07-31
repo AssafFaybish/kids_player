@@ -62,3 +62,26 @@ export function mergeVideoRecord(a, b) {
   out.updatedAt = Math.max(a.updatedAt || 0, b.updatedAt || 0) || Date.now();
   return out;
 }
+
+/**
+ * v1.0.22 — make a merged record's curation SELF-CONSISTENT. Two shapes are illegal and
+ * BOTH were reachable, because `mergeVideoRecord` above flips `state` (a live loser
+ * promotes a pending survivor) and never touches `folderId`:
+ *  - pending but not parked: `by_folder_sort` carries no state component, so an
+ *    unapproved record left in a real folder is visible to the CHILD.
+ *  - live but still parked in '~pending': invisible in the child's folder AND absent from
+ *    the approval queue — a record that exists and can never be reached.
+ * Lives here, next to the merge it repairs, because BOTH callers of that merge need it:
+ * `plan.planMutations` (the sync's title-twin and prior branches) and
+ * `drive.applyRemoteDoc` (a peer's approval arriving over the Drive doc).
+ */
+export function settleCuration(rec, fallbackFolderId, now = Date.now()) {
+  if (rec.state === 'pending') {
+    rec.homeFolderId = rec.homeFolderId || fallbackFolderId;
+    rec.folderId = '~pending';
+  } else {
+    if (rec.folderId === '~pending') rec.folderId = rec.homeFolderId || fallbackFolderId;
+    if (!rec.approvedAt) rec.approvedAt = now; // it becomes live HERE — say when
+  }
+  return rec;
+}

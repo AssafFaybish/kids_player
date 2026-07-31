@@ -25,7 +25,7 @@ live and how does data flow".
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
 | `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends; `interpretSheetResponse` is the ONE gate for every `values.get` read (reads and flushes alike) | platform, gauth, db, classify, csv |
-| `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT), `interpretDriveDoc`/`interpretDriveList`/`decidePush` (an unreadable remote NEVER writes), `stripPerDeviceChannel`/`mergeChannelForApply` + push/pull I/O | platform, gauth, normalize, db, csv |
+| `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT), `interpretDriveDoc`/`interpretDriveList`/`decidePush` (an unreadable remote NEVER writes), `stripPerDeviceChannel`/`mergeChannelForApply`, `mergeLibraryChannel` (autoApprove converges; tie → still-requires-approval) + push/pull I/O | platform, gauth, normalize, db, csv |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback | classify, normalize, order, platform, db |
 | `search.js` | PURE home-search ranking: normalized exact/starts/word/substring tiers | normalize |
@@ -93,6 +93,22 @@ hydrate (views read IDB directly — the ONLY thing on the critical path)
    → titles for still-untitled loose links (videos.list 50/unit or oEmbed conc-6)
    → planProfileGifts (baseline newest-12 once per profile+library, then incremental)
    → meta bookkeeping → (drive.schedulePush if enabled)
+```
+
+Cross-device convergence (v1.0.22) is the OTHER half, and it is a separate cadence from the
+sheet sync above:
+
+```
+profile activation (⇒ every launch) / resume from background
+   → app.maybePullDrive()  SILENT · best-effort · 60s throttle · one in-flight promise
+                           skipped entirely unless meta['drive'].enabled
+     → drive.pullDrive → readDbFile → mergeDbFiles(local, remote) → applyRemoteDoc
+        ↳ every video passes settleCuration: a peer's approval lands REACHABLE, and a
+          record still pending stays parked
+        ↳ libraryChannels via mergeLibraryChannel (LWW on updatedAt; tie → the row that
+          still requires approval), applied with preserveTimestamp so devices don't ping-pong
+     → re-render only if db.dataVersion() moved
+   → THEN the sheet sync above (serialized — both write the same video records)
 ```
 
 ## Player HUD state machine

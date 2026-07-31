@@ -360,8 +360,19 @@ export async function listLibraryChannels(libraryId) {
   const r = await preq(idx.getAll(IDBKeyRange.bound([libraryId, -Infinity], [libraryId, Infinity])));
   return r || [];
 }
-export async function putLibraryChannel(rec) {
-  await tx(['libraryChannels'], 'readwrite', (s) => { s.put(rec); });
+/**
+ * v1.0.22 — the `updatedAt` STAMP LIVES HERE, not at the nine call sites. This record
+ * carries `autoApprove`, i.e. "the parent approved this whole channel", and
+ * `drive.mergeLibraryChannel` resolves two devices by that timestamp. Nobody set it, so
+ * both sides compared 0 > 0, the FIRST document won, and the toggle converged on
+ * whichever order the merge happened to run in — provably order-dependent.
+ * `preserveTimestamp` is for the ONE caller that must not restamp: applying a merged
+ * remote record (drive.applyRemoteDoc). Restamping there would make every applied record
+ * instantly "newer" than the peer's, and the two devices would ping-pong forever.
+ */
+export async function putLibraryChannel(rec, { preserveTimestamp = false } = {}) {
+  const out = preserveTimestamp && rec.updatedAt ? rec : { ...rec, updatedAt: Date.now() };
+  await tx(['libraryChannels'], 'readwrite', (s) => { s.put(out); });
 }
 export async function deleteLibraryChannel(libraryId, channelId) {
   await tx(['libraryChannels'], 'readwrite', (s) => { s.delete([libraryId, channelId]); });

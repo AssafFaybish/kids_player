@@ -16,7 +16,7 @@ import { httpRequest } from './platform.js';
 import { getAccessToken, invalidateToken } from './gauth.js';
 import { libraryIdFor } from './util.js';
 import { looksLikeHtml } from './csv.js'; // a 200 + sign-in page is a FAILURE, never an empty doc
-import { normalizeTitle, mergeVideoRecord } from './normalize.js';
+import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
@@ -177,6 +177,30 @@ export function mergeDenyRecord(a, b) {
   return denyActive(a) ? b : a; // tie → prefer the revoked entry
 }
 
+/**
+ * v1.0.22 — the channel's `autoApprove` is "the parent approved this whole channel", so
+ * it MUST converge. `lww` alone did not: no writer set `updatedAt` (now stamped inside
+ * `db.putLibraryChannel`), both sides compared `0 > 0` → false → the FIRST argument won,
+ * and `merge(A,B)` therefore answered `true` where `merge(B,A)` answered `false`. The
+ * existing commutativity test missed it because its fixtures carry timestamps — it pinned
+ * the fixture, not the production path.
+ *
+ * On an exact tie (two legacy rows, neither ever rewritten) recency cannot decide, so the
+ * tie-break is the SAFE direction: the row that still requires the parent's approval wins.
+ * It is deterministic, so the merge is commutative again, and it can only ever ask for one
+ * more confirmation — never leak a channel's uploads to a child unreviewed. Any device
+ * that touches the toggle after this release carries a real timestamp and wins outright.
+ */
+export function mergeLibraryChannel(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ta = a.updatedAt || 0;
+  const tb = b.updatedAt || 0;
+  if (ta !== tb) return tb > ta ? b : a;
+  if (!!a.autoApprove !== !!b.autoApprove) return a.autoApprove ? b : a;
+  return a;
+}
+
 /** Commutative + idempotent (tested): merge(a,b) ≡ merge(b,a); merge(a,a) ≡ a. */
 export function mergeDbFiles(a, b) {
   if (!a) return b;
@@ -215,7 +239,7 @@ export function mergeDbFiles(a, b) {
     }
     const libCh = new Map();
     for (const c of [...(la.libraryChannels || []), ...(lb.libraryChannels || [])]) {
-      libCh.set(c.channelId, libCh.has(c.channelId) ? lww(libCh.get(c.channelId), c) : c);
+      libCh.set(c.channelId, mergeLibraryChannel(libCh.get(c.channelId), c));
     }
 
     out.libraries[id] = {
@@ -383,6 +407,13 @@ async function applyRemoteDoc(doc) {
       const mine = existing.get(v.key);
       const rec = mine ? mergeVideoRecord(mine, { ...v, scopeId: libId }) : { ...v, scopeId: libId, localPath: null, thumbId: null };
       rec.normTitle = normalizeTitle(rec.title);
+      // v1.0.22 — THIS is where a peer's approval lands, and it must land REACHABLE.
+      // mergeVideoRecord promotes a locally-pending record when the remote one is live
+      // (exactly the "I approved it on the phone" case) but never moves it out of
+      // '~pending', so the video became live, invisible to the child, AND gone from the
+      // approval queue. Settled on the remote-only branch too: a doc written by an older
+      // build can already carry that shape.
+      settleCuration(rec, v.homeFolderId || v.folderId, Date.now());
       puts.push(rec);
     }
     await putVideos(puts);
@@ -399,7 +430,12 @@ async function applyRemoteDoc(doc) {
       // may still carry it).
       await putChannel(mergeChannelForApply(prev, c));
     }
-    for (const lc of lib.libraryChannels || []) await putLibraryChannel({ ...lc, libraryId: libId });
+    // preserveTimestamp: the merged record's `updatedAt` is the winner's, and restamping
+    // it here would make it instantly newer than the peer's — the two devices would then
+    // overwrite each other forever instead of converging.
+    for (const lc of lib.libraryChannels || []) {
+      await putLibraryChannel({ ...lc, libraryId: libId }, { preserveTimestamp: true });
+    }
   }
   // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the
   // library data but not WHICH sheet each profile follows. Local records win —

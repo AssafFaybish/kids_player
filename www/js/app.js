@@ -1500,6 +1500,77 @@ async function refreshDriveStatus() {
 }
 
 /** Push local state to Drive soon — no-op until the parent enabled backup. */
+/* v1.0.22 — SHARED STATE TRAVELS BOTH WAYS.
+ *
+ * The app scheduled a PUSH on every mutation but called `pullDrive` from exactly three
+ * places — the first-launch Google connect, profile creation, and the enable-backup
+ * button. So an approval made on the phone reached Drive and sat there: the tablet had no
+ * code path that read it, and the same profile showed a different library on every device.
+ * Pulled here on profile activation (which covers every launch — a launch ends in one) and
+ * on resume from the background.
+ *
+ * Non-negotiables:
+ *  - SILENT and best-effort. Covering a populated grid with the loading screen is the
+ *    worse bug (v1.0.18), and a network failure must never stop a child from watching.
+ *  - ONE pull at a time. Two callers share the in-flight promise, the way `authorize()`
+ *    shares a token request so two taps cannot pop two dialogs.
+ *  - Throttled, because resume + activation can fire together.
+ *  - Answers whether local data actually CHANGED, via the `db.dataVersion()` write
+ *    counter, so the caller re-renders only when there is something new to show.
+ */
+const PULL_THROTTLE_MS = 60 * 1000;
+let pullInFlight = null;
+let lastPullAt = 0;
+
+async function maybePullDrive({ force = false } = {}) {
+  const meta = await db.getMeta('drive');
+  if (!meta || !meta.enabled) return false; // Drive is opt-in, and not connected here
+  if (pullInFlight) return pullInFlight;
+  if (!force && Date.now() - lastPullAt < PULL_THROTTLE_MS) return false;
+  const before = db.dataVersion();
+  pullInFlight = (async () => {
+    try {
+      const { pullDrive } = await import('./drive.js');
+      const r = await pullDrive(activeProfileId);
+      lastPullAt = Date.now();
+      return !!(r && r.ok) && db.dataVersion() !== before;
+    } catch {
+      return false;
+    } finally {
+      pullInFlight = null;
+    }
+  })();
+  return pullInFlight;
+}
+
+/**
+ * The background work after a profile is activated: pull the family's shared state, THEN
+ * sync the sheet. SERIALIZED on purpose — both write the same video records, and letting
+ * them interleave would have one clobber the other's merge. The loading screen (raised by
+ * the caller only when there is nothing cached to show) must be hidden on EVERY path.
+ */
+async function pullThenSync(id) {
+  if (await maybePullDrive()) {
+    if (activeProfileId !== id) return; // switched profile under us — that render owns it
+    await loadGiftStates();
+    if (nav.isActive('gallery')) await renderHome();
+  }
+  if (activeProfileId !== id) return;
+  if (!(await shouldSync(id))) { await loading.hide(); return; }
+  try {
+    await syncLibrary(id, { onProgress: (p) => loading.progress(p) });
+    if (activeProfileId !== id) return;
+    await absorbMineIntoShared(id); // the first sync may have just created sources
+    await loadGiftStates();
+    if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
+    await loading.hide();
+    if (!nav.isActive('gallery') && nav.isActive('loading')) nav.reset('gallery');
+    maybeSchedulePush();
+  } finally {
+    await loading.hide(); // idempotent; the ONLY guarantee the child depends on
+  }
+}
+
 async function maybeSchedulePush() {
   const meta = (await db.getMeta('drive')) || {};
   if (!meta.enabled) return;
@@ -2436,21 +2507,9 @@ async function activateProfile(id) {
   // their interactive PIN flow must not fight the activation navigation.
   drainShareQueue().catch(() => {});
 
-  // Background sync — never blocks the grid; re-renders when new content lands.
-  if (await shouldSync(id)) {
-    syncLibrary(id, { onProgress: (p) => loading.progress(p) })
-      .then(async (r) => {
-        await absorbMineIntoShared(id); // first sync may have just created sources
-        await loadGiftStates();
-        if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
-        await loading.hide();
-        if (!nav.isActive('gallery') && nav.isActive('loading')) nav.reset('gallery');
-        maybeSchedulePush();
-      })
-      .catch(async () => { await loading.hide(); });
-  } else {
-    await loading.hide();
-  }
+  // Background: pull the family's shared state, then sync the sheet. Never blocks the
+  // grid; re-renders when either one lands something new (v1.0.22).
+  pullThenSync(id).catch(async () => { await loading.hide(); });
 }
 
 async function updateProfileChip() {
@@ -2965,6 +3024,18 @@ async function init() {
   } catch {}
 
   onAppResume(async () => {
+    // v1.0.22 — pull the family's shared state FIRST: the parent very often approves on
+    // the phone and then hands the tablet to the child, and resume does not re-fire the
+    // gallery's onEnter. Same guards as the resync below (never mid-video, home only),
+    // and serialized before it so the two never write the same records at once.
+    if (activeProfileId && isGalleryActive()) {
+      try {
+        if (await maybePullDrive()) {
+          await loadGiftStates();
+          if (isGalleryActive()) await renderHome();
+        }
+      } catch {}
+    }
     // resync on foreground — but never while a video plays, and only from the home
     if (activeProfileId && isGalleryActive() && await shouldSync(activeProfileId)) {
       syncLibrary(activeProfileId).then(async () => {
