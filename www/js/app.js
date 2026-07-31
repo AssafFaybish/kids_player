@@ -4,7 +4,7 @@ import {
   loadItems, getSource, youtubeThumbCandidates,
   getProfiles, getActiveId, getActiveProfile, createProfile, deleteProfile,
   migrateLegacyIfNeeded, loadActiveId, setActiveId, fetchYouTubeTitle,
-  profileNameExists
+  profileNameExists, profileNameConflict, duplicateProfileNames
 } from './store.js';
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
@@ -1389,6 +1389,16 @@ async function refreshParent() {
   $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
   $('share-approval-toggle').checked = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
+  // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
+  // cannot be blocked retroactively, and merging or renaming it silently would be worse —
+  // so tell the parent and let them rename or delete. Nothing is touched automatically.
+  const dups = duplicateProfileNames(await getProfiles());
+  const dupEl = $('dup-profiles');
+  dupEl.classList.toggle('hidden', !dups.length);
+  if (dups.length) {
+    const names = dups.map((d) => `"${d.name}" (${d.ids.length})`).join(', ');
+    dupEl.textContent = `⚠️ יש יותר מפרופיל אחד באותו שם: ${names}. זה קורה כששני מכשירים יצרו את אותו שם בלי חיבור לאינטרנט. הילד רואה שני אווטארים זהים, וההתקדמות שלו (מתנות וסרטונים אישיים) מתפצלת ביניהם — כדאי לשנות שם לאחד מהם, או למחוק את המיותר.`;
+  }
   $('add-msg').textContent = '';
   $('remote-status').textContent = '';
   $('approve-msg').textContent = '';
@@ -2297,10 +2307,34 @@ async function createNewProfile() {
   const msg = $('create-msg');
   if (!name) { msg.textContent = 'בחרו שם'; msg.className = 'form-msg err'; return; }
   if (!createSel) { msg.textContent = 'בחרו תמונה'; msg.className = 'form-msg err'; return; }
-  // v1.0.8: two profiles with the same name are indistinguishable on screen — block
-  if (profileNameExists(await getProfiles(), name)) {
-    msg.textContent = 'כבר יש פרופיל בשם הזה — בחרו שם אחר';
+
+  // v1.0.22 — the name must be unique across the whole GOOGLE ACCOUNT, not just this
+  // device. `createProfile` mints its id locally and both merge paths union by ID, so two
+  // devices could each create "נועם" and BOTH would survive the sync — splitting that
+  // child's gift progress, personal videos and (with no sheet) their whole library, while
+  // the parent sees two identical avatars. So: pull first, then decide.
+  //
+  // The pull is best-effort on purpose. Hard-blocking creation when Drive is unreachable
+  // would make the app unusable on a plane; we fall back to the local list and accept that
+  // the rare simultaneous-offline case is resolved later, in the parent screen.
+  const localBefore = await getProfiles();
+  let merged = localBefore;
+  try {
+    if (((await db.getMeta('drive')) || {}).enabled) {
+      const { pullDrive } = await import('./drive.js');
+      loading.show({ title: 'בודקים שהשם פנוי…', step: 'קוראים את הגיבוי בגוגל דרייב' });
+      try { await pullDrive(activeProfileId); } finally { loading.hide(); }
+      merged = await getProfiles(); // pullDrive already folded the remote profiles in
+    }
+  } catch { /* offline / not connected — the local check below still applies */ }
+
+  const clash = profileNameConflict(localBefore, merged, name);
+  if (clash) {
+    msg.textContent = clash === 'remote'
+      ? 'שם הפרופיל קיים כבר בחשבון הגוגל, במכשיר אחר — בחרו שם אחר.'
+      : 'כבר יש פרופיל בשם הזה — בחרו שם אחר';
     msg.className = 'form-msg err';
+    renderProfiles(); // the pull may have added profiles — show them
     return;
   }
   const p = await createProfile(name, createSel.e, createSel.c);

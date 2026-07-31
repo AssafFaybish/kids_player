@@ -66,6 +66,50 @@ export function profileNameExists(list, name) {
   return (list || []).some((p) => p && norm(p.name) === n);
 }
 
+/**
+ * v1.0.22 — PURE: WHERE does this name already exist? `'local'` | `'remote'` | `null`.
+ *
+ * Two devices on the same Google account could both create "נועם": `createProfile` mints
+ * the id LOCALLY (`Date.now()` + random), and both merge paths union by ID
+ * (`mergeProfileLists` here, `mergeDbFiles` in drive.js) — the name is never compared. So
+ * the duplicate survived, and the damage is not cosmetic: `profileVideoState` is keyed by
+ * profileId (so the child's 🎁 progress SPLITS — a video opened on one is still a gift on
+ * the other), `prof:<id>` splits their personal videos, and a sheet-less profile gets
+ * `lib:p:<profileId>`, i.e. two separate libraries for one child. On screen the parent just
+ * sees two identical avatars with the same name.
+ *
+ * The distinction matters only for the MESSAGE: after a Drive pull the other device's
+ * profiles are already local (pullDrive → mergeRestoredProfiles), so the caller passes the
+ * list it had BEFORE the pull to tell "you already have this" from "another device does".
+ */
+export function profileNameConflict(localBefore, merged, name) {
+  if (!profileNameExists(merged, name)) return null;
+  return profileNameExists(localBefore, name) ? 'local' : 'remote';
+}
+
+/**
+ * v1.0.22 — PURE: names shared by more than one profile, for the parent screen.
+ *
+ * Blocking at creation cannot close this completely: with no server there is no
+ * coordination point, so two devices both offline can each mint "נועם" and only meet
+ * later. At THAT moment there is nothing left to block — the profile exists on both sides.
+ * Merging them would be irreversible (gift state, scopes) and renaming behind the parent's
+ * back is worse, so the collision is reported and the parent decides.
+ * -> [{ name, ids: [...] }], only for names with 2+ profiles.
+ */
+export function duplicateProfileNames(list) {
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const byName = new Map();
+  for (const p of list || []) {
+    if (!p || !p.id) continue;
+    const n = norm(p.name);
+    if (!n) continue;
+    if (!byName.has(n)) byName.set(n, []);
+    byName.get(n).push(p.id);
+  }
+  return [...byName.entries()].filter(([, ids]) => ids.length > 1).map(([name, ids]) => ({ name, ids }));
+}
+
 export async function createProfile(name, avatar, color) {
   const list = await getProfiles();
   const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);

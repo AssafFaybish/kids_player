@@ -65,3 +65,52 @@ test('profileNameExists: trims + collapses whitespace; empty never matches', asy
   assert.equal(profileNameExists([], 'דני'), false);
   assert.equal(profileNameExists(null, 'דני'), false);
 });
+
+test('profileNameConflict: a name taken on ANOTHER device blocks creation too', async () => {
+  const { profileNameConflict } = await import('../www/js/store.js');
+  const mine = [{ id: 'p1', name: 'דני' }];
+  // the other device's "נועם" arrives via the Drive pull, so it is in `merged` but was
+  // not in `localBefore`. That distinction only picks the MESSAGE — both block.
+  const merged = [...mine, { id: 'p2', name: 'נועם' }];
+
+  assert.equal(profileNameConflict(mine, merged, 'נועם'), 'remote');
+  assert.equal(profileNameConflict(mine, merged, 'דני'), 'local');
+  assert.equal(profileNameConflict(mine, merged, 'שירה'), null, 'a free name must not be blocked');
+
+  // Why this exists: createProfile mints the id LOCALLY and both merge paths union by ID,
+  // so two devices on one Google account could each create "נועם" and BOTH survive —
+  // splitting that child's gift progress (profileVideoState is keyed by profileId), their
+  // personal videos (prof:<id>) and, with no sheet, their entire library (lib:p:<id>).
+  assert.equal(profileNameConflict(mine, merged, '  נועם  '), 'remote', 'trimming must not defeat it');
+  assert.equal(profileNameConflict(mine, merged, 'נועם'), 'remote');
+
+  // an offline creation falls back to localBefore === merged: still blocks a local clash
+  assert.equal(profileNameConflict(mine, mine, 'דני'), 'local');
+  assert.equal(profileNameConflict(mine, mine, 'נועם'), null);
+  // junk is never a conflict (an empty name is rejected earlier by its own check)
+  for (const junk of ['', '   ', null, undefined]) {
+    assert.equal(profileNameConflict(mine, merged, junk), null, String(junk));
+  }
+  assert.equal(profileNameConflict(null, null, 'דני'), null);
+});
+
+test('duplicateProfileNames: reports collisions the parent has to resolve', async () => {
+  const { duplicateProfileNames } = await import('../www/js/store.js');
+  assert.deepEqual(duplicateProfileNames([{ id: 'p1', name: 'דני' }, { id: 'p2', name: 'נועם' }]), []);
+  // the case blocking cannot prevent: both devices offline, both mint the same name
+  assert.deepEqual(
+    duplicateProfileNames([{ id: 'p1', name: 'נועם' }, { id: 'p2', name: ' נועם ' }, { id: 'p3', name: 'דני' }]),
+    [{ name: 'נועם', ids: ['p1', 'p2'] }],
+    'whitespace variants are the SAME name on screen and must be reported'
+  );
+  // three-way, and a second colliding name at once
+  const three = duplicateProfileNames([
+    { id: 'a', name: 'נועם' }, { id: 'b', name: 'נועם' }, { id: 'c', name: 'נועם' },
+    { id: 'd', name: 'דני' }, { id: 'e', name: 'דני' }
+  ]);
+  assert.equal(three.length, 2);
+  assert.deepEqual(three.find((x) => x.name === 'נועם').ids, ['a', 'b', 'c']);
+  // an unnamed or id-less row must never invent a collision
+  assert.deepEqual(duplicateProfileNames([{ id: 'p1', name: '' }, { id: 'p2', name: '  ' }, { name: 'נועם' }]), []);
+  for (const junk of [null, undefined, []]) assert.deepEqual(duplicateProfileNames(junk), [], String(junk));
+});

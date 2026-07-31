@@ -402,6 +402,10 @@
 
       <!-- Settings -->
       <div id="panel-settings" class="panel hidden">
+        <!-- v1.0.22: two devices offline at once can each create the same profile name —
+             there is no coordination point to block that, so it is surfaced HERE instead
+             of being silently merged or renamed. Nothing is touched automatically. -->
+        <div id="dup-profiles" class="form-msg err hidden"></div>
         <label class="switch-row">
           <input id="share-approval-toggle" type="checkbox" checked />
           <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס</span>

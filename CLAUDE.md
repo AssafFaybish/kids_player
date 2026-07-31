@@ -129,6 +129,20 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   check, so a zero limit yielded one row — and `pageAnyFolder` passes `limit - extras.length`,
   which is exactly 0 once absorbed singles fill a page (16 tiles on a 15-tile grid, the row
   repeated on page 2).
+- **A PROFILE NAME IS UNIQUE PER GOOGLE ACCOUNT, NOT PER DEVICE** (v1.0.22). `createProfile`
+  mints the id LOCALLY and BOTH merge paths union by id (`store.mergeProfileLists`,
+  `drive.mergeDbFiles`) — the name is never compared — so two devices on one account could
+  each create "נועם" and both would survive the sync. That is not cosmetic: `profileVideoState`
+  is keyed by profileId (the child's 🎁 progress SPLITS), `prof:<id>` splits their personal
+  videos, and a sheet-less profile gets `lib:p:<profileId>` — two whole libraries for one
+  child, while the parent just sees two identical avatars. Creation therefore PULLS FROM
+  DRIVE first (`pullDrive` already folds remote profiles in via `mergeRestoredProfiles`) and
+  blocks with a distinct message via pure `store.profileNameConflict` → 'local'|'remote'|null.
+  The pull is BEST-EFFORT: hard-blocking creation when Drive is unreachable would make the
+  app unusable offline. That leaves one irreducible case — two devices offline at once —
+  because with no server there is no coordination point; `store.duplicateProfileNames`
+  reports it in the parent screen and the parent renames or deletes. Never auto-merge
+  (irreversible: gift state + scopes) and never auto-rename behind their back.
 - Scoping (decision 20): `lib:<fnv1a(sheet)>` = shared per input-sheet; `prof:<id>` = personal.
   A profile with NO sheet gets `lib:p:<profileId>`. CONNECTING or CHANGING a sheet therefore
   CHANGES the scope — always route it through `adoptLibraryScope()` (→ `db.moveScope`, which
