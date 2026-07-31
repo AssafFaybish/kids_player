@@ -2,7 +2,8 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel } from '../www/js/drive.js';
+import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
 const vid = (key, over = {}) => ({
   key, type: 'youtube', id: key.slice(3), srcUrl: 'https://youtu.be/' + key.slice(3),
@@ -79,6 +80,62 @@ test('LWW by updatedAt for profiles and channel toggles', () => {
   const m = mergeDbFiles(docA, docB);
   assert.equal(m.profiles[0].name, 'דני!');
   assert.equal(m.libraries['lib:x'].libraryChannels[0].autoApprove, true);
+});
+
+test('autoApprove CONVERGES even when neither row carries a timestamp (v1.0.22)', () => {
+  // The real production shape until v1.0.22: no writer set `updatedAt` on a
+  // libraryChannels row, so `lww` compared 0 > 0 → false → the FIRST argument won and
+  // "I approved this channel" resolved by merge order. The suite missed it because the
+  // fixtures above DO carry timestamps — it pinned the fixture, not the app.
+  const lib = (autoApprove) => ({
+    kind: 'kids-player-db', schema: 1, exportedAt: 1, profiles: [], profileState: {}, profileSources: {},
+    libraries: { 'lib:x': { videos: [], denylist: [], channels: [], libraryChannels: [{ channelId: 'UC1', autoApprove }] } }
+  });
+  const on = lib(true);
+  const off = lib(false);
+  const pick = (d) => mergeDbFiles(...d).libraries['lib:x'].libraryChannels[0].autoApprove;
+  assert.equal(pick([on, off]), pick([off, on]), 'merge must not depend on argument order');
+  // and the tie resolves the SAFE way: still requires the parent to approve
+  assert.equal(pick([on, off]), false);
+});
+
+test('mergeLibraryChannel: recency wins, a timestamp beats a legacy row, tie is safe', () => {
+  const a = { channelId: 'UC1', autoApprove: false, updatedAt: 10 };
+  const b = { channelId: 'UC1', autoApprove: true, updatedAt: 20 };
+  assert.equal(mergeLibraryChannel(a, b).autoApprove, true, 'newer wins');
+  assert.equal(mergeLibraryChannel(b, a).autoApprove, true, 'and it is commutative');
+  const legacy = { channelId: 'UC1', autoApprove: false };
+  assert.equal(mergeLibraryChannel(legacy, b).autoApprove, true, 'a real timestamp beats no timestamp');
+  assert.equal(mergeLibraryChannel(b, legacy).autoApprove, true);
+  assert.equal(mergeLibraryChannel(null, a), a);
+  assert.equal(mergeLibraryChannel(a, null), a);
+});
+
+test('a peer\'s approval arrives REACHABLE, not parked (v1.0.22)', () => {
+  // The applyRemoteDoc composition: local record is waiting for approval, the remote one
+  // was approved on another device. mergeVideoRecord promotes the state and never touches
+  // folderId, so this used to yield live + '~pending' — invisible in the child's folder
+  // AND absent from the approval queue.
+  const mine = {
+    key: 'yt:aaaaaaaaaaa', state: 'pending', folderId: '~pending', homeFolderId: 'ch:UC1',
+    title: 'שיר', titleSource: 'rss', addedAt: 100, approvedAt: null
+  };
+  const remote = {
+    key: 'yt:aaaaaaaaaaa', state: 'live', folderId: 'ch:UC1',
+    title: 'שיר', titleSource: 'rss', addedAt: 100, approvedAt: 500
+  };
+  const rec = settleCuration(mergeVideoRecord(mine, remote), remote.homeFolderId || remote.folderId, 900);
+  assert.equal(rec.state, 'live');
+  assert.equal(rec.folderId, 'ch:UC1', 'un-parked, or the child can never reach it');
+  assert.equal(rec.approvedAt, 500, 'the peer\'s approval time survives');
+
+  // The other direction must NOT leak: a remote record still pending stays parked.
+  const stillWaiting = settleCuration(
+    mergeVideoRecord({ ...mine }, { ...remote, state: 'pending', folderId: '~pending', approvedAt: null }),
+    'ch:UC1', 900
+  );
+  assert.equal(stillWaiting.state, 'pending');
+  assert.equal(stillWaiting.folderId, '~pending');
 });
 
 test('serializeDb refusal list: no localPath, no thumbId, no backfillCursor', () => {

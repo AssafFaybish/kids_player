@@ -4,7 +4,7 @@
 // most important assertion in the suite is that running planMutations twice yields an
 // EMPTY second diff (sync never churns the DB or re-gifts on every launch).
 
-import { normalizeTitle, mergeVideoRecord } from './normalize.js';
+import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
 
 /** Fields that constitute "the record changed" (put emitted only when one differs). */
@@ -13,27 +13,6 @@ const DIFF_FIELDS = [
   'thumbUrl', 'thumbId', 'localPath', 'publishedAt', 'rowIndex', 'origin', 'url', 'srcUrl'
 ];
 const changed = (a, b) => DIFF_FIELDS.some((f) => (a[f] ?? null) !== (b[f] ?? null));
-
-/**
- * v1.0.22 — make a merged record's curation SELF-CONSISTENT. Two shapes are illegal
- * and both were reachable:
- *  - pending but not parked: `by_folder_sort` carries no state component, so an
- *    unapproved record left in a real folder is visible to the CHILD.
- *  - live but still parked in '~pending': invisible in the child's folder AND absent
- *    from the approval queue — a record that exists and can never be reached.
- * `mergeVideoRecord` promotes a pending survivor to live when the loser was live, and
- * it does not touch folderId, so every caller of it must pass through here.
- */
-function settleCuration(rec, fallbackFolderId, now) {
-  if (rec.state === 'pending') {
-    rec.homeFolderId = rec.homeFolderId || fallbackFolderId;
-    rec.folderId = '~pending';
-  } else {
-    if (rec.folderId === '~pending') rec.folderId = rec.homeFolderId || fallbackFolderId;
-    if (!rec.approvedAt) rec.approvedAt = now; // it becomes live HERE — say when
-  }
-  return rec;
-}
 
 /**
  * @param candidates  enriched candidate records for ONE scope:

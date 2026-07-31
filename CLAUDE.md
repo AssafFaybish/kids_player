@@ -89,7 +89,37 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imported 2 videos"). Both merge branches now go through pure `settleCuration`, which also
   closes the mirror-image hole: `mergeVideoRecord` flips `state` but never `folderId`, so a
   legitimately promoted record used to stay parked in `'~pending'` — invisible in the child's
-  folder AND absent from the approval queue.
+  folder AND absent from the approval queue. `settleCuration` lives in
+  [normalize.js](www/js/normalize.js) next to the merge it repairs, because BOTH callers of
+  that merge need it: `plan.planMutations` and `drive.applyRemoteDoc` — a peer's approval
+  arriving over the Drive doc hits the identical promotion.
+- **SHARED STATE TRAVELS BOTH WAYS** (v1.0.22). The app scheduled a PUSH on every mutation
+  but called `pullDrive` from exactly three places — the first-launch Google connect,
+  profile creation, and the enable-backup button. Neither app launch, nor profile entry, nor
+  `syncLibrary`, nor the parent's 🔄 ever pulled, so an approval made on the phone reached
+  Drive and SAT there: the tablet had no code path that read it, and one profile showed a
+  different library on every device. `app.maybePullDrive()` now pulls on profile activation
+  (which covers every launch — a launch ends in one) and on resume from the background.
+  It is SILENT, best-effort, throttled (60s), and shares its in-flight promise so two
+  callers cannot pop two pulls. It reports whether anything CHANGED via the
+  `db.dataVersion()` write counter, so a render only happens when there is something new.
+  **The pull and the sheet sync are SERIALIZED** (`pullThenSync`): both write the same video
+  records, and interleaving them would let one clobber the other's merge.
+- **`libraryChannels.updatedAt` IS STAMPED INSIDE `db.putLibraryChannel`**, not at the nine
+  call sites (v1.0.22). That row carries `autoApprove` = "the parent approved this whole
+  channel", and `drive.mergeLibraryChannel` resolves two devices by that timestamp. Nobody
+  set it, so both sides compared `0 > 0`, the FIRST document won, and `merge(A,B)` answered
+  `true` where `merge(B,A)` answered `false` — provably order-dependent, i.e. the documented
+  commutativity invariant was false for this field. The suite missed it because the fixtures
+  carry timestamps: **it pinned the fixture, not the production path.** On an exact tie
+  (two legacy rows) the tie-break is the SAFE direction — the row still requiring approval
+  wins — which is deterministic and can only ever ask for one extra confirmation.
+  `drive.applyRemoteDoc` passes `preserveTimestamp`: restamping an applied remote record
+  would make it instantly newer than the peer's and the two devices would ping-pong forever.
+- Gift RANKS stay device-local on purpose (`drive.js` skips `giftRank`); only `unwrappedAt`
+  converges, min-merged, so what a child opened stays open everywhere. Decision 2026-07-31:
+  syncing `giftRank` is the exact path that once produced a runaway 🎁 folder needing a
+  repair migration, and the child-visible benefit is small.
 - Deletion = atomic delete + deny-list tombstone. Since v1.0.10 the deny-list is an
   LWW-element set: entries are never removed, but the SHEET re-adding a key revokes them
   (`removedAt >= at` = inert; `db.denyActive`, merge rule `drive.mergeDenyRecord` — later
