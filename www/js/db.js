@@ -372,7 +372,16 @@ export async function deleteLibraryChannel(libraryId, channelId) {
   const ch = await getChannel(channelId);
   // uploadsPlaylistId and the logo are kept — they cost a lookup/scrape to rebuild
   // and never go stale; only the cursor is state that must not outlive the sub.
-  if (ch) await putChannel({ ...ch, backfillCursor: null, backfillDone: false });
+  // v1.0.21: the PLAYLISTS walk is a second source with the same problem — a surviving
+  // `playlistsDone` meant a re-added channel never re-imported its playlist content, and
+  // a surviving `noLongForm` kept it closed AND kept showing the parent "only Shorts".
+  if (ch) {
+    await putChannel({
+      ...ch,
+      backfillCursor: null, backfillDone: false, backfillPlaylistId: null,
+      playlistCursor: null, playlistQueue: null, playlistsDone: false, noLongForm: false
+    });
+  }
 }
 
 /* ---------------- thumbs (Blob cache) ---------------- */

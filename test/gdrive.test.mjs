@@ -87,7 +87,11 @@ test('serializeDb refusal list: no localPath, no thumbId, no backfillCursor', ()
     libraries: {
       'lib:x': {
         videos: [vid('yt:aaaaaaaaaaa', { localPath: 'videos/x.mp4', thumbId: 'file:abc' })],
-        channels: [{ channelId: 'UCabcdefghijklmnopqrstuv', backfillCursor: 'PAGE_TOKEN' }],
+        channels: [{
+          channelId: 'UCabcdefghijklmnopqrstuv', title: 'ערוץ', logoUrl: 'https://x/y.jpg',
+          backfillCursor: 'PAGE_TOKEN', backfillPlaylistId: 'UULFabcdefghijklmnopqrstuv',
+          playlistCursor: 'PL_TOKEN', playlistQueue: ['PLaaa'], playlistsDone: true, noLongForm: true
+        }],
         denylist: [], libraryChannels: []
       }
     },
@@ -97,6 +101,16 @@ test('serializeDb refusal list: no localPath, no thumbId, no backfillCursor', ()
   assert.ok(!json.includes('thumbId'));
   assert.ok(!json.includes('backfillCursor'));
   assert.ok(!json.includes('PAGE_TOKEN'));
+  // v1.0.21 — PAGING STATE IS PER DEVICE. A page token means nothing in another device's
+  // paging position, and `playlistsDone`/`noLongForm` arriving from a peer would make this
+  // device skip work it never did: device B would pull "playlists finished" from device A
+  // and never walk them in its OWN scope, losing that content permanently if B follows a
+  // different sheet.
+  for (const leak of ['playlistCursor', 'PL_TOKEN', 'playlistQueue', 'PLaaa', 'playlistsDone', 'noLongForm', 'backfillPlaylistId']) {
+    assert.ok(!json.includes(leak), `${leak} leaked into the Drive backup`);
+  }
+  // …while the fields that DO belong to every device still travel
+  assert.ok(json.includes('logoUrl') && json.includes('ערוץ'), 'shared channel fields were dropped');
 });
 
 test('parseDb: round-trip works; garbage and truncated input → null, never throws', () => {

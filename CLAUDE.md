@@ -164,6 +164,47 @@ pins that the consumers follow the config and that every address is well-formed.
   - **Duplicates need no new code**: `planMutations` keys on `yt:<videoId>` and its
     per-channel title index also merges same-titled twins WITHIN a run, so the heavy
     Videos-tab∩playlists overlap collapses to one record and one gift (test-pinned).
+    Note the price, also pinned: a same-title/DIFFERENT-id twin (an alt mix, a re-upload)
+    merges too, and `mergedFrom` makes that permanent — the loser can never be imported.
+  - Review fixes, each now a rule:
+    - **A PAGE TOKEN BELONGS TO ONE PLAYLIST.** `backfillPlaylistId` travels with
+      `backfillCursor`, and `quota.planBackfillPlaylist` RESETS the cursor on a mismatch.
+      Reusing a `UU…` token against `UULF…` either skipped a slice of the back catalogue
+      and latched `backfillDone`, or was rejected and written back — leaving the channel
+      returning `'backfill'` forever, never delivering another video. `playlistId: null`
+      means SKIP; substituting `UU…` is what the whole release exists to avoid.
+    - **PAGING STATE NEVER TRAVELS TO DRIVE.** `serializeDb` strips `backfillCursor`,
+      `backfillPlaylistId`, `playlistCursor`, `playlistQueue`, `playlistsDone`,
+      `noLongForm`, and the apply side keeps the LOCAL values. A peer's "playlists
+      finished" made another device skip pages it had never walked.
+    - **`playlistsDone` REQUIRES A COMPLETE ENUMERATION** (`plan.planPlaylistAdvance`).
+      Deriving it from "the queue is empty" made one throttled first call disable the
+      source for that channel forever — nothing rearms it. `db.deleteLibraryChannel`
+      now rearms the playlist walk and `noLongForm` alongside the backfill.
+    - **A MISSING `videoOwnerChannelId` IS REJECTED** (`plan.acceptPlaylistItem`): that
+      is what private and deleted playlist entries look like, and they reached the child
+      as untappable "Private video" tiles. RSS fails OPEN, playlist items fail CLOSED.
+    - **ONE 404 IS A CHANNEL, ALL 404s ARE AN OUTAGE** (`plan.planNoLongForm` +
+      `planLongFormOutage`). Only a first-page 404 on a derived id means "Shorts-only";
+      every channel 404ing at once means YouTube retired the alias, so nothing is closed
+      and no parent is told something false. `noLongForm` is retracted the moment
+      long-form content appears.
+    - **A FORCED SYNC CHAINS, NEVER JOINS.** `inFlight` used to hand a forced caller the
+      running promise and drop its opts, so a share landing inside the launch sync's
+      window got no `srcChannelId` and no `giftRank` — the exact bug it was fixing.
+    - **`planGifts` CAPS THE OUTSTANDING GIFTS AT `baseline` ON BOTH BRANCHES.** The
+      incremental branch had no ceiling, so approve-all / a backfill going live / a
+      baseline spent on a near-empty library gifted EVERYTHING. A runaway 🎁 folder is
+      now unrepresentable rather than repairable, and the NEWEST arrivals get the ranks.
+    - `refreshAfterAdd` refuses to run under a playing video (a forced sync also bypasses
+      the per-channel RSS throttle, so it is a full sweep), `parentAdd` AWAITS its sheet
+      row before syncing (its own mirror could otherwise tombstone it), and the
+      channel-auto-approve bulk path calls it too.
+    - Source-level guards may not pin SYNTAX. Three did, and all three broke on a
+      refactor that improved the code while a dead filter would have passed them. The
+      decisions live in pure `plan.js`/`quota.js` helpers with behavioural tests; the
+      only greps left are the ones a test cannot express (no duration parser anywhere,
+      no second caller of `db.pageGifts`).
 - v1.0.21 field fixes — these are INVARIANTS now:
   - **`pageAnyFolder` PAGES 🎁 TOO.** 🎁 "חדשים" is not a stored folder — no record carries
     `folderId:'new'`, so `folderRange(scope,'new')` is an exact bound matching nothing.

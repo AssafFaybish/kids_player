@@ -48,7 +48,12 @@ export function serializeDb({ profiles, libraries, profileState, profileSources 
       sheetUrl: lib.sheetUrl || null,
       videos: (lib.videos || []).map(({ localPath, thumbId, ...v }) => v),
       denylist: lib.denylist || [],
-      channels: (lib.channels || []).map(({ backfillCursor, ...c }) => c),
+      // Paging state is PER DEVICE and must never travel: a page token means nothing in
+      // another device's paging position, and `playlistsDone`/`noLongForm` arriving from
+      // a peer would skip work this device has not done (v1.0.21 added the last four).
+      channels: (lib.channels || []).map(
+        ({ backfillCursor, backfillPlaylistId, playlistCursor, playlistQueue, playlistsDone, noLongForm, ...c }) => c
+      ),
       libraryChannels: lib.libraryChannels || []
     };
   }
@@ -278,7 +283,16 @@ async function applyRemoteDoc(doc) {
     });
     for (const c of lib.channels || []) {
       const prev = await getChannel(c.channelId);
-      await putChannel(prev ? { ...prev, ...c, backfillCursor: prev.backfillCursor } : c);
+      // LOCAL paging state always wins — a doc written before this release may still
+      // carry these fields, and letting a peer's value through would skip pages this
+      // device never walked.
+      await putChannel(prev ? {
+        ...prev, ...c,
+        backfillCursor: prev.backfillCursor, backfillPlaylistId: prev.backfillPlaylistId,
+        backfillDone: prev.backfillDone, playlistCursor: prev.playlistCursor,
+        playlistQueue: prev.playlistQueue, playlistsDone: prev.playlistsDone,
+        noLongForm: prev.noLongForm
+      } : c);
     }
     for (const lc of lib.libraryChannels || []) await putLibraryChannel({ ...lc, libraryId: libId });
   }

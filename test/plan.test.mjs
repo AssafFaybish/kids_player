@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
-  sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair
+  sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair,
+  acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -290,15 +291,21 @@ test('the Videos tab and a PLAYLIST holding the same video yield ONE record', ()
   // contain videos the Videos tab already gave us, so the same id arrives twice in a
   // single run. Both arrivals must collapse: two records would mean two tiles of the
   // same video in the child's folder, and two gifts.
+  // The two arrivals must DIFFER the way the real sources do, or the test proves nothing:
+  // `snippet.publishedAt` on a playlist item is when it was ADDED TO THE PLAYLIST, so the
+  // same video can reach us with a different date and a different title revision.
   const dup = [
-    cand({ id: 'vvvvvvvvvvv', titleSource: 'api' }),                   // from UULF…
-    cand({ id: 'vvvvvvvvvvv', titleSource: 'api', publishedAt: 1000 }) // from a playlist
+    cand({ id: 'vvvvvvvvvvv', titleSource: 'api', publishedAt: 1000, title: 'שיר הבוקר' }),
+    cand({ id: 'vvvvvvvvvvv', titleSource: 'api', publishedAt: 7777, title: 'שיר הבוקר (מתוך אוסף)' })
   ];
   const plan = planMutations({ candidates: dup, existing: new Map(), denySet: new Set(), now: 5000 });
-  assert.equal(plan.puts.length, 1, 'the same videoId produced two records');
-  assert.equal(plan.puts[0].key, 'yt:vvvvvvvvvvv');
+  // `puts` is a Map keyed by key, so its LENGTH is structurally guaranteed and proves
+  // nothing. What matters is that the video is gifted ONCE and gets ONE sortKey.
   assert.equal(plan.newLiveKeys.filter((k) => k === 'yt:vvvvvvvvvvv').length, 1,
     'one video became two gifts');
+  assert.equal(plan.puts.length, 1);
+  assert.equal(plan.puts[0].key, 'yt:vvvvvvvvvvv');
+  assert.equal(typeof plan.puts[0].sortKey, 'number');
 
   // and again against an ALREADY-STORED copy (the steady state: uploads imported last
   // run, the playlists stage reaches the same video this run)
@@ -309,4 +316,167 @@ test('the Videos tab and a PLAYLIST holding the same video yield ONE record', ()
   });
   assert.deepEqual(second.puts, [], 'a re-seen video rewrote its record (churn)');
   assert.deepEqual(second.newLiveKeys, [], 'a re-seen video was gifted a second time');
+});
+
+/* ---- v1.0.21: Shorts/live exclusion and the playlists-tab source ---- */
+
+const OWN = 'UCabcdefghijklmnopqrstuv';
+const OTHER = 'UCzzzzzzzzzzzzzzzzzzzzzz';
+const item = (over = {}) => ({ videoId: 'aaaaaaaaaaa', ownerChannelId: OWN, ...over });
+
+test('acceptRssEntry: Shorts and live streams never enter, normal videos do', () => {
+  // A grep for the word "isShort" passed for `if (!v.isShort) continue`, which imports
+  // ONLY Shorts — the maximally-bad inversion in a child-safety app. A predicate cannot
+  // be inverted without failing here.
+  assert.equal(acceptRssEntry({ isShort: false, isLive: false }), true);
+  assert.equal(acceptRssEntry({ isShort: true, isLive: false }), false);
+  assert.equal(acceptRssEntry({ isShort: false, isLive: true }), false);
+  assert.equal(acceptRssEntry({ isShort: true, isLive: true }), false);
+  // unknown = INCLUDE: everything here rests on undocumented feed behaviour, and a
+  // wrongly hidden video is a bug the parent cannot explain
+  assert.equal(acceptRssEntry({}), true);
+  for (const junk of [null, undefined, 0, '']) assert.equal(acceptRssEntry(junk), false, String(junk));
+});
+
+test('acceptPlaylistItem: own uploads only, no Shorts, and PRIVATE entries rejected', () => {
+  const shortIds = new Set(['sssssssssss']);
+  // the happy path
+  assert.equal(acceptPlaylistItem(item(), { channelId: OWN, shortIds }), true);
+  // a curated playlist routinely holds OTHER channels' videos — the parent subscribed to
+  // this channel, not to whatever it collected
+  assert.equal(acceptPlaylistItem(item({ ownerChannelId: OTHER }), { channelId: OWN, shortIds }), false);
+  // a Short of this channel, caught by UUSH membership (playlistItems has no flag)
+  assert.equal(acceptPlaylistItem(item({ videoId: 'sssssssssss' }), { channelId: OWN, shortIds }), false);
+  // PRIVATE / DELETED entries come back with no uploader at all, and rendered as an
+  // untappable "Private video" tile for the child. Unlike RSS, unknown here fails CLOSED.
+  assert.equal(acceptPlaylistItem(item({ ownerChannelId: '' }), { channelId: OWN, shortIds }), false);
+  assert.equal(acceptPlaylistItem({ videoId: 'aaaaaaaaaaa' }, { channelId: OWN, shortIds }), false);
+  // junk ids never become records
+  for (const bad of ['', 'short', null, undefined, 42, 'aaaaaaaaaaaa']) {
+    assert.equal(acceptPlaylistItem(item({ videoId: bad }), { channelId: OWN, shortIds }), false, String(bad));
+  }
+  // an EMPTY shorts set only ever leaks (documented) — it must not hide own uploads
+  assert.equal(acceptPlaylistItem(item(), { channelId: OWN, shortIds: new Set() }), true);
+  assert.equal(acceptPlaylistItem(item(), { channelId: OWN }), true);
+});
+
+test('planPlaylistAdvance: an INCOMPLETE enumeration never marks the walk done', () => {
+  // THE wedge: `playlistsDone` used to be "the queue is empty", which is also true when
+  // the enumeration was throttled or errored. One quota blip on the first pass disabled
+  // the playlists source for that channel for the life of the install — nothing rearms it.
+  assert.deepEqual(planPlaylistAdvance({ playlistQueue: [] }, { listComplete: false }),
+    { playlistQueue: [], playlistCursor: null, playlistsDone: false });
+  // a COMPLETE enumeration that genuinely found nothing IS done
+  assert.deepEqual(planPlaylistAdvance({ playlistQueue: [] }, { listComplete: true }),
+    { playlistQueue: [], playlistCursor: null, playlistsDone: true });
+  assert.equal(planPlaylistAdvance({ playlistQueue: ['PL1'] }, { listComplete: true }).playlistsDone, false);
+});
+
+test('planPlaylistAdvance: pages, playlist hand-off, and a broken playlist', () => {
+  // more pages of the head playlist
+  assert.deepEqual(planPlaylistAdvance({ playlistQueue: ['A', 'B'], playlistCursor: null }, { nextPageToken: 'T1' }),
+    { playlistQueue: ['A', 'B'], playlistCursor: 'T1', playlistsDone: false });
+  // last page of A → move to B, cursor cleared (a stale cursor against B would page
+  // from the wrong offset)
+  assert.deepEqual(planPlaylistAdvance({ playlistQueue: ['A', 'B'], playlistCursor: 'T1' }, { nextPageToken: null }),
+    { playlistQueue: ['B'], playlistCursor: null, playlistsDone: false });
+  // last page of the last playlist → done
+  assert.deepEqual(planPlaylistAdvance({ playlistQueue: ['B'], playlistCursor: 'T9' }, {}),
+    { playlistQueue: [], playlistCursor: null, playlistsDone: true });
+  // a private/deleted playlist is DROPPED, never retried forever
+  assert.deepEqual(planPlaylistAdvance({ playlistQueue: ['A', 'B'] }, { pageError: 'http-404' }),
+    { playlistQueue: ['B'], playlistCursor: null, playlistsDone: false });
+  // feeding the result back in is a fixed point (the repo's idempotence convention)
+  const done = planPlaylistAdvance({ playlistQueue: ['B'] }, {});
+  assert.deepEqual(planPlaylistAdvance(done, {}), done);
+  for (const junk of [undefined, {}, { playlistQueue: null }]) {
+    assert.doesNotThrow(() => planPlaylistAdvance(junk, {}), JSON.stringify(junk));
+  }
+});
+
+test('planNoLongForm: only a FIRST-page 404 means "this channel posts only Shorts"', () => {
+  assert.deepEqual(planNoLongForm({ notFound: true, isFirstPage: true, derived: true }),
+    { noLongForm: true, closeBackfill: true });
+  // deeper in the walk a 404 is not a verdict about the channel
+  assert.equal(planNoLongForm({ notFound: true, isFirstPage: false, derived: true }).noLongForm, false);
+  // and a 403 / quota / network failure must NEVER close a backfill
+  assert.equal(planNoLongForm({ notFound: false, isFirstPage: true, derived: true }).closeBackfill, false);
+  assert.equal(planNoLongForm({}).noLongForm, false);
+});
+
+test('planLongFormOutage: every channel 404ing is an OUTAGE, not a fact about them', () => {
+  // UULF is undocumented. If YouTube retires it, page 1 answers 404 for EVERY channel at
+  // once; acting on that would close every backfill in every family's library in one sync
+  // and tell each parent something false. Same spirit as the sheet-mirror valve.
+  const all404 = [{ channelId: 'a', notFound: true }, { channelId: 'b', notFound: true }, { channelId: 'c', notFound: true }];
+  assert.equal(planLongFormOutage(all404).outage, true);
+  // a genuinely Shorts-only channel among healthy ones is NOT an outage
+  const mixed = [{ channelId: 'a', notFound: true }, { channelId: 'b', notFound: false }];
+  assert.equal(planLongFormOutage(mixed).outage, false);
+  assert.equal(planLongFormOutage(mixed).notFoundCount, 1);
+  // a single channel can never establish an outage (too small a sample to act on)
+  assert.equal(planLongFormOutage([{ channelId: 'a', notFound: true }]).outage, false);
+  assert.equal(planLongFormOutage([]).outage, false);
+  assert.equal(planLongFormOutage().outage, false);
+});
+
+test('planGifts caps the OUTSTANDING gifts, so a bulk arrival is never a wall', () => {
+  // v1.0.21. The incremental branch had no ceiling, so approve-all, a channel backfill
+  // going live, or a baseline spent on a nearly-empty library gifted EVERYTHING — the
+  // v1.0.20 field bug (a "חדשים" folder holding the whole library). Now unrepresentable
+  // rather than repairable.
+  const live = Array.from({ length: 300 }, (_, i) => ({
+    key: 'yt:' + String(i).padStart(11, 'v'), sortKey: 1000 + i, thumbUrl: 'x', type: 'youtube'
+  }));
+  const puts = planGifts({
+    profileId: 'p1', liveRecords: live, newLiveKeys: live.map((r) => r.key),
+    existingStates: new Map(), firstSync: false
+  });
+  assert.equal(puts.length, 12, 'a 300-video bulk approval produced ' + puts.length + ' gifts');
+  // and the NEWEST are the ones that got them
+  assert.equal(puts[0].key, live[299].key);
+  assert.ok(puts.every((p) => p.giftRank));
+
+  // already-outstanding gifts count against the cap
+  const states = new Map(Array.from({ length: 10 }, (_, i) => ['yt:old' + i, { giftRank: i + 1 }]));
+  const some = planGifts({
+    profileId: 'p1', liveRecords: live, newLiveKeys: live.map((r) => r.key),
+    existingStates: states, firstSync: false
+  });
+  assert.equal(some.length, 2, 'the cap ignored the 10 gifts already waiting');
+  // an OPENED gift frees a slot again, so the folder keeps refilling over time
+  const opened = new Map(Array.from({ length: 10 }, (_, i) => ['yt:old' + i, { giftRank: i + 1, unwrappedAt: 5 }]));
+  assert.equal(planGifts({
+    profileId: 'p1', liveRecords: live, newLiveKeys: live.map((r) => r.key),
+    existingStates: opened, firstSync: false
+  }).length, 12);
+});
+
+test('a same-titled DIFFERENT video from a playlist merges — and stays merged', () => {
+  // The playlists tab is exactly the source that multiplies same-title/different-id pairs
+  // (an alt mix or re-upload of a song the Videos tab already has), and both tabs feed the
+  // SAME run, so this is the realistic shape. planMutations merges them per channel and
+  // records the loser in `mergedFrom`, which PERMANENTLY resolves to the survivor — the
+  // second video can never be imported again. Pinned so the trade-off is visible.
+  const plan = planMutations({
+    candidates: [
+      cand({ id: 'aaaaaaaaaaa', title: 'Baby Shark', publishedAt: 1000 }),   // Videos tab
+      cand({ id: 'bbbbbbbbbbb', title: 'Baby Shark!', publishedAt: 7777 })   // a playlist
+    ],
+    existing: new Map(), denySet: new Set(), now: 1
+  });
+  const survivor = plan.puts.find((r) => r.key === 'yt:aaaaaaaaaaa');
+  assert.ok(survivor, 'the survivor was not written');
+  assert.ok((survivor.mergedFrom || []).includes('yt:bbbbbbbbbbb'), 'the loser was not recorded');
+  assert.ok(!plan.puts.some((r) => r.key === 'yt:bbbbbbbbbbb'), 'a duplicate record was created');
+  assert.equal(plan.newLiveKeys.length, 1, 'the twin was gifted as a second video');
+  assert.equal(plan.mergeReport.length, 1);
+
+  // …and the loser does not resurrect on a later run: mergedFromIndex resolves it back
+  const third = planMutations({
+    candidates: [cand({ id: 'bbbbbbbbbbb', title: 'Baby Shark!' })],
+    existing: new Map(plan.puts.map((r) => [r.key, r])), denySet: new Set(), now: 3
+  });
+  assert.ok(!third.puts.some((r) => r.key === 'yt:bbbbbbbbbbb'), 'the merged-away id came back');
+  assert.deepEqual(third.newLiveKeys, [], 'the merged-away id was gifted again');
 });

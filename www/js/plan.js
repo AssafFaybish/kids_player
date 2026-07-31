@@ -177,14 +177,33 @@ export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates,
   }
 
   let maxRank = 0;
-  for (const st of existingStates.values()) if (st.giftRank) maxRank = Math.max(maxRank, st.giftRank);
+  let outstanding = 0; // ranks the child has not opened yet
+  for (const st of existingStates.values()) {
+    if (!st.giftRank) continue;
+    maxRank = Math.max(maxRank, st.giftRank);
+    if (!st.unwrappedAt) outstanding += 1;
+  }
   const byKey = new Map(liveRecords.map((r) => [r.key, r]));
-  for (const key of newLiveKeys) {
-    const st = stateOf(key);
-    if (st && (st.unwrappedAt || st.giftRank)) continue;
-    const rec = byKey.get(key);
-    if (!rec || !giftable(rec)) continue;
+  // v1.0.21 — CAP THE OUTSTANDING GIFTS AT `baseline`, exactly like the first sync does.
+  //
+  // 🎁 is a treat the child opens one at a time; a folder holding hundreds is not a
+  // bigger treat, it is a wall (the v1.0.20 field bug). The old incremental branch had NO
+  // ceiling, so any bulk arrival — approve-all, a channel backfill going live, or a
+  // baseline that was spent while the library was nearly empty — gifted EVERYTHING. This
+  // makes such a runaway unrepresentable rather than repairable, and the NEWEST arrivals
+  // are the ones that get the ranks.
+  const fresh = newLiveKeys
+    .filter((key) => {
+      const st = stateOf(key);
+      if (st && (st.unwrappedAt || st.giftRank)) return false; // never re-gift / re-rank
+      const rec = byKey.get(key);
+      return !!rec && giftable(rec);
+    })
+    .sort((a, b) => compareForDisplay(byKey.get(a), byKey.get(b))); // newest first
+  for (const key of fresh) {
+    if (outstanding >= baseline) break;
     maxRank += 1;
+    outstanding += 1;
     statePuts.push({ profileId, key, giftRank: maxRank });
   }
   return statePuts;
@@ -360,6 +379,101 @@ export function planGiftRunawayRepair(states, { baseline = 12, floor = 60, sortK
 }
 
 /** Folder ids that are just "everything loose" — no identity of their own. */
+/**
+ * v1.0.21 — PURE: may this RSS entry enter the library?
+ * Shorts and live streams never do. Kept as a named predicate so an INVERSION
+ * (`if (!v.isShort) continue`, which would import only Shorts) fails a test instead of
+ * satisfying a grep for the word.
+ */
+export function acceptRssEntry(v) {
+  return !!v && !v.isShort && !v.isLive;
+}
+
+/**
+ * v1.0.21 — PURE: may this item of a channel's own PLAYLIST enter the library?
+ * This is a child-safety boundary, so each rejection is deliberate:
+ *  - a videoId that is not a real id — junk in the response;
+ *  - a FOREIGN uploader: the parent subscribed to THIS channel, not to whatever it
+ *    curated from others;
+ *  - a MISSING uploader: private and deleted playlist entries are exactly what come back
+ *    with no `videoOwnerChannelId`, and they render as an untappable "Private video"
+ *    tile. (Unlike the RSS case, "unknown" here means unplayable, not third-party — so
+ *    this one fails CLOSED.)
+ *  - a known Short of this channel (`playlistItems` carries no Shorts flag, so UUSH
+ *    membership is the only exact test).
+ */
+export function acceptPlaylistItem(v, { channelId, shortIds } = {}) {
+  if (!v || !/^[A-Za-z0-9_-]{11}$/.test(String(v.videoId || ''))) return false;
+  if (!v.ownerChannelId) return false;
+  if (channelId && v.ownerChannelId !== channelId) return false;
+  if (shortIds && shortIds.has && shortIds.has(v.videoId)) return false;
+  return true;
+}
+
+/**
+ * v1.0.21 — PURE: advance the resumable walk of a channel's playlists.
+ *
+ * The wedge this exists to prevent: `playlistsDone` used to be derived from "the queue is
+ * empty", which is ALSO true when the enumeration never ran (throttled / errored). One
+ * quota blip on the first pass then disabled the playlists source for that channel for
+ * the lifetime of the install, because nothing rearms the flag.
+ *
+ * @param state { playlistQueue, playlistCursor }
+ * @param ev    { listComplete } after enumerating, or { pageError, nextPageToken } after a page
+ * @returns { playlistQueue, playlistCursor, playlistsDone }
+ */
+export function planPlaylistAdvance(state = {}, ev = {}) {
+  const queue = Array.isArray(state.playlistQueue) ? state.playlistQueue : [];
+  // enumeration result: done ONLY when the list was fully read and held nothing
+  if ('listComplete' in ev) {
+    return {
+      playlistQueue: queue,
+      playlistCursor: null,
+      playlistsDone: !!ev.listComplete && queue.length === 0
+    };
+  }
+  // a page of the head playlist
+  if (ev.pageError) {
+    // a private/deleted playlist must not wedge the queue — drop it and move on
+    const rest = queue.slice(1);
+    return { playlistQueue: rest, playlistCursor: null, playlistsDone: rest.length === 0 };
+  }
+  if (ev.nextPageToken) {
+    return { playlistQueue: queue, playlistCursor: ev.nextPageToken, playlistsDone: false };
+  }
+  const rest = queue.slice(1);
+  return { playlistQueue: rest, playlistCursor: null, playlistsDone: rest.length === 0 };
+}
+
+/**
+ * v1.0.21 — PURE: what did a 404 on the long-form playlist mean?
+ * Only a 404 on the FIRST page of a DERIVED id says "this channel has no long-form
+ * video". A 404 deeper in, or any other error (403/quota/network), must never be read as
+ * "Shorts-only" — that would close the channel's backfill over a transient failure.
+ */
+export function planNoLongForm({ notFound = false, isFirstPage = false, derived = false } = {}) {
+  const shortsOnly = !!(notFound && isFirstPage && derived);
+  return { noLongForm: shortsOnly, closeBackfill: shortsOnly };
+}
+
+/**
+ * v1.0.21 — PURE: the safety valve for an UNDOCUMENTED dependency.
+ *
+ * `UULF…` is not a documented API. If YouTube retires it, page 1 answers 404 for EVERY
+ * channel at once and the naive reading ("they are all Shorts-only") would close every
+ * backfill in every family's library in a single sync, with a false explanation shown to
+ * each parent. A whole-population failure is an OUTAGE, not a fact about the channels.
+ * Same spirit as the sheet-mirror valve: refuse to act, keep the old state, say so.
+ *
+ * @param results [{ channelId, notFound }] — one entry per channel that tried this run
+ */
+export function planLongFormOutage(results = []) {
+  const tried = (results || []).filter((r) => r && r.channelId);
+  if (tried.length < 2) return { outage: false, notFoundCount: tried.filter((r) => r.notFound).length };
+  const notFoundCount = tried.filter((r) => r.notFound).length;
+  return { outage: notFoundCount === tried.length, notFoundCount };
+}
+
 const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
 
 /**

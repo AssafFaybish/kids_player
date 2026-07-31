@@ -186,6 +186,11 @@ function homeEntryRefresh() {
  */
 function refreshAfterAdd({ parent = false } = {}) {
   if (!activeProfileId) return;
+  // NEVER while a video plays: a forced sync also bypasses the 30-min per-channel RSS
+  // throttle, so this is a full sweep of every channel plus a whole-library re-plan —
+  // on a low-end tablet, under a playing video. The gallery/parent screens are the only
+  // safe places, and the next home entry re-runs it anyway.
+  if (nav.isActive('watch')) return;
   syncLibrary(activeProfileId, { force: true }).then(async () => {
     await loadGiftStates();
     if (nav.isActive('gallery')) renderHome();
@@ -1653,6 +1658,9 @@ async function refreshChannelsList() {
       await loadGiftStates();
       await Promise.all([refreshPendingList(), refreshParentList()]);
       renderHome();
+      // approvePending assigns no giftRank — planProfileGifts is the only assigner, so
+      // without this the newly-approved videos arrive with no 🎁 at all
+      refreshAfterAdd({ parent: true });
       maybeSchedulePush();
     });
     toggle.appendChild(cb);
@@ -1803,7 +1811,11 @@ async function parentAdd() {
     };
     await db.putVideos([rec]);
     const { enqueueSheetRow } = await import('./sheetwrite.js');
-    enqueueSheetRow(activeProfileId, { key: rec.key, srcUrl: rec.srcUrl, title: rec.title }).catch(() => {});
+    // AWAITED before the forced sync below: the record is live + folderId 'sheet', i.e.
+    // sheet-backed, and the presence-mirror deletes sheet-backed records the sheet does
+    // not list. Racing its own row against its own sync could tombstone it (one item
+    // never trips the safety valve). Every other add path already awaits this.
+    await enqueueSheetRow(activeProfileId, { key: rec.key, srcUrl: rec.srcUrl, title: rec.title }).catch(() => {});
     if (!rec.title && rec.type === 'youtube') {
       fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
     }

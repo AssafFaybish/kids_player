@@ -13,8 +13,11 @@ export function batchIds(ids, size = 50) {
  * Predicted unit cost of a sync plan — pinned by an executable assertion in tests
  * (10 channels × 500 videos === 111).
  */
-export function quotaCostFor({ handleResolves = 0, channelBatches = 0, backfillPages = 0, titleBatches = 0 } = {}) {
-  return handleResolves + channelBatches + backfillPages + titleBatches;
+export function quotaCostFor({
+  handleResolves = 0, channelBatches = 0, backfillPages = 0, titleBatches = 0,
+  playlistPages = 0 // v1.0.21: the playlists tab — enumeration + item pages + UUSH probe
+} = {}) {
+  return handleResolves + channelBatches + backfillPages + titleBatches + playlistPages;
 }
 
 export function shouldThrottle(spentToday, planned, softCap = 8000) {
@@ -58,6 +61,32 @@ export function longFormPlaylistIdFor(channelId) {
  */
 export function shortsPlaylistIdFor(channelId) {
   return /^UC[A-Za-z0-9_-]{22}$/.test(String(channelId || '')) ? 'UUSH' + channelId.slice(2) : null;
+}
+
+/**
+ * v1.0.21 — PURE: which playlist does this channel's backfill page, and is the persisted
+ * cursor still valid for it?
+ *
+ * TWO bugs this closes:
+ *  - `backfillCursor` is a POSITIONAL page token that belongs to ONE playlist. A device
+ *    upgrading mid-backfill held a `UU…` token; reusing it against `UULF…` either
+ *    resumed at a meaningless offset (silently skipping a slice of the back catalogue
+ *    and then latching backfillDone) or was rejected, writing the bad token back so the
+ *    channel returned 'backfill' forever and never delivered another video. The playlist
+ *    the cursor was earned against is therefore recorded alongside it, and a mismatch
+ *    RESETS the cursor instead of trusting it.
+ *  - falling back to `UU…` when no long-form id can be derived would import the very
+ *    Shorts this release exists to exclude. `playlistId: null` means SKIP, and the caller
+ *    must honour it — never substitute the uploads playlist.
+ *
+ * @returns { playlistId, resetCursor } — playlistId null ⇒ do not backfill this channel
+ */
+export function planBackfillPlaylist(channel = {}) {
+  const playlistId = longFormPlaylistIdFor(channel.channelId);
+  if (!playlistId) return { playlistId: null, resetCursor: false };
+  const earnedOn = channel.backfillPlaylistId || null;
+  const hasCursor = !!channel.backfillCursor;
+  return { playlistId, resetCursor: hasCursor && earnedOn !== playlistId };
 }
 
 /**

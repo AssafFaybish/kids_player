@@ -204,60 +204,43 @@ test('every grid pages through pageAnyFolder — including the 🎁 folder', () 
   assert.match(body, /fid === 'new'/, "pageAnyFolder lost its 🎁 ('new') branch");
 });
 
-test('adding content triggers the sync that makes it a gift and files it', () => {
-  // v1.0.21 FIELD BUG: a video shared from YouTube (or pasted in the parent screen)
-  // is written straight to the store, where it is INERT — `srcChannelId` is filled only
-  // by the sync's enrichment stage (and that is what groups a single into its channel
-  // folder) and `giftRank` only by planProfileGifts. So the video landed in the loose
-  // list and was not a 🎁 until the parent happened to press "רענון נתונים".
+test('every path that makes a record LIVE forces a refresh', () => {
+  // v1.0.21 field bug: a freshly written record is INERT — `srcChannelId` (which files it
+  // into its channel folder) comes from the sync's enrichment stage and `giftRank` only
+  // from planProfileGifts, so a shared/added video sat in the loose list and was not a 🎁
+  // until the parent happened to press "רענון נתונים".
+  //
+  // A COUNT is all a grep can honestly assert here (the behaviour is DOM- and
+  // IndexedDB-coupled). It catches a call being deleted; it cannot catch a NEW approval
+  // path that never had one — which is a real hole this suite hit once already, so any
+  // new approve/add site must be added here deliberately.
   const app = MODULES.get('www/js/app.js');
   assert.match(app, /function refreshAfterAdd\(/, 'the post-add refresh helper is gone');
-  // every path that makes a record LIVE must call it: manual add, share, both approvals
-  const calls = (app.match(/refreshAfterAdd\(/g) || []).length;
-  assert.ok(calls >= 5, `only ${calls} refreshAfterAdd sites — an add path stopped refreshing`);
-  // it must force: the 3-min shouldSync throttle is exactly what made the bug invisible
+  // total occurrences minus the one declaration = real call sites
+  const sites = (app.match(/refreshAfterAdd\(/g) || []).length - 1;
+  assert.ok(sites >= 5, `only ${sites} refreshAfterAdd call sites — an add path stopped refreshing`);
+  // it must FORCE: the 3-min shouldSync throttle is what made the bug invisible
   const fn = app.slice(app.indexOf('function refreshAfterAdd('));
-  assert.match(fn.slice(0, 400), /syncLibrary\(activeProfileId,\s*\{\s*force:\s*true\s*\}/,
+  assert.match(fn.slice(0, 900), /syncLibrary\(activeProfileId,\s*\{\s*force:\s*true\s*\}/,
     'refreshAfterAdd must force the sync, or the 3-min throttle swallows it');
+  // …and never under a playing video: a forced sync also bypasses the per-channel RSS
+  // throttle, so it is a full sweep of every channel on a low-end tablet
+  assert.match(fn.slice(0, 900), /nav\.isActive\('watch'\)/,
+    'refreshAfterAdd lost its playback guard');
 });
 
-test('channel content is filtered by PLAYLIST membership, never by duration', () => {
-  // v1.0.21. Shorts must not reach a child's library, and there is NO isShort field
-  // anywhere in the Data API. The only correct filter is which auto-generated playlist a
-  // video belongs to: UULF… is the channel's "Videos" tab, UUSH… its Shorts.
+test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
+  // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
+  // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.
+  // Measured 2026-07-31: 6 of the 15 most recent Super Simple Songs LONG-FORM uploads are
+  // under 3 minutes (3 of 15 for Cocomelon) — a duration filter would silently delete real
+  // nursery rhymes, the app's core content. Membership of the UULF/UUSH playlists is the
+  // only correct filter; see quota.planBackfillPlaylist.
   //
-  // The trap this pins shut: reaching for `contentDetails.duration` instead. YouTube
-  // defines a Short as "≤3 minutes AND square-or-taller" — the API cannot see aspect
-  // ratio, so length can never reproduce the rule. Measured 2026-07-31: 6 of the 15
-  // most recent Super Simple Songs LONG-FORM uploads are under 3 minutes, and 3 of 15
-  // for Cocomelon. A duration rule would silently delete real nursery rhymes, which is
-  // the app's core content.
-  const sync = MODULES.get('www/js/sync2.js');
-  assert.match(sync, /longFormPlaylistIdFor\(/,
-    'the channel backfill no longer pages the long-form (Videos-tab) playlist');
-  assert.match(sync, /isShort/,
-    'the RSS incremental path no longer filters Shorts — new Shorts would leak in daily');
-  assert.match(MODULES.get('www/js/quota.js'), /DURATION IS NOT A SUBSTITUTE/,
-    'the warning against duration-based Shorts detection was removed from quota.js');
-
-  // No module may parse an ISO-8601 duration. `PT(?:` is the shape every such parser
-  // has, and nothing else in this codebase needs one (the player reads seconds from the
-  // media element, not from the API).
+  // `PT(?:` is the shape every such parser has, and nothing here needs one (the player
+  // reads seconds off the media element, not the API).
   for (const [p, body] of MODULES) {
     assert.doesNotMatch(body, /PT\(\?:/,
-      `${p} parses an ISO-8601 duration — a Short is ≤3min AND vertical, so length alone `
-      + 'misclassifies short nursery rhymes as Shorts');
+      `${p} parses an ISO-8601 duration — length misclassifies short nursery rhymes as Shorts`);
   }
-});
-
-test('a playlist can only contribute the SUBSCRIBED channel’s own videos', () => {
-  // A channel's curated playlists routinely hold other channels' videos. The parent
-  // subscribed to THIS channel, so a foreign entry would put content in the library that
-  // nobody approved — in a child-safety app that is the whole ballgame.
-  const sync = MODULES.get('www/js/sync2.js');
-  assert.match(sync, /ownerChannelId\s*&&\s*v\.ownerChannelId\s*!==\s*lc\.channelId/,
-    'the playlists stage stopped dropping foreign-channel videos');
-  // …and the field it relies on must actually be read out of the API response
-  assert.match(MODULES.get('www/js/yt.js'), /videoOwnerChannelId/,
-    'fetchUploadsPage no longer surfaces the uploader, so the foreign-video filter is blind');
 });
