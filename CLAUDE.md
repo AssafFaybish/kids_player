@@ -77,6 +77,19 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   merged records (real bug once).
 - Pending records are PARKED in `folderId:'~pending'` (kid folder queries must never see them);
   approval restores `homeFolderId`.
+- **APPROVAL IS DECIDED BEFORE ANY MERGE, AND A MERGE MAY NEVER GRANT IT** (v1.0.22).
+  `base.state` in `planMutations` defaulted to `'live'` and the `quarantine || !autoApprove`
+  routing lived only in the brand-new branch at the bottom — so the titleTwin branch
+  short-circuited past it with a spurious `'live'`, and `mergeVideoRecord` promotes a
+  pending survivor when the LOSER is live. A channel added in the parent screen is
+  `autoApprove:false`, so a same-titled twin arriving in the SAME run AUTO-APPROVED a video
+  the parent had never seen: live in the child's folder with `approvedAt` still null. Found
+  in the field on @rotemama4kids — its 109-video backfill contained exactly 2 such twins,
+  and those 2 were the ONLY videos the child could see (the parent read that as "the app
+  imported 2 videos"). Both merge branches now go through pure `settleCuration`, which also
+  closes the mirror-image hole: `mergeVideoRecord` flips `state` but never `folderId`, so a
+  legitimately promoted record used to stay parked in `'~pending'` — invisible in the child's
+  folder AND absent from the approval queue.
 - Deletion = atomic delete + deny-list tombstone. Since v1.0.10 the deny-list is an
   LWW-element set: entries are never removed, but the SHEET re-adding a key revokes them
   (`removedAt >= at` = inert; `db.denyActive`, merge rule `drive.mergeDenyRecord` — later
@@ -192,6 +205,20 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.22 — **ADDING A CHANNEL ASKS ONCE, AND SAYS WHAT ACTUALLY HAPPENED.** A channel
+  added in the parent screen is created `autoApprove:false`, so its ENTIRE back catalogue
+  landed in the approval queue while the message read "הערוץ סונכרן ✅" — the parent had no
+  reason to look in ממתינים, and the child's home stayed empty. Pasting a channel link
+  behind the PIN is a deliberate parental act, so `offerChannelApproval()` (app.js) now asks
+  once, right after the import: "yes" approves the backlog AND flips `autoApprove` so future
+  uploads flow without another visit; "רק לסקירה" keeps them queued. Either way the status
+  line reports the real outcome (`N אושרו` / `N ממתינים לאישור`) — a reassuring ✅ over an
+  invisible backlog is how this survived to the field. Decision (2026-07-31): ASK, never
+  auto-approve silently — it is the one moment before a stranger's whole catalogue reaches a
+  5-year-old. The dialog is raised only AFTER `loading.hide()` (modals must never stack), so
+  the channel add now awaits its sync instead of firing it into a `.then()`. The pending
+  lookup + bulk approve are shared with the channel-list auto-approve toggle
+  (`pendingKeysOfChannel` / `approveChannelBacklog`) so the two paths cannot drift.
 - v1.0.21 — **A CHANNEL MEANS ITS "VIDEOS" TAB + ITS "PLAYLISTS" TAB. NOTHING ELSE.**
   No Shorts, no live streams. The mechanism is playlist membership, and it is the only
   correct one:

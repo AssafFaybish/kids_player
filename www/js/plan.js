@@ -15,6 +15,27 @@ const DIFF_FIELDS = [
 const changed = (a, b) => DIFF_FIELDS.some((f) => (a[f] ?? null) !== (b[f] ?? null));
 
 /**
+ * v1.0.22 — make a merged record's curation SELF-CONSISTENT. Two shapes are illegal
+ * and both were reachable:
+ *  - pending but not parked: `by_folder_sort` carries no state component, so an
+ *    unapproved record left in a real folder is visible to the CHILD.
+ *  - live but still parked in '~pending': invisible in the child's folder AND absent
+ *    from the approval queue — a record that exists and can never be reached.
+ * `mergeVideoRecord` promotes a pending survivor to live when the loser was live, and
+ * it does not touch folderId, so every caller of it must pass through here.
+ */
+function settleCuration(rec, fallbackFolderId, now) {
+  if (rec.state === 'pending') {
+    rec.homeFolderId = rec.homeFolderId || fallbackFolderId;
+    rec.folderId = '~pending';
+  } else {
+    if (rec.folderId === '~pending') rec.folderId = rec.homeFolderId || fallbackFolderId;
+    if (!rec.approvedAt) rec.approvedAt = now; // it becomes live HERE — say when
+  }
+  return rec;
+}
+
+/**
  * @param candidates  enriched candidate records for ONE scope:
  *   { scopeId,key,type,id,url,srcUrl,driveId, title,titleSource,thumbUrl,
  *     channelId,folderId,origin,publishedAt,rowIndex, autoApprove }
@@ -77,6 +98,24 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
       updatedAt: now
     };
 
+    // APPROVAL IS DECIDED BEFORE ANY MERGE (v1.0.22). This routing used to live only in
+    // the brand-new branch at the bottom, so `base` reached the two merge branches still
+    // carrying its 'live' default — and `mergeVideoRecord` promotes a pending survivor
+    // when the LOSER is live (right when the loser really was approved, catastrophic when
+    // it only looked that way). A channel added in the parent screen is autoApprove:false,
+    // so a same-titled twin arriving in the SAME run silently AUTO-APPROVED a video the
+    // parent had never seen: live in the child's folder with approvedAt still null. Found
+    // on a real channel whose 109-video backfill produced exactly 2 such twins.
+    // Pending records are PARKED in '~pending' so the kid-facing folder index
+    // (by_folder_sort has no state component) can never surface them; approval restores
+    // homeFolderId.
+    const needsApproval = quarantine || !c.autoApprove;
+    if (needsApproval) {
+      base.state = 'pending';
+      base.homeFolderId = base.folderId;
+      base.folderId = '~pending';
+    }
+
     const prior = puts.get(key) || existing.get(key) || null;
 
     // Intra-channel title dedupe (only for channel/sheet content with a real title).
@@ -87,7 +126,9 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
     }
 
     if (titleTwin) {
-      const merged = mergeVideoRecord({ ...titleTwin, scopeId: c.scopeId }, base);
+      const merged = settleCuration(
+        mergeVideoRecord({ ...titleTwin, scopeId: c.scopeId }, base), base.homeFolderId || base.folderId, now
+      );
       mergeReport.push({
         survivorKey: merged.key, survivorTitle: merged.title,
         mergedKeys: [key], channelId: c.channelId, normTitle
@@ -99,34 +140,19 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
     if (prior) {
       const merged = mergeVideoRecord({ ...prior, scopeId: c.scopeId, key }, base);
       // an existing record keeps its curation: a pending item stays pending (parked)
-      if (prior.state === 'pending') {
-        merged.state = 'pending';
-        merged.homeFolderId = prior.homeFolderId || base.folderId;
-        merged.folderId = '~pending';
-      } else if (merged.folderId === '~pending') {
-        merged.folderId = merged.homeFolderId || base.folderId; // approved elsewhere
-      }
+      if (prior.state === 'pending') merged.state = 'pending';
+      settleCuration(merged, prior.homeFolderId || base.homeFolderId || base.folderId, now);
       if (!existing.has(key) || changed(existing.get(key), merged)) puts.set(key, merged);
       continue;
     }
 
-    // Brand-new record: caps, then approval routing.
+    // Brand-new record: caps, then the approval bookkeeping for the routing above.
     const chCount = (perChannel.get(c.channelId) || 0);
     if (c.channelId && chCount >= maxPerChannel) { dropsCapped += 1; continue; }
     if (total >= maxTotal) { dropsCapped += 1; continue; }
 
-    if (quarantine || !c.autoApprove) {
-      // Pending records are PARKED in '~pending' so the kid-facing folder index
-      // (by_folder_sort has no state component) can never surface them; approval
-      // restores homeFolderId.
-      base.state = 'pending';
-      base.homeFolderId = base.folderId;
-      base.folderId = '~pending';
-      pendingKeys.push(key);
-    } else {
-      base.approvedAt = now;
-      newLiveKeys.push(key);
-    }
+    if (needsApproval) pendingKeys.push(key);
+    else { base.approvedAt = now; newLiveKeys.push(key); }
     puts.set(key, base);
     total += 1;
     if (c.channelId) perChannel.set(c.channelId, chCount + 1);
