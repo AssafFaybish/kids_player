@@ -76,3 +76,18 @@ test('libraryIdFor: the scope IS the sheet identity — changing sheets changes 
   assert.equal(libraryIdFor(null), null);
   assert.ok(!String(a).startsWith('lib:p:'), 'sheet scopes never collide with lib:p:<profile>');
 });
+
+test('fnv1a is pinned to LITERAL values — it is persisted cross-device identity', () => {
+  // Why a literal and not `f(x) === f(x)`: this hash is not an implementation detail. It
+  // is the `scopeId` component of every IndexedDB primary key, every key in the Drive
+  // doc's `libraries` map, and the sheet-change signature. Swapping the algorithm (or
+  // "tidying" the >>> 0, the seed, or the char iteration) would orphan every install's
+  // library and gift state on upgrade — silently, since nothing would throw. The old
+  // stability test could not tell: any hash function passes `f(x) === f(x)`.
+  assert.equal(fnv1a('abc'), '1a47e90b');
+  assert.equal(fnv1a('שיר'), '03c103dd', 'non-ASCII must hash by code unit, unchanged');
+  assert.equal(fnv1a(''), '811c9dc5', 'the empty string is the bare FNV offset basis');
+  assert.equal(libraryIdFor('https://docs.google.com/spreadsheets/d/ABC123/edit#gid=0'), 'lib:930dc871');
+  // …and the shape contract the rest of the app relies on
+  assert.match(fnv1a('anything'), /^[0-9a-f]{8}$/);
+});

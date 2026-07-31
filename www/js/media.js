@@ -33,6 +33,16 @@ export async function downloadAndCache(item) {
   if (!fsAvailable()) throw new Error('download-unsupported');
   const path = cacheName(item);
   const uri = await fsDownload(downloadUrlFor(item), path);
+  // Persist where prepareStreamSrc actually LOOKS. `setItemLocalPath` writes the legacy
+  // Preferences blob, but `item` is an IndexedDB record — so the write matched nothing and
+  // `item.localPath` stayed null, meaning every single playback re-downloaded the whole
+  // file on a metered tablet connection. Kept as well, harmlessly, for pre-migration data.
+  if (item.scopeId && item.key) {
+    try {
+      const { setVideoFields } = await import('./db.js');
+      await setVideoFields(item.scopeId, item.key, { localPath: path });
+    } catch {}
+  }
   await setItemLocalPath(item.key, path);
   const playable = uri ? convertFileSrc(uri) : convertFileSrc((await fsStatUri(path)) || path);
   return { src: playable, local: true };
@@ -54,9 +64,24 @@ export function captureFrame(video) {
 // Removes downloaded video files and clears localPath references. Returns how many were cleared.
 export async function clearCache() {
   await fsRemoveDir(CACHE_DIR);
-  const items = await loadItems();
   let count = 0;
+  // IndexedDB is where localPath actually lives (see downloadAndCache). Counting only the
+  // legacy Preferences list made this return 0 forever, so the parent was told
+  // "אין מה לנקות" immediately after the files had in fact been deleted — and any record
+  // still holding a localPath would then resolve to a file that no longer exists.
+  try {
+    const { openDb, setVideoFields } = await import('./db.js');
+    const idb = await openDb();
+    const req = idb.transaction('videos').objectStore('videos').getAll();
+    const all = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+    for (const rec of all || []) {
+      if (!rec || !rec.localPath) continue;
+      await setVideoFields(rec.scopeId, rec.key, { localPath: null });
+      count += 1;
+    }
+  } catch {}
+  const items = await loadItems();
   for (const it of items) { if (it.localPath) { delete it.localPath; count++; } }
-  if (count) await saveItems(items);
+  if (items.some((it) => !it.localPath)) await saveItems(items);
   return count;
 }

@@ -2,7 +2,7 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { serializeDb, parseDb, mergeDbFiles } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles } from '../www/js/drive.js';
 
 const vid = (key, over = {}) => ({
   key, type: 'youtube', id: key.slice(3), srcUrl: 'https://youtu.be/' + key.slice(3),
@@ -87,7 +87,11 @@ test('serializeDb refusal list: no localPath, no thumbId, no backfillCursor', ()
     libraries: {
       'lib:x': {
         videos: [vid('yt:aaaaaaaaaaa', { localPath: 'videos/x.mp4', thumbId: 'file:abc' })],
-        channels: [{ channelId: 'UCabcdefghijklmnopqrstuv', backfillCursor: 'PAGE_TOKEN' }],
+        channels: [{
+          channelId: 'UCabcdefghijklmnopqrstuv', title: 'ערוץ', logoUrl: 'https://x/y.jpg',
+          backfillCursor: 'PAGE_TOKEN', backfillPlaylistId: 'UULFabcdefghijklmnopqrstuv',
+          playlistCursor: 'PL_TOKEN', playlistQueue: ['PLaaa'], playlistsDone: true, noLongForm: true
+        }],
         denylist: [], libraryChannels: []
       }
     },
@@ -97,6 +101,16 @@ test('serializeDb refusal list: no localPath, no thumbId, no backfillCursor', ()
   assert.ok(!json.includes('thumbId'));
   assert.ok(!json.includes('backfillCursor'));
   assert.ok(!json.includes('PAGE_TOKEN'));
+  // v1.0.21 — PAGING STATE IS PER DEVICE. A page token means nothing in another device's
+  // paging position, and `playlistsDone`/`noLongForm` arriving from a peer would make this
+  // device skip work it never did: device B would pull "playlists finished" from device A
+  // and never walk them in its OWN scope, losing that content permanently if B follows a
+  // different sheet.
+  for (const leak of ['playlistCursor', 'PL_TOKEN', 'playlistQueue', 'PLaaa', 'playlistsDone', 'noLongForm', 'backfillPlaylistId']) {
+    assert.ok(!json.includes(leak), `${leak} leaked into the Drive backup`);
+  }
+  // …while the fields that DO belong to every device still travel
+  assert.ok(json.includes('logoUrl') && json.includes('ערוץ'), 'shared channel fields were dropped');
 });
 
 test('parseDb: round-trip works; garbage and truncated input → null, never throws', () => {
@@ -183,4 +197,112 @@ test('denyActive: the read gate agrees with the merge rule, tie → revoked', as
   for (const junk of [null, undefined, 0, '', false]) assert.equal(denyActive(junk), false, String(junk));
   // a record with no timestamp at all still blocks (at||0 = 0, no removedAt)
   assert.equal(denyActive({ key: 'yt:a' }), true);
+});
+
+/* ---- v1.0.22: the Drive I/O gates. The pure half of the merge was always tested; the
+        decision to WRITE was not, and that is the side that can lose a family's data. ---- */
+
+test('interpretDriveDoc: only a 404 may mean "no document"', () => {
+  const doc = JSON.stringify({ kind: 'kids-player-db', schema: 1, libraries: {}, profiles: [] });
+  assert.equal(interpretDriveDoc(404, ''), null, 'a real 404 is the ONE empty answer');
+  assert.equal(interpretDriveDoc(200, doc).kind, 'kids-player-db');
+
+  // Everything else THROWS. This is the whole point: readDbFile used to answer `null` for
+  // all of these, mergeDbFiles(local, null) returns local, and pushDrive then PATCHed
+  // local over the remote — in the branch that exists to protect the peer's changes.
+  for (const [status, body, why] of [
+    [401, '', 'stale token'],
+    [500, '', 'server error'],
+    [0, '', 'network drop'],
+    [200, '', 'empty body'],
+    [200, '<!DOCTYPE html><html>sign in</html>', 'a lost grant answers 200 + HTML'],
+    [200, '{"kind":"something-else"}', 'not our document'],
+    [200, 'not json at all', 'garbage'],
+    [200, '{"kind":"kids-player-db"}', 'no libraries map']
+  ]) {
+    assert.throws(() => interpretDriveDoc(status, body), undefined, `${status} (${why}) did not throw`);
+  }
+});
+
+test('interpretDriveList: "couldn’t ask" is not "nothing there"', () => {
+  // Conflating them told the parent "no backup exists" AND sent pushDrive down the create
+  // branch, producing a SECOND db file that permanently shadows the family's real one.
+  assert.deepEqual(interpretDriveList(200, { files: [] }), []);
+  assert.equal(interpretDriveList(200, { files: [{ id: 'a' }] }).length, 1);
+  for (const [status, data] of [[401, null], [500, null], [0, null], [200, {}], [200, { files: 'x' }], [200, null]]) {
+    assert.throws(() => interpretDriveList(status, data), undefined, `status ${status} did not throw`);
+  }
+});
+
+test('decidePush: an UNREADABLE remote aborts — it never writes', () => {
+  // Aborting costs one deferred push (pendingPush retries). Guessing costs the backup.
+  assert.equal(decidePush({ fileId: null }).action, 'create', 'no file yet ⇒ create');
+  assert.equal(decidePush({ fileId: 'f', remoteVersion: '7', lastRemoteVersion: '7' }).action, 'write',
+    'unchanged since our own write ⇒ safe to overwrite');
+
+  const changed = { fileId: 'f', remoteVersion: '9', lastRemoteVersion: '7' };
+  assert.equal(decidePush({ ...changed, remoteRead: { ok: false, error: 'drive-401' } }).action, 'abort');
+  assert.equal(decidePush({ ...changed, remoteRead: null }).action, 'abort', 'not even attempted ⇒ abort');
+  const merged = decidePush({ ...changed, remoteRead: { ok: true, doc: { kind: 'kids-player-db', libraries: {} } } });
+  assert.equal(merged.action, 'write');
+  assert.equal(merged.useRemote, true, 'a readable remote MUST be merged in before writing');
+
+  // an unknown version is a mismatch, not a match: a failed probe must not look "unchanged"
+  assert.equal(decidePush({ fileId: 'f', remoteVersion: null, lastRemoteVersion: '7', remoteRead: { ok: false } }).action, 'abort');
+  // …and a first-ever push (no lastRemoteVersion) against an existing file still merges
+  assert.equal(decidePush({ fileId: 'f', remoteVersion: '1', lastRemoteVersion: '', remoteRead: { ok: true, doc: {} } }).useRemote, true);
+});
+
+test('per-device channel progress never travels, in EITHER direction', () => {
+  const remote = {
+    channelId: 'UCabcdefghijklmnopqrstuv', title: 'ערוץ', logoUrl: 'https://x/y.jpg',
+    backfillCursor: 'THEIRS', backfillPlaylistId: 'UULFtheirs', backfillDone: true,
+    lastRssCheckedAt: 999, playlistCursor: 'THEIRS2', playlistQueue: ['PL1'],
+    playlistsDone: true, noLongForm: true
+  };
+  // A channel this device has NEVER seen must adopt the shared facts only. Writing the
+  // peer's record verbatim handed it `backfillDone:true`, so planChannelFetch returned
+  // 'rss' forever and the child only ever got the ~15-video feed window.
+  const fresh = mergeChannelForApply(null, remote);
+  assert.equal(fresh.title, 'ערוץ');
+  assert.equal(fresh.logoUrl, 'https://x/y.jpg');
+  for (const f of ['backfillCursor', 'backfillPlaylistId', 'backfillDone', 'lastRssCheckedAt',
+    'playlistCursor', 'playlistQueue', 'playlistsDone', 'noLongForm']) {
+    assert.ok(!(f in fresh), `${f} was adopted from a peer`);
+  }
+  // where we DO have local progress, ours wins and the shared facts still update
+  const prev = { channelId: remote.channelId, title: 'old', backfillCursor: 'MINE', backfillDone: false, playlistsDone: false };
+  const merged = mergeChannelForApply(prev, remote);
+  assert.equal(merged.title, 'ערוץ', 'shared facts must still be adopted');
+  assert.equal(merged.backfillCursor, 'MINE');
+  assert.equal(merged.backfillDone, false, "a peer's 'finished' must not skip our backfill");
+  assert.equal(merged.playlistsDone, false);
+  // stripPerDeviceChannel is what serializeDb uses, so the two halves cannot drift
+  assert.deepEqual(Object.keys(stripPerDeviceChannel(remote)).sort(), ['channelId', 'logoUrl', 'title']);
+});
+
+test('denyRowToWrite: a REVOKED tombstone in the target is never overwritten', async () => {
+  const { denyRowToWrite, denyActive } = await import('../www/js/db.js');
+  const active = { key: 'yt:aaaaaaaaaaa', at: 500, reason: 'watch-delete' };
+
+  // The bug: "is it missing?" was answered with loadDenySet, which exposes ACTIVE entries
+  // only — so a REVOKED row read as absent, got put over, and lost its `removedAt`. That
+  // silently undid the one deliberate undeny path ("the sheet wins"), and because the
+  // replacement was stamped Date.now() it always won Drive's last-event comparison, so the
+  // resurrected tombstone propagated and re-deleted the video on EVERY device.
+  const revokedTarget = { key: 'yt:aaaaaaaaaaa', at: 500, removedAt: 900 };
+  assert.equal(denyRowToWrite(revokedTarget, active, 'lib:x'), null, 'a revocation was clobbered');
+  // an ACTIVE target is likewise left alone (its own timestamp must survive)
+  assert.equal(denyRowToWrite({ key: 'yt:aaaaaaaaaaa', at: 700 }, active, 'lib:x'), null);
+
+  // genuinely missing ⇒ copy, carrying the SOURCE's timestamp, not "now"
+  const row = denyRowToWrite(undefined, active, 'lib:x');
+  assert.equal(row.scopeId, 'lib:x');
+  assert.equal(row.key, 'yt:aaaaaaaaaaa');
+  assert.equal(row.at, 500, 'the tombstone was re-stamped, which wins the Drive LWW wrongly');
+  // a revoked SOURCE copies as revoked — it must not arrive active in the new scope
+  const revokedSource = denyRowToWrite(undefined, { key: 'yt:bbbbbbbbbbb', at: 100, removedAt: 200 }, 'lib:x');
+  assert.equal(revokedSource.removedAt, 200);
+  assert.equal(denyActive(revokedSource), false, 'a revoked entry arrived ACTIVE in the target');
+  for (const junk of [null, undefined, {}, { at: 1 }]) assert.equal(denyRowToWrite(undefined, junk, 'lib:x'), null, String(junk));
 });

@@ -15,23 +15,24 @@ live and how does data flow".
 | `order.js` | sortKeyFor domains (channel=publishedAt / sheet=BASE+rowIndex / manual=above-all), compareForDisplay | — |
 | `normalize.js` | normalizeTitle (Hebrew: niqqud/bidi/emoji), mergeVideoRecord (survivor policy) | — |
 | `store.js` | legacy Preferences layer (profiles, PIN key, oEmbed title, thumb candidates hq-first); re-exports classify | platform, classify |
-| `db.js` | IndexedDB I/O ONLY (no business logic) — see schema below | — |
+| `db.js` | IndexedDB I/O ONLY (no business logic) — see schema below; `dataVersion()` is a committed-write counter bumped inside `tx()` (v1.0.20 derived-state cache key) | — |
 | `migrate.js` | one-time resumable Preferences→IDB migration (never deletes the legacy blob) | platform, db, order, util |
-| `plan.js` | PURE sync brain: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental) | normalize, order |
+| `plan.js` | PURE decisions — mostly sync, some home: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental), planSheetMirror, groupSinglesByChannel, `isSheetBacked`/`sheetBackedKeysOf` (the sheet-backed boundary), planScopeAdoption, shouldRecordGiftBaseline, planGiftRunawayRepair, shouldFlattenHome (home-render rule) | normalize, order |
 | `sync2.js` | the staged pipeline (below); parseSourceRows (+parseSourceSheet — test-only since v1.0.19, no production caller) | csv, classify, plan, yt, db, quota |
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
-| `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, UU-derivation | — |
-| `ytrss.js` | pure keyless parsers (never throw): Atom feed + channel-page logo extractor | — |
+| `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, playlist-id derivation: `UU` uploads / `UULF` long-form ("Videos" tab) / `UUSH` Shorts | — |
+| `ytrss.js` | pure keyless parsers (never throw): Atom feed (incl. Short/live detection from the entry's alternate-link form) + channel-page logo extractor | — |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
-| `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends | platform, gauth, db, classify |
-| `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
+| `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends; `interpretSheetResponse` is the ONE gate for every `values.get` read (reads and flushes alike) | platform, gauth, db, classify, csv |
+| `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT), `interpretDriveDoc`/`interpretDriveList`/`decidePush` (an unreadable remote NEVER writes), `stripPerDeviceChannel`/`mergeChannelForApply` + push/pull I/O | platform, gauth, normalize, db, csv |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback | classify, normalize, order, platform, db |
 | `search.js` | PURE home-search ranking: normalized exact/starts/word/substring tiers | normalize |
-| `dataver.js` | one-shot data migrations after an app update (meta dataVersion; pure pendingSteps) | db, store |
+| `dataver.js` | one-shot data migrations after an app update (meta dataVersion; pure pendingSteps) | db, store, plan (dynamic) |
 | `links.js` | CONFIG ONLY (v1.0.15): every external address — donation links, contact mail, public site, update repo. Consumers: donate.js, update.js, app.js | — |
 | `spatial.js` | PURE TV D-pad geometry: pickNextIndex / pickFirstIndex (no wrap, drift penalty) | — |
+| `playerlogic.js` | PURE player decisions (player.js is untestable DOM): clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent | config |
 | `ui/dpad.js` | Android TV focus manager (v1.0.9): spatial nav over the active view, watch-view player mode via player.handleTvKey | spatial, nav, modal, player |
 | `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled; honors `update.skip` on silent checks), downloadAndInstall (size-verified) | platform |
 | `wake.js` | ref-counted keep-screen-on (KidsNative → KeepAwake → wakeLock → noop) | — |

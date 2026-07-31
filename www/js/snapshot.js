@@ -91,30 +91,61 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
   const c = classifyLink(v && v.srcUrl);
   if (!c) return null;
 
-  const scopeId = inScope(validScopes, v.scopeId) ? v.scopeId : profScope(profileId);
+  const scopeOk = inScope(validScopes, v.scopeId);
+  const scopeId = scopeOk ? v.scopeId : profScope(profileId);
+  // A record whose LIBRARY scope was rejected falls back to the profile scope — where the
+  // shared 'sheet' folder does not exist (buildFolders raises that tile only for libScope,
+  // and absorbMineIntoShared only ever picks up 'mine'). Left as-is the row is stored,
+  // approved, and then in NO folder on any screen, forever. Remap it to the profile
+  // scope's own loose list.
+  // Only when the row NAMED a scope we rejected — a row with no scopeId at all is simply
+  // unscoped and keeps whatever folder it declared (pinned by the round-trip tests).
+  const scopeRejected = v && v.scopeId != null && !scopeOk;
+  const reFolder = (f) => (scopeRejected && f === 'sheet' ? 'mine' : f);
   // '~pending' is a parking slot, never a folder to return to
   const folderId = typeof v.folderId === 'string' && v.folderId !== '~pending' ? v.folderId : 'mine';
   const homeFolderId = typeof v.homeFolderId === 'string' && v.homeFolderId !== '~pending'
     ? v.homeFolderId : null;
   const pending = v.state === 'pending';
+  const title = typeof v.title === 'string' ? v.title.slice(0, 300) : '';
+
+  // Ordering inputs are sanitized BEFORE they reach sortKeyFor, and its result is checked:
+  // a junk publishedAt/addedAt produced a string or NaN sortKey, which stores fine and then
+  // indexes NOWHERE (by_folder_sort rejects a NaN key; a string sorts outside folderRange's
+  // numeric bounds). The row counted as imported and was invisible to the child forever.
+  const num = (x) => {
+    if (x === null || x === undefined || x === '') return null;
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
+  };
+  const origin = v.origin || 'manual';
+  const publishedAt = num(v.publishedAt);
+  const rowIndex = num(v.rowIndex);
+  const addedAt = num(v.addedAt) || now;
+  const rawSort = num(v.sortKey) ?? sortKeyFor({ origin, publishedAt, rowIndex, addedAt });
+  const sortKey = Number.isFinite(rawSort) ? rawSort : sortKeyFor({ origin: 'manual', addedAt: now });
 
   return {
     scopeId, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
     srcUrl: c.srcUrl, driveId: c.driveId ?? null,
-    title: typeof v.title === 'string' ? v.title.slice(0, 300) : '',
+    title,
     titleSource: v.titleSource || null,
-    normTitle: normalizeTitle(v.title),
-    folderId: pending ? '~pending' : folderId,
+    normTitle: normalizeTitle(title), // from the SANITIZED title — `{}` used to normalize
+    folderId: pending ? '~pending' : reFolder(folderId),
     // an exported pending row already carries its real home; only a row that was never
     // parked (or lost its home) falls back to the folder it was filed under
-    homeFolderId: pending ? (homeFolderId || folderId) : homeFolderId,
+    homeFolderId: reFolder(pending ? (homeFolderId || folderId) : homeFolderId),
     channelId: typeof v.channelId === 'string' ? v.channelId : null,
-    sortKey: typeof v.sortKey === 'number' ? v.sortKey
-      : sortKeyFor({ origin: v.origin || 'manual', publishedAt: v.publishedAt, rowIndex: v.rowIndex, addedAt: v.addedAt }),
-    publishedAt: v.publishedAt ?? null, rowIndex: v.rowIndex ?? null,
-    origin: v.origin || 'manual',
+    // v1.0.12 grouping fields: without them every 🎞️ collection dissolves into the flat
+    // list on import, and the weekly re-enrichment throttle restarts from scratch.
+    srcChannelId: typeof v.srcChannelId === 'string' ? v.srcChannelId : null,
+    srcChannelTitle: typeof v.srcChannelTitle === 'string' ? v.srcChannelTitle.slice(0, 300) : null,
+    srcChannelTriedAt: num(v.srcChannelTriedAt),
+    sortKey,
+    publishedAt, rowIndex,
+    origin,
     state: pending ? 'pending' : 'live',
-    addedAt: v.addedAt || now, approvedAt: v.approvedAt ?? null,
+    addedAt, approvedAt: v.approvedAt ?? null,
     thumbId: null, // blobs don't travel in the snapshot
     thumbUrl: typeof v.thumbUrl === 'string' && /^https:/.test(v.thumbUrl) ? v.thumbUrl : null,
     // typeof FIRST: RegExp.test stringifies, so `["videos/x.mp4"]` used to pass the shape

@@ -177,14 +177,33 @@ export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates,
   }
 
   let maxRank = 0;
-  for (const st of existingStates.values()) if (st.giftRank) maxRank = Math.max(maxRank, st.giftRank);
+  let outstanding = 0; // ranks the child has not opened yet
+  for (const st of existingStates.values()) {
+    if (!st.giftRank) continue;
+    maxRank = Math.max(maxRank, st.giftRank);
+    if (!st.unwrappedAt) outstanding += 1;
+  }
   const byKey = new Map(liveRecords.map((r) => [r.key, r]));
-  for (const key of newLiveKeys) {
-    const st = stateOf(key);
-    if (st && (st.unwrappedAt || st.giftRank)) continue;
-    const rec = byKey.get(key);
-    if (!rec || !giftable(rec)) continue;
+  // v1.0.21 — CAP THE OUTSTANDING GIFTS AT `baseline`, exactly like the first sync does.
+  //
+  // 🎁 is a treat the child opens one at a time; a folder holding hundreds is not a
+  // bigger treat, it is a wall (the v1.0.20 field bug). The old incremental branch had NO
+  // ceiling, so any bulk arrival — approve-all, a channel backfill going live, or a
+  // baseline that was spent while the library was nearly empty — gifted EVERYTHING. This
+  // makes such a runaway unrepresentable rather than repairable, and the NEWEST arrivals
+  // are the ones that get the ranks.
+  const fresh = newLiveKeys
+    .filter((key) => {
+      const st = stateOf(key);
+      if (st && (st.unwrappedAt || st.giftRank)) return false; // never re-gift / re-rank
+      const rec = byKey.get(key);
+      return !!rec && giftable(rec);
+    })
+    .sort((a, b) => compareForDisplay(byKey.get(a), byKey.get(b))); // newest first
+  for (const key of fresh) {
+    if (outstanding >= baseline) break;
     maxRank += 1;
+    outstanding += 1;
     statePuts.push({ profileId, key, giftRank: maxRank });
   }
   return statePuts;
@@ -258,13 +277,15 @@ export function planSheetMirror({
  * Channel videos are deliberately absent: they have no row of their own (the channel row
  * represents them), so the sheet can never "not list" them.
  */
+export function isSheetBacked(r) {
+  if (!r || r.state !== 'live') return false;
+  return (r.homeFolderId || r.folderId) === 'sheet';
+}
+
+/** Keys of the sheet-backed records in `records`. Same boundary, list form. */
 export function sheetBackedKeysOf(records) {
   const out = [];
-  for (const r of records || []) {
-    if (!r || r.state !== 'live') continue;
-    if ((r.homeFolderId || r.folderId) !== 'sheet') continue;
-    out.push(r.key);
-  }
+  for (const r of records || []) if (isSheetBacked(r)) out.push(r.key);
   return out;
 }
 
@@ -312,21 +333,45 @@ export function shouldRecordGiftBaseline(firstSync, liveCount) {
  * On devices that added a channel before the fix, the baseline flag was spent on an
  * empty library and the next sync gifted the ENTIRE backfill: a "חדשים" folder holding
  * the whole library, which the child would have to tap through one by one. This decides
- * the repair — keep the `baseline` newest ranks (rank 1 IS the newest), retire the rest —
- * which is exactly the state the first sync should have produced.
+ * the repair — keep the `baseline` NEWEST, retire the rest — which is exactly the state
+ * the first sync should have produced.
+ *
+ * ⚠️ RANK IS NOT RECENCY on the piles this repairs. `planGifts` sorts by
+ * `compareForDisplay` only on its BASELINE branch; the INCREMENTAL branch (the one that
+ * actually creates a runaway) stamps `maxRank+1` while walking `newLiveKeys`, which comes
+ * from `loadMergeIndex` — a cursor over the `[scopeId, key]` primary key, i.e. ALPHABETICAL
+ * by video id. Ranking by giftRank therefore kept an arbitrary alphabetical dozen and
+ * retired the genuinely newest videos, permanently (`unwrappedAt` is min-merged forever).
+ * So the caller passes `sortKeyOf`; giftRank is only the tie-break / last-resort fallback.
  *
  * Deliberately conservative: a child who simply never opens gifts accumulates ranks
- * legitimately, so only an implausible pile is touched. Even a false positive is benign
- * (a retired gift is a normal video in its folder, never a deleted one).
+ * legitimately, so only an implausible pile is touched.
  *
  * @param states iterable of profileVideoState records for ONE profile
+ * @param sortKeyOf Map|function key -> sortKey (the video's own recency). Omit only when
+ *                  the records are unavailable; ordering then degrades to giftRank.
  * @returns { keep: string[], retire: string[] } — retire = give up its rank
  */
-export function planGiftRunawayRepair(states, { baseline = 12, floor = 60 } = {}) {
+export function planGiftRunawayRepair(states, { baseline = 12, floor = 60, sortKeyOf = null } = {}) {
   const ranked = [];
   for (const st of states || []) if (st && st.giftRank && !st.unwrappedAt) ranked.push(st);
   if (ranked.length <= Math.max(floor, baseline)) return { keep: [], retire: [] };
-  ranked.sort((a, b) => a.giftRank - b.giftRank); // rank 1 = newest
+  const recency = sortKeyOf == null ? null
+    : typeof sortKeyOf === 'function' ? sortKeyOf
+      : (k) => (sortKeyOf.get ? sortKeyOf.get(k) : sortKeyOf[k]);
+  ranked.sort((a, b) => {
+    if (recency) {
+      const ra = Number(recency(a.key));
+      const rb = Number(recency(b.key));
+      const fa = Number.isFinite(ra);
+      const fb = Number.isFinite(rb);
+      // a record we can date always outranks one we cannot — never retire a video
+      // just because its sortKey went missing
+      if (fa !== fb) return fa ? -1 : 1;
+      if (fa && rb !== ra) return rb - ra; // newest first
+    }
+    return a.giftRank - b.giftRank;
+  });
   return {
     keep: ranked.slice(0, baseline).map((s) => s.key),
     retire: ranked.slice(baseline).map((s) => s.key)
@@ -334,6 +379,131 @@ export function planGiftRunawayRepair(states, { baseline = 12, floor = 60 } = {}
 }
 
 /** Folder ids that are just "everything loose" — no identity of their own. */
+/**
+ * v1.0.21 — PURE: may this RSS entry enter the library?
+ * Shorts and live streams never do. Kept as a named predicate so an INVERSION
+ * (`if (!v.isShort) continue`, which would import only Shorts) fails a test instead of
+ * satisfying a grep for the word.
+ */
+export function acceptRssEntry(v) {
+  return !!v && !v.isShort && !v.isLive;
+}
+
+/**
+ * v1.0.21 — PURE: may this item of a channel's own PLAYLIST enter the library?
+ * This is a child-safety boundary, so each rejection is deliberate:
+ *  - a videoId that is not a real id — junk in the response;
+ *  - a FOREIGN uploader: the parent subscribed to THIS channel, not to whatever it
+ *    curated from others;
+ *  - a MISSING uploader: private and deleted playlist entries are exactly what come back
+ *    with no `videoOwnerChannelId`, and they render as an untappable "Private video"
+ *    tile. (Unlike the RSS case, "unknown" here means unplayable, not third-party — so
+ *    this one fails CLOSED.)
+ *  - a known Short of this channel (`playlistItems` carries no Shorts flag, so UUSH
+ *    membership is the only exact test).
+ */
+export function acceptPlaylistItem(v, { channelId, shortIds } = {}) {
+  if (!v || !/^[A-Za-z0-9_-]{11}$/.test(String(v.videoId || ''))) return false;
+  if (!v.ownerChannelId) return false;
+  if (channelId && v.ownerChannelId !== channelId) return false;
+  if (shortIds && shortIds.has && shortIds.has(v.videoId)) return false;
+  return true;
+}
+
+/**
+ * v1.0.21 — PURE: advance the resumable walk of a channel's playlists.
+ *
+ * The wedge this exists to prevent: `playlistsDone` used to be derived from "the queue is
+ * empty", which is ALSO true when the enumeration never ran (throttled / errored). One
+ * quota blip on the first pass then disabled the playlists source for that channel for
+ * the lifetime of the install, because nothing rearms the flag.
+ *
+ * @param state { playlistQueue, playlistCursor }
+ * @param ev    { listComplete } after enumerating, or { pageError, nextPageToken } after a page
+ * @returns { playlistQueue, playlistCursor, playlistsDone }
+ */
+export function planPlaylistAdvance(state = {}, ev = {}) {
+  const queue = Array.isArray(state.playlistQueue) ? state.playlistQueue : [];
+  // enumeration result: done ONLY when the list was fully read and held nothing
+  if ('listComplete' in ev) {
+    return {
+      playlistQueue: queue,
+      playlistCursor: null,
+      playlistsDone: !!ev.listComplete && queue.length === 0
+    };
+  }
+  // a page of the head playlist
+  if (ev.pageError) {
+    // a private/deleted playlist must not wedge the queue — drop it and move on
+    const rest = queue.slice(1);
+    return { playlistQueue: rest, playlistCursor: null, playlistsDone: rest.length === 0 };
+  }
+  if (ev.nextPageToken) {
+    return { playlistQueue: queue, playlistCursor: ev.nextPageToken, playlistsDone: false };
+  }
+  const rest = queue.slice(1);
+  return { playlistQueue: rest, playlistCursor: null, playlistsDone: rest.length === 0 };
+}
+
+/**
+ * v1.0.21 — PURE: what did a 404 on the long-form playlist mean?
+ * Only a 404 on the FIRST page of a DERIVED id says "this channel has no long-form
+ * video". A 404 deeper in, or any other error (403/quota/network), must never be read as
+ * "Shorts-only" — that would close the channel's backfill over a transient failure.
+ */
+export function planNoLongForm({ notFound = false, isFirstPage = false, derived = false } = {}) {
+  const shortsOnly = !!(notFound && isFirstPage && derived);
+  return { noLongForm: shortsOnly, closeBackfill: shortsOnly };
+}
+
+/**
+ * v1.0.21 — PURE: the safety valve for an UNDOCUMENTED dependency.
+ *
+ * `UULF…` is not a documented API. If YouTube retires it, page 1 answers 404 for EVERY
+ * channel at once and the naive reading ("they are all Shorts-only") would close every
+ * backfill in every family's library in a single sync, with a false explanation shown to
+ * each parent. A whole-population failure is an OUTAGE, not a fact about the channels.
+ * Same spirit as the sheet-mirror valve: refuse to act, keep the old state, say so.
+ *
+ * @param results [{ channelId, notFound }] — one entry per channel that tried this run
+ */
+export function planLongFormOutage(results = []) {
+  const tried = (results || []).filter((r) => r && r.channelId);
+  if (tried.length < 2) return { outage: false, notFoundCount: tried.filter((r) => r.notFound).length };
+  const notFoundCount = tried.filter((r) => r.notFound).length;
+  return { outage: notFoundCount === tried.length, notFoundCount };
+}
+
+/**
+ * v1.0.22 — PURE: which (scope, folder) should the UNDER-PLAYER grid page?
+ *
+ * The grid is how the child reaches the next video, so an empty one is a dead end. Two
+ * rules fight here and the order matters:
+ *  - came from a FOLDER view ⇒ browse that folder, because a virtual 🎞️ group folder is
+ *    not stored on the record and `item.folderId` cannot express it (v1.0.12);
+ *  - …EXCEPT 🎁 'new', which is a VIEW over other folders, not a folder. Opening a gift
+ *    unwraps it, so it leaves the sparse by_gift index immediately — and paging 'new'
+ *    then returned FEWER items than the child could see, or nothing at all when it was
+ *    the last gift. A gift browses where the video actually lives, which is also what
+ *    player.js's own comment always claimed.
+ *  - '~pending' is a parking slot and must never be browsed.
+ */
+export function resolveWatchContext({
+  item, isWatching = false, prevFolderId = null, folderViewId = null,
+  libScope = null, profileScope = null
+} = {}) {
+  const rec = item || {};
+  const real = (f) => (f && f !== '~pending' ? f : null);
+  const fromView = folderViewId === 'new' ? null : real(folderViewId);
+  const folderId = isWatching
+    ? real(prevFolderId) || real(rec.homeFolderId) || real(rec.folderId)
+    : fromView || real(rec.homeFolderId) || real(rec.folderId) || real(prevFolderId);
+  return {
+    scope: rec.scopeId || (folderId === 'mine' ? profileScope : libScope) || libScope || profileScope || null,
+    folderId: folderId || null
+  };
+}
+
 const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
 
 /**

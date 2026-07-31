@@ -15,7 +15,8 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
-import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption } from './plan.js';
+import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
+  resolveWatchContext } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -143,22 +144,62 @@ async function computeAttention() {
 /**
  * v1.0.7: fresh-on-home — fired on every gallery entry, never blocking the render.
  * Content sync self-throttles (shouldSync, 3 min); the update check self-throttles
- * (6h) and the prompt fires at most once per session.
+ * (6h) and the prompt fires at most once per session. v1.0.21: the first pass of each
+ * LAUNCH bypasses both throttles — see below.
  */
+let launchSyncDone = false; // the forced launch refresh happens once per process
 function homeEntryRefresh() {
   if (!activeProfileId) return;
+  // v1.0.21: the FIRST refresh of a launch is forced. The 3-min throttle exists so a
+  // child flipping between home and a video doesn't resync every few seconds — but it
+  // also meant reopening the app minutes after the parent edited the sheet showed stale
+  // content until something else happened to trip a sync. One forced pass per launch is
+  // the fix; every later home entry keeps the throttle.
+  const force = !launchSyncDone;
+  launchSyncDone = true;
   (async () => {
-    if (await shouldSync(activeProfileId)) {
-      syncLibrary(activeProfileId).then(async () => {
+    if (force || await shouldSync(activeProfileId)) {
+      syncLibrary(activeProfileId, force ? { force: true } : {}).then(async () => {
         await loadGiftStates();
         if (nav.isActive('gallery')) renderHome();
       }).catch(() => {});
     }
   })().catch(() => {});
+  // …and so is the version check: the 6h throttle could hide a release for a whole day
+  // of launches. `silent` still honors update.skip, so a version the parent declined
+  // does not nag again — only the red dot stays lit.
   import('./update.js')
-    .then((u) => u.checkForUpdate({ silent: true }))
+    .then((u) => u.checkForUpdate({ silent: true, force }))
     .then((r) => maybePromptUpdate(r))
     .catch(() => {});
+}
+
+/**
+ * v1.0.21 — run after ANY content the parent just added (a share, a manual link, an
+ * approval). A freshly written record is INERT until a sync touches it:
+ *  - `srcChannelId` is filled only by the sync's enrichment stage, and that field is
+ *    what `groupSinglesByChannel` folds a single into its 🎞️ collection / 📺 channel
+ *    folder by — so without it the video sits in the loose "סרטונים נוספים" list;
+ *  - `giftRank` is assigned only by `planProfileGifts`, so the video is not a 🎁 either.
+ * Both used to appear only after the parent happened to press "רענון נתונים" (field bug).
+ * Silent and non-blocking on purpose: the child may be looking at a populated grid, and
+ * covering it with the loading screen is the worse bug (v1.0.18).
+ */
+function refreshAfterAdd({ parent = false } = {}) {
+  if (!activeProfileId) return;
+  // NEVER while a video plays: a forced sync also bypasses the 30-min per-channel RSS
+  // throttle, so this is a full sweep of every channel plus a whole-library re-plan —
+  // on a low-end tablet, under a playing video. The gallery/parent screens are the only
+  // safe places, and the next home entry re-runs it anyway.
+  if (nav.isActive('watch')) return;
+  syncLibrary(activeProfileId, { force: true }).then(async () => {
+    await loadGiftStates();
+    if (nav.isActive('gallery')) renderHome();
+    if (parent && nav.isActive('parent')) {
+      await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]).catch(() => {});
+    }
+    refreshGateDot();
+  }).catch(() => {});
 }
 
 /** The red dot on the 🔒 gate button — the parent's cue to come look. */
@@ -526,15 +567,25 @@ async function absorbMineIntoShared(profileId) {
         // live items are part of the master list — register them in the sheet once
         // (pending shares enqueue at APPROVAL time instead)
         if (!pending) {
+          // {flush:false} — a bulk caller must NOT flush per record (v1.0.18): this runs on
+          // EVERY profile activation and was one network round trip per moved video. The
+          // single flush after the loop also closes the window in which a record is live +
+          // sheet-backed + rowless, which is exactly what the presence-mirror tombstones.
           const { enqueueSheetRow } = await import('./sheetwrite.js');
-          await enqueueSheetRow(profileId, { key: rec.key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+          await enqueueSheetRow(profileId, { key: rec.key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' }, { flush: false });
         }
         moved += 1;
       }
       await db.deleteVideoRaw(pScope, rec.key); // raw: a move, not a deletion — no tombstone
     }
     await db.copyDenies(pScope, lib); // personal deletions keep protecting the shared list
-    if (moved) maybeSchedulePush();
+    if (moved) {
+      try {
+        const { flushSheetQueue } = await import('./sheetwrite.js');
+        await flushSheetQueue(profileId);
+      } catch {}
+      maybeSchedulePush();
+    }
   } catch { /* absorbing must never block activation; next activation retries */ }
 }
 
@@ -558,29 +609,36 @@ async function buildFolders() {
     return cache.folders.slice();
   }
   const seq = db.dataVersion();
+  // Capture the profile ALONGSIDE the write counter. Switching profile writes only to
+  // Preferences, so dataVersion() does NOT change across a switch — `profileId` is the
+  // cache's only cross-profile guard, and reading it at cache-WRITE time (after every
+  // await below) let a derivation that started as child A get stamped with child B's id.
+  // B then hit the cache and was shown A's library, with libScope pointing at A's videos.
+  const pid = activeProfileId;
   const out = [];
-  if (!activeProfileId) return out;
-  const giftCount = await db.countGifts(activeProfileId);
+  if (!pid) return out;
+  const giftCount = await db.countGifts(pid);
   if (giftCount > 0) out.push({ id: 'new', title: 'חדשים', emoji: '🎁', count: giftCount, isNew: true });
 
-  const src = await db.getSources(activeProfileId);
-  libScope = (src && src.libraryId) || null;
-  // ALL grouping state resets here, before the libScope guard: a profile without
-  // sources used to keep the PREVIOUS profile's looseSingles, so any future code
-  // rendering the flat list would show another child's videos (latent leak).
-  singleGroups = new Map();
-  absorbedSingles = new Map();
-  looseSingles = [];
-  if (libScope) {
-    const libChannels = await db.listLibraryChannels(libScope); // read ONCE — this used
+  const src = await db.getSources(pid);
+  const lib = (src && src.libraryId) || null;
+  // ALL grouping state is derived into LOCALS and published together at the very end.
+  // A profile without sources used to keep the PREVIOUS profile's looseSingles, and a
+  // derivation superseded mid-await by a profile switch used to publish its stale
+  // globals over the new child's (latent leak, and the cross-profile cache hit above).
+  let groups = new Map();
+  let absorbed = new Map();
+  let loose = [];
+  if (lib) {
+    const libChannels = await db.listLibraryChannels(lib); // read ONCE — this used
     const subscribedIds = new Set(libChannels.map((c) => c.channelId)); // to run twice
     for (const lc of libChannels) {
       if (lc.hidden) continue;
       const ch = (await db.getChannel(lc.channelId)) || {};
-      const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
+      const count = await db.countFolder(lib, 'ch:' + lc.channelId);
       if (!count) continue;
       out.push({
-        id: 'ch:' + lc.channelId, scope: libScope, title: lc.titleOverride || ch.title || 'ערוץ',
+        id: 'ch:' + lc.channelId, scope: lib, title: lc.titleOverride || ch.title || 'ערוץ',
         // logo → persisted per-channel fallback thumbnail → 📺 emoji (v1.0.6):
         // every channel folder must stay visually distinct for a non-reading child
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
@@ -592,28 +650,27 @@ async function buildFolders() {
     // inside that channel's 📺 folder instead of a second same-named folder.
     // All of it rides ONE bulk read — the record arrays feed pagination directly.
     const { compareForDisplay } = await import('./order.js');
-    const sheetRecords = [...(await db.loadMergeIndex(libScope)).values()]
-      .filter((r) => r.state === 'live' && (r.homeFolderId || r.folderId) === 'sheet');
+    const sheetRecords = [...(await db.loadMergeIndex(lib)).values()].filter(isSheetBacked);
     const grouping = groupSinglesByChannel(sheetRecords.filter((r) => !r.channelId), subscribedIds);
     const byKey = new Map(sheetRecords.map((r) => [r.key, r]));
     const recsOf = (keys) => keys.map((k) => byKey.get(k)).filter(Boolean).sort(compareForDisplay);
 
-    singleGroups = new Map(grouping.groups.map((g) => [g.channelId, recsOf(g.keys)]));
-    absorbedSingles = new Map([...grouping.absorb].map(([id, keys]) => [id, recsOf(keys)]));
-    for (const [chId, recs] of absorbedSingles) {
+    groups = new Map(grouping.groups.map((g) => [g.channelId, recsOf(g.keys)]));
+    absorbed = new Map([...grouping.absorb].map(([id, keys]) => [id, recsOf(keys)]));
+    for (const [chId, recs] of absorbed) {
       const f = out.find((x) => x.id === 'ch:' + chId);
       if (f) { f.count += recs.length; continue; }
       // subscribed but nothing imported yet — the singles still need a home
       const ch = (await db.getChannel(chId)) || {};
       out.push({
-        id: 'ch:' + chId, scope: libScope, title: ch.title || 'ערוץ',
+        id: 'ch:' + chId, scope: lib, title: ch.title || 'ערוץ',
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count: recs.length
       });
     }
     for (const g of grouping.groups) {
       const ch = (await db.getChannel(g.channelId)) || {};
       out.push({
-        id: 'grp:' + g.channelId, scope: libScope, title: g.title,
+        id: 'grp:' + g.channelId, scope: lib, title: g.title,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '🎞️',
         count: g.keys.length, grouped: true
       });
@@ -623,21 +680,28 @@ async function buildFolders() {
       ...grouping.groups.flatMap((g) => g.keys),
       ...[...grouping.absorb.values()].flat()
     ]);
-    looseSingles = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
-    if (looseSingles.length) {
-      out.push({ id: 'sheet', scope: libScope, title: 'סרטונים נוספים', emoji: '⭐', count: looseSingles.length });
+    loose = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
+    if (loose.length) {
+      out.push({ id: 'sheet', scope: lib, title: 'סרטונים נוספים', emoji: '⭐', count: loose.length });
     }
   }
   // legacy safety: pre-absorb profile-scope items (e.g. before the first sync creates
   // sources) stay reachable until absorbMineIntoShared picks them up
-  const mineCount = await db.countFolder(db.profScope(activeProfileId), 'mine');
-  if (mineCount) out.push({ id: 'mine', scope: db.profScope(activeProfileId), title: 'סרטונים נוספים', emoji: '💜', count: mineCount });
-  // Cache against the write counter READ AT ENTRY: if anything committed while we were
-  // deriving, `seq` is already stale and the next render redoes the work (never serves
-  // a list that never matched the store).
+  const mineCount = await db.countFolder(db.profScope(pid), 'mine');
+  if (mineCount) out.push({ id: 'mine', scope: db.profScope(pid), title: 'סרטונים נוספים', emoji: '💜', count: mineCount });
+  // Superseded by a profile switch while we were awaiting? Publish NOTHING — not the
+  // globals, not the cache. The switch does its own render and re-derives from scratch.
+  if (pid !== activeProfileId) return out;
+  libScope = lib;
+  singleGroups = groups;
+  absorbedSingles = absorbed;
+  looseSingles = loose;
+  // Cache against the write counter AND the profile READ AT ENTRY: if anything committed
+  // while we were deriving, `seq` is already stale and the next render redoes the work
+  // (never serves a list that never matched the store).
   foldersCache = {
-    seq, profileId: activeProfileId, libScope, folders: out.slice(),
-    singleGroups, absorbedSingles, looseSingles
+    seq, profileId: pid, libScope: lib, folders: out.slice(),
+    singleGroups: groups, absorbedSingles: absorbed, looseSingles: loose
   };
   return out;
 }
@@ -656,7 +720,6 @@ function scopeForFolder(fid) {
 async function renderHome() {
   folders = await buildFolders();
   const grid = $('grid');
-  const contentFolders = folders.filter((f) => !f.isNew);
 
   refreshGateDot(); // fire-and-forget — the red dot must never delay the grid
 
@@ -666,7 +729,8 @@ async function renderHome() {
   if (empty) { $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
   if (shouldFlattenHome(folders)) {
-    await renderGridPage(grid, contentFolders[0].scope, contentFolders[0].id, 'home');
+    // shouldFlattenHome only says yes for a SINGLE non-🎁 folder, so folders[0] is it
+    await renderGridPage(grid, folders[0].scope, folders[0].id, 'home');
     return;
   }
 
@@ -693,15 +757,46 @@ function updateHomePager(total) {
 }
 
 /**
+ * 🎁 "חדשים" — the sparse by_gift index resolved to live records, rank order.
+ * Kept out of pageAnyFolder's body only for readability; it is reached ONLY through it.
+ */
+async function pageGiftFolder({ offset, limit }) {
+  const res = await db.pageGifts(activeProfileId, { offset, limit });
+  const items = [];
+  const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  for (const st of res.items) {
+    // by-key lookup across ALL scopes: immune to library-id drift (a re-saved sheet
+    // URL used to orphan gift states — badge counted them, the folder came up empty)
+    const rec = await db.findLiveByKey(st.key, prefer);
+    if (rec) {
+      items.push(rec);
+    } else {
+      // self-heal: the video is gone everywhere — drop the orphaned state so the
+      // "חדשים" badge converges with what the child actually sees
+      try { await db.deleteVideoState(activeProfileId, st.key); giftStates.delete(st.key); } catch {}
+    }
+  }
+  return { items, total: res.total };
+}
+
+/**
  * One pagination entry point for every folder kind (v1.0.12):
+ *   new      — 🎁 "חדשים": the sparse gift index, resolved to live records (v1.0.21);
  *   grp:<id> — a virtual folder of loose singles sharing a channel (array slice);
  *   sheet    — the flat list MINUS whatever grouping claimed (array slice);
  *   ch:<id>  — the channel's indexed range, with absorbed singles PREPENDED
  *              (they come first, then the channel's own videos, paged correctly);
  *   anything else — the plain by_folder_sort range.
+ *
+ * 🎁 lives HERE, not in renderGridPage, because it is not a stored folder: no record
+ * carries `folderId:'new'`, so `folderRange(scope,'new')` is an exact bound that matches
+ * nothing. renderGridPage had its own gift branch and renderWatchGrid did not, so opening
+ * a gift left the UNDER-PLAYER GRID EMPTY (v1.0.21 field bug) — the child lost every way
+ * to pick the next video. One entry point means one gift implementation.
  */
 async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {}) {
   const slice = (arr) => ({ items: arr.slice(offset, offset + limit), total: arr.length });
+  if (fid === 'new') return pageGiftFolder({ offset, limit });
   if (String(fid).startsWith('grp:')) return slice(singleGroups.get(String(fid).slice(4)) || []);
   if (fid === 'sheet' && looseSingles.length) return slice(looseSingles);
 
@@ -716,32 +811,10 @@ async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {})
 /** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
 async function renderGridPage(grid, scope, fid, which) {
   const pg = which === 'home' ? page : folderPage;
-  let items15;
-  let total;
-  if (fid === 'new') {
-    const res = await db.pageGifts(activeProfileId, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
-    total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
-    items15 = [];
-    const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
-    for (const st of res.items) {
-      // by-key lookup across ALL scopes: immune to library-id drift (a re-saved sheet
-      // URL used to orphan gift states — badge counted them, the folder came up empty)
-      const rec = await db.findLiveByKey(st.key, prefer);
-      if (rec) {
-        items15.push(rec);
-      } else {
-        // self-heal: the video is gone everywhere — drop the orphaned state so the
-        // "חדשים" badge converges with what the child actually sees
-        try { await db.deleteVideoState(activeProfileId, st.key); giftStates.delete(st.key); } catch {}
-      }
-    }
-  } else {
-    const res = await pageAnyFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
-    total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
-    items15 = res.items;
-  }
+  const res = await pageAnyFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
+  const total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
   grid.innerHTML = '';
-  for (const rec of items15) grid.appendChild(tileEl(rec));
+  for (const rec of res.items) grid.appendChild(tileEl(rec));
   if (which === 'home') updateHomePager(total);
   else folderPagerObj.update(folderPage, total);
 }
@@ -923,13 +996,16 @@ async function openWatch(item) {
   // v1.0.12: when the child came from a FOLDER view, browse THAT folder — virtual
   // 🎞️ group folders aren't stored on the record, so item.folderId can't express
   // them. video→video from the under-player grid keeps the existing context.
-  const cameFromFolder = nav.isActive('folder') && folderId;
-  watchCtx = {
-    scope: item.scopeId || scopeForFolder(folderId) || libScope || db.profScope(activeProfileId),
-    folderId: nav.isActive('watch') ? watchCtx.folderId
-      : (cameFromFolder ? folderId
-        : ((item.folderId && item.folderId !== '~pending') ? item.folderId : folderId))
-  };
+  // …and 🎁 'new' is a VIEW, not a folder: paging it after the gift is unwrapped came up
+  // short or empty, so a gift browses where the video actually lives (resolveWatchContext).
+  watchCtx = resolveWatchContext({
+    item,
+    isWatching: nav.isActive('watch'),
+    prevFolderId: nav.isActive('watch') ? watchCtx.folderId : folderId,
+    folderViewId: nav.isActive('folder') ? folderId : null,
+    libScope,
+    profileScope: db.profScope(activeProfileId)
+  });
   // replace() when already watching: back always returns to the gallery, never
   // through the chain of watched videos. nav scrolls to top — the F4 fix: the
   // user actually SEES the player instead of staying scrolled at the grid.
@@ -1343,6 +1419,26 @@ async function refreshSheetWriteStatus() {
   await flushSheetQueue(activeProfileId).catch(() => {}); // opportunistic retry on entry
   const st = await sheetWriteState(libScope);
   if (!st) return;
+  if (st.dropped) {
+    // The write queue hit its cap and REFUSED an op. A refused delete is the dangerous
+    // one: its row stays in the sheet, and the mirror reads that presence as a
+    // deliberate re-add. Never let this hide behind the reassuring "pending" line.
+    el.textContent = `⚠️ ${st.dropped} פעולות לא נרשמו בקובץ הרשימה (תור הכתיבה מלא) — ייתכן שמחיקות או הוספות שביצעתם לא יעברו למכשירים אחרים. בדקו את קובץ הרשימה ידנית. `;
+    el.className = 'form-msg err';
+    // …and it must be DISMISSIBLE: `acknowledgeDropped` existed with no caller, so once
+    // this warning appeared it stayed forever, hiding every later queue status behind it.
+    const ack = document.createElement('button');
+    ack.type = 'button';
+    ack.className = 'text-btn';
+    ack.textContent = 'הבנתי, אפשר להסתיר';
+    ack.addEventListener('click', async () => {
+      const { acknowledgeDropped } = await import('./sheetwrite.js');
+      await acknowledgeDropped(libScope);
+      await refreshSheetWriteStatus();
+    });
+    el.appendChild(ack);
+    return;
+  }
   if (st.error === 'no-edit-permission') {
     el.textContent = '⚠️ אין הרשאת עריכה לגיליון — סרטונים שנוספו באפליקציה לא נרשמים בו. שתפו את הגיליון לחשבון Google המחובר כעורך.';
     el.className = 'form-msg err';
@@ -1528,6 +1624,9 @@ async function refreshPendingList() {
         await enqueueApprovedForSheet([rec]);
         await refreshPendingList();
         renderHome();
+        // approval is what makes the record LIVE, so this is the moment it becomes
+        // eligible for enrichment and for a gift rank — see refreshAfterAdd
+        refreshAfterAdd({ parent: true });
         maybeSchedulePush();
       },
       onDelete: async () => {
@@ -1585,6 +1684,9 @@ async function refreshChannelsList() {
       await loadGiftStates();
       await Promise.all([refreshPendingList(), refreshParentList()]);
       renderHome();
+      // approvePending assigns no giftRank — planProfileGifts is the only assigner, so
+      // without this the newly-approved videos arrive with no 🎁 at all
+      refreshAfterAdd({ parent: true });
       maybeSchedulePush();
     });
     toggle.appendChild(cb);
@@ -1610,6 +1712,15 @@ async function refreshChannelsList() {
       renderHome();
       maybeSchedulePush();
     });
+    // v1.0.21: a channel with NO long-form videos yields nothing, because Shorts are
+    // excluded on purpose. Say it here — otherwise the parent sees an empty folder and
+    // reasonably concludes the app is broken.
+    if (ch.noLongForm) {
+      const note = document.createElement('div');
+      note.className = 'li-note';
+      note.textContent = 'הערוץ הזה מפרסם רק Shorts — לא נמשכו ממנו סרטונים.';
+      body.appendChild(note);
+    }
     li.appendChild(logo);
     li.appendChild(body);
     li.appendChild(del);
@@ -1726,12 +1837,18 @@ async function parentAdd() {
     };
     await db.putVideos([rec]);
     const { enqueueSheetRow } = await import('./sheetwrite.js');
-    enqueueSheetRow(activeProfileId, { key: rec.key, srcUrl: rec.srcUrl, title: rec.title }).catch(() => {});
+    // AWAITED before the forced sync below: the record is live + folderId 'sheet', i.e.
+    // sheet-backed, and the presence-mirror deletes sheet-backed records the sheet does
+    // not list. Racing its own row against its own sync could tombstone it (one item
+    // never trips the safety valve). Every other add path already awaits this.
+    await enqueueSheetRow(activeProfileId, { key: rec.key, srcUrl: rec.srcUrl, title: rec.title }).catch(() => {});
     if (!rec.title && rec.type === 'youtube') {
       fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
     }
     $('add-url').value = ''; $('add-title').value = ''; $('add-thumb').value = '';
     msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
+    // the record is live but not yet enriched or gifted — see refreshAfterAdd
+    refreshAfterAdd({ parent: true });
     await refreshParentList();
     renderHome();
     maybeSchedulePush();
@@ -2362,6 +2479,7 @@ function wire() {
     await loadGiftStates();
     await Promise.all([refreshPendingList(), refreshParentList()]);
     renderHome();
+    refreshAfterAdd({ parent: true }); // newly-live records need enrichment + gift ranks
   });
   $('reject-all').addEventListener('click', async () => {
     const pend = await refreshPendingList();
@@ -2752,6 +2870,14 @@ async function init() {
         if (isGalleryActive()) renderHome();
       }).catch(() => {});
     }
+    // v1.0.21: also re-check for a release here. Coming back from the background does
+    // NOT re-fire the gallery's onEnter, so a device left running for days never looked.
+    if (activeProfileId && isGalleryActive()) {
+      import('./update.js')
+        .then((u) => u.checkForUpdate({ silent: true }))
+        .then((r) => maybePromptUpdate(r))
+        .catch(() => {});
+    }
   });
 
   // v1.0.14: stamp the first launch once — the gentle support reminder waits a month
@@ -2777,6 +2903,11 @@ async function init() {
         await alertKid({ emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — מושכים את הסרטונים שלו; חדשים ימתינו לאישור במסך ההורים.`, ok: 'מעולה' });
       }
       if (nav.isActive('gallery')) renderHome();
+      // A video shared from YouTube lands with no srcChannelId and no gift rank, so it
+      // showed up in the loose list and was not a 🎁 until the parent happened to press
+      // "רענון נתונים" (v1.0.21 field bug). A channel share already syncs itself; a
+      // PENDING video waits for approval, which syncs then.
+      if (!channelAdded && !pending) refreshAfterAdd();
     }
   });
   await loadActiveId();

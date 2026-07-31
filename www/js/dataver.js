@@ -47,7 +47,7 @@ async function forceSheetReparse() {
  */
 async function retireRunawayGifts() {
   const { planGiftRunawayRepair } = await import('./plan.js');
-  const { openDb, putVideoStates } = await import('./db.js');
+  const { openDb, putVideoStates, getSources, loadMergeIndex, profScope } = await import('./db.js');
   const db = await openDb();
   for (const p of await getProfiles()) {
     const states = [];
@@ -62,7 +62,17 @@ async function retireRunawayGifts() {
       };
       req.onerror = () => reject(req.error);
     });
-    const { retire } = planGiftRunawayRepair(states);
+    // Recency comes from the VIDEO records, never from giftRank: the runaway piles this
+    // step repairs were ranked in IndexedDB key order (alphabetical), so ranking by
+    // giftRank retired the newest videos and kept an arbitrary dozen — permanently.
+    const src = await getSources(p.id);
+    const sortKeyOf = new Map();
+    for (const scope of [src && src.libraryId, profScope(p.id)].filter(Boolean)) {
+      for (const rec of (await loadMergeIndex(scope)).values()) {
+        if (rec && typeof rec.sortKey === 'number') sortKeyOf.set(rec.key, rec.sortKey);
+      }
+    }
+    const { retire } = planGiftRunawayRepair(states, { sortKeyOf });
     if (!retire.length) continue;
     const byKey = new Map(states.map((s) => [s.key, s]));
     const now = Date.now();

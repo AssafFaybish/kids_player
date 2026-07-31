@@ -13,8 +13,9 @@
 // a body without one (verified in Capacitor source).
 
 import { httpRequest } from './platform.js';
-import { getAccessToken } from './gauth.js';
+import { getAccessToken, invalidateToken } from './gauth.js';
 import { libraryIdFor } from './util.js';
+import { looksLikeHtml } from './csv.js'; // a 200 + sign-in page is a FAILURE, never an empty doc
 import { normalizeTitle, mergeVideoRecord } from './normalize.js';
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
@@ -36,11 +37,107 @@ export function parseDb(text) {
 }
 
 /**
+ * v1.0.22 — PURE: is this Drive response the document, or a FAILURE?
+ *
+ * WHY THIS EXISTS. `readDbFile` used to answer `null` for every outcome — a 401 from a
+ * stale token, a dropped connection, a sign-in interstitial answering 200 with HTML, a
+ * truncated body, and a genuinely absent file all looked identical. `mergeDbFiles(local,
+ * null)` returns `local` verbatim, so the "the remote changed since our last write, merge
+ * before overwriting" branch in `pushDrive` DEGRADED INTO A BLIND OVERWRITE of exactly the
+ * document it existed to protect: one failed read and a fresh device PATCHed its empty
+ * doc over the family's entire library, tombstones and channel subscriptions. Nothing
+ * local held a copy.
+ *
+ * This is the same class as the sheet's `interpretSheetResponse`, and the same rule
+ * applies, only harder because this feeds a WRITE: **emptiness may come from exactly one
+ * input** — a 404, i.e. the file is really not there. Everything else THROWS.
+ */
+export function interpretDriveDoc(status, data) {
+  if (status === 404) return null; // genuinely absent — the ONLY "no document" answer
+  if (status !== 200) throw new Error('drive-http-' + (status || 0));
+  const text = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+  if (!text) throw new Error('drive-empty-body');
+  if (looksLikeHtml(text)) throw new Error('drive-html'); // a lost grant answers 200 + a sign-in page
+  const doc = parseDb(text);
+  if (!doc) throw new Error('drive-not-json');
+  return doc;
+}
+
+/**
+ * v1.0.22 — PURE: the file-search result, with "couldn't ask" distinguishable from
+ * "nothing there". Conflating them made a failed search report "no backup exists" to the
+ * parent AND sent `pushDrive` down the create branch, producing a SECOND db file that
+ * permanently shadows the family's real one (neither device's `dbFileId` points at the
+ * other, so they never merge).
+ */
+export function interpretDriveList(status, data) {
+  if (status !== 200) throw new Error('drive-http-' + (status || 0));
+  const files = data && data.files;
+  if (!Array.isArray(files)) throw new Error('drive-not-json');
+  return files;
+}
+
+/**
+ * v1.0.22 — PURE: may this push write, and with what?
+ *
+ * The one rule that matters: **a version mismatch we could not read is `'abort'`, never
+ * `'write'`.** Aborting costs one deferred push (`pendingPush` retries); guessing costs
+ * the family's whole backup.
+ *
+ * @param remoteRead { ok: boolean, doc: object|null } — `ok:false` means the read FAILED,
+ *        `ok:true, doc:null` means the file is genuinely absent (a 404)
+ */
+export function decidePush({ fileId = null, remoteVersion = null, lastRemoteVersion = '', remoteRead = null } = {}) {
+  if (!fileId) return { action: 'create', useRemote: false, reason: 'no-file' };
+  if (String(remoteVersion ?? '') === String(lastRemoteVersion || '')) {
+    return { action: 'write', useRemote: false, reason: 'unchanged-since-our-write' };
+  }
+  // changed since our last write (or we could not establish the version at all)
+  if (!remoteRead || !remoteRead.ok) {
+    return { action: 'abort', useRemote: false, reason: 'remote-unreadable' };
+  }
+  return { action: 'write', useRemote: true, reason: 'merged' };
+}
+
+/**
  * Build the Drive DB document. NEVER includes: localPath (device-local URI),
  * thumb blobs, backfill cursors, or the YouTube API key (explicit refusal list).
  * profileSources (v1.0.4, additive — old readers ignore it) maps profile→sheetUrl
  * so a fresh device restoring the backup can rebuild each profile's sources record.
  */
+/**
+ * Channel fields that describe THIS DEVICE's progress, not the channel. They must never
+ * travel in either direction: a page token is meaningless in another device's paging
+ * position, and `backfillDone`/`playlistsDone` arriving from a peer makes this device skip
+ * a back catalogue it never walked (the v1.0.18 rearm bug, reachable through Drive).
+ * `lastRssCheckedAt` is a per-device throttle — a peer's value suppresses our next check.
+ */
+const PER_DEVICE_CHANNEL_FIELDS = [
+  'backfillCursor', 'backfillPlaylistId', 'backfillDone', 'lastRssCheckedAt',
+  'playlistCursor', 'playlistQueue', 'playlistsDone', 'noLongForm'
+];
+
+/** PURE: strip this device's progress fields from a channel record. */
+export function stripPerDeviceChannel(c) {
+  const out = { ...(c || {}) };
+  for (const f of PER_DEVICE_CHANNEL_FIELDS) delete out[f];
+  return out;
+}
+
+/**
+ * v1.0.22 — PURE: the channel record to write when applying a remote doc.
+ * The `prev == null` case is the one that bit: writing the peer's record verbatim handed
+ * a device that had never seen the channel a `backfillDone: true`, so `planChannelFetch`
+ * returned 'rss' forever and the child only ever got the ~15-video feed window.
+ */
+export function mergeChannelForApply(prev, remote) {
+  const shared = stripPerDeviceChannel(remote);
+  if (!prev) return shared; // brand-new here: adopt the SHARED facts, none of the progress
+  const keep = {};
+  for (const f of PER_DEVICE_CHANNEL_FIELDS) if (f in prev) keep[f] = prev[f];
+  return { ...prev, ...shared, ...keep };
+}
+
 export function serializeDb({ profiles, libraries, profileState, profileSources }) {
   const clean = {};
   for (const [libId, lib] of Object.entries(libraries || {})) {
@@ -48,7 +145,10 @@ export function serializeDb({ profiles, libraries, profileState, profileSources 
       sheetUrl: lib.sheetUrl || null,
       videos: (lib.videos || []).map(({ localPath, thumbId, ...v }) => v),
       denylist: lib.denylist || [],
-      channels: (lib.channels || []).map(({ backfillCursor, ...c }) => c),
+      // ONE list, shared with the apply side (mergeChannelForApply), so the two halves of
+      // "paging state never travels" cannot drift. They did: this used to omit
+      // `backfillDone` and `lastRssCheckedAt`.
+      channels: (lib.channels || []).map(stripPerDeviceChannel),
       libraryChannels: lib.libraryChannels || []
     };
   }
@@ -158,14 +258,20 @@ export function mergeDbFiles(a, b) {
 /* =================== I/O: Drive API =================== */
 
 async function api(token, opts) {
-  return httpRequest({ ...opts, headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+  const res = await httpRequest({ ...opts, headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+  // A 401 means the token is dead NOW, whatever our 55-minute guess says. Dropping it
+  // here is what lets the very next call re-authorize instead of failing for the rest of
+  // the hour — and an hour of failing reads is how a push ends up with no remote to merge.
+  if (res && res.status === 401) invalidateToken('http-401');
+  return res;
 }
 
+/** THROWS when the search itself failed — "couldn't ask" must never read as "nothing there". */
 async function findDbFile(token) {
   const q = encodeURIComponent("appProperties has { key='kpApp' and value='kids-player' } and trashed=false");
   const res = await api(token, { url: `${DRIVE}/files?q=${q}&spaces=drive&fields=files(id,name,version,appProperties)`, responseType: 'json' });
-  if (res.status !== 200) return null;
-  const files = (res.data && res.data.files) || [];
+  const data = typeof res.data === 'string' ? (() => { try { return JSON.parse(res.data); } catch { return null; } })() : res.data;
+  const files = interpretDriveList(res.status, data);
   return files.find((f) => f.appProperties && f.appProperties.kpKind === 'db') || null;
 }
 
@@ -189,9 +295,19 @@ async function updateDbFile(token, fileId, content) {
   return res.status === 200 ? res.data : null;
 }
 
+/**
+ * -> { ok: true, doc }  (doc null ⇒ the file is genuinely absent, a 404)
+ *    { ok: false, error } (we could NOT read it — the caller must not write)
+ * Never collapses those two into `null`: that is what let a failed read overwrite the
+ * family's backup. See interpretDriveDoc.
+ */
 async function readDbFile(token, fileId) {
   const res = await api(token, { url: `${DRIVE}/files/${fileId}?alt=media`, responseType: 'text' });
-  return res.status === 200 ? parseDb(typeof res.data === 'string' ? res.data : JSON.stringify(res.data)) : null;
+  try {
+    return { ok: true, doc: interpretDriveDoc(res.status, res.data) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 }
 
 /* =================== local <-> document =================== */
@@ -278,7 +394,10 @@ async function applyRemoteDoc(doc) {
     });
     for (const c of lib.channels || []) {
       const prev = await getChannel(c.channelId);
-      await putChannel(prev ? { ...prev, ...c, backfillCursor: prev.backfillCursor } : c);
+      // LOCAL paging state always wins, and a channel we have never seen adopts the
+      // SHARED facts only — never the peer's progress (a doc written before this release
+      // may still carry it).
+      await putChannel(mergeChannelForApply(prev, c));
     }
     for (const lc of lib.libraryChannels || []) await putLibraryChannel({ ...lc, libraryId: libId });
   }
@@ -327,27 +446,46 @@ export async function pushDrive(profiles) {
 
   let fileId = meta.dbFileId;
   let remoteVersion = null;
+  let probeFailed = false;
   if (fileId) {
     const probe = await api(token, { url: `${DRIVE}/files/${fileId}?fields=id,version`, responseType: 'json' });
     if (probe.status === 404) fileId = null; // parent deleted it in Drive — fall through
-    else if (probe.status === 200) remoteVersion = probe.data.version;
+    else if (probe.status === 200) remoteVersion = (typeof probe.data === 'string' ? JSON.parse(probe.data) : probe.data).version;
+    else probeFailed = true; // 401/5xx — we do NOT know the version; never guess (see below)
   }
+  if (probeFailed) { await patchDriveMeta({ pendingPush: true }); return { ok: false, error: 'probe-failed' }; }
   if (!fileId) {
-    const found = await findDbFile(token);
+    // A FAILED SEARCH must not read as "no backup exists": that sent us to createDbFile
+    // and produced a second db file permanently shadowing the family's real one.
+    let found;
+    try { found = await findDbFile(token); } catch (e) {
+      await patchDriveMeta({ pendingPush: true });
+      return { ok: false, error: 'search-failed:' + String((e && e.message) || e) };
+    }
     if (found) { fileId = found.id; remoteVersion = found.version; }
   }
 
+  // The remote is only read when it changed since OUR last write, and an unreadable
+  // remote ABORTS. Merging `null` used to yield localDoc, i.e. a blind overwrite in the
+  // exact branch meant to protect the peer's changes.
+  const needRemote = !!fileId && String(remoteVersion ?? '') !== String(meta.lastRemoteVersion || '');
+  const remoteRead = needRemote ? await readDbFile(token, fileId) : null;
+  const plan = decidePush({ fileId, remoteVersion, lastRemoteVersion: meta.lastRemoteVersion, remoteRead });
+  if (plan.action === 'abort') {
+    await patchDriveMeta({ pendingPush: true });
+    return { ok: false, error: 'remote-unreadable:' + ((remoteRead && remoteRead.error) || '?') };
+  }
+
   let content;
-  if (fileId && String(remoteVersion) !== String(meta.lastRemoteVersion || '')) {
-    const remote = await readDbFile(token, fileId); // changed since our last write: merge first
-    const merged = mergeDbFiles(localDoc, remote);
+  if (plan.useRemote) {
+    const merged = mergeDbFiles(localDoc, remoteRead.doc);
     await applyRemoteDoc(merged);
     content = JSON.stringify(merged);
   } else {
     content = JSON.stringify(localDoc);
   }
 
-  const res = fileId ? await updateDbFile(token, fileId, content) : await createDbFile(token, content);
+  const res = plan.action === 'create' ? await createDbFile(token, content) : await updateDbFile(token, fileId, content);
   if (!res) { await patchDriveMeta({ pendingPush: true }); return { ok: false, error: 'upload-failed' }; }
   await patchDriveMeta({ enabled: true, dbFileId: res.id, lastRemoteVersion: res.version, lastPushAt: Date.now(), pendingPush: false });
   return { ok: true };
@@ -360,12 +498,19 @@ export async function pullDrive(myProfileId) {
   const meta = (await getMeta('drive')) || {};
   let fileId = meta.dbFileId;
   if (!fileId) {
-    const found = await findDbFile(token);
+    // `empty: true` tells the parent "there is no backup yet". A failed search must
+    // therefore be an ERROR, or we invite them to create a second, shadowing db file.
+    let found;
+    try { found = await findDbFile(token); } catch (e) {
+      return { ok: false, error: 'search-failed:' + String((e && e.message) || e) };
+    }
     if (!found) return { ok: true, empty: true };
     fileId = found.id;
   }
-  const doc = await readDbFile(token, fileId);
-  if (!doc) return { ok: false, error: 'read-failed' };
+  const read = await readDbFile(token, fileId);
+  if (!read.ok) return { ok: false, error: read.error };
+  if (!read.doc) return { ok: true, empty: true }; // 404: the file is really gone
+  const doc = read.doc;
   await applyRemoteDoc(doc);
   // Restore profiles from the backup (v1.0.4): on a fresh device the local list is
   // empty — without this, a connected backup restored the library but no profiles.

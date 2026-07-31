@@ -194,12 +194,25 @@ async function enqueueOp(profileId, op, { flush = true } = {}) {
     (await getMeta(qKey(src.libraryId))) || [], { ...op, at: Date.now() }, QUEUE_CAP
   );
   await putMeta(qKey(src.libraryId), queue);
-  // Overflow is data loss, not a queue detail — say so instead of dropping quietly.
+  // Overflow is DATA LOSS, not a queue detail, and it must outlive the next flush.
+  // It used to be written into `error`, which every doFlush exit overwrites — a
+  // successful flush two lines below erased it before any parent could see it, and the
+  // sources tab (which has no overflow branch) then promised the dropped rows "will be
+  // written automatically at the next sync". `dropped` is a durable count instead:
+  // only the parent acknowledging it clears it.
+  const cur = (await sheetWriteState(src.libraryId)) || {};
   await patchState(src.libraryId, {
     pending: queue.length,
-    ...(overflow ? { error: 'queue-overflow' } : {})
+    ...(overflow ? { dropped: (Number(cur.dropped) || 0) + 1, droppedAt: Date.now() } : {})
   });
-  return flush ? flushSheetQueue(profileId) : { ok: true, queued: true };
+  const res = flush ? await flushSheetQueue(profileId) : { ok: true, queued: true };
+  return overflow ? { ...res, overflow: true } : res;
+}
+
+/** The parent has seen the overflow warning — stop showing it. */
+export async function acknowledgeDropped(libraryId) {
+  if (!libraryId) return;
+  await patchState(libraryId, { dropped: 0, droppedAt: null });
 }
 
 /**
@@ -428,9 +441,12 @@ export async function readSourceSheet(sheetUrl) {
  */
 export function interpretSheetResponse(status, data) {
   if (status !== 200) throw new Error('sheet-http-' + (status || 0));
-  // A 200 with no body at all: the browser path yields null when the body was not
-  // JSON (i.e. exactly the HTML interstitial above), so this is a failure too.
-  if (!data) throw new Error('sheet-http-' + status);
+  // A 200 with no body at all. On the BROWSER path this IS the HTML interstitial:
+  // platform.httpRequest does `r.json().catch(() => null)`, so the markup never reaches
+  // the looksLikeHtml branch below. It must therefore route like one — 'sheet-http-200'
+  // matched no sheetErrorMessage branch and told the parent "maybe no internet", i.e.
+  // "do nothing", for a lost grant that only reconnecting fixes.
+  if (!data) throw new Error('sheet-not-json');
 
   let payload = data;
   if (typeof payload === 'string') {
@@ -440,9 +456,15 @@ export function interpretSheetResponse(status, data) {
   }
   // A bare array is not a values.get payload either — only `{…}` can carry `values`.
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('sheet-not-json');
-  if (payload.error && payload.values == null) {
+  // An error envelope may only ride along with ACTUAL ROWS (a partial-warning shape).
+  // Gating this on `values == null` alone let `{error:{…}, values:[]}` return [] — a
+  // SECOND source of emptiness, and emptiness is the one answer that can destroy data.
+  if (payload.error && !(Array.isArray(payload.values) && payload.values.length)) {
     const err = payload.error;
-    throw new Error('sheet-api-' + (err.code || err.status || 'error'));
+    // carry the status TEXT when there is no numeric code, so sheetErrorMessage can still
+    // route it — 'sheet-api-error' matched nothing and read as "maybe no internet"
+    const code = err && typeof err === 'object' ? (err.code || err.status || 'error') : String(err || 'error');
+    throw new Error('sheet-api-' + code);
   }
   const values = payload.values;
   if (values == null) return []; // the ONLY empty result: a genuinely empty sheet
@@ -461,10 +483,12 @@ export function interpretSheetResponse(status, data) {
  */
 export function sheetErrorMessage(err) {
   const e = String(err || '');
-  if (/no-token|401/.test(e)) {
+  // status TEXT, not just numeric codes: a Sheets envelope can arrive with `status`
+  // only, and an OAuth failure arrives as the bare string 'invalid_grant'
+  if (/no-token|401|UNAUTHENTICATED|invalid_grant/i.test(e)) {
     return 'אין חיבור לחשבון Google — הרשימה לא נקראה. התחברו מחדש בהגדרות (הגיבוי בגוגל דרייב).';
   }
-  if (/40[34]/.test(e)) {
+  if (/40[34]|PERMISSION_DENIED|NOT_FOUND/i.test(e)) {
     // The pre-v1.0.19 case: a sheet the parent created and pasted. drive.file cannot
     // reach it, and the paste flow that produced it no longer exists.
     return 'אין גישה לקובץ הרשימה. אם חיברתם קובץ ידנית בגרסה ישנה — צרו רשימה חדשה כאן, והתוכן הקיים יעבור אליה.';
@@ -577,14 +601,23 @@ async function doFlush(profileId, src, lib) {
   const auth = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
   const tabRef = encodeURIComponent(`'${tab.title.replace(/'/g, "''")}'!A:A`);
 
-  // current column A — used both for delete matching and append dedupe
+  // Current column A — used both for delete matching and append dedupe, so an
+  // UNREADABLE response must abort the flush with the queue INTACT. This read goes
+  // through the same gate as readSourceSheet: hand-rolling it treated an error envelope
+  // or a sign-in page as an empty sheet, which matched no row for deletion, re-appended
+  // every row as a duplicate, and then let clearFlushed() drop the unsent delvideo ops —
+  // their rows stayed in the sheet, and the next mirror pass read that presence as a
+  // deliberate re-add and resurrected the deleted videos on every device.
   const read = await httpRequest({ url: `${SHEETS}/${spreadsheetId}/values/${tabRef}`, headers: auth, responseType: 'json' });
-  if (read.status !== 200 || !read.data) {
-    await patchState(lib, { error: read.status === 403 ? 'no-edit-permission' : 'http-' + read.status, pending: q.length });
-    return { ok: false, error: 'http-' + read.status };
+  let colA;
+  try {
+    colA = interpretSheetResponse(read.status, read.data).map((r) => (r && r[0]) || '');
+  } catch (e) {
+    const code = String(e && e.message || e);
+    const permanent = /40[34]/.test(code);
+    await patchState(lib, { error: permanent ? 'no-edit-permission' : code, pending: q.length });
+    return { ok: false, error: code };
   }
-  const readData = typeof read.data === 'string' ? JSON.parse(read.data) : read.data;
-  const colA = (readData.values || []).map((r) => (r && r[0]) || '');
   const handleMap = (await getMeta('handleMap')) || {};
 
   /* ---- deletions, bottom-up in ONE batchUpdate ---- */

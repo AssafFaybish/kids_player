@@ -4,8 +4,12 @@
 // failure at any stage leaves the cached library intact.
 //
 // Stages: sheet(+hash skip) → resolveChannels → rss (incremental, keyless) →
-// backfill (budgeted, resumable, API) → planMutations (pure) → persist →
-// titles (batched; persist twice) → gifts (per profile) → [pushDrive hook].
+// backfill (budgeted, resumable, API) → playlists tab (budgeted, resumable, API) →
+// planMutations (pure) → persist → titles (batched; persist twice) →
+// gifts (per profile) → [pushDrive hook].
+//
+// A channel contributes its "Videos" tab and its "playlists" tab, and NOTHING else:
+// Shorts and live streams are excluded (v1.0.21). See quota.longFormPlaylistIdFor.
 
 import { prefGet } from './platform.js';
 // v1.0.19: reads moved to the authenticated Sheets API, so the CSV-export fetch
@@ -16,11 +20,12 @@ import { parseCsv } from './csv.js';
 import { classifySourceRow } from './classify.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
-  planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf
+  planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
+  acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage
 } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
-import { planChannelFetch, shouldThrottle } from './quota.js';
+import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
 import { QUOTA_DAILY_SOFT_CAP } from './config.js';
 import * as yt from './yt.js';
 import {
@@ -32,6 +37,14 @@ import {
 } from './db.js';
 
 const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
+// v1.0.21 — the channel's "playlists" tab, walked AFTER its uploads backfill finishes.
+// Its own budget so it can never starve the uploads pass (which is what the child
+// actually sees) and can never surprise the daily quota. EVERY request in the stage —
+// enumeration, the UUSH probe and the item pages alike — counts against
+// PLAYLIST_PAGE_BUDGET, so that number IS the per-run ceiling in quota units.
+const PLAYLIST_PAGE_BUDGET = 20;
+const PLAYLIST_LIST_PAGES = 2;  // ≤100 playlists per channel is plenty
+const SHORTS_PAGE_CAP = 6;      // ≤300 known Shorts per channel, for filtering playlists
 
 /**
  * PURE: typed rows from raw CSV TEXT.
@@ -86,13 +99,26 @@ export function parseSourceRows(rows) {
   return { videoRows: videoRows.filter((r) => !removed.has(r.key)), channelRows, removedKeys, invalid };
 }
 
-const inFlight = new Map(); // profileId -> Promise
+const inFlight = new Map(); // profileId -> { promise, force }
 
+/**
+ * One run per profile. v1.0.21: a FORCED request may not silently ride a run that is
+ * already past the stages it needs — the launch-forced sync made that collision routine,
+ * and a share or manual add landing inside its ~10s window would get no `srcChannelId`
+ * and no `giftRank` (exactly the bug `refreshAfterAdd` exists to prevent). A forced
+ * caller therefore CHAINS a fresh run behind the current one instead of joining it.
+ */
 export function syncLibrary(profileId, opts = {}) {
-  if (inFlight.has(profileId)) return inFlight.get(profileId);
-  const p = doSync(profileId, opts).finally(() => inFlight.delete(profileId));
-  inFlight.set(profileId, p);
-  return p;
+  const cur = inFlight.get(profileId);
+  if (cur) {
+    if (!opts.force || cur.force) return cur.promise;
+    return cur.promise.catch(() => {}).then(() => syncLibrary(profileId, opts));
+  }
+  const entry = { force: !!opts.force };
+  entry.promise = doSync(profileId, opts)
+    .finally(() => { if (inFlight.get(profileId) === entry) inFlight.delete(profileId); });
+  inFlight.set(profileId, entry);
+  return entry.promise;
 }
 
 async function doSync(profileId, { onProgress = () => {}, signal, force = false } = {}) {
@@ -186,10 +212,17 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       // The deny set is read ONCE, not per key: it is a full getAll over the scope's
       // tombstones, it only grows as parents delete things, and the branch below is
       // taken exactly for keys that are already gone (v1.0.20 — it was quadratic).
-      const denied = removedKeys.length ? await loadDenySet(lib) : null;
+      // Read once and keep it CURRENT: the loop below writes tombstones, so a snapshot
+      // goes stale against its own work. Two devices can each append a '# הוסר' row for
+      // the same video (and youtu.be/X and watch?v=X are the same key), and removedKeys
+      // is not deduplicated — without the add() the duplicate re-ran deleteVideo,
+      // restamping the tombstone's `at` (the LWW tiebreaker) and pushing a second opLog
+      // row to Drive. Reused below for planSheetMirror instead of a second full getAll.
+      const denied = await loadDenySet(lib);
       for (const key of removedKeys) {
-        if (await getVideo(lib, key)) await deleteVideo(lib, key, 'sheet-removed');
-        else if (!denied.has(key)) await deleteVideo(lib, key, 'sheet-removed');
+        if (denied.has(key) && !(await getVideo(lib, key))) continue;
+        await deleteVideo(lib, key, 'sheet-removed');
+        denied.add(key);
       }
       const libIndex = await loadMergeIndex(lib);
       // LIVE records only — see sheetBackedKeysOf: a PENDING share is parked with
@@ -205,7 +238,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         // a key with a '# הוסר' row must never be un-denied by presence, and neither
         // must one whose own row-removal is still queued
         pendingDeleteKeys: [...(await pendingDeleteKeys(lib)), ...removedKeys],
-        deniedKeys: await loadDenySet(lib)
+        deniedKeys: denied // kept current by the loop above — a second getAll read the same set
       });
       // a denied key the sheet LISTS = deliberate re-add → the tombstone yields
       for (const k of mirror.unDenyKeys) await unDeny(lib, k);
@@ -296,11 +329,18 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   }, { signal });
 
   let backfillPages = 0;
+  const longFormProbe = []; // [{channelId, notFound}] — fed to the outage valve below
   for (const r of rssResults) {
     if (!r.ok) continue;
     const { channelId, videos, backfill } = r.value;
     const lc = libChannels.find((c) => c.channelId === channelId);
     for (const v of videos) {
+      // v1.0.21 — Shorts and live streams never enter a child's library. The RSS feed
+      // interleaves all three kinds and carries no duration, but every entry's
+      // `<link rel="alternate">` is `/shorts/…` vs `/watch?v=…` (ytrss.altLinkKind) —
+      // free, keyless, and the only Shorts signal the INCREMENTAL path can have, since
+      // the UULF playlist trick below only covers the backfill.
+      if (!acceptRssEntry(v)) continue;
       candidates.push({
         scopeId: scope, key: 'yt:' + v.videoId, type: 'youtube', id: v.videoId,
         url: null, srcUrl: 'https://www.youtube.com/watch?v=' + v.videoId, driveId: null,
@@ -312,11 +352,32 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     if (backfill && key) {
       report('backfill', 45, 'מושכים את כל הסרטונים…');
       let ch = await getChannel(channelId);
+      // v1.0.21 — page the LONG-FORM playlist (UULF…), i.e. exactly the channel's
+      // "Videos" tab: no Shorts, no live streams, at no extra quota cost. `resetCursor`
+      // guards the upgrade: a token earned against UU… is meaningless against UULF….
+      const { playlistId: longForm, resetCursor } = planBackfillPlaylist(ch);
+      if (resetCursor) {
+        ch = { ...ch, backfillCursor: null, backfillDone: false };
+        await putChannel(ch);
+      }
       let token = ch.backfillCursor || null;
-      while (backfillPages < BACKFILL_PAGE_BUDGET && !aborted()) {
+      // playlistId null ⇒ no long-form id could be derived. Skipping is deliberate:
+      // falling back to UU… would import the very Shorts we are excluding.
+      while (longForm && backfillPages < BACKFILL_PAGE_BUDGET && !aborted()) {
         if (shouldThrottle(await yt.quotaSpentToday(), 1, QUOTA_DAILY_SOFT_CAP)) break;
-        const page = await yt.fetchUploadsPage(ch.uploadsPlaylistId, token, key);
+        const page = await yt.fetchUploadsPage(longForm, token, key);
         backfillPages += 1;
+        // A 404 on the FIRST page means the variant playlist does not exist — the channel
+        // publishes no long-form video at all. Only a first-page 404 says that; a 404
+        // deeper in, or any other error, must never close the backfill (planNoLongForm).
+        // The decision is DEFERRED to after the loop, because a whole-population 404 is a
+        // YouTube outage rather than a fact about the channels (planLongFormOutage).
+        const verdict = planNoLongForm({ notFound: page.notFound, isFirstPage: !token, derived: true });
+        if (verdict.closeBackfill) {
+          longFormProbe.push({ channelId, notFound: true });
+          break;
+        }
+        if (!page.error) longFormProbe.push({ channelId, notFound: false });
         // Up to BACKFILL_PAGE_BUDGET (40) network round-trips reported ONCE before
         // the loop used to read as a freeze; count the pages instead (v1.0.18).
         report('backfill', 45 + Math.round((backfillPages / BACKFILL_PAGE_BUDGET) * 20),
@@ -332,9 +393,139 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
           });
         }
         token = page.nextPageToken;
-        ch = { ...ch, backfillCursor: token, backfillDone: !token };
+        // the playlist the cursor was earned against travels WITH it, so the next
+        // release cannot resume a UULF token against some other playlist
+        ch = { ...ch, backfillCursor: token, backfillDone: !token, backfillPlaylistId: longForm };
         await putChannel(ch); // cursor persisted per page — resumable across kills
         if (!token) break;
+      }
+    }
+  }
+  if (aborted()) return { ok: false, error: 'aborted' };
+
+  // v1.0.21 — SAFETY VALVE for an undocumented dependency. A 404 from every channel at
+  // once is YouTube retiring the UULF alias, not every channel becoming Shorts-only:
+  // acting on it would close every backfill in every library in one sync and tell each
+  // parent something false. Refuse to act; the next release can fix the mechanism.
+  {
+    const { outage } = planLongFormOutage(longFormProbe);
+    for (const p of longFormProbe) {
+      const ch = await getChannel(p.channelId);
+      if (!ch) continue;
+      if (p.notFound && !outage) {
+        // genuinely Shorts-only: close the backfill and let the parent screen say so
+        await putChannel({ ...ch, noLongForm: true, backfillCursor: null, backfillDone: true });
+      } else if (!p.notFound && ch.noLongForm) {
+        // long-form arrived after all (or the alias came back) — retract the note
+        await putChannel({ ...ch, noLongForm: false });
+      }
+    }
+    if (outage) console.warn('long-form playlist 404 for EVERY channel — treating as an outage, not closing backfills');
+  }
+
+  /* ---------- stage: the channel's PLAYLISTS tab (v1.0.21, budgeted + resumable) ---------- */
+  if (key) {
+    let plPages = 0;
+    // The bar must MOVE across the stage's ~20 sequential requests. A constant pct is
+    // the freeze the v1.0.18 backfill fix exists to prevent (a parent force-quits and
+    // the in-progress cursor work is lost).
+    const reportPl = (n) => report('backfill', 66 + Math.round((n / PLAYLIST_PAGE_BUDGET) * 4),
+      `מוסיפים סרטונים מרשימות ההשמעה… ${candidates.length}`);
+    for (const lc of libChannels) {
+      if (plPages >= PLAYLIST_PAGE_BUDGET || aborted()) break;
+      let ch = (await getChannel(lc.channelId)) || { channelId: lc.channelId };
+      // uploads first: the Videos tab is what the child actually came for, and walking
+      // playlists before it finishes would spend the budget on the redundant half.
+      if (!ch.backfillDone || ch.playlistsDone) continue;
+
+      // 1) the playlist LIST, once per channel (queue persisted → resumable). The
+      //    ENUMERATION MUST BE COMPLETE before its emptiness may mean "done": an empty
+      //    queue from a throttled or errored call used to persist playlistsDone=true and
+      //    disable this source for the channel forever (nothing rearms it).
+      if (!Array.isArray(ch.playlistQueue)) {
+        const queue = [];
+        let tok = null;
+        let listComplete = false;
+        for (let i = 0; i < PLAYLIST_LIST_PAGES; i += 1) {
+          if (shouldThrottle(await yt.quotaSpentToday(), 1, QUOTA_DAILY_SOFT_CAP)) break;
+          const r = await yt.fetchChannelPlaylists(lc.channelId, tok, key);
+          plPages += 1;
+          reportPl(plPages);
+          if (r.error) break;
+          for (const p of r.playlists) {
+            // A playlist the channel itself calls "Shorts" is the one place a curated
+            // list is guaranteed to be full of them — skip it by name, cheaply.
+            if (/\bshorts?\b/i.test(p.title)) continue;
+            queue.push(p.id);
+          }
+          tok = r.nextPageToken;
+          if (!tok) { listComplete = true; break; }
+          if (i === PLAYLIST_LIST_PAGES - 1) listComplete = true; // capped on purpose
+        }
+        if (!listComplete && !queue.length) continue; // retry the enumeration next run
+        ch = { ...ch, playlistQueue: queue, ...planPlaylistAdvance({ playlistQueue: queue }, { listComplete }) };
+        await putChannel(ch);
+        if (ch.playlistsDone) continue;
+      }
+
+      // 2) the channel's own Shorts, so a Short sitting inside a curated playlist is
+      //    still excluded. playlistItems exposes no Shorts flag, so UUSH membership is
+      //    the only exact test. A 404 (no Shorts at all) is a REAL empty set and is
+      //    cached; any other failure must NOT be, or one throttled page would memoize
+      //    "no Shorts" and let a curated list import every one of them.
+      let shortIds = null;
+      const loadShortIds = async () => {
+        if (shortIds) return shortIds;
+        const found = new Set();
+        let tok = null;
+        let complete = false;
+        for (let i = 0; i < SHORTS_PAGE_CAP; i += 1) {
+          if (shouldThrottle(await yt.quotaSpentToday(), 1, QUOTA_DAILY_SOFT_CAP)) break;
+          const r = await yt.fetchUploadsPage(shortsPlaylistIdFor(lc.channelId), tok, key);
+          plPages += 1;
+          reportPl(plPages);
+          if (r.notFound) { complete = true; break; } // this channel has posted no Shorts
+          if (r.error) break;                          // transient — do not cache
+          for (const v of r.videos) found.add(v.videoId);
+          tok = r.nextPageToken;
+          if (!tok || i === SHORTS_PAGE_CAP - 1) { complete = true; break; }
+        }
+        if (complete || found.size) shortIds = found;
+        return found;
+      };
+
+      // 3) walk one playlist at a time, resuming mid-playlist across runs
+      while (ch.playlistQueue.length && plPages < PLAYLIST_PAGE_BUDGET && !aborted()) {
+        if (shouldThrottle(await yt.quotaSpentToday(), 1, QUOTA_DAILY_SOFT_CAP)) break;
+        const plId = ch.playlistQueue[0];
+        const page = await yt.fetchUploadsPage(plId, ch.playlistCursor || null, key);
+        plPages += 1;
+        reportPl(plPages);
+        if (page.error) { // a private/deleted playlist must not wedge the queue
+          ch = { ...ch, ...planPlaylistAdvance(ch, { pageError: page.error }) };
+          await putChannel(ch);
+          continue;
+        }
+        const shorts = await loadShortIds();
+        for (const v of page.videos) {
+          // The child-safety boundary, as a tested predicate: own uploads only (a
+          // curated playlist may hold other channels' videos), no known Shorts, and a
+          // MISSING uploader is rejected — that is what private/deleted entries look
+          // like, and they render as an untappable "Private video" tile.
+          if (!acceptPlaylistItem(v, { channelId: lc.channelId, shortIds: shorts })) continue;
+          candidates.push({
+            scopeId: scope, key: 'yt:' + v.videoId, type: 'youtube', id: v.videoId,
+            url: null, srcUrl: 'https://www.youtube.com/watch?v=' + v.videoId, driveId: null,
+            title: v.title, titleSource: 'api', thumbUrl: v.thumbUrl || null,
+            // the channel's own folder, NOT a folder per playlist (user decision): a
+            // playlist is a SOURCE here. Duplicates with the Videos tab collapse in
+            // planMutations, which keys on 'yt:<id>'.
+            channelId: lc.channelId, folderId: 'ch:' + lc.channelId, origin: 'channel',
+            publishedAt: v.publishedAt, rowIndex: null, autoApprove: !!lc.autoApprove
+          });
+        }
+        ch = { ...ch, ...planPlaylistAdvance(ch, { nextPageToken: page.nextPageToken }) };
+        await putChannel(ch); // resumable at page granularity, like the uploads cursor
       }
     }
   }

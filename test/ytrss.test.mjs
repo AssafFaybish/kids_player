@@ -67,3 +67,50 @@ test('extractChannelLogoFromHtml: garbage/truncated/empty -> empty string, never
   assert.equal(extractChannelLogoFromHtml(null), '');
   assert.equal(extractChannelLogoFromHtml(undefined), '');
 });
+
+test('Shorts and live streams are told apart by the entry’s alternate link', () => {
+  // v1.0.21 — the ONLY Shorts signal the keyless incremental path can have. The feed
+  // carries no duration and no dimensions, and duration would be wrong anyway (a Short
+  // is "≤3 min AND square-or-taller"; ~30% of real nursery-rhyme uploads are under 3
+  // min). YouTube's own canonical link form is the discriminator: measured 100%
+  // agreement with UUSH/UULF membership over 60 videos on 4 channels.
+  const entry = (id, href) => `<entry>
+    <yt:videoId>${id}</yt:videoId><title>t ${id}</title>
+    <link rel="alternate" href="${href}"/>
+    <published>2026-01-01T00:00:00+00:00</published>
+  </entry>`;
+  const xml = `<feed><yt:channelId>UCabcdefghijklmnopqrstuv</yt:channelId>
+    ${entry('aaaaaaaaaaa', 'https://www.youtube.com/shorts/aaaaaaaaaaa')}
+    ${entry('bbbbbbbbbbb', 'https://www.youtube.com/watch?v=bbbbbbbbbbb')}
+    ${entry('ccccccccccc', 'https://www.youtube.com/live/ccccccccccc')}
+  </feed>`;
+  const got = parseYouTubeRss(xml);
+  assert.equal(got.length, 3);
+  assert.deepEqual(got.map((v) => [v.isShort, v.isLive]), [[true, false], [false, false], [false, true]]);
+});
+
+test('an entry with no usable alternate link is treated as a NORMAL video', () => {
+  // Fail-open on purpose: a wrongly HIDDEN video is a bug the parent sees and cannot
+  // explain, while a leaked Short is cosmetic. Everything here rests on undocumented
+  // feed behaviour, so the unknown case must include, never drop.
+  const bare = `<feed><yt:channelId>UCabcdefghijklmnopqrstuv</yt:channelId>
+    <entry><yt:videoId>ddddddddddd</yt:videoId><title>no link</title></entry>
+    <entry><yt:videoId>eeeeeeeeeee</yt:videoId><title>self only</title>
+      <link rel="self" href="https://www.youtube.com/shorts/eeeeeeeeeee"/></entry>
+  </feed>`;
+  for (const v of parseYouTubeRss(bare)) {
+    assert.equal(v.isShort, false, v.videoId);
+    assert.equal(v.isLive, false, v.videoId);
+  }
+});
+
+test('the alternate link is found regardless of attribute order or spacing', () => {
+  const xml = `<feed><yt:channelId>UCabcdefghijklmnopqrstuv</yt:channelId>
+    <entry><yt:videoId>fffffffffff</yt:videoId><title>a</title>
+      <link href="https://www.youtube.com/shorts/fffffffffff" rel="alternate" type="text/html"/></entry>
+    <entry><yt:videoId>ggggggggggg</yt:videoId><title>b</title>
+      <link  rel = "alternate"  href = "https://www.youtube.com/shorts/ggggggggggg" /></entry>
+  </feed>`;
+  const got = parseYouTubeRss(xml);
+  assert.deepEqual(got.map((v) => v.isShort), [true, true]);
+});

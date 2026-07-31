@@ -213,3 +213,83 @@ test('junk in never throws — the import loop has no per-row try/catch', () => 
   assert.equal(sanitizeSnapshotVideo(null, ctx()), null);
   assert.equal(sanitizeSnapshotVideo({}, ctx()), null);
 });
+
+// ── the fields and shapes an import must not quietly lose ──────────────────────────────
+
+test('a record can never be imported with an UNINDEXABLE sortKey', () => {
+  // sortKeyFor happily returns NaN for a junk addedAt and a STRING for a junk
+  // publishedAt. Both store fine and then index NOWHERE: the by_folder_sort index
+  // takes no NaN key, and a string sorts outside folderRange's numeric bounds. The row
+  // counted as "imported", the parent was told it worked, and the child never saw it.
+  for (const v of [
+    { srcUrl: YT, addedAt: 'y' },
+    { srcUrl: YT, origin: 'channel', publishedAt: 'soon' },
+    { srcUrl: YT, origin: 'sheet-row', rowIndex: 'x' },
+    { srcUrl: YT, sortKey: 'nope' },
+    { srcUrl: YT, sortKey: NaN },
+    { srcUrl: YT, addedAt: {}, publishedAt: [], rowIndex: Symbol ? undefined : 0 }
+  ]) {
+    const rec = sanitizeSnapshotVideo(v, ctx());
+    assert.equal(typeof rec.sortKey, 'number', `non-numeric sortKey for ${JSON.stringify(v)}`);
+    assert.ok(Number.isFinite(rec.sortKey), `unindexable sortKey for ${JSON.stringify(v)}`);
+  }
+  // the stored ordering inputs are sanitized too — a junk value must not survive on the record
+  const junk = sanitizeSnapshotVideo({ srcUrl: YT, publishedAt: 'soon', rowIndex: 'x', addedAt: 'y' }, ctx());
+  assert.equal(junk.publishedAt, null);
+  assert.equal(junk.rowIndex, null);
+  assert.equal(typeof junk.addedAt, 'number');
+});
+
+test('the 🎞️ collection fields survive the round trip', () => {
+  // groupSinglesByChannel keys off srcChannelId. Dropping it turned every restored
+  // library's collections back into one flat list, and dropping srcChannelTriedAt
+  // restarted the weekly re-enrichment throttle on top of it.
+  const rec = sanitizeSnapshotVideo({
+    srcUrl: YT, srcChannelId: 'UCaaaaaaaaaaaaaaaaaaaaaa', srcChannelTitle: 'ערוץ ילדים',
+    srcChannelTriedAt: 1700000000000
+  }, ctx());
+  assert.equal(rec.srcChannelId, 'UCaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(rec.srcChannelTitle, 'ערוץ ילדים');
+  assert.equal(rec.srcChannelTriedAt, 1700000000000);
+  // …and are still sanitized like every other untrusted field
+  const bad = sanitizeSnapshotVideo({ srcUrl: YT, srcChannelId: {}, srcChannelTitle: 5, srcChannelTriedAt: 'x' }, ctx());
+  assert.equal(bad.srcChannelId, null);
+  assert.equal(bad.srcChannelTitle, null);
+  assert.equal(bad.srcChannelTriedAt, null);
+});
+
+test('normTitle is derived from the SANITIZED title, never the raw one', () => {
+  // `{}` was rejected for `title` and then stringified into normTitle, so the kid's
+  // search found a nameless tile under "object".
+  const rec = sanitizeSnapshotVideo({ srcUrl: YT, title: { evil: 1 } }, ctx());
+  assert.equal(rec.title, '');
+  assert.equal(rec.normTitle, '', 'normTitle leaked the raw value');
+  assert.equal(sanitizeSnapshotVideo({ srcUrl: YT, title: 5 }, ctx()).normTitle, '');
+});
+
+test('a REJECTED library scope takes the sheet folder down with it', () => {
+  // 'sheet' is a folder buildFolders only ever raises for the LIBRARY scope, and
+  // absorbMineIntoShared only rescues 'mine'. A row whose lib scope was rejected and
+  // downgraded to prof: therefore landed in NO folder — stored, approvable, invisible.
+  const rejected = sanitizeSnapshotVideo(
+    { srcUrl: YT, state: 'pending', folderId: '~pending', homeFolderId: 'sheet', scopeId: 'lib:foreign' },
+    ctx()
+  );
+  assert.equal(rejected.scopeId, PROF_SCOPE);
+  assert.equal(rejected.homeFolderId, 'mine', 'approval would file it into a folder that does not exist');
+
+  const liveRejected = sanitizeSnapshotVideo({ srcUrl: YT, state: 'live', folderId: 'sheet', scopeId: 'lib:foreign' }, ctx());
+  assert.equal(liveRejected.folderId, 'mine');
+
+  // an ACCEPTED library scope keeps 'sheet' — that is the whole point of the v1.0.20 fix
+  const kept = sanitizeSnapshotVideo(
+    { srcUrl: YT, state: 'pending', folderId: '~pending', homeFolderId: 'sheet', scopeId: LIB_SCOPE }, ctx()
+  );
+  assert.equal(kept.scopeId, LIB_SCOPE);
+  assert.equal(kept.homeFolderId, 'sheet');
+  // a channel folder is unaffected either way
+  assert.equal(
+    sanitizeSnapshotVideo({ srcUrl: YT, folderId: 'ch:UCaaaaaaaaaaaaaaaaaaaaaa', scopeId: 'lib:foreign' }, ctx()).folderId,
+    'ch:UCaaaaaaaaaaaaaaaaaaaaaa'
+  );
+});

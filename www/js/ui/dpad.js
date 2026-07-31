@@ -56,6 +56,11 @@ function onKeyDown(e) {
   // Watch-view focus model: top buttons (🏠/🗑️) ↕ PLAYER (nothing focused) ↕ grid.
   if (watchMode && focusedIdx < 0) {
     // player mode — the remote drives the video
+    // e.repeat is load-bearing: Android TV auto-repeats a HELD key at ~30/s, and each
+    // event was a full ±10s seek. One second on the arrow jumped ~4 minutes and could
+    // run past the end, where YouTube fires ENDED → onExit → the child is thrown out of
+    // the video. A held key now reveals the HUD instead of scrubbing.
+    if (e.repeat) { handleTvKey('reveal'); e.preventDefault(); return; }
     if (isEnter) { if (handleTvKey('toggle')) e.preventDefault(); return; }
     if (dir === 'left') { if (handleTvKey('back')) e.preventDefault(); return; }
     if (dir === 'right') { if (handleTvKey('fwd')) e.preventDefault(); return; }

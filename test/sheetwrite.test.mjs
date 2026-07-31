@@ -357,6 +357,43 @@ test('interpretSheetResponse: a JSON error envelope on a 200 keeps its code', ()
   assert.deepEqual(interpretSheetResponse(200, { error: { code: 0 }, values: [['a']] }), [['a']]);
 });
 
+test('interpretSheetResponse: an error envelope can never produce the EMPTY answer', () => {
+  // Emptiness is the one answer that can destroy data (the presence-mirror reads it as
+  // "the parent emptied the sheet"). Gating the error branch on a MISSING `values` let
+  // an envelope carrying `values: []` slip through and return [] — a second source of
+  // emptiness, against this function's whole contract.
+  for (const payload of [
+    { error: { code: 403, status: 'PERMISSION_DENIED' }, values: [] },
+    { error: { code: 500 }, values: [] },
+    { error: 'invalid_grant', values: [] }
+  ]) {
+    assert.ok(thrown(() => interpretSheetResponse(200, payload)),
+      `an error envelope returned []: ${JSON.stringify(payload)}`);
+  }
+  // a clean 200 with no `values` key stays the ONE input that legitimately means empty
+  assert.deepEqual(interpretSheetResponse(200, {}), []);
+});
+
+test('interpretSheetResponse: every failure lands on a message with a NEXT STEP', () => {
+  // 'sheet-http-200' / 'sheet-api-error' matched no sheetErrorMessage branch and fell
+  // through to "maybe no internet" — i.e. "do nothing" — for failures only reconnecting
+  // fixes. A bodyless 200 IS the browser's view of the sign-in interstitial
+  // (platform.httpRequest does r.json().catch(() => null)), so it must route like one.
+  const reconnect = /התחברו מחדש/;
+  for (const [payload, want] of [
+    [null, reconnect],                                        // browser: HTML became null
+    ['', reconnect],
+    [{ error: 'invalid_grant' }, reconnect],                  // OAuth, bare string
+    [{ error: { status: 'UNAUTHENTICATED' } }, reconnect],    // no numeric code
+    [{ error: { status: 'PERMISSION_DENIED' } }, /צרו רשימה חדשה/],
+    [{ error: { status: 'NOT_FOUND' } }, /צרו רשימה חדשה/]
+  ]) {
+    const e = thrown(() => interpretSheetResponse(200, payload));
+    assert.ok(e, `did not throw: ${JSON.stringify(payload)}`);
+    assert.match(sheetErrorMessage(e.message), want, `misrouted: ${JSON.stringify(payload)} -> ${e.message}`);
+  }
+});
+
 test('interpretSheetResponse: ragged rows survive untouched (the API omits trailing cells)', () => {
   const values = [
     ['# עמודה A · לינק', 'שם', 'auto/manual'],
