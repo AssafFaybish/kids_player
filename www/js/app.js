@@ -15,7 +15,8 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
-import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked } from './plan.js';
+import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
+  resolveWatchContext } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -566,15 +567,25 @@ async function absorbMineIntoShared(profileId) {
         // live items are part of the master list — register them in the sheet once
         // (pending shares enqueue at APPROVAL time instead)
         if (!pending) {
+          // {flush:false} — a bulk caller must NOT flush per record (v1.0.18): this runs on
+          // EVERY profile activation and was one network round trip per moved video. The
+          // single flush after the loop also closes the window in which a record is live +
+          // sheet-backed + rowless, which is exactly what the presence-mirror tombstones.
           const { enqueueSheetRow } = await import('./sheetwrite.js');
-          await enqueueSheetRow(profileId, { key: rec.key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' });
+          await enqueueSheetRow(profileId, { key: rec.key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' }, { flush: false });
         }
         moved += 1;
       }
       await db.deleteVideoRaw(pScope, rec.key); // raw: a move, not a deletion — no tombstone
     }
     await db.copyDenies(pScope, lib); // personal deletions keep protecting the shared list
-    if (moved) maybeSchedulePush();
+    if (moved) {
+      try {
+        const { flushSheetQueue } = await import('./sheetwrite.js');
+        await flushSheetQueue(profileId);
+      } catch {}
+      maybeSchedulePush();
+    }
   } catch { /* absorbing must never block activation; next activation retries */ }
 }
 
@@ -985,13 +996,16 @@ async function openWatch(item) {
   // v1.0.12: when the child came from a FOLDER view, browse THAT folder — virtual
   // 🎞️ group folders aren't stored on the record, so item.folderId can't express
   // them. video→video from the under-player grid keeps the existing context.
-  const cameFromFolder = nav.isActive('folder') && folderId;
-  watchCtx = {
-    scope: item.scopeId || scopeForFolder(folderId) || libScope || db.profScope(activeProfileId),
-    folderId: nav.isActive('watch') ? watchCtx.folderId
-      : (cameFromFolder ? folderId
-        : ((item.folderId && item.folderId !== '~pending') ? item.folderId : folderId))
-  };
+  // …and 🎁 'new' is a VIEW, not a folder: paging it after the gift is unwrapped came up
+  // short or empty, so a gift browses where the video actually lives (resolveWatchContext).
+  watchCtx = resolveWatchContext({
+    item,
+    isWatching: nav.isActive('watch'),
+    prevFolderId: nav.isActive('watch') ? watchCtx.folderId : folderId,
+    folderViewId: nav.isActive('folder') ? folderId : null,
+    libScope,
+    profileScope: db.profScope(activeProfileId)
+  });
   // replace() when already watching: back always returns to the gallery, never
   // through the chain of watched videos. nav scrolls to top — the F4 fix: the
   // user actually SEES the player instead of staying scrolled at the grid.
@@ -1409,8 +1423,20 @@ async function refreshSheetWriteStatus() {
     // The write queue hit its cap and REFUSED an op. A refused delete is the dangerous
     // one: its row stays in the sheet, and the mirror reads that presence as a
     // deliberate re-add. Never let this hide behind the reassuring "pending" line.
-    el.textContent = `⚠️ ${st.dropped} פעולות לא נרשמו בקובץ הרשימה (תור הכתיבה מלא) — ייתכן שמחיקות או הוספות שביצעתם לא יעברו למכשירים אחרים. בדקו את קובץ הרשימה ידנית.`;
+    el.textContent = `⚠️ ${st.dropped} פעולות לא נרשמו בקובץ הרשימה (תור הכתיבה מלא) — ייתכן שמחיקות או הוספות שביצעתם לא יעברו למכשירים אחרים. בדקו את קובץ הרשימה ידנית. `;
     el.className = 'form-msg err';
+    // …and it must be DISMISSIBLE: `acknowledgeDropped` existed with no caller, so once
+    // this warning appeared it stayed forever, hiding every later queue status behind it.
+    const ack = document.createElement('button');
+    ack.type = 'button';
+    ack.className = 'text-btn';
+    ack.textContent = 'הבנתי, אפשר להסתיר';
+    ack.addEventListener('click', async () => {
+      const { acknowledgeDropped } = await import('./sheetwrite.js');
+      await acknowledgeDropped(libScope);
+      await refreshSheetWriteStatus();
+    });
+    el.appendChild(ack);
     return;
   }
   if (st.error === 'no-edit-permission') {

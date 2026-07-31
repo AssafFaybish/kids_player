@@ -80,29 +80,49 @@ export function back() {
  * PURE decision core for the hardware back button — unit-tested in test/nav.test.mjs.
  * viewConsumesBack: the current view's onBack() said it handled the event.
  */
-export function resolveBack({ depth, fullscreen = false, modal = false, viewConsumesBack = false }) {
+export function resolveBack({ depth, fullscreen = false, modal = false, viewConsumesBack = false, askView = null }) {
   if (fullscreen) return 'exit-fullscreen';
   if (modal) return 'close-modal';
-  if (viewConsumesBack) return 'view';
+  // `askView` lets the live caller defer the view's onBack (which has side effects) until
+  // it is actually this step's turn; tests pass the plain boolean instead.
+  const consumed = askView ? !!askView() : !!viewConsumesBack;
+  if (consumed) return 'view';
   if (depth > 1) return 'pop';
   return 'swallow';
 }
 
-/** The single hardware-back handler. Always consumes the event (catch-all swallow). */
+/**
+ * The single hardware-back handler. Always consumes the event (catch-all swallow).
+ *
+ * It DELEGATES the precedence decision to `resolveBack` rather than re-implementing it.
+ * That matters: the chain used to exist twice — once here and once in `resolveBack`, which
+ * had no caller at all — so `test/nav.test.mjs` pinned a copy nothing ran. Reordering the
+ * modal and fullscreen checks here, or dropping the final swallow (which is what stops
+ * Android's default back from exiting the app under a 5-year-old), left every test green.
+ */
 export function handleBack() {
   const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-  if (fsEl) {
+  const c = current();
+  const h = c && views[c.name];
+  // The view is ASKED only when it is its turn — onBack has side effects (askExit, etc.),
+  // so it must not run while fullscreen or a modal is still open.
+  const askView = () => {
+    if (!h || !h.onBack) return false;
+    try { return !!h.onBack(c); } catch { return false; }
+  };
+  const action = resolveBack({
+    depth: depth(),
+    fullscreen: !!fsEl,
+    modal: isModalOpen(),
+    viewConsumesBack: undefined, // evaluated lazily below — see askView
+    askView
+  });
+  if (action === 'exit-fullscreen') {
     try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch {}
     return true;
   }
-  if (isModalOpen()) { closeModal(false); return true; }
-  const c = current();
-  const h = c && views[c.name];
-  if (h && h.onBack) {
-    let consumed = false;
-    try { consumed = !!h.onBack(c); } catch {}
-    if (consumed) return true;
-  }
-  if (back()) return true;
+  if (action === 'close-modal') { closeModal(false); return true; }
+  if (action === 'view') return true;      // the view handled it
+  if (action === 'pop') { back(); return true; }
   return true; // swallow — NEVER let the Android default (app exit) run
 }

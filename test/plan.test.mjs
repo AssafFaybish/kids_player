@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import {
   planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
   sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair,
-  acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage
+  acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
+  resolveWatchContext
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -34,10 +35,18 @@ test('autoApprove=false routes new videos to pending; approval survives re-sync'
   assert.deepEqual(p1.pendingKeys, ['yt:aaaaaaaaaaa']);
 
   // parent approved it since (existing shows live); re-sync must NOT flip it back
-  const existing = new Map([[c.key, { ...p1.puts[0], state: 'live', approvedAt: 2 }]]);
+  const existing = new Map([[c.key, { ...p1.puts[0], state: 'live', approvedAt: 2, folderId: '~pending' }]]);
   const p2 = planMutations({ candidates: [c], existing, denySet: new Set(), now: 3 });
   const put = p2.puts.find((p) => p.key === c.key);
-  assert.ok(!put || put.state === 'live');
+  // `!put || put.state === 'live'` used to be the whole assertion — a disjunction that
+  // PASSES WHEN NOTHING IS EMITTED. Deleting the un-park branch entirely left p2.puts
+  // empty and the test green, while the real consequence is a record that is live,
+  // approved, in the parent's list, and invisible to the child forever (by_folder_sort has
+  // no state component, so nothing ever surfaces '~pending').
+  assert.ok(put, 'an approved-but-parked record must be re-emitted so it can be un-parked');
+  assert.equal(put.state, 'live');
+  assert.notEqual(put.folderId, '~pending', 'the record was left parked — invisible to the child');
+  assert.equal(put.folderId, 'ch:' + CH);
 });
 
 test('quarantine forces pending regardless of autoApprove (post-migration first sync)', () => {
@@ -78,6 +87,27 @@ test('caps: per-channel and total', () => {
   const p = planMutations({ candidates: many, existing: new Map(), denySet: new Set(), caps: { maxPerChannel: 10, maxTotal: 100 } });
   assert.equal(p.puts.length, 10);
   assert.equal(p.counts.capped, 20);
+
+  // maxTotal was never actually exercised: with maxPerChannel:10 the total never reached
+  // 100, so `if (total >= maxTotal)` never ran and the 5000-record library ceiling could
+  // have been deleted with the suite green — one large sheet then imports without bound
+  // onto a tablet. Bind it explicitly, and across TWO channels so it is the total that caps.
+  const twoChannels = [
+    ...Array.from({ length: 5 }, (_, i) => cand({ id: 'a' + String(i).padStart(10, '0'), title: 'a' + i })),
+    ...Array.from({ length: 5 }, (_, i) => cand({ id: 'b' + String(i).padStart(10, '0'), title: 'b' + i, channelId: 'UCother0000000000000000', folderId: 'ch:other' }))
+  ];
+  const capped = planMutations({
+    candidates: twoChannels, existing: new Map(), denySet: new Set(),
+    caps: { maxPerChannel: 99, maxTotal: 4 }
+  });
+  assert.equal(capped.puts.length, 4, 'maxTotal did not bind');
+  assert.equal(capped.counts.capped, 6);
+  // and EXISTING records count toward the total, or the cap resets every sync
+  const nearFull = new Map(Array.from({ length: 4 }, (_, i) => ['yt:pre' + i, { key: 'yt:pre' + i, state: 'live' }]));
+  const full = planMutations({
+    candidates: twoChannels, existing: nearFull, denySet: new Set(), caps: { maxPerChannel: 99, maxTotal: 4 }
+  });
+  assert.equal(full.puts.length, 0, 'a library already at the cap kept importing');
 });
 
 test('THE assertion: second run over the same inputs yields an empty diff', () => {
@@ -479,4 +509,40 @@ test('a same-titled DIFFERENT video from a playlist merges — and stays merged'
   });
   assert.ok(!third.puts.some((r) => r.key === 'yt:bbbbbbbbbbb'), 'the merged-away id came back');
   assert.deepEqual(third.newLiveKeys, [], 'the merged-away id was gifted again');
+});
+
+test('resolveWatchContext: 🎁 is a VIEW, so a gift browses where the video really lives', () => {
+  // The under-player grid is how the child reaches the next video, so an empty one is a
+  // dead end. Opening a gift UNWRAPS it, which removes it from the sparse by_gift index —
+  // so paging 'new' returned fewer items than the child could see, and NOTHING at all when
+  // it was the last gift.
+  const gift = { key: 'yt:aaaaaaaaaaa', scopeId: 'lib:1', folderId: 'ch:' + CH };
+  const fromGift = resolveWatchContext({ item: gift, folderViewId: 'new', libScope: 'lib:1', profileScope: 'prof:p1' });
+  assert.equal(fromGift.folderId, 'ch:' + CH, "the gift folder was paged instead of the video's own");
+  assert.equal(fromGift.scope, 'lib:1');
+
+  // a REAL folder view still wins over the record: a virtual 🎞️ group folder is not
+  // stored on the record, so item.folderId cannot express it (v1.0.12)
+  assert.equal(resolveWatchContext({ item: gift, folderViewId: 'grp:' + CH, libScope: 'lib:1' }).folderId, 'grp:' + CH);
+  assert.equal(resolveWatchContext({ item: gift, folderViewId: 'sheet', libScope: 'lib:1' }).folderId, 'sheet');
+
+  // video→video from the under-player grid keeps the context it already had
+  assert.equal(resolveWatchContext({
+    item: { key: 'yt:bbbbbbbbbbb', scopeId: 'lib:1', folderId: 'sheet' },
+    isWatching: true, prevFolderId: 'grp:' + CH, libScope: 'lib:1'
+  }).folderId, 'grp:' + CH);
+
+  // '~pending' is a parking slot and must NEVER be browsed — it is in no index
+  const parked = { key: 'yt:ccccccccccc', scopeId: 'lib:1', folderId: '~pending', homeFolderId: 'sheet' };
+  assert.equal(resolveWatchContext({ item: parked, libScope: 'lib:1' }).folderId, 'sheet');
+  assert.equal(resolveWatchContext({ item: { ...parked, homeFolderId: '~pending' }, libScope: 'lib:1' }).folderId, null);
+
+  // opened from SEARCH (no folder view): the record's own folder
+  assert.equal(resolveWatchContext({ item: gift, folderViewId: null, libScope: 'lib:1' }).folderId, 'ch:' + CH);
+  // 'mine' resolves against the PROFILE scope, not the library
+  assert.equal(resolveWatchContext({
+    item: { key: 'yt:ddddddddddd', folderId: 'mine' }, libScope: 'lib:1', profileScope: 'prof:p1'
+  }).scope, 'prof:p1');
+  assert.doesNotThrow(() => resolveWatchContext({}));
+  assert.doesNotThrow(() => resolveWatchContext());
 });

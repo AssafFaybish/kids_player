@@ -10,7 +10,7 @@ and data model before touching sync/db/player code.
 
 ```bash
 npm run serve        # dev server http://localhost:5173 (fixed port, no-store, /__proxy CORS helper)
-npm test             # node:test suite (~84 tests) — MUST stay green; pure logic only, no DOM
+npm test             # node:test suite (~305 tests) — MUST stay green; pure logic only, no DOM
 npm run apk          # cap copy + DEBUG apk → installs as com.assaf.kidsplayer.DEV (never collides with release)
 npm run apk:release  # cap copy + SIGNED release apk (fails loudly if ~/.keystores/kids-player.properties missing)
 npm run apk:verify   # apksigner — mandatory before publishing anything
@@ -28,6 +28,30 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   mutable `cb` so `finish()` never fires a stale `onExit`. Near-end poll guarded by
   `Date.now()-swapAt>1200 && currentTime>0.5`.
 - `TAP_SINGLE_DELAY >= TAP_DOUBLE_MS` (config.js) or a slow double-tap both pauses AND seeks.
+  The single-tap branch must ALSO `clearTimeout(tapTimer)` first: two taps in the 20ms gap
+  between the two constants armed TWO toggles, so a deliberate double-tap paused and
+  instantly resumed (v1.0.22).
+- The pure decisions live in [playerlogic.js](www/js/playerlogic.js) (imports only config.js)
+  and are node-tested — player.js itself is untestable DOM. **`clampSeek` on EVERY seek**
+  (touch, drag and TV remote): an unclamped forward seek runs past the end, YouTube fires
+  ENDED → `finish()` → `onExit`, so pressing ⏩ near the end EJECTED the child from the
+  video. `shouldFinishNearEnd` also compares the player's REPORTED video id against the
+  expected one — the wall-clock swap grace alone is a bet on network latency, and a slow
+  `loadVideoById` made the poll read the previous video's tail.
+- `pointercancel` MUST be bound next to `pointerup`: the seek bar sits in Android's bottom
+  gesture inset, so the OS routinely steals the drag and no `pointerup` arrives. `dragging`
+  then stayed true forever and every later pointermove anywhere seeked the video (v1.0.22).
+- `loadYouTubeApi()` must be able to FAIL and be retried (onerror + timeout, and a rejected
+  attempt is not cached). It used to cache a promise with no reject, so one offline tap left
+  every YouTube video dead — black player, stale HUD, no status — until the app was killed.
+- The YT `onError` timer is CANCELLABLE and re-checks `swapAt`. `reuse()` deliberately leaves
+  `torn === false`, so video A's 400ms error timer used to destroy the iframe playing B.
+- `playFile` takes the same `playSeq` token as `playYouTube`: `prepareStreamSrc` awaits a
+  native bridge, and a tap during it detached the `<video>` while it kept decoding audio —
+  two soundtracks that nothing could stop, because `current` no longer referenced it.
+- A held TV-remote key must NOT scrub (`e.repeat` → reveal only). Android TV repeats at
+  ~30/s and each event was a full ±10s seek: one second jumped ~4 minutes and could run
+  past the end, ejecting the child.
 - HUD bar CONTAINERS are `pointer-events:none` ALWAYS (only buttons/seek take events, only while
   `.hud-on`) — interactive bars swallow the center-tap/double-tap on small players.
 - Tap model: hidden→tap only reveals; visible→center-50% tap toggles play. Paused pins the HUD.
@@ -77,6 +101,34 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - `planMutations` twice over identical inputs ⇒ empty diff (the churn-free test is sacred).
 - Gift state lives in `profileVideoState`, NOT on video records (siblings share libraries);
   `unwrappedAt` is forever (min-merged everywhere).
+- **AN UNREADABLE DRIVE DOC IS NEVER AN EMPTY ONE** (v1.0.22, `drive.interpretDriveDoc` /
+  `interpretDriveList` / `decidePush` — same pattern as `interpretSheetResponse`, and the
+  same reason). `readDbFile` used to answer `null` for a 401, a network drop, a 200 + HTML
+  sign-in page and a genuinely absent file alike; `mergeDbFiles(local, null)` returns
+  `local`, so the "the remote changed since our last write, merge first" branch became a
+  BLIND OVERWRITE of the very document it protected — one failed read and a fresh device
+  PATCHed its empty doc over the family's whole library. **A version mismatch we could not
+  read ABORTS** (`pendingPush` retries). Emptiness may come from exactly one input: a 404.
+  A failed file SEARCH likewise must not read as "no backup" — that created a second db
+  file permanently shadowing the real one.
+- **PER-DEVICE CHANNEL PROGRESS TRAVELS NOWHERE**, in either direction, via ONE shared list
+  (`drive.stripPerDeviceChannel` / `mergeChannelForApply`): cursors, `backfillDone`,
+  `lastRssCheckedAt`, `playlistQueue`/`playlistsDone`, `noLongForm`. The serialize side used
+  to omit `backfillDone`, and the apply side wrote a peer's record VERBATIM when the channel
+  was new here — so a device inherited "finished" and only ever saw the ~15-video RSS window.
+- A 401 INVALIDATES the cached token (`gauth.invalidateToken`, called from `drive.api`). The
+  55-minute lifetime is our guess, not something `authorize()` returns, so a token revoked in
+  the parent's account kept being handed out for up to an hour of failing I/O — which is the
+  most likely real-world trigger for the overwrite above. `authorize()` is also shared between
+  concurrent callers, so two taps cannot pop two system dialogs.
+- `copyDenies` judges presence by the RECORD EXISTING, not by `loadDenySet` (which hides
+  revoked entries), and carries the source row's own `at` (`db.denyRowToWrite`). Otherwise a
+  revoked tombstone read as absent, was overwritten with `at: Date.now()`, lost its
+  `removedAt`, won the Drive last-event comparison, and re-deleted the video on every device.
+- `db.pageFolder` returns NOTHING for `limit <= 0`. The push used to precede the length
+  check, so a zero limit yielded one row — and `pageAnyFolder` passes `limit - extras.length`,
+  which is exactly 0 once absorbed singles fill a page (16 tiles on a 15-tile grid, the row
+  repeated on page 2).
 - Scoping (decision 20): `lib:<fnv1a(sheet)>` = shared per input-sheet; `prof:<id>` = personal.
   A profile with NO sheet gets `lib:p:<profileId>`. CONNECTING or CHANGING a sheet therefore
   CHANGES the scope — always route it through `adoptLibraryScope()` (→ `db.moveScope`, which

@@ -244,3 +244,26 @@ test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
       `${p} parses an ISO-8601 duration — length misclassifies short nursery rhymes as Shorts`);
   }
 });
+
+test('the version chain is not one deletable line', () => {
+  // EVERY APK's version comes from one `apply from` at the END of a CAPACITOR-GENERATED
+  // file. `npx cap add android` regenerates that file, and its own defaultConfig still says
+  // versionName "1.0" — so losing the line ships every build as 1.0, which makes
+  // isNewer(anything, '1.0') true forever: an update-nag loop on every launch, and no way
+  // to tell which build a parent is running.
+  const gradle = readFileSync(join(ROOT, 'android/app/build.gradle'), 'utf8');
+  assert.match(gradle, /apply from:.*release\/android-release\.gradle/,
+    'android/app/build.gradle lost the version+signing hook — every APK would ship as 1.0');
+  const rel = readFileSync(join(ROOT, 'release/android-release.gradle'), 'utf8');
+  assert.match(rel, /package\.json/, 'the version no longer derives from package.json');
+});
+
+test('package.json is the single version source and is well-formed', () => {
+  // gradle parses this with a regex and THROWS on a non-X.Y.Z value, but that failure only
+  // shows up at build time on the release machine.
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/, `version "${pkg.version}" breaks the gradle parser`);
+  const [, minor, patch] = pkg.version.split('.').map(Number);
+  // versionCode = major*10000 + minor*100 + patch, so >99 in either would collide
+  assert.ok(minor <= 99 && patch <= 99, 'minor/patch must stay <= 99 for the versionCode scheme');
+});

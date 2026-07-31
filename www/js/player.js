@@ -19,6 +19,7 @@
 import { prepareStreamSrc, downloadAndCache, captureFrame } from './media.js';
 import { stripTimeHints } from './classify.js';
 import { HUD_HIDE_MS, SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY } from './config.js';
+import { clampSeek, fractionFromX, shouldFinishNearEnd, tvKeyIntent } from './playerlogic.js';
 import * as wake from './wake.js';
 
 const $id = (id) => document.getElementById(id);
@@ -30,26 +31,40 @@ let tvHud = null;   // v1.0.9: the live HUD's controls, for TV-remote keys (dpad
  * TV remote → player (v1.0.9): 'toggle' = play/pause, 'back'/'fwd' = ±SEEK_STEP,
  * 'reveal' = show the HUD. Returns false when no video is live (dpad ignores it).
  */
-export function handleTvKey(action) {
+export function handleTvKey(action, { repeat = false } = {}) {
   if (!tvHud) return false;
   const { ctl, reveal, renderProgress, flash } = tvHud;
-  if (action === 'toggle') { ctl.togglePlay(); reveal(); return true; }
-  if (action === 'back') { ctl.seekTo(Math.max(0, ctl.getTime() - SEEK_STEP)); flash('⏪ ' + SEEK_STEP); renderProgress(); reveal(); return true; }
-  if (action === 'fwd') { ctl.seekTo(ctl.getTime() + SEEK_STEP); flash(SEEK_STEP + ' ⏩'); renderProgress(); reveal(); return true; }
-  if (action === 'reveal') { reveal(); return true; }
-  return false;
+  const intent = tvKeyIntent(action, { time: ctl.getTime(), duration: ctl.getDuration(), repeat });
+  if (intent.kind === 'ignore') return false;
+  if (intent.kind === 'toggle') ctl.togglePlay();
+  if (intent.kind === 'seek') { ctl.seekTo(intent.to); flash(intent.flash); renderProgress(); }
+  reveal();
+  return true;
 }
 
+/**
+ * The IFrame API script. MUST be able to fail and be retried: it used to cache a promise
+ * with no `reject`, no `onerror` and no timeout, so ONE failed load (offline, captive
+ * portal — the normal state of a tablet that just woke up) left it pending forever. Every
+ * later tap awaited the same dead promise, so `current` was never registered and there is
+ * no onStatus on this path: the child stared at a black player with a stale HUD, and
+ * every YouTube video stayed dead until the app was force-quit. Wi-Fi returning did not
+ * help. A rejected attempt is NOT cached, so the next tap tries again.
+ */
 function loadYouTubeApi() {
   if (ytApiPromise) return ytApiPromise;
-  ytApiPromise = new Promise((resolve) => {
+  ytApiPromise = new Promise((resolve, reject) => {
     if (window.YT && window.YT.Player) return resolve();
+    let settled = false;
+    const done = (fn, arg) => { if (!settled) { settled = true; clearTimeout(t); fn(arg); } };
     const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => { if (prev) try { prev(); } catch {} resolve(); };
+    window.onYouTubeIframeAPIReady = () => { if (prev) try { prev(); } catch {} done(resolve); };
     const s = document.createElement('script');
     s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => done(reject, new Error('yt-api-load-failed'));
+    const t = setTimeout(() => done(reject, new Error('yt-api-timeout')), 15000);
     document.head.appendChild(s);
-  });
+  }).catch((e) => { ytApiPromise = null; throw e; });
   return ytApiPromise;
 }
 
@@ -76,7 +91,7 @@ export async function playItem(item, host, opts = {}) {
   stop();
   host.innerHTML = '';
   if (item.type === 'youtube') return playYouTube(item, host, opts, seq);
-  return playFile(item, host, opts);
+  return playFile(item, host, opts, seq); // the file path needs the token too — see below
 }
 
 /* ---------------- Shared HUD ----------------
@@ -129,10 +144,15 @@ function setupHud(ctl) {
   const onAnyTouch = () => { wasVisible = wrap.classList.contains('hud-on'); reveal(); };
 
   // Seek bar (LTR timeline): tap or drag anywhere on it to jump. Dragging pins the HUD.
-  const fracFrom = (e) => { const r = seek.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); };
-  const seekFrac = (f) => { const d = ctl.getDuration() || 0; if (d > 0) { ctl.seekTo(f * d); renderProgress(); } };
+  const fracFrom = (e) => { const r = seek.getBoundingClientRect(); return fractionFromX(e.clientX, r.left, r.width); };
+  const seekFrac = (f) => { const d = ctl.getDuration() || 0; if (d > 0) { ctl.seekTo(clampSeek(f * d, d)); renderProgress(); } };
   const onDown = (e) => { dragging = true; clearTimeout(hideTimer); setHud(true); seekFrac(fracFrom(e)); e.preventDefault(); };
   const onMove = (e) => { if (dragging) seekFrac(fracFrom(e)); };
+  // pointercancel is NOT optional: the seek bar sits in Android's bottom gesture inset
+  // and the app enables swipe-to-reveal system bars, so the OS routinely steals the
+  // gesture and no `pointerup` ever arrives. `dragging` then stayed true FOREVER — every
+  // later pointermove anywhere in the window seeked the video (scrolling the grid dragged
+  // the playhead), and `reveal()` never re-armed the hide timer, pinning the HUD.
   const onUp = () => { if (dragging) { dragging = false; reveal(); } };
 
   // Video-area taps: double left/right = seek; single center = play/pause, but ONLY
@@ -147,11 +167,16 @@ function setupHud(ctl) {
     if (now - lastTap < TAP_DOUBLE_MS) {
       clearTimeout(tapTimer);
       lastTap = 0;
-      if (x < r.width / 2) { ctl.seekTo(Math.max(0, ctl.getTime() - SEEK_STEP)); flash('⏪ ' + SEEK_STEP); }
-      else { ctl.seekTo(ctl.getTime() + SEEK_STEP); flash(SEEK_STEP + ' ⏩'); }
+      const d = ctl.getDuration();
+      if (x < r.width / 2) { ctl.seekTo(clampSeek(ctl.getTime() - SEEK_STEP, d)); flash('⏪ ' + SEEK_STEP); }
+      else { ctl.seekTo(clampSeek(ctl.getTime() + SEEK_STEP, d)); flash(SEEK_STEP + ' ⏩'); }
       renderProgress();
       reveal();
     } else {
+      // clear FIRST: two taps in the TAP_DOUBLE_MS..TAP_SINGLE_DELAY window (260-279ms)
+      // are too slow to be a seek but both armed a toggle, so the child's deliberate
+      // double-tap paused and instantly resumed — no seek, no pause, just a HUD flicker.
+      clearTimeout(tapTimer);
       lastTap = now;
       const visible = wasVisible;
       const center = x > r.width * 0.25 && x < r.width * 0.75;
@@ -166,6 +191,7 @@ function setupHud(ctl) {
   if (seek) seek.addEventListener('pointerdown', onDown);
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
   document.addEventListener('fullscreenchange', onFsChange);
   document.addEventListener('webkitfullscreenchange', onFsChange);
 
@@ -178,6 +204,7 @@ function setupHud(ctl) {
     if (seek) seek.removeEventListener('pointerdown', onDown);
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
     document.removeEventListener('fullscreenchange', onFsChange);
     document.removeEventListener('webkitfullscreenchange', onFsChange);
     clearTimeout(tapTimer);
@@ -208,7 +235,15 @@ function setupHud(ctl) {
 
 /* ---------------- YouTube ---------------- */
 async function playYouTube(item, host, opts = {}, seq = playSeq) {
-  await loadYouTubeApi();
+  try {
+    await loadYouTubeApi();
+  } catch {
+    // The script could not load (offline / captive portal). SAY SO instead of leaving the
+    // child in front of a black rectangle — and the next tap retries, because a failed
+    // attempt is no longer cached.
+    if (seq === playSeq && opts.onStatus) opts.onStatus('error');
+    return;
+  }
   // Superseded while the API script loaded: a newer playItem already owns the host.
   // Bail BEFORE mounting anything — there is no `current` entry for stop() to reach.
   if (seq !== playSeq) return;
@@ -223,6 +258,8 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
   let hud = null;
   let swapAt = 0;     // last loadVideoById time; guards the near-end check during swaps
   let ccLast = 0;
+  let errTimer = null; // MUST be cancellable — see onError
+  let curId = item.id; // which video we BELIEVE is loaded; reuse() swaps it
 
   const ctl = {
     getTime: () => { try { return player.getCurrentTime(); } catch { return 0; } },
@@ -256,6 +293,7 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
     if (torn) return;
     torn = true;
     if (timer) clearInterval(timer);
+    if (errTimer) clearTimeout(errTimer);
     if (hud) hud.teardown();
     try { player && player.stopVideo && player.stopVideo(); } catch {}
     try { player && player.destroy && player.destroy(); } catch {}
@@ -266,6 +304,8 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
     if (torn || !player || !player.loadVideoById) throw new Error('not-reusable');
     cb = nextOpts || {};
     swapAt = Date.now();
+    curId = nextItem.id; // so the near-end guard can tell a slow swap from a real tail
+    if (errTimer) { clearTimeout(errTimer); errTimer = null; } // A's error must not exit B
     player.loadVideoById({ videoId: nextItem.id, startSeconds: 0 }); // F3: always from 0
     killCaptions(true);
     hud.reset();
@@ -296,10 +336,15 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
             const d = player.getDuration();
             const c = player.getCurrentTime();
             hud.renderProgress();
-            // Leave before the end-screen recommendations. After loadVideoById,
-            // getDuration() briefly reports the OLD video with currentTime≈0 — require
-            // a swap grace period AND real progress, or the child gets bounced out.
-            if (d > 0 && d - c <= 1.5 && Date.now() - swapAt > 1200 && c > 0.5) finish();
+            // Leave before the end-screen recommendations (pure: shouldFinishNearEnd).
+            // The reported video id is the authoritative swap guard when the player
+            // offers it — the wall-clock grace alone is a bet on network latency.
+            let reportedId = null;
+            try { reportedId = (player.getVideoData() || {}).video_id || null; } catch {}
+            if (shouldFinishNearEnd({
+              duration: d, current: c, now: Date.now(), swapAt,
+              expectedId: curId, reportedId
+            })) finish();
           } catch {}
         }, 250);
       },
@@ -309,13 +354,22 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
         if (e.data === YT.PlayerState.PLAYING) killCaptions();
         hud.renderProgress();
       },
-      onError: () => { setTimeout(finish, 400); }
+      // An embedding-disabled video (error 101/150 — routine in a curated kids library)
+      // exits after a beat. The handle and the swapAt re-check are load-bearing: `reuse()`
+      // deliberately leaves `torn === false`, so an uncancelled timer from video A fired
+      // AFTER the child had already picked B, destroying the iframe playing B and firing
+      // onExit — yanking them out of the video they just chose, 400ms in.
+      onError: () => {
+        if (errTimer) clearTimeout(errTimer);
+        const firedFor = swapAt;
+        errTimer = setTimeout(() => { if (!torn && swapAt === firedFor) finish(); }, 400);
+      }
     }
   });
 }
 
 /* ---------------- Direct file ---------------- */
-async function playFile(item, host, { onExit, onStatus, onThumb } = {}) {
+async function playFile(item, host, { onExit, onStatus, onThumb } = {}, seq = 0) {
   const video = document.createElement('video');
   video.setAttribute('playsinline', '');
   video.controls = false; // we provide our own HUD
@@ -364,8 +418,23 @@ async function playFile(item, host, { onExit, onStatus, onThumb } = {}) {
 
   const play = (src) => { video.src = stripTimeHints(src); const p = video.play(); if (p && p.catch) p.catch(() => {}); };
   const first = await prepareStreamSrc(item);
+  // SUPERSESSION — the same guard playYouTube has, and for a worse failure. `prepareStreamSrc`
+  // awaits a native Filesystem round trip; a tap on another tile during it runs stop() +
+  // `host.innerHTML = ''`, DETACHING this <video>. A detached media element still decodes
+  // audio, and `current` no longer references it, so stop()/goGallery()/wake.releaseAll()
+  // cannot reach it: two soundtracks at once until the app is killed.
+  if (torn || (seq && seq !== playSeq)) return;
   let downloading = false;
   play(first.src);
+
+  // A LOCAL file needs the error listener too: the cache is written with no integrity
+  // check and `localPath` is recorded before anything ever plays it, so a truncated or
+  // unsupported cached file was a silent black screen the child could never escape —
+  // and the bad entry is preferred on every later attempt.
+  video.addEventListener('error', () => {
+    if (torn || downloading) return;
+    if (first.local && onStatus) onStatus('error');
+  });
 
   if (!first.local) {
     video.addEventListener('error', async () => {

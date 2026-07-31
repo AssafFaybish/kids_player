@@ -474,6 +474,36 @@ export function planLongFormOutage(results = []) {
   return { outage: notFoundCount === tried.length, notFoundCount };
 }
 
+/**
+ * v1.0.22 — PURE: which (scope, folder) should the UNDER-PLAYER grid page?
+ *
+ * The grid is how the child reaches the next video, so an empty one is a dead end. Two
+ * rules fight here and the order matters:
+ *  - came from a FOLDER view ⇒ browse that folder, because a virtual 🎞️ group folder is
+ *    not stored on the record and `item.folderId` cannot express it (v1.0.12);
+ *  - …EXCEPT 🎁 'new', which is a VIEW over other folders, not a folder. Opening a gift
+ *    unwraps it, so it leaves the sparse by_gift index immediately — and paging 'new'
+ *    then returned FEWER items than the child could see, or nothing at all when it was
+ *    the last gift. A gift browses where the video actually lives, which is also what
+ *    player.js's own comment always claimed.
+ *  - '~pending' is a parking slot and must never be browsed.
+ */
+export function resolveWatchContext({
+  item, isWatching = false, prevFolderId = null, folderViewId = null,
+  libScope = null, profileScope = null
+} = {}) {
+  const rec = item || {};
+  const real = (f) => (f && f !== '~pending' ? f : null);
+  const fromView = folderViewId === 'new' ? null : real(folderViewId);
+  const folderId = isWatching
+    ? real(prevFolderId) || real(rec.homeFolderId) || real(rec.folderId)
+    : fromView || real(rec.homeFolderId) || real(rec.folderId) || real(prevFolderId);
+  return {
+    scope: rec.scopeId || (folderId === 'mine' ? profileScope : libScope) || libScope || profileScope || null,
+    folderId: folderId || null
+  };
+}
+
 const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
 
 /**

@@ -143,6 +143,12 @@ export async function pageFolder(scopeId, folderId, { after = null, offset = 0, 
     ? IDBKeyRange.bound([scopeId, folderId, -Infinity], [scopeId, folderId, after.sortKey], false, true)
     : folderRange(scopeId, folderId);
   const total = await preq(idx.count(folderRange(scopeId, folderId)));
+  // limit <= 0 means "no room left on this page" and MUST yield nothing. The push used to
+  // happen before the length check, so a zero limit returned ONE row: pageAnyFolder passes
+  // `limit - eSlice.length`, which is exactly 0 once absorbed singles fill the page, so a
+  // channel with ≥PAGE_SIZE absorbed singles rendered 16 tiles on a 15-tile grid and
+  // repeated that row as the first tile of page 2.
+  if (!(Number(limit) > 0)) return { items: [], total };
   const items = await new Promise((resolve, reject) => {
     const out = [];
     let advanced = after ? true : offset === 0; // keyset ranges need no advance
@@ -439,6 +445,30 @@ export async function evictThumbs({ maxBytes = 120 * 1024 * 1024, maxCount = 600
  */
 export const denyActive = (d) => !!d && !(d.removedAt >= (d.at || 0));
 
+/**
+ * v1.0.22 — PURE: the deny row to write when unioning one scope's tombstones into
+ * another, or `null` for "leave the target alone".
+ *
+ * TWO bugs this closes, both from deciding "is it missing?" with `loadDenySet` (which
+ * exposes ACTIVE entries only):
+ *  - a REVOKED target entry read as absent, so it was `put` over and lost its
+ *    `removedAt` — silently undoing the one deliberate undeny path ("the sheet wins").
+ *  - the replacement was stamped `at: Date.now()`, which always wins Drive's
+ *    last-event comparison, so the resurrected tombstone propagated and deleted the
+ *    video on every other device. A tombstone must carry the SOURCE event's time.
+ */
+export function denyRowToWrite(existing, incoming, toScope) {
+  if (!incoming || !incoming.key) return null;
+  if (existing) return null; // present in any form (active OR revoked) — never overwrite
+  return {
+    scopeId: toScope,
+    key: incoming.key,
+    at: Number(incoming.at) || 0,
+    ...(incoming.removedAt ? { removedAt: Number(incoming.removedAt) } : {}),
+    reason: incoming.reason || 'scope-merge'
+  };
+}
+
 export async function loadDenySet(scopeId) {
   const recs = await loadDenyRecords(scopeId);
   return new Set(recs.filter(denyActive).map((d) => d.key));
@@ -456,15 +486,15 @@ export async function loadDenyRecords(scopeId) {
  * original deny timestamps in the target are never overwritten.
  */
 export async function copyDenies(fromScope, toScope) {
-  const from = await loadDenySet(fromScope);
-  if (!from.size) return 0;
-  const have = await loadDenySet(toScope);
-  const missing = [...from].filter((k) => !have.has(k));
-  if (!missing.length) return 0;
-  await tx(['denylist'], 'readwrite', (deny) => {
-    for (const key of missing) deny.put({ scopeId: toScope, key, at: Date.now(), reason: 'scope-merge' });
-  });
-  return missing.length;
+  // FULL rows on BOTH sides: presence must be judged by the record existing, not by it
+  // being active, and the source's own `at` has to travel (see denyRowToWrite).
+  const fromRows = await loadDenyRecords(fromScope);
+  if (!fromRows.length) return 0;
+  const have = new Map((await loadDenyRecords(toScope)).map((d) => [d.key, d]));
+  const rows = fromRows.map((d) => denyRowToWrite(have.get(d.key), d, toScope)).filter(Boolean);
+  if (!rows.length) return 0;
+  await tx(['denylist'], 'readwrite', (deny) => { for (const r of rows) deny.put(r); });
+  return rows.length;
 }
 
 /**

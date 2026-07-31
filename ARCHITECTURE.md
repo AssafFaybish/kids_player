@@ -25,13 +25,14 @@ live and how does data flow".
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
 | `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends; `interpretSheetResponse` is the ONE gate for every `values.get` read (reads and flushes alike) | platform, gauth, db, classify, csv |
-| `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT) + push/pull I/O | platform, gauth, normalize, db |
+| `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT), `interpretDriveDoc`/`interpretDriveList`/`decidePush` (an unreadable remote NEVER writes), `stripPerDeviceChannel`/`mergeChannelForApply` + push/pull I/O | platform, gauth, normalize, db, csv |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback | classify, normalize, order, platform, db |
 | `search.js` | PURE home-search ranking: normalized exact/starts/word/substring tiers | normalize |
 | `dataver.js` | one-shot data migrations after an app update (meta dataVersion; pure pendingSteps) | db, store, plan (dynamic) |
 | `links.js` | CONFIG ONLY (v1.0.15): every external address — donation links, contact mail, public site, update repo. Consumers: donate.js, update.js, app.js | — |
 | `spatial.js` | PURE TV D-pad geometry: pickNextIndex / pickFirstIndex (no wrap, drift penalty) | — |
+| `playerlogic.js` | PURE player decisions (player.js is untestable DOM): clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent | config |
 | `ui/dpad.js` | Android TV focus manager (v1.0.9): spatial nav over the active view, watch-view player mode via player.handleTvKey | spatial, nav, modal, player |
 | `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled; honors `update.skip` on silent checks), downloadAndInstall (size-verified) | platform |
 | `wake.js` | ref-counted keep-screen-on (KidsNative → KeepAwake → wakeLock → noop) | — |
