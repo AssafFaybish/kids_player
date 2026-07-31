@@ -126,6 +126,44 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.21 — **A CHANNEL MEANS ITS "VIDEOS" TAB + ITS "PLAYLISTS" TAB. NOTHING ELSE.**
+  No Shorts, no live streams. The mechanism is playlist membership, and it is the only
+  correct one:
+  - YouTube auto-generates siblings of the uploads playlist, addressed by swapping the
+    prefix on the channel id: `UU…` all uploads, **`UULF…` long-form only (= the Videos
+    tab)**, `UUSH…` Shorts only, `UULV…` live. `quota.longFormPlaylistIdFor` /
+    `shortsPlaylistIdFor`. The backfill pages UULF instead of UU — same
+    `playlistItems.list` call, **zero extra quota**. UNDOCUMENTED by Google; measured
+    2026-07-31 on Cocomelon / Blippi / Super Simple Songs: `UULF ∪ UUSH = UU` exactly,
+    no overlap, no leftovers.
+  - **NEVER FILTER BY DURATION.** A Short is "≤3 minutes AND square-or-taller"; the API
+    exposes no aspect ratio and no `isShort` field at all. 6 of the 15 most recent Super
+    Simple Songs LONG-FORM uploads are under 3 minutes (3 of 15 for Cocomelon), so a
+    length rule would delete real nursery rhymes — the app's core content. An invariants
+    test rejects any ISO-8601 duration parser anywhere in `www/js`.
+  - A variant playlist **does not exist** when the channel has no content of that type, so
+    a Shorts-only channel answers `404 playlistNotFound` (`fetchUploadsPage(...).notFound`).
+    That is information: the channel is marked `noLongForm`, the backfill is closed so we
+    stop asking, and the parent's channel list SAYS SO. Deliberately NOT falling back to
+    `UU` — that would import the very Shorts being excluded.
+  - The RSS incremental path cannot see playlists, so it uses the other free signal: each
+    entry's `<link rel="alternate">` is `/shorts/…` vs `/watch?v=…` vs `/live/…`
+    (`ytrss.altLinkKind` → `isShort`/`isLive`). Measured 100% agreement with UUSH/UULF
+    over 60 videos on 4 channels. Everything here rests on undocumented behaviour, so an
+    UNKNOWN signal means INCLUDE: a wrongly hidden video is a bug the parent cannot
+    explain, a leaked Short is cosmetic.
+  - The **playlists tab is a SOURCE, not a folder layout** (decision 2026-07-31): its
+    videos land in the channel's own `ch:<id>` folder, mixed by date. Own budget
+    (`PLAYLIST_PAGE_BUDGET`) so it can never starve the uploads pass, walked only after
+    `backfillDone`, and resumable per page via `playlistQueue`/`playlistCursor`.
+    Two filters are load-bearing: **foreign videos are dropped** (`videoOwnerChannelId
+    !== channelId` — the parent subscribed to THIS channel, not to whatever it curated),
+    and the channel's own Shorts are dropped via UUSH membership, because
+    `playlistItems` carries no Shorts flag. Playlists whose title matches `/shorts?/i`
+    are skipped outright.
+  - **Duplicates need no new code**: `planMutations` keys on `yt:<videoId>` and its
+    per-channel title index also merges same-titled twins WITHIN a run, so the heavy
+    Videos-tab∩playlists overlap collapses to one record and one gift (test-pinned).
 - v1.0.21 field fixes — these are INVARIANTS now:
   - **`pageAnyFolder` PAGES 🎁 TOO.** 🎁 "חדשים" is not a stored folder — no record carries
     `folderId:'new'`, so `folderRange(scope,'new')` is an exact bound matching nothing.

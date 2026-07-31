@@ -284,3 +284,29 @@ test('planGiftRunawayRepair is idempotent — the repaired state repairs to noth
     .concat(states.filter((s) => first.retire.includes(s.key)).map((s) => ({ key: s.key, unwrappedAt: 9 })));
   assert.deepEqual(planGiftRunawayRepair(after), { keep: [], retire: [] });
 });
+
+test('the Videos tab and a PLAYLIST holding the same video yield ONE record', () => {
+  // v1.0.21 — a channel's playlists are pulled as an extra SOURCE, and they mostly
+  // contain videos the Videos tab already gave us, so the same id arrives twice in a
+  // single run. Both arrivals must collapse: two records would mean two tiles of the
+  // same video in the child's folder, and two gifts.
+  const dup = [
+    cand({ id: 'vvvvvvvvvvv', titleSource: 'api' }),                   // from UULF…
+    cand({ id: 'vvvvvvvvvvv', titleSource: 'api', publishedAt: 1000 }) // from a playlist
+  ];
+  const plan = planMutations({ candidates: dup, existing: new Map(), denySet: new Set(), now: 5000 });
+  assert.equal(plan.puts.length, 1, 'the same videoId produced two records');
+  assert.equal(plan.puts[0].key, 'yt:vvvvvvvvvvv');
+  assert.equal(plan.newLiveKeys.filter((k) => k === 'yt:vvvvvvvvvvv').length, 1,
+    'one video became two gifts');
+
+  // and again against an ALREADY-STORED copy (the steady state: uploads imported last
+  // run, the playlists stage reaches the same video this run)
+  const existing = new Map(plan.puts.map((r) => [r.key, r]));
+  const second = planMutations({
+    candidates: [cand({ id: 'vvvvvvvvvvv', titleSource: 'api' })],
+    existing, denySet: new Set(), now: 6000
+  });
+  assert.deepEqual(second.puts, [], 'a re-seen video rewrote its record (churn)');
+  assert.deepEqual(second.newLiveKeys, [], 'a re-seen video was gifted a second time');
+});

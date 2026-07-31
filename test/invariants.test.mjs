@@ -220,3 +220,44 @@ test('adding content triggers the sync that makes it a gift and files it', () =>
   assert.match(fn.slice(0, 400), /syncLibrary\(activeProfileId,\s*\{\s*force:\s*true\s*\}/,
     'refreshAfterAdd must force the sync, or the 3-min throttle swallows it');
 });
+
+test('channel content is filtered by PLAYLIST membership, never by duration', () => {
+  // v1.0.21. Shorts must not reach a child's library, and there is NO isShort field
+  // anywhere in the Data API. The only correct filter is which auto-generated playlist a
+  // video belongs to: UULF… is the channel's "Videos" tab, UUSH… its Shorts.
+  //
+  // The trap this pins shut: reaching for `contentDetails.duration` instead. YouTube
+  // defines a Short as "≤3 minutes AND square-or-taller" — the API cannot see aspect
+  // ratio, so length can never reproduce the rule. Measured 2026-07-31: 6 of the 15
+  // most recent Super Simple Songs LONG-FORM uploads are under 3 minutes, and 3 of 15
+  // for Cocomelon. A duration rule would silently delete real nursery rhymes, which is
+  // the app's core content.
+  const sync = MODULES.get('www/js/sync2.js');
+  assert.match(sync, /longFormPlaylistIdFor\(/,
+    'the channel backfill no longer pages the long-form (Videos-tab) playlist');
+  assert.match(sync, /isShort/,
+    'the RSS incremental path no longer filters Shorts — new Shorts would leak in daily');
+  assert.match(MODULES.get('www/js/quota.js'), /DURATION IS NOT A SUBSTITUTE/,
+    'the warning against duration-based Shorts detection was removed from quota.js');
+
+  // No module may parse an ISO-8601 duration. `PT(?:` is the shape every such parser
+  // has, and nothing else in this codebase needs one (the player reads seconds from the
+  // media element, not from the API).
+  for (const [p, body] of MODULES) {
+    assert.doesNotMatch(body, /PT\(\?:/,
+      `${p} parses an ISO-8601 duration — a Short is ≤3min AND vertical, so length alone `
+      + 'misclassifies short nursery rhymes as Shorts');
+  }
+});
+
+test('a playlist can only contribute the SUBSCRIBED channel’s own videos', () => {
+  // A channel's curated playlists routinely hold other channels' videos. The parent
+  // subscribed to THIS channel, so a foreign entry would put content in the library that
+  // nobody approved — in a child-safety app that is the whole ballgame.
+  const sync = MODULES.get('www/js/sync2.js');
+  assert.match(sync, /ownerChannelId\s*&&\s*v\.ownerChannelId\s*!==\s*lc\.channelId/,
+    'the playlists stage stopped dropping foreign-channel videos');
+  // …and the field it relies on must actually be read out of the API response
+  assert.match(MODULES.get('www/js/yt.js'), /videoOwnerChannelId/,
+    'fetchUploadsPage no longer surfaces the uploader, so the foreign-video filter is blind');
+});

@@ -20,8 +20,8 @@ live and how does data flow".
 | `plan.js` | PURE decisions — mostly sync, some home: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental), planSheetMirror, groupSinglesByChannel, `isSheetBacked`/`sheetBackedKeysOf` (the sheet-backed boundary), planScopeAdoption, shouldRecordGiftBaseline, planGiftRunawayRepair, shouldFlattenHome (home-render rule) | normalize, order |
 | `sync2.js` | the staged pipeline (below); parseSourceRows (+parseSourceSheet — test-only since v1.0.19, no production caller) | csv, classify, plan, yt, db, quota |
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
-| `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, UU-derivation | — |
-| `ytrss.js` | pure keyless parsers (never throw): Atom feed + channel-page logo extractor | — |
+| `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, playlist-id derivation: `UU` uploads / `UULF` long-form ("Videos" tab) / `UUSH` Shorts | — |
+| `ytrss.js` | pure keyless parsers (never throw): Atom feed (incl. Short/live detection from the entry's alternate-link form) + channel-page logo extractor | — |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
 | `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends; `interpretSheetResponse` is the ONE gate for every `values.get` read (reads and flushes alike) | platform, gauth, db, classify, csv |

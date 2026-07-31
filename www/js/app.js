@@ -1678,6 +1678,15 @@ async function refreshChannelsList() {
       renderHome();
       maybeSchedulePush();
     });
+    // v1.0.21: a channel with NO long-form videos yields nothing, because Shorts are
+    // excluded on purpose. Say it here — otherwise the parent sees an empty folder and
+    // reasonably concludes the app is broken.
+    if (ch.noLongForm) {
+      const note = document.createElement('div');
+      note.className = 'li-note';
+      note.textContent = 'הערוץ הזה מפרסם רק Shorts — לא נמשכו ממנו סרטונים.';
+      body.appendChild(note);
+    }
     li.appendChild(logo);
     li.appendChild(body);
     li.appendChild(del);

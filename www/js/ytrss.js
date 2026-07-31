@@ -36,7 +36,34 @@ export function extractChannelLogoFromHtml(html) {
 }
 
 /**
- * -> [{ videoId, title, publishedAt (epoch ms), channelId, channelTitle, thumbUrl }]
+ * v1.0.21 — is this feed entry a SHORT (or a live stream)? The feed carries no duration
+ * and no dimensions, but every entry's `<link rel="alternate">` points at the form
+ * YouTube itself considers canonical:
+ *     <link rel="alternate" href="https://www.youtube.com/shorts/Gsn9eOqFOdA"/>   Short
+ *     <link rel="alternate" href="https://www.youtube.com/watch?v=vMH1M0px_-s"/>  video
+ * Measured 2026-07-31: 100% agreement with UUSH/UULF playlist membership over 60 videos
+ * on 4 channels. Free, keyless, no extra request — this is what keeps Shorts out of the
+ * INCREMENTAL (RSS) path, which the UULF playlist trick cannot reach.
+ * Attribute order is not assumed. Unknown/missing link -> not a short: a wrongly HIDDEN
+ * video is a visible bug, while a leaked Short is cosmetic.
+ */
+function altLinkKind(entry) {
+  const linkRe = /<link\b[^>]*>/g;
+  let m;
+  while ((m = linkRe.exec(entry))) {
+    if (!/rel\s*=\s*"alternate"/i.test(m[0])) continue;
+    const href = m[0].match(/href\s*=\s*"([^"]*)"/i);
+    if (!href) continue;
+    if (/\/shorts\//i.test(href[1])) return 'short';
+    if (/\/live\//i.test(href[1])) return 'live';
+    return 'video';
+  }
+  return 'video';
+}
+
+/**
+ * -> [{ videoId, title, publishedAt (epoch ms), channelId, channelTitle, thumbUrl,
+ *       isShort, isLive }]
  * in feed order (newest first). Entries missing a videoId are skipped, never
  * emitted with an undefined key.
  */
@@ -56,13 +83,16 @@ export function parseYouTubeRss(xml) {
     if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) continue;
     const published = Date.parse(tag(e, 'published')) || 0;
     const thumb = e.match(/<media:thumbnail[^>]*url="([^"]+)"/);
+    const kind = altLinkKind(e);
     out.push({
       videoId,
       title: decodeEntities(tag(e, 'title')),
       publishedAt: published,
       channelId: tag(e, 'yt:channelId') || feedChannelId,
       channelTitle,
-      thumbUrl: thumb ? decodeEntities(thumb[1]) : ''
+      thumbUrl: thumb ? decodeEntities(thumb[1]) : '',
+      isShort: kind === 'short',
+      isLive: kind === 'live'
     });
   }
   return out;

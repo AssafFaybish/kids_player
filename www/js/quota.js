@@ -27,6 +27,40 @@ export function uploadsPlaylistIdFor(channelId) {
 }
 
 /**
+ * v1.0.21 — the channel's LONG-FORM uploads playlist: exactly its "Videos" tab.
+ *
+ * YouTube auto-generates sibling playlists next to `UU…` (all uploads), addressable by
+ * swapping the prefix: `UULF…` long-form only, `UUSH…` Shorts only, `UULV…` live. This
+ * is how Shorts and live streams are kept out of a child's library, and it costs NOTHING
+ * — it is the same `playlistItems.list` call against a different id.
+ *
+ * ⚠️ UNDOCUMENTED by Google (community-discovered; measured 2026-07-31 on Cocomelon,
+ * Blippi and Super Simple Songs: `UULF ∪ UUSH = UU` exactly, no overlap, no leftovers).
+ * Two consequences the callers must honour:
+ *  - a variant playlist DOES NOT EXIST when the channel has no content of that type, so
+ *    a Shorts-only channel answers `404 playlistNotFound`. That is information, not an
+ *    error — see sync2's backfill stage.
+ *  - the ONLY reliable filter is which playlist a video is in. There is no `isShort`
+ *    field anywhere in the Data API, and DURATION IS NOT A SUBSTITUTE: a Short is
+ *    "≤3 minutes AND square-or-taller", the API cannot see aspect ratio, and ~30% of
+ *    recent Super Simple Songs / Cocomelon LONG-FORM uploads are under 3 minutes. A
+ *    length rule would delete real nursery rhymes. Never add one.
+ */
+export function longFormPlaylistIdFor(channelId) {
+  return /^UC[A-Za-z0-9_-]{22}$/.test(String(channelId || '')) ? 'UULF' + channelId.slice(2) : null;
+}
+
+/**
+ * v1.0.21 — the channel's SHORTS-only playlist (sibling of the above). Not used to
+ * import anything: it is read to build the exclusion set for the "playlists" tab, where
+ * `playlistItems` exposes no Shorts flag and membership is the only exact test.
+ * 404s (via `fetchUploadsPage(...).notFound`) when the channel has posted no Shorts.
+ */
+export function shortsPlaylistIdFor(channelId) {
+  return /^UC[A-Za-z0-9_-]{22}$/.test(String(channelId || '')) ? 'UUSH' + channelId.slice(2) : null;
+}
+
+/**
  * What to do for one channel this run. Truth table (tested):
  *   no uploadsPlaylistId              -> resolve
  *   !backfillDone && hasKey           -> backfill (resume from cursor)

@@ -1,7 +1,8 @@
 // Quota math — the 111-unit figure is an executable assertion, not a comment.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { batchIds, quotaCostFor, shouldThrottle, uploadsPlaylistIdFor, planChannelFetch } from '../www/js/quota.js';
+import { batchIds, quotaCostFor, shouldThrottle, uploadsPlaylistIdFor, longFormPlaylistIdFor,
+  shortsPlaylistIdFor, planChannelFetch } from '../www/js/quota.js';
 
 test('batchIds: sizes, dedupe, order', () => {
   assert.deepEqual(batchIds([]), []);
@@ -59,4 +60,25 @@ test('v1.0.18: rearming the cursor on unsubscribe restores a full backfill', () 
   assert.equal(planChannelFetch(rearmed, now, false), 'rss');
   // the playlist id is deliberately KEPT, so re-subscribing costs no resolve call
   assert.notEqual(planChannelFetch(rearmed, now, true), 'resolve');
+});
+
+test('the LONG-FORM and SHORTS sibling playlists are derived from the channel id', () => {
+  // v1.0.21 — this is the whole Shorts-exclusion mechanism: `UULF…` is the channel's
+  // "Videos" tab and `UUSH…` its Shorts, both reachable with the SAME
+  // playlistItems.list call and zero extra quota. Measured 2026-07-31 on Cocomelon /
+  // Blippi / Super Simple Songs: UULF ∪ UUSH == UU, no overlap, no leftovers.
+  const CH = 'UCabcdefghijklmnopqrstuv';
+  assert.equal(longFormPlaylistIdFor(CH), 'UULFabcdefghijklmnopqrstuv');
+  assert.equal(shortsPlaylistIdFor(CH), 'UUSHabcdefghijklmnopqrstuv');
+  // all three variants keep the channel's 22-char tail, so they address one channel
+  const tail = CH.slice(2);
+  for (const id of [uploadsPlaylistIdFor(CH), longFormPlaylistIdFor(CH), shortsPlaylistIdFor(CH)]) {
+    assert.ok(id.endsWith(tail), id);
+  }
+  assert.notEqual(longFormPlaylistIdFor(CH), uploadsPlaylistIdFor(CH));
+  // same strict guard as the uploads id — junk in must never become a playlist id
+  for (const junk of ['PLwhatever', '', null, undefined, 'UCshort', 'UUabcdefghijklmnopqrstuv', 42]) {
+    assert.equal(longFormPlaylistIdFor(junk), null, String(junk));
+    assert.equal(shortsPlaylistIdFor(junk), null, String(junk));
+  }
 });

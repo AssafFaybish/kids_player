@@ -147,7 +147,10 @@ export async function fetchUploadsPage(uploadsPlaylistId, pageToken, key) {
   const params = { part: 'snippet,contentDetails', playlistId: uploadsPlaylistId, maxResults: 50 };
   if (pageToken) params.pageToken = pageToken;
   const r = await apiGet('playlistItems', params, key);
-  if (r.error) return { videos: [], nextPageToken: null, error: r.error };
+  // v1.0.21: a 404 on a DERIVED playlist (UULF…) is information, not a failure — the
+  // variant does not exist when the channel has no content of that type. Told apart
+  // from a real error so the caller can react instead of retrying forever.
+  if (r.error) return { videos: [], nextPageToken: null, error: r.error, notFound: r.error === 'http-404' };
   const videos = [];
   for (const item of r.data?.items || []) {
     const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
@@ -157,10 +160,39 @@ export async function fetchUploadsPage(uploadsPlaylistId, pageToken, key) {
       videoId,
       title: item.snippet?.title || '',
       publishedAt: Date.parse(item.contentDetails?.videoPublishedAt || item.snippet?.publishedAt || '') || 0,
-      thumbUrl: (th.standard || th.medium || th.high || th.default || {}).url || ''
+      thumbUrl: (th.standard || th.medium || th.high || th.default || {}).url || '',
+      // v1.0.21 — who UPLOADED it. Identical to the channel for its own uploads, but a
+      // curated playlist can hold other channels' videos, and those must not enter a
+      // library the parent built by subscribing to THIS channel.
+      ownerChannelId: item.snippet?.videoOwnerChannelId || ''
     });
   }
   return { videos, nextPageToken: r.data?.nextPageToken || null };
+}
+
+/**
+ * v1.0.21 — the channel's own PLAYLISTS ("playlists" tab). 1 unit/page, 50 per page.
+ * `channelId` restricts the result to playlists that channel CREATED (not ones it
+ * merely saved), so this cannot pull in a stranger's list wholesale.
+ * -> { playlists: [{ id, title, itemCount }], nextPageToken, error? }
+ */
+export async function fetchChannelPlaylists(channelId, pageToken, key) {
+  const params = { part: 'snippet,contentDetails', channelId, maxResults: 50 };
+  if (pageToken) params.pageToken = pageToken;
+  const r = await apiGet('playlists', params, key);
+  if (r.error) return { playlists: [], nextPageToken: null, error: r.error };
+  const playlists = [];
+  for (const item of r.data?.items || []) {
+    if (!item || typeof item.id !== 'string' || !item.id) continue;
+    playlists.push({
+      id: item.id,
+      title: item.snippet?.title || '',
+      // NOT a pagination oracle: itemCount counts Shorts and private/deleted entries
+      // that playlistItems.list will never hand back.
+      itemCount: Number(item.contentDetails?.itemCount) || 0
+    });
+  }
+  return { playlists, nextPageToken: r.data?.nextPageToken || null };
 }
 
 /* ---------------- RSS incremental (keyless, 0 quota) ---------------- */
