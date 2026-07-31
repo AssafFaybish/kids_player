@@ -87,6 +87,9 @@ hydrate (views read IDB directly — the ONLY thing on the critical path)
         rss (free, latest 15, etag) | backfill (resumable cursor, 40-page budget, quota soft-cap)
    → planMutations (PURE: key-merge, intra-channel title dedupe, deny drop, pending routing,
      caps; quarantine on first post-migration sync) → putVideos (chunked)
+     ↳ pending routing runs BEFORE the two merge branches, and `settleCuration` keeps every
+       merged record self-consistent (pending ⇒ parked in '~pending'; live ⇒ never parked).
+       A merge must never be able to approve content — see the v1.0.22 invariant in CLAUDE.md.
    → titles for still-untitled loose links (videos.list 50/unit or oEmbed conc-6)
    → planProfileGifts (baseline newest-12 once per profile+library, then incremental)
    → meta bookkeeping → (drive.schedulePush if enabled)

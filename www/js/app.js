@@ -1681,8 +1681,7 @@ async function refreshChannelsList() {
       // v1.0.6: turning auto-approve ON offers to flush the channel's WAITING videos
       // too — otherwise they'd sit in ממתינים forever ("approved the channel, why is
       // the queue still full?"). Declining keeps them for one-by-one review.
-      const { items } = await db.pagePending(libScope, { limit: 5000 });
-      const keys = items.filter((r) => r.channelId === lc.channelId).map((r) => r.key);
+      const keys = await pendingKeysOfChannel(lc.channelId);
       if (!keys.length) return;
       const yes = await confirmKid({
         emoji: '✅', title: `לאשר גם ${keys.length} סרטונים שממתינים?`,
@@ -1690,14 +1689,7 @@ async function refreshChannelsList() {
         ok: 'אישור הכול', cancel: 'רק מהיום והלאה'
       });
       if (!yes) return;
-      await db.approvePending(libScope, keys);
-      await loadGiftStates();
-      await Promise.all([refreshPendingList(), refreshParentList()]);
-      renderHome();
-      // approvePending assigns no giftRank — planProfileGifts is the only assigner, so
-      // without this the newly-approved videos arrive with no 🎁 at all
-      refreshAfterAdd({ parent: true });
-      maybeSchedulePush();
+      await approveChannelBacklog(keys);
     });
     toggle.appendChild(cb);
     toggle.appendChild(document.createTextNode('אישור אוטומטי לסרטונים חדשים'));
@@ -1803,6 +1795,72 @@ async function adoptLibraryScope(profileId, oldLib, newLib) {
 }
 
 /** The profile's sources record, created on first use (stable library even without a sheet). */
+/** The WAITING videos of one channel, in the shared library scope (channel content
+    never lands anywhere else). One read — the caller decides what to do with them. */
+async function pendingKeysOfChannel(channelId) {
+  const { items } = await db.pagePending(libScope, { limit: 5000 });
+  return items.filter((r) => r.channelId === channelId).map((r) => r.key);
+}
+
+/** Approve a channel's whole backlog + refresh everything that shows it. */
+async function approveChannelBacklog(keys) {
+  await db.approvePending(libScope, keys);
+  await loadGiftStates();
+  await Promise.all([refreshPendingList(), refreshParentList(), refreshChannelsList()]);
+  renderHome();
+  // approvePending assigns no giftRank — planProfileGifts is the only assigner, so
+  // without this the newly-approved videos arrive with no 🎁 at all
+  refreshAfterAdd({ parent: true });
+  maybeSchedulePush();
+}
+
+/** The channel's row in the sources sheet; `flag` mirrors the in-app approval choice. */
+function enqueueChannelSheetRow(channelId, flag) {
+  return import('./sheetwrite.js')
+    .then(({ enqueueSheetRow }) => enqueueSheetRow(activeProfileId, {
+      key: 'ch:' + channelId,
+      srcUrl: 'https://www.youtube.com/channel/' + channelId,
+      flag
+    }))
+    .catch(() => {});
+}
+
+/**
+ * v1.0.22 — ASK, once, right after a hand-added channel finishes importing.
+ *
+ * The channel is created `autoApprove:false`, so its ENTIRE back catalogue lands in the
+ * approval queue and the child sees NOTHING — while the message said "הערוץ סונכרן ✅".
+ * A real channel (@rotemama4kids) put 109 videos there and the parent reasonably
+ * concluded the app had imported 2 of them. Pasting a channel link behind the PIN is a
+ * deliberate parental act, so the backlog should not need 109 more taps; but it is also
+ * the one moment before a stranger's whole catalogue reaches a 5-year-old, so we ask
+ * instead of silently approving (parent's decision, 2026-07-31).
+ * "Yes" also flips autoApprove, so future uploads flow without another visit here.
+ * -> { approved, count } — count is the backlog size either way, for the message.
+ */
+async function offerChannelApproval(channelId) {
+  const keys = await pendingKeysOfChannel(channelId);
+  if (!keys.length) return { approved: false, count: 0 };
+  const ch = (await db.getChannel(channelId)) || {};
+  const yes = await confirmKid({
+    emoji: '✅',
+    title: `לאשר את ${keys.length} הסרטונים של ${ch.title ? '"' + ch.title + '"' : 'הערוץ'}?`,
+    text: 'הם ייכנסו מיד לתיקיית הערוץ אצל הילד, וגם סרטונים חדשים שיעלו בערוץ יאושרו אוטומטית. '
+      + '"רק לסקירה" ישאיר את כולם ברשימת הממתינים במסך ההורים.',
+    ok: 'אישור הכול', cancel: 'רק לסקירה'
+  });
+  if (!yes) return { approved: false, count: keys.length };
+  const lc = (await db.listLibraryChannels(libScope)).find((c) => c.channelId === channelId);
+  if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
+  await db.approvePending(libScope, keys);
+  // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
+  // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
+  // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
+  // later then asks ITS parent the same question instead of inheriting our answer.
+  await enqueueChannelSheetRow(channelId, 'auto');
+  return { approved: true, count: keys.length };
+}
+
 async function ensureSources() {
   let src = await db.getSources(activeProfileId);
   if (!src) {
@@ -1877,27 +1935,37 @@ async function parentAdd() {
       order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
     });
     if (!known) { // v1.0.6: channels added here become sheet rows too (single master list)
-      const { enqueueSheetRow } = await import('./sheetwrite.js');
-      enqueueSheetRow(activeProfileId, {
-        key: 'ch:' + channelId,
-        srcUrl: 'https://www.youtube.com/channel/' + channelId,
-        flag: 'manual' // approval-required, matching the in-app default
-      }).catch(() => {});
+      // AWAITED, like the video path above: the forced sync below runs the presence-mirror,
+      // and a subscribed channel the sheet does not list is exactly what that deletes. The
+      // queued append is what protects it (planSheetMirror's pendingAppendKeys).
+      await enqueueChannelSheetRow(channelId, 'manual'); // approval-required for now
     }
     msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
     $('add-url').value = '';
+    await refreshChannelsList();
     // A brand-new channel backfills up to ~2000 videos — by far the longest wait a
     // parent triggers by hand, and it used to run behind a one-line message (v1.0.18).
     loading.show({ title: 'מושכים את הסרטונים של הערוץ', step: 'מתחילים…', pct: 0 });
-    syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) }).then(async () => {
-      await loadGiftStates();
-      await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
-      renderHome();
-      msg.textContent = 'הערוץ סונכרן ✅'; msg.className = 'form-msg ok';
-    }).catch(() => {
-      msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err';
-    }).finally(() => loading.hide());
-    await refreshChannelsList();
+    let synced = false;
+    try {
+      await syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) });
+      synced = true;
+    } catch { /* reported below */ } finally {
+      await loading.hide(); // ALWAYS — and BEFORE the dialog: modals must never stack
+    }
+    if (!synced) { msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err'; return; }
+    const { approved, count } = await offerChannelApproval(channelId);
+    await loadGiftStates();
+    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+    renderHome();
+    if (approved) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
+    maybeSchedulePush();
+    // Say what actually happened. "הערוץ סונכרן ✅" over a backlog of 109 unapproved
+    // videos is how this bug stayed invisible (v1.0.22).
+    msg.textContent = approved ? `הערוץ נוסף ו-${count} סרטונים אושרו ✅`
+      : count ? `הערוץ נוסף. ${count} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`
+        : 'הערוץ סונכרן ✅';
+    msg.className = 'form-msg ok';
     return;
   }
 

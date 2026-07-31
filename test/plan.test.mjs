@@ -71,6 +71,57 @@ test('title dedupe within a channel; NOT across channels; empty normTitle never 
   assert.ok(survivor.mergedFrom.includes('yt:bbbbbbbbbbb'));
 });
 
+test('a same-titled twin can NEVER auto-approve its survivor (v1.0.22 safety hole)', () => {
+  // The bug, measured on a real channel (@rotemama4kids, 109 long-form videos added from
+  // the parent screen ⇒ autoApprove:false): `base.state` defaulted to 'live' and the
+  // approval routing lived only in the brand-new branch, so the titleTwin branch
+  // short-circuited past it. mergeVideoRecord promotes a pending survivor when the LOSER
+  // is live — so the 2 same-titled pairs in that backfill became live in the child's
+  // folder with approvedAt still null, and they were the ONLY 2 videos the child could
+  // see. Unapproved content reaching a 5-year-old is the worst failure this app has.
+  const a = cand({ id: 'aaaaaaaaaaa', title: 'שמח, עצוב או כועס?', autoApprove: false });
+  const twin = cand({ id: 'bbbbbbbbbbb', title: 'שמח עצוב או כועס!', autoApprove: false });
+  const p = planMutations({ candidates: [a, twin], existing: new Map(), denySet: new Set(), now: 7 });
+
+  assert.equal(p.puts.length, 1, 'the twin still merges — dedupe is not what changed');
+  const survivor = p.puts[0];
+  assert.equal(survivor.state, 'pending', 'a merge must never approve what the parent has not seen');
+  assert.equal(survivor.folderId, '~pending', 'and it must stay parked out of the child folder');
+  assert.ok(survivor.mergedFrom.includes('yt:bbbbbbbbbbb'));
+  assert.ok(!p.newLiveKeys.length, 'nothing became live');
+});
+
+test('quarantine also survives the twin-merge path', () => {
+  const a = cand({ id: 'aaaaaaaaaaa', title: 'שיר', autoApprove: true });
+  const twin = cand({ id: 'bbbbbbbbbbb', title: 'שיר!', autoApprove: true });
+  const p = planMutations({ candidates: [a, twin], existing: new Map(), denySet: new Set(), quarantine: true });
+  assert.equal(p.puts.length, 1);
+  assert.equal(p.puts[0].state, 'pending', 'post-migration quarantine outranks autoApprove everywhere');
+  assert.equal(p.puts[0].folderId, '~pending');
+});
+
+test('a twin merge that DOES go live is never left parked (mirror of the leak)', () => {
+  // The legitimate direction: the parent has since switched the channel to auto-approve,
+  // so an incoming candidate really is approved and promoting the waiting twin is right.
+  // mergeVideoRecord flips state but never folderId, and a live record still parked in
+  // '~pending' is invisible in the child's folder AND gone from the approval queue.
+  const existing = new Map([['yt:aaaaaaaaaaa', {
+    key: 'yt:aaaaaaaaaaa', channelId: CH, normTitle: 'שיר', state: 'pending',
+    title: 'שיר', titleSource: 'rss', addedAt: 1, sortKey: 1000, origin: 'channel',
+    folderId: '~pending', homeFolderId: 'ch:' + CH, publishedAt: 1000, rowIndex: null,
+    thumbUrl: 'x', thumbId: null, localPath: null, srcUrl: '', url: null, approvedAt: null
+  }]]);
+  const p = planMutations({
+    candidates: [cand({ id: 'bbbbbbbbbbb', title: 'שיר!', autoApprove: true })],
+    existing, denySet: new Set(), now: 99
+  });
+  const survivor = p.puts.find((x) => x.key === 'yt:aaaaaaaaaaa');
+  assert.ok(survivor, 'the promotion must be emitted');
+  assert.equal(survivor.state, 'live');
+  assert.equal(survivor.folderId, 'ch:' + CH, 'un-parked, or the child can never reach it');
+  assert.equal(survivor.approvedAt, 99, 'it became live now — the record must say so');
+});
+
 test('a reappearing merged-away link resolves to its survivor, not a new record', () => {
   const existing = new Map([['yt:aaaaaaaaaaa', {
     key: 'yt:aaaaaaaaaaa', channelId: CH, normTitle: 'שיר', state: 'live',
