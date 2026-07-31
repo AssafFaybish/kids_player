@@ -258,13 +258,15 @@ export function planSheetMirror({
  * Channel videos are deliberately absent: they have no row of their own (the channel row
  * represents them), so the sheet can never "not list" them.
  */
+export function isSheetBacked(r) {
+  if (!r || r.state !== 'live') return false;
+  return (r.homeFolderId || r.folderId) === 'sheet';
+}
+
+/** Keys of the sheet-backed records in `records`. Same boundary, list form. */
 export function sheetBackedKeysOf(records) {
   const out = [];
-  for (const r of records || []) {
-    if (!r || r.state !== 'live') continue;
-    if ((r.homeFolderId || r.folderId) !== 'sheet') continue;
-    out.push(r.key);
-  }
+  for (const r of records || []) if (isSheetBacked(r)) out.push(r.key);
   return out;
 }
 
@@ -312,21 +314,45 @@ export function shouldRecordGiftBaseline(firstSync, liveCount) {
  * On devices that added a channel before the fix, the baseline flag was spent on an
  * empty library and the next sync gifted the ENTIRE backfill: a "חדשים" folder holding
  * the whole library, which the child would have to tap through one by one. This decides
- * the repair — keep the `baseline` newest ranks (rank 1 IS the newest), retire the rest —
- * which is exactly the state the first sync should have produced.
+ * the repair — keep the `baseline` NEWEST, retire the rest — which is exactly the state
+ * the first sync should have produced.
+ *
+ * ⚠️ RANK IS NOT RECENCY on the piles this repairs. `planGifts` sorts by
+ * `compareForDisplay` only on its BASELINE branch; the INCREMENTAL branch (the one that
+ * actually creates a runaway) stamps `maxRank+1` while walking `newLiveKeys`, which comes
+ * from `loadMergeIndex` — a cursor over the `[scopeId, key]` primary key, i.e. ALPHABETICAL
+ * by video id. Ranking by giftRank therefore kept an arbitrary alphabetical dozen and
+ * retired the genuinely newest videos, permanently (`unwrappedAt` is min-merged forever).
+ * So the caller passes `sortKeyOf`; giftRank is only the tie-break / last-resort fallback.
  *
  * Deliberately conservative: a child who simply never opens gifts accumulates ranks
- * legitimately, so only an implausible pile is touched. Even a false positive is benign
- * (a retired gift is a normal video in its folder, never a deleted one).
+ * legitimately, so only an implausible pile is touched.
  *
  * @param states iterable of profileVideoState records for ONE profile
+ * @param sortKeyOf Map|function key -> sortKey (the video's own recency). Omit only when
+ *                  the records are unavailable; ordering then degrades to giftRank.
  * @returns { keep: string[], retire: string[] } — retire = give up its rank
  */
-export function planGiftRunawayRepair(states, { baseline = 12, floor = 60 } = {}) {
+export function planGiftRunawayRepair(states, { baseline = 12, floor = 60, sortKeyOf = null } = {}) {
   const ranked = [];
   for (const st of states || []) if (st && st.giftRank && !st.unwrappedAt) ranked.push(st);
   if (ranked.length <= Math.max(floor, baseline)) return { keep: [], retire: [] };
-  ranked.sort((a, b) => a.giftRank - b.giftRank); // rank 1 = newest
+  const recency = sortKeyOf == null ? null
+    : typeof sortKeyOf === 'function' ? sortKeyOf
+      : (k) => (sortKeyOf.get ? sortKeyOf.get(k) : sortKeyOf[k]);
+  ranked.sort((a, b) => {
+    if (recency) {
+      const ra = Number(recency(a.key));
+      const rb = Number(recency(b.key));
+      const fa = Number.isFinite(ra);
+      const fb = Number.isFinite(rb);
+      // a record we can date always outranks one we cannot — never retire a video
+      // just because its sortKey went missing
+      if (fa !== fb) return fa ? -1 : 1;
+      if (fa && rb !== ra) return rb - ra; // newest first
+    }
+    return a.giftRank - b.giftRank;
+  });
   return {
     keep: ranked.slice(0, baseline).map((s) => s.key),
     retire: ranked.slice(baseline).map((s) => s.key)

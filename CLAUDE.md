@@ -273,24 +273,61 @@ pins that the consumers follow the config and that every address is well-formed.
     everything is still pending, so the flag was spent on nothing: the child got NO gifts
     after approval, and the next sync took the incremental path and gifted the ENTIRE
     backfill. `dataver` step 2 (`plan.planGiftRunawayRepair`) retires such a pile on
-    already-affected devices — keeps the newest 12, only above an implausible floor (60),
-    and `giftRank` must be DELETED not zeroed (the sparse by_gift index is the 🎁 folder).
+    already-affected devices — only above an implausible floor (60), and `giftRank` must
+    be DELETED not zeroed (the sparse by_gift index is the 🎁 folder).
+    **RANK IS NOT RECENCY** on those piles: only `planGifts`' BASELINE branch sorts by
+    `compareForDisplay`; the INCREMENTAL branch (the one that creates a runaway) stamps
+    `maxRank+1` while walking `loadMergeIndex`, a cursor over the `[scopeId,key]` primary
+    key — i.e. ALPHABETICAL. Ranking the repair by `giftRank` kept an arbitrary dozen and
+    retired the genuinely newest videos, permanently (`unwrappedAt` is min-merged forever).
+    So `planGiftRunawayRepair` takes `sortKeyOf` and the caller supplies the VIDEOS' own
+    recency; giftRank is only the tie-break. STILL OPEN (see the review notes): the step
+    runs at boot, before the sync that can create the pile, and nothing ever clears a
+    burned `baselineDone`.
   - **THE HOME NO LONGER RE-READS THE LIBRARY PER RENDER.** `buildFolders` needs full
     records (they feed the tiles), and `renderHome` runs on every gallery entry, every
     return from a video and every page flip — a full-store deserialize each time. `db.dataVersion()`
     counts committed writes (bumped inside `tx()` itself, so no write path can forget)
     and `buildFolders` caches its whole derivation against it. Measured with 1020 videos:
     22ms → 1.8ms per render. NEVER cache derived home state against anything else.
+    The cache key is `{seq, profileId}` and **BOTH are captured AT ENTRY**: switching
+    profile writes only to Preferences, so `dataVersion()` does NOT change across a
+    switch and `profileId` is the ONLY cross-profile guard. Reading it at cache-write
+    time let a derivation that began as child A get stamped with child B, and B was then
+    served A's library with `libScope` pointing at A's videos. For the same reason all
+    the derived state (`libScope`, `singleGroups`, `absorbedSingles`, `looseSingles`)
+    is built into LOCALS and published only if the profile is still current.
   - Also: the sync's deny set is read once per run instead of once per removed key (it was
-    quadratic in accumulated deletions), and `update.currentVersion()` is memoized — the
-    attention dot was making a native bridge round trip on every render.
-  - Snapshot import: a PENDING record keeps its exported `homeFolderId`. It used to be
-    overwritten with the parked `'~pending'`→`'mine'` fallback, so approval refiled the
-    video into "הסרטונים שלי" and it silently stopped being sheet-backed.
+    quadratic in accumulated deletions) — and it is `add()`ed to as the loop tombstones,
+    because duplicate `# הוסר` rows otherwise re-ran `deleteVideo` and restamped the
+    tombstone's LWW `at`. `update.currentVersion()` is memoized — the attention dot was
+    making a native bridge round trip on every render.
+  - Snapshot import: a PENDING record keeps its exported `homeFolderId` — UNLESS its
+    `scopeId` was rejected and downgraded to `prof:`, in which case `'sheet'` becomes
+    `'mine'`: the shared folder is raised only for `libScope`, so the record would be
+    stored, approvable, and in no folder on any screen. Import also preserves
+    `srcChannelId`/`srcChannelTitle`/`srcChannelTriedAt` (without them every 🎞️
+    collection dissolves into the flat list) and REFUSES a non-finite `sortKey`
+    (`by_folder_sort` takes no NaN key and a string sorts outside `folderRange`, so the
+    row counted as imported and was invisible forever).
+  - `sheetwrite.interpretSheetResponse` is the ONE gate for EVERY `values.get` read,
+    including the one inside `doFlush` — hand-rolling that one read let an error envelope
+    or a sign-in page pass as an empty sheet, so no row matched for deletion, every append
+    was re-appended, and `clearFlushed` then dropped the unsent `delvideo` ops whose rows
+    were still in the sheet: the next mirror pass read that presence as a re-add and
+    resurrected the deleted videos everywhere. An unreadable read ABORTS the flush with
+    the queue intact. An error envelope may ride along only with ACTUAL ROWS.
+  - Queue overflow is DATA LOSS and must outlive the next flush: it lives in a durable
+    `dropped` counter (not `error`, which every `doFlush` exit overwrites) and the sources
+    tab renders it ABOVE the reassuring "pending" line.
   - New test files: `invariants.test.mjs` (import graph acyclic, `tour.js` imports nothing,
     no `search.list`, no `spreadsheets` scope, no paste-a-sheet control, keys.local.js
     gitignored, `parseSourceSheet` has no production caller), `pin.test.mjs`, `yt.test.mjs`,
-    `snapshot.test.mjs`.
+    `snapshot.test.mjs`. Guards in there must be PROVEN to fail on a planted regression —
+    three of them were vacuous: `walk()` collected only `.js` so the `spreadsheets` sweep
+    read ZERO Java files (and `native-reference/`, the canonical rebuild copy, still
+    declared the scope), the `search.list` patterns matched nothing this repo can write,
+    and `importsOf` was blind to `await import()`, which outnumbers static imports here.
 - v1.0.20 — the ADD-CONTENT GUIDE is the app's real manual: **18 slides, chaptered.**
   Without it the app is worthless to a parent, so it gets the detail it needs.
   Same `view-tour` mechanism; every `ADD_GUIDE_SLIDES` slide now carries a `chapter`

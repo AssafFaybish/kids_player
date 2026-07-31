@@ -186,10 +186,17 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       // The deny set is read ONCE, not per key: it is a full getAll over the scope's
       // tombstones, it only grows as parents delete things, and the branch below is
       // taken exactly for keys that are already gone (v1.0.20 — it was quadratic).
-      const denied = removedKeys.length ? await loadDenySet(lib) : null;
+      // Read once and keep it CURRENT: the loop below writes tombstones, so a snapshot
+      // goes stale against its own work. Two devices can each append a '# הוסר' row for
+      // the same video (and youtu.be/X and watch?v=X are the same key), and removedKeys
+      // is not deduplicated — without the add() the duplicate re-ran deleteVideo,
+      // restamping the tombstone's `at` (the LWW tiebreaker) and pushing a second opLog
+      // row to Drive. Reused below for planSheetMirror instead of a second full getAll.
+      const denied = await loadDenySet(lib);
       for (const key of removedKeys) {
-        if (await getVideo(lib, key)) await deleteVideo(lib, key, 'sheet-removed');
-        else if (!denied.has(key)) await deleteVideo(lib, key, 'sheet-removed');
+        if (denied.has(key) && !(await getVideo(lib, key))) continue;
+        await deleteVideo(lib, key, 'sheet-removed');
+        denied.add(key);
       }
       const libIndex = await loadMergeIndex(lib);
       // LIVE records only — see sheetBackedKeysOf: a PENDING share is parked with
@@ -205,7 +212,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         // a key with a '# הוסר' row must never be un-denied by presence, and neither
         // must one whose own row-removal is still queued
         pendingDeleteKeys: [...(await pendingDeleteKeys(lib)), ...removedKeys],
-        deniedKeys: await loadDenySet(lib)
+        deniedKeys: denied // kept current by the loop above — a second getAll read the same set
       });
       // a denied key the sheet LISTS = deliberate re-add → the tombstone yields
       for (const k of mirror.unDenyKeys) await unDeny(lib, k);

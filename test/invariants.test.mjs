@@ -10,12 +10,15 @@ import { dirname, join, relative } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const JS_DIR = join(ROOT, 'www', 'js');
 
-function walk(dir) {
+// `exts` is load-bearing: this used to hard-code `.js`, so the Java sweep below
+// (the ONLY place the OAuth scope can live) silently walked zero files while the
+// test reported the invariant as pinned.
+function walk(dir, exts = ['.js']) {
   const out = [];
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walk(p));
-    else if (name.endsWith('.js')) out.push(p);
+    if (statSync(p).isDirectory()) out.push(...walk(p, exts));
+    else if (exts.some((e) => name.endsWith(e))) out.push(p);
   }
   return out;
 }
@@ -34,6 +37,22 @@ function importsOf(relPath) {
     const dir = dirname(relPath);
     out.push(join(dir, m[1]).replace(/\\/g, '/'));
   }
+  return out;
+}
+
+/**
+ * DYNAMIC `await import('./x.js')` targets. This codebase has MORE of these than static
+ * imports (app.js alone: 61 vs 21), and the static-only regex above could not see any of
+ * them — a typo'd dynamic path is a blank screen on the device and a fully green suite.
+ * Kept separate from importsOf() on purpose: a dynamic edge is evaluated lazily and is
+ * this repo's sanctioned way to BREAK a cycle, so the cycle test must not follow it.
+ */
+function dynamicImportsOf(relPath) {
+  const body = MODULES.get(relPath) || '';
+  const out = [];
+  const re = /\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+  let m;
+  while ((m = re.exec(body))) out.push(join(dirname(relPath), m[1]).replace(/\\/g, '/'));
   return out;
 }
 
@@ -76,8 +95,14 @@ test('nav.js depends on no SCREEN — only on the modal primitive it must outran
 test('nothing calls the YouTube search endpoint (100 quota units per call)', () => {
   // The entire quota budget is 10 000/day. One search.list per channel would burn it
   // before lunch and freeze every family's library for the rest of the day.
+  // The patterns must match how this codebase actually writes a call — params are object
+  // literals fed to URLSearchParams and the host is the `API` constant, so the previous
+  // `part=` / `youtube/v3/search` patterns could not match ANY real offender.
   for (const [p, body] of MODULES) {
-    assert.doesNotMatch(body, /['"`/]search\b[^\n]*part=/i, `${p} looks like it calls search.list`);
+    // call shapes only — quota.js states the rule in PROSE, and a doc comment naming
+    // the endpoint must not read as a violation
+    assert.doesNotMatch(body, /\bapiGet\s*\(\s*['"`]search\b/i, `${p} calls search.list via apiGet`);
+    assert.doesNotMatch(body, /['"`][^'"`\n]*\/search\?/i, `${p} builds a search endpoint URL`);
     assert.doesNotMatch(body, /youtube\/v3\/search/i, `${p} calls youtube/v3/search`);
   }
 });
@@ -87,11 +112,13 @@ test('the sensitive `spreadsheets` OAuth scope is gone for good', () => {
   // for every family, and verification needs DNS we do not control. Re-adding it to
   // make a pasted sheet writable brings the warning back for everyone.
   const suspects = [...MODULES.entries()];
-  for (const dir of ['android/app/src/main/java', 'www']) {
-    for (const p of walk(join(ROOT, dir)).filter((f) => /\.(js|java)$/.test(f))) {
-      suspects.push([rel(p), src(p)]);
-    }
+  // native-reference/ is included deliberately: ARCHITECTURE.md calls those the canonical
+  // copies for a `npx cap add android` rebuild, so a stale scope there would be restored
+  // verbatim into a real APK.
+  for (const dir of ['android/app/src/main/java', 'www', 'native-reference']) {
+    for (const p of walk(join(ROOT, dir), ['.js', '.java'])) suspects.push([rel(p), src(p)]);
   }
+  assert.ok(suspects.some(([p]) => p.endsWith('.java')), 'the Java sweep matched no files');
   for (const [p, body] of suspects) {
     assert.doesNotMatch(body, /auth\/spreadsheets/, `${p} requests the spreadsheets scope`);
   }
@@ -121,7 +148,10 @@ test('the dead sheet-parsing path has no production caller', () => {
   // (and with it the "unshared sheet returns HTML 200" library-wipe).
   for (const [p, body] of MODULES) {
     if (p === 'www/js/sync.js') continue;
+    // both forms: `await import('./sync.js')` evaded the `from`-anchored check entirely
     assert.doesNotMatch(body, /from\s+['"]\.\/sync\.js['"]/, `${p} imports the dead sync.js`);
+    assert.ok(!dynamicImportsOf(p).some((d) => d === 'www/js/sync.js'),
+      `${p} dynamically imports the dead sync.js`);
     if (p === 'www/js/sync2.js') {
       // its own definition is the ONLY mention allowed — one more means a caller
       const hits = (body.match(/\bparseSourceSheet\s*\(/g) || []).length;
@@ -133,9 +163,10 @@ test('the dead sheet-parsing path has no production caller', () => {
 });
 
 test('every module app.js imports actually exists on disk', () => {
-  // A typo'd path is a blank screen on the device and nothing at all in `npm test`.
+  // A typo'd path is a blank screen on the device and nothing at all in `npm test` —
+  // which is why the DYNAMIC form has to be resolved here too, not just the static one.
   for (const [p] of MODULES) {
-    for (const dep of importsOf(p)) {
+    for (const dep of [...importsOf(p), ...dynamicImportsOf(p)]) {
       if (dep.includes('keys.local')) continue; // gitignored by design
       assert.ok(MODULES.has(dep), `${p} imports a file that does not exist: ${dep}`);
     }

@@ -69,3 +69,27 @@ test('the same PIN always hashes to the same value (verify is not luck)', async 
   assert.equal([...store.values()].join('|'), first, 'hashing is not deterministic');
   assert.equal(await pin.verifyPin('9876'), true);
 });
+
+test('a NUMERIC pin is hashed like its digits, not collapsed to one constant', async () => {
+  // The djb2 fallback (insecure contexts — no crypto.subtle) iterated `str.length`.
+  // A number has none, so the loop never ran and EVERY number hashed to the same
+  // constant: setPin(1234) then verifyPin(9999) opened the parent gate. The suite only
+  // ever exercised the crypto.subtle branch, so the fallback was asserted-safe by the
+  // test above and untested in fact. Force the fallback and pin the real behavior.
+  const realCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  try {
+    // getter-only on globalThis in node, hence defineProperty rather than assignment
+    Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true });
+    const fresh = await import('../www/js/pin.js?nocrypto=1');
+    store.clear();
+    await fresh.setPin(1234);
+    assert.equal(await fresh.verifyPin(9999), false, 'ANY 4-digit number opened the gate');
+    assert.equal(await fresh.verifyPin(1234), true);
+    assert.equal(await fresh.verifyPin('1234'), true, 'the number and its digits are one PIN');
+    const stored = [...store.values()].join('|');
+    assert.ok(stored.startsWith('djb2:'), 'this test did not reach the fallback: ' + stored);
+    assert.ok(!stored.includes('1234'), 'the plaintext PIN is in storage: ' + stored);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', realCrypto);
+  }
+});

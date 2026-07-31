@@ -15,7 +15,7 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
-import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption } from './plan.js';
+import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -558,29 +558,36 @@ async function buildFolders() {
     return cache.folders.slice();
   }
   const seq = db.dataVersion();
+  // Capture the profile ALONGSIDE the write counter. Switching profile writes only to
+  // Preferences, so dataVersion() does NOT change across a switch — `profileId` is the
+  // cache's only cross-profile guard, and reading it at cache-WRITE time (after every
+  // await below) let a derivation that started as child A get stamped with child B's id.
+  // B then hit the cache and was shown A's library, with libScope pointing at A's videos.
+  const pid = activeProfileId;
   const out = [];
-  if (!activeProfileId) return out;
-  const giftCount = await db.countGifts(activeProfileId);
+  if (!pid) return out;
+  const giftCount = await db.countGifts(pid);
   if (giftCount > 0) out.push({ id: 'new', title: 'חדשים', emoji: '🎁', count: giftCount, isNew: true });
 
-  const src = await db.getSources(activeProfileId);
-  libScope = (src && src.libraryId) || null;
-  // ALL grouping state resets here, before the libScope guard: a profile without
-  // sources used to keep the PREVIOUS profile's looseSingles, so any future code
-  // rendering the flat list would show another child's videos (latent leak).
-  singleGroups = new Map();
-  absorbedSingles = new Map();
-  looseSingles = [];
-  if (libScope) {
-    const libChannels = await db.listLibraryChannels(libScope); // read ONCE — this used
+  const src = await db.getSources(pid);
+  const lib = (src && src.libraryId) || null;
+  // ALL grouping state is derived into LOCALS and published together at the very end.
+  // A profile without sources used to keep the PREVIOUS profile's looseSingles, and a
+  // derivation superseded mid-await by a profile switch used to publish its stale
+  // globals over the new child's (latent leak, and the cross-profile cache hit above).
+  let groups = new Map();
+  let absorbed = new Map();
+  let loose = [];
+  if (lib) {
+    const libChannels = await db.listLibraryChannels(lib); // read ONCE — this used
     const subscribedIds = new Set(libChannels.map((c) => c.channelId)); // to run twice
     for (const lc of libChannels) {
       if (lc.hidden) continue;
       const ch = (await db.getChannel(lc.channelId)) || {};
-      const count = await db.countFolder(libScope, 'ch:' + lc.channelId);
+      const count = await db.countFolder(lib, 'ch:' + lc.channelId);
       if (!count) continue;
       out.push({
-        id: 'ch:' + lc.channelId, scope: libScope, title: lc.titleOverride || ch.title || 'ערוץ',
+        id: 'ch:' + lc.channelId, scope: lib, title: lc.titleOverride || ch.title || 'ערוץ',
         // logo → persisted per-channel fallback thumbnail → 📺 emoji (v1.0.6):
         // every channel folder must stay visually distinct for a non-reading child
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
@@ -592,28 +599,27 @@ async function buildFolders() {
     // inside that channel's 📺 folder instead of a second same-named folder.
     // All of it rides ONE bulk read — the record arrays feed pagination directly.
     const { compareForDisplay } = await import('./order.js');
-    const sheetRecords = [...(await db.loadMergeIndex(libScope)).values()]
-      .filter((r) => r.state === 'live' && (r.homeFolderId || r.folderId) === 'sheet');
+    const sheetRecords = [...(await db.loadMergeIndex(lib)).values()].filter(isSheetBacked);
     const grouping = groupSinglesByChannel(sheetRecords.filter((r) => !r.channelId), subscribedIds);
     const byKey = new Map(sheetRecords.map((r) => [r.key, r]));
     const recsOf = (keys) => keys.map((k) => byKey.get(k)).filter(Boolean).sort(compareForDisplay);
 
-    singleGroups = new Map(grouping.groups.map((g) => [g.channelId, recsOf(g.keys)]));
-    absorbedSingles = new Map([...grouping.absorb].map(([id, keys]) => [id, recsOf(keys)]));
-    for (const [chId, recs] of absorbedSingles) {
+    groups = new Map(grouping.groups.map((g) => [g.channelId, recsOf(g.keys)]));
+    absorbed = new Map([...grouping.absorb].map(([id, keys]) => [id, recsOf(keys)]));
+    for (const [chId, recs] of absorbed) {
       const f = out.find((x) => x.id === 'ch:' + chId);
       if (f) { f.count += recs.length; continue; }
       // subscribed but nothing imported yet — the singles still need a home
       const ch = (await db.getChannel(chId)) || {};
       out.push({
-        id: 'ch:' + chId, scope: libScope, title: ch.title || 'ערוץ',
+        id: 'ch:' + chId, scope: lib, title: ch.title || 'ערוץ',
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count: recs.length
       });
     }
     for (const g of grouping.groups) {
       const ch = (await db.getChannel(g.channelId)) || {};
       out.push({
-        id: 'grp:' + g.channelId, scope: libScope, title: g.title,
+        id: 'grp:' + g.channelId, scope: lib, title: g.title,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '🎞️',
         count: g.keys.length, grouped: true
       });
@@ -623,21 +629,28 @@ async function buildFolders() {
       ...grouping.groups.flatMap((g) => g.keys),
       ...[...grouping.absorb.values()].flat()
     ]);
-    looseSingles = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
-    if (looseSingles.length) {
-      out.push({ id: 'sheet', scope: libScope, title: 'סרטונים נוספים', emoji: '⭐', count: looseSingles.length });
+    loose = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
+    if (loose.length) {
+      out.push({ id: 'sheet', scope: lib, title: 'סרטונים נוספים', emoji: '⭐', count: loose.length });
     }
   }
   // legacy safety: pre-absorb profile-scope items (e.g. before the first sync creates
   // sources) stay reachable until absorbMineIntoShared picks them up
-  const mineCount = await db.countFolder(db.profScope(activeProfileId), 'mine');
-  if (mineCount) out.push({ id: 'mine', scope: db.profScope(activeProfileId), title: 'סרטונים נוספים', emoji: '💜', count: mineCount });
-  // Cache against the write counter READ AT ENTRY: if anything committed while we were
-  // deriving, `seq` is already stale and the next render redoes the work (never serves
-  // a list that never matched the store).
+  const mineCount = await db.countFolder(db.profScope(pid), 'mine');
+  if (mineCount) out.push({ id: 'mine', scope: db.profScope(pid), title: 'סרטונים נוספים', emoji: '💜', count: mineCount });
+  // Superseded by a profile switch while we were awaiting? Publish NOTHING — not the
+  // globals, not the cache. The switch does its own render and re-derives from scratch.
+  if (pid !== activeProfileId) return out;
+  libScope = lib;
+  singleGroups = groups;
+  absorbedSingles = absorbed;
+  looseSingles = loose;
+  // Cache against the write counter AND the profile READ AT ENTRY: if anything committed
+  // while we were deriving, `seq` is already stale and the next render redoes the work
+  // (never serves a list that never matched the store).
   foldersCache = {
-    seq, profileId: activeProfileId, libScope, folders: out.slice(),
-    singleGroups, absorbedSingles, looseSingles
+    seq, profileId: pid, libScope: lib, folders: out.slice(),
+    singleGroups: groups, absorbedSingles: absorbed, looseSingles: loose
   };
   return out;
 }
@@ -656,7 +669,6 @@ function scopeForFolder(fid) {
 async function renderHome() {
   folders = await buildFolders();
   const grid = $('grid');
-  const contentFolders = folders.filter((f) => !f.isNew);
 
   refreshGateDot(); // fire-and-forget — the red dot must never delay the grid
 
@@ -666,7 +678,8 @@ async function renderHome() {
   if (empty) { $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
   if (shouldFlattenHome(folders)) {
-    await renderGridPage(grid, contentFolders[0].scope, contentFolders[0].id, 'home');
+    // shouldFlattenHome only says yes for a SINGLE non-🎁 folder, so folders[0] is it
+    await renderGridPage(grid, folders[0].scope, folders[0].id, 'home');
     return;
   }
 
@@ -1343,6 +1356,14 @@ async function refreshSheetWriteStatus() {
   await flushSheetQueue(activeProfileId).catch(() => {}); // opportunistic retry on entry
   const st = await sheetWriteState(libScope);
   if (!st) return;
+  if (st.dropped) {
+    // The write queue hit its cap and REFUSED an op. A refused delete is the dangerous
+    // one: its row stays in the sheet, and the mirror reads that presence as a
+    // deliberate re-add. Never let this hide behind the reassuring "pending" line.
+    el.textContent = `⚠️ ${st.dropped} פעולות לא נרשמו בקובץ הרשימה (תור הכתיבה מלא) — ייתכן שמחיקות או הוספות שביצעתם לא יעברו למכשירים אחרים. בדקו את קובץ הרשימה ידנית.`;
+    el.className = 'form-msg err';
+    return;
+  }
   if (st.error === 'no-edit-permission') {
     el.textContent = '⚠️ אין הרשאת עריכה לגיליון — סרטונים שנוספו באפליקציה לא נרשמים בו. שתפו את הגיליון לחשבון Google המחובר כעורך.';
     el.className = 'form-msg err';

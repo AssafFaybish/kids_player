@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
-  sheetBackedKeysOf, planScopeAdoption, planGiftRunawayRepair
+  sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -189,6 +189,10 @@ test('sheetBackedKeysOf: a PENDING share is NEVER sheet-backed', () => {
   assert.deepEqual(sheetBackedKeysOf(new Map([['a', recs[0]]]).values()), ['yt:live0000000']);
   assert.deepEqual(sheetBackedKeysOf([null, undefined, {}, 0]), []);
   assert.deepEqual(sheetBackedKeysOf(null), []);
+  // ONE predicate behind both forms: buildFolders needs the records, sync2 needs the
+  // keys, and the two used to hand-inline the same rule and could drift apart.
+  assert.deepEqual(recs.filter(isSheetBacked).map((r) => r.key), sheetBackedKeysOf(recs));
+  for (const junk of [null, undefined, {}, 0, 'x']) assert.equal(isSheetBacked(junk), false);
 });
 
 test('planScopeAdoption refuses to move a scope a SIBLING still reads', () => {
@@ -222,12 +226,40 @@ test('planScopeAdoption: nothing to do is never a move', () => {
 
 test('planGiftRunawayRepair keeps the newest 12 and retires an implausible pile', () => {
   // The state devices are in after the burned-baseline bug: the whole library gifted.
+  // giftRank here IS recency only because this fixture says so — see the next test.
   const states = Array.from({ length: 1020 }, (_, i) => ({ profileId: 'p1', key: 'yt:k' + i, giftRank: i + 1 }));
   const { keep, retire } = planGiftRunawayRepair(states);
   assert.equal(keep.length, 12);
   assert.equal(retire.length, 1008);
-  assert.deepEqual(keep.slice(0, 3), ['yt:k0', 'yt:k1', 'yt:k2'], 'rank 1 is the NEWEST — it stays');
+  assert.deepEqual(keep.slice(0, 3), ['yt:k0', 'yt:k1', 'yt:k2'], 'no recency data: rank order is the fallback');
   assert.equal(new Set([...keep, ...retire]).size, 1020, 'every ranked gift is accounted for exactly once');
+});
+
+test('planGiftRunawayRepair ranks by the VIDEOS’ recency, not by giftRank', () => {
+  // THE bug this signature exists for: a runaway pile is created by planGifts'
+  // INCREMENTAL branch, which stamps maxRank+1 while walking loadMergeIndex — a cursor
+  // over the [scopeId,key] primary key, i.e. ALPHABETICAL. So giftRank is uncorrelated
+  // with recency exactly on the piles this repairs, and retiring is PERMANENT
+  // (unwrappedAt is min-merged forever). Here rank order is the REVERSE of recency.
+  const n = 100;
+  const states = Array.from({ length: n }, (_, i) => ({ key: 'yt:k' + i, giftRank: i + 1 }));
+  const sortKeyOf = new Map(states.map((s, i) => [s.key, i])); // k99 newest, k0 oldest
+  const { keep, retire } = planGiftRunawayRepair(states, { sortKeyOf });
+  assert.equal(keep.length, 12);
+  assert.deepEqual(keep.slice(0, 3), ['yt:k99', 'yt:k98', 'yt:k97'], 'newest first');
+  assert.ok(!keep.includes('yt:k0'), 'the oldest video must not survive as a gift');
+  assert.ok(retire.includes('yt:k0'));
+  assert.equal(new Set([...keep, ...retire]).size, n);
+
+  // a plain object and a function are accepted too (the caller builds whatever it has)
+  assert.deepEqual(planGiftRunawayRepair(states, { sortKeyOf: (k) => Number(k.slice(4)) }).keep[0], 'yt:k99');
+
+  // a video we cannot date must never be retired just for missing a sortKey: datable
+  // records sort first, and the undatable ones fall back to rank among themselves
+  const partial = new Map([['yt:k5', 1000]]);
+  const res = planGiftRunawayRepair(states, { sortKeyOf: partial });
+  assert.equal(res.keep[0], 'yt:k5');
+  assert.equal(res.keep.length, 12);
 });
 
 test('planGiftRunawayRepair leaves a plausible gift pile completely alone', () => {
