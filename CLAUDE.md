@@ -259,6 +259,31 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.25 — **BOTH WAYS TO ADD A CHANNEL NOW IMPORT IT AND THEN ASK.** v1.0.22 gave the
+  parent screen the "what should I do with this catalogue?" question and CLAUDE.md recorded
+  that it covered "parent screen + share". **The share path never had it.**
+  `share.handleChannelShare` subscribed the channel, fired a sync it did NOT await, and
+  immediately announced "הערוץ נוסף! ✅ … חדשים ימתינו לאישור" — an outcome reported before
+  there was one, over a back catalogue that then sat in ממתינים unannounced. That is the
+  v1.0.22 bug, still live on the other half of the feature. Both callers now go through
+  `app.importChannelAndAsk` (loading screen → awaited forced sync → `loading.hide()` →
+  dialog), and a test pins that it has EXACTLY two callers and that share.js no longer syncs
+  behind `onAdded` — sharing the path is what stops the two from drifting again.
+  The three answers are **אישור הכל / אישור ידני / אחר כך** (relabelled from
+  אישור אוטומטי / בחירה ידנית; the parent's decision 2026-08-02 kept the third button —
+  without it the only way out is the scrim or hardware back, neither discoverable).
+  אישור הכל is what ticks the ✅ in the parent's channel list: `refreshChannelsList`
+  renders `cb.checked = !!lc.autoApprove`, so the flag IS the checkbox.
+  **The channel-approval paths resolve the library scope instead of reading the bare
+  `libScope` global** (`currentLibScope`, the same fallback `pendingTotal` already used).
+  That global is published by `buildFolders`, i.e. only after a home render — and a share
+  can now reach `offerChannelApproval` / `pickChannelVideos` on a cold start, where a null
+  scope reads as "this library is empty": no dialog, and a picker with no rows.
+  The outcome sentence is pure `plan.channelAddOutcome`, and it NAMES A ZERO too: a
+  Shorts-only channel and "nothing arrived" are different facts, the first one permanent
+  (Shorts are excluded on purpose). A plain ✅ is left for the single case that earns it —
+  nothing new, but the channel does have content the child can see. `diagnoseEmptyChannel`
+  does the two IDB reads only when the count is 0, so the common path skips them.
 - v1.0.25 — **A FORCED SYNC CHAINS, NEVER JOINS — AND NOW THE CODE ACTUALLY DOES IT.**
   v1.0.21 wrote that sentence in the comment above `syncLibrary` and then shipped
   `if (!opts.force || cur.force) return cur.promise`, which JOINS whenever the RUNNING sync
@@ -285,8 +310,9 @@ pins that the consumers follow the config and that every address is well-formed.
   progress events — which is why the add-a-channel loading screen sat frozen on its first
   step for the whole run. A comment cannot fail a test, so `invariants.test.mjs` pins that
   `syncLibrary` delegates to the helper and handles every branch it can return.
-  Also: a channel add reporting ZERO now says WHICH zero (Shorts-only channel vs. nothing
-  found) instead of the reassuring "הערוץ סונכרן ✅" that hid this for a release.
+  Also: a channel add reporting ZERO now says WHICH zero instead of the reassuring
+  "הערוץ סונכרן ✅" that hid this for a release — see `plan.channelAddOutcome` above, which
+  is where that decision lives now, so BOTH add paths get it.
 - v1.0.24 — **A CHANNEL FOLDER SHOWING 📺 IS A BUG, AND IT HAD TWO INDEPENDENT CAUSES.**
   Reported from the field on @rotemama4kids. NOT the channel and NOT the parser: both
   `yt.fetchChannelMeta` and the keyless `yt.scrapeChannelLogo` return a good avatar for it

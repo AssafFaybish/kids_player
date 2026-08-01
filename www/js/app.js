@@ -17,7 +17,7 @@ import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/moda
 import { rankItems } from './search.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
-  pendingBulkAction, PARENT_TAB_IDS } from './plan.js';
+  pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -128,17 +128,24 @@ async function askExit() {
  * scopes (the shared library and the personal one). `limit: 1` because only `total`
  * is read — this runs on every home render and again on every parent-screen entry.
  */
+/**
+ * The shared library scope, safe to call before the first home render.
+ *
+ * `libScope` is published by buildFolders, i.e. only once a home render has completed.
+ * Anything that asks earlier (the gate tapped while the profile is still activating, or a
+ * share arriving on a cold start) would otherwise read null and quietly answer "nothing
+ * here" about a library that is full. Falling back to the stored value costs one read,
+ * and only in that window.
+ */
+async function currentLibScope() {
+  if (libScope) return libScope;
+  if (!activeProfileId) return null;
+  try { return (await db.getSources(activeProfileId) || {}).libraryId || null; } catch { return null; }
+}
+
 async function pendingTotal() {
   let pending = 0;
-  // `libScope` is published by buildFolders, i.e. only once a home render has completed.
-  // Anything that asks earlier (the gate tapped while the profile is still activating)
-  // would otherwise count ZERO and report a queue that is actually full — no dot, and the
-  // parent screen landing on אודות. Falling back to the stored value costs one read, and
-  // only in that window.
-  let lib = libScope;
-  if (!lib && activeProfileId) {
-    try { lib = (await db.getSources(activeProfileId) || {}).libraryId || null; } catch {}
-  }
+  const lib = await currentLibScope();
   const scopes = [lib, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
   for (const s of scopes) pending += (await db.pagePending(s, { limit: 1 })).total;
   return pending;
@@ -2103,13 +2110,15 @@ async function adoptLibraryScope(profileId, oldLib, newLib) {
 /** The WAITING videos of one channel, in the shared library scope (channel content
     never lands anywhere else). One read — the caller decides what to do with them. */
 async function pendingKeysOfChannel(channelId) {
-  const { items } = await db.pagePending(libScope, { limit: 5000 });
+  const scope = await currentLibScope();
+  if (!scope) return [];
+  const { items } = await db.pagePending(scope, { limit: 5000 });
   return items.filter((r) => r.channelId === channelId).map((r) => r.key);
 }
 
 /** Approve a channel's whole backlog + refresh everything that shows it. */
 async function approveChannelBacklog(keys) {
-  await db.approvePending(libScope, keys);
+  await db.approvePending(await currentLibScope(), keys);
   await loadGiftStates();
   await Promise.all([refreshPendingList(), refreshParentList(), refreshChannelsList()]);
   renderHome();
@@ -2144,6 +2153,7 @@ function enqueueChannelSheetRow(channelId, flag) {
  * -> { approved, count } — count is the backlog size either way, for the message.
  */
 async function offerChannelApproval(channelId) {
+  const scope = await currentLibScope();
   const keys = await pendingKeysOfChannel(channelId);
   if (!keys.length) return { approved: false, count: 0 };
   const ch = (await db.getChannel(channelId)) || {};
@@ -2154,16 +2164,18 @@ async function offerChannelApproval(channelId) {
   const answer = await askKid({
     emoji: '📺',
     title: `${keys.length} סרטונים ב${name}. מה לעשות איתם?`,
-    text: 'אישור אוטומטי: הכול נכנס מיד, וגם כל סרטון חדש שיעלה בערוץ בעתיד — בלי לשאול שוב. '
-      + 'בחירה ידנית: תראו את כל הסרטונים ותסמנו אילו להשאיר. '
+    text: 'אישור הכל: הכול נכנס מיד, וגם כל סרטון חדש שיעלה בערוץ בעתיד — בלי לשאול שוב. '
+      + 'אישור ידני: תראו את כל הסרטונים ותסמנו אילו להשאיר. '
       + 'אחר כך: הכול ממתין בטאב "ממתינים" עד שתחליטו.',
-    ok: 'אישור אוטומטי', third: 'בחירה ידנית', cancel: 'אחר כך'
+    ok: 'אישור הכל', third: 'אישור ידני', cancel: 'אחר כך'
   });
 
   if (answer === 'ok') {
-    const lc = (await db.listLibraryChannels(libScope)).find((c) => c.channelId === channelId);
+    const lc = (await db.listLibraryChannels(scope)).find((c) => c.channelId === channelId);
+    // The ✅ in the parent's channel list IS this flag — refreshChannelsList renders
+    // `cb.checked = !!lc.autoApprove`, so approving here is what ticks it.
     if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
-    await db.approvePending(libScope, keys);
+    await db.approvePending(scope, keys);
     // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
     // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
     // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
@@ -2181,6 +2193,62 @@ async function offerChannelApproval(channelId) {
 }
 
 /**
+ * v1.0.25 — ONE path for "a channel was just subscribed": import it, then ask.
+ *
+ * Both places a parent can add a channel must behave the same, and until now only the
+ * parent screen did. A channel SHARED from YouTube subscribed it, fired a sync it never
+ * waited for, and immediately reported success — so the entire back catalogue landed in
+ * ממתינים with no dialog and no count, which is precisely the v1.0.22 bug that the parent
+ * screen was fixed for. CLAUDE.md already claimed the question covered "parent screen +
+ * share"; the code only ever covered one of them. Sharing them here is what stops the two
+ * from drifting again.
+ *
+ * The wait is unavoidable: the dialog needs the backlog, and the backlog needs the sync.
+ * loading.hide() runs in a `finally` and BEFORE the dialog — modals must never stack.
+ */
+async function importChannelAndAsk(channelId) {
+  // A brand-new channel backfills up to ~2000 videos — by far the longest wait a parent
+  // triggers by hand, and it used to run behind a one-line message (v1.0.18).
+  loading.show({ title: 'מושכים את הסרטונים של הערוץ', step: 'מתחילים…', pct: 0 });
+  let synced = false;
+  try {
+    await syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) });
+    synced = true;
+  } catch { /* reported by the caller */ } finally {
+    await loading.hide();
+  }
+  if (!synced) return { synced: false, approved: false, count: 0, empty: {} };
+
+  const { approved, count } = await offerChannelApproval(channelId);
+  await loadGiftStates();
+  await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+  renderHome();
+  if (approved) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
+  maybeSchedulePush();
+  return { synced: true, approved, count, empty: await diagnoseEmptyChannel(channelId, count) };
+}
+
+/**
+ * A channel that produced NOTHING: say which nothing it is.
+ *
+ * Until the planSyncDispatch fix a zero here was usually a LIE — the forced sync had
+ * joined the launch run and never looked at this channel at all. Now that a zero is real,
+ * the parent still deserves better than a reassuring ✅ over an empty folder: a
+ * Shorts-only channel is a permanent fact about the channel (Shorts are excluded on
+ * purpose, v1.0.21) and is worth saying out loud, which is what the parent's channel list
+ * already does with `noLongForm`.
+ *
+ * Only read when there is nothing to report — two IDB reads that the common path skips.
+ */
+async function diagnoseEmptyChannel(channelId, count) {
+  if (count) return {};
+  const ch = await db.getChannel(channelId).catch(() => null);
+  const live = await db.countFolder(await currentLibScope(), 'ch:' + channelId).catch(() => 0);
+  return { noLongForm: !!(ch && ch.noLongForm), hasLive: live > 0 };
+}
+
+
+/**
  * v1.0.23 — the MANUAL choice: show every waiting video of one channel and keep only the
  * ticked ones. Everything unticked becomes 'rejected' — parked, invisible to the child, and
  * recoverable from the parent's rejected list (decision 2026-08-01: the parent asked for a
@@ -2195,7 +2263,10 @@ function pickChannelVideos(channelId, name) {
   return new Promise((resolve) => {
     (async () => {
       const { compareForDisplay } = await import('./order.js');
-      const { items } = await db.pagePending(libScope, { limit: 5000 });
+      // Resolved, not the bare global: since v1.0.25 a channel SHARED from YouTube can
+      // reach this picker before any home render has published `libScope`.
+      const scope = await currentLibScope();
+      const { items } = await db.pagePending(scope, { limit: 5000 });
       const recs = items.filter((r) => r.channelId === channelId).sort(compareForDisplay);
       const chosen = new Set(recs.map((r) => r.key)); // all ticked
       const ul = $('pick-list');
@@ -2259,10 +2330,10 @@ function pickChannelVideos(channelId, name) {
         const keep = recs.filter((r) => chosen.has(r.key)).map((r) => r.key);
         const drop = recs.filter((r) => !chosen.has(r.key)).map((r) => r.key);
         if (keep.length) {
-          await db.approvePending(libScope, keep);
+          await db.approvePending(scope, keep);
           await enqueueApprovedForSheet(recs.filter((r) => chosen.has(r.key)));
         }
-        if (drop.length) await db.rejectPending(libScope, drop); // parked, NOT tombstoned
+        if (drop.length) await db.rejectPending(scope, drop); // parked, NOT tombstoned
         await loadGiftStates();
         await Promise.all([refreshPendingList(), refreshParentList(), refreshChannelsList()]);
         renderHome();
@@ -2366,38 +2437,9 @@ async function parentAdd() {
     msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
     $('add-url').value = '';
     await refreshChannelsList();
-    // A brand-new channel backfills up to ~2000 videos — by far the longest wait a
-    // parent triggers by hand, and it used to run behind a one-line message (v1.0.18).
-    loading.show({ title: 'מושכים את הסרטונים של הערוץ', step: 'מתחילים…', pct: 0 });
-    let synced = false;
-    try {
-      await syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) });
-      synced = true;
-    } catch { /* reported below */ } finally {
-      await loading.hide(); // ALWAYS — and BEFORE the dialog: modals must never stack
-    }
+    const { synced, approved, count, empty } = await importChannelAndAsk(channelId);
     if (!synced) { msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err'; return; }
-    const { approved, count } = await offerChannelApproval(channelId);
-    await loadGiftStates();
-    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
-    renderHome();
-    if (approved) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
-    maybeSchedulePush();
-    // Say what actually happened. "הערוץ סונכרן ✅" over a backlog of 109 unapproved
-    // videos is how this bug stayed invisible (v1.0.22). v1.0.25: a count of ZERO used to
-    // read the same reassuring way, and until the planSyncDispatch fix it was usually a
-    // LIE — the forced sync had joined the launch run and never looked at this channel at
-    // all. Now that zero is real, name which zero it is.
-    let tail = 'הערוץ סונכרן ✅';
-    if (!approved && !count) {
-      const ch = await db.getChannel(channelId).catch(() => null);
-      const live = await db.countFolder(libScope, 'ch:' + channelId).catch(() => 0);
-      if (ch && ch.noLongForm) tail = 'הערוץ נוסף, אבל הוא מפרסם רק Shorts — לא נמשכו ממנו סרטונים';
-      else if (!live) tail = 'הערוץ נוסף, אבל לא נמצאו בו סרטונים';
-    }
-    msg.textContent = approved ? `הערוץ נוסף ו-${count} סרטונים אושרו ✅`
-      : count ? `הערוץ נוסף. ${count} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`
-        : tail;
+    msg.textContent = channelAddOutcome(approved, count, empty);
     msg.className = 'form-msg ok';
     return;
   }
@@ -3536,14 +3578,23 @@ async function init() {
         return;
       }
       if (channelAdded) {
-        await alertKid({ emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — מושכים את הסרטונים שלו; חדשים ימתינו לאישור במסך ההורים.`, ok: 'מעולה' });
+        // v1.0.25: the SAME import-then-ask path the parent screen uses. This used to be a
+        // bare "הערוץ נוסף! ✅ … חדשים ימתינו לאישור" over a catalogue that was still
+        // downloading — the parent was told the outcome before there was one, and the
+        // backlog then sat in ממתינים unannounced.
+        const { synced, approved, count, empty } = await importChannelAndAsk(channelAdded);
+        await alertKid(synced
+          ? { emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — ${channelAddOutcome(approved, count, empty)}`, ok: 'מעולה' }
+          : { emoji: '😕', title: 'הערוץ נוסף, אבל המשיכה נכשלה', text: 'אפשר לנסות שוב ממסך ההורים ← מקורות ← רענון נתונים.', ok: 'בסדר' });
+        if (nav.isActive('gallery')) renderHome();
+        return; // importChannelAndAsk already re-rendered and scheduled the push
       }
       if (nav.isActive('gallery')) renderHome();
       // A video shared from YouTube lands with no srcChannelId and no gift rank, so it
       // showed up in the loose list and was not a 🎁 until the parent happened to press
-      // "רענון נתונים" (v1.0.21 field bug). A channel share already syncs itself; a
-      // PENDING video waits for approval, which syncs then.
-      if (!channelAdded && !pending) refreshAfterAdd();
+      // "רענון נתונים" (v1.0.21 field bug). A PENDING video waits for approval, which
+      // syncs then.
+      if (!pending) refreshAfterAdd();
     }
   });
   await loadActiveId();

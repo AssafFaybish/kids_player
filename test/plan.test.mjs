@@ -9,7 +9,7 @@ import {
   shouldAskShareProfile,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
-  resolveWatchContext, planSyncDispatch
+  resolveWatchContext, planSyncDispatch, channelAddOutcome
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -176,6 +176,37 @@ test('planSyncDispatch: a FORCED sync never rides a run that already read (v1.0.
 
   assert.equal(planSyncDispatch(), 'start', 'must never throw on junk input');
   assert.equal(planSyncDispatch({}), 'start');
+});
+
+test('channelAddOutcome: never a bare ✅ over a backlog the child cannot see (v1.0.25)', () => {
+  // THE v1.0.22 field bug in one line. A channel added in the parent screen is
+  // autoApprove:false, so its whole catalogue lands in ממתינים — and the message said
+  // "הערוץ סונכרן ✅". The parent had no reason to open ממתינים, so the child's home
+  // simply stayed empty and the app looked broken.
+  assert.match(channelAddOutcome(false, 109), /109/, 'a waiting backlog must state its size');
+  assert.match(channelAddOutcome(false, 109), /ממתינים/, 'and name where to find it');
+  assert.equal(channelAddOutcome(true, 109), 'הערוץ נוסף ו-109 סרטונים אושרו ✅');
+
+  // A ZERO gets named too, because "nothing arrived" and "this channel publishes only
+  // Shorts" are different facts — and the second is PERMANENT (Shorts are excluded on
+  // purpose, v1.0.21), so a parent staring at an empty folder deserves to hear it.
+  assert.match(channelAddOutcome(false, 0, { noLongForm: true }), /Shorts/);
+  assert.match(channelAddOutcome(false, 0, { noLongForm: false, hasLive: false }),
+    /לא נמצאו בו סרטונים/);
+  // The one zero that earns a plain ✅: nothing NEW, but the child can already see content.
+  assert.equal(channelAddOutcome(false, 0, { hasLive: true }), 'הערוץ סונכרן ✅');
+  // noLongForm wins over hasLive — it is a fact about the channel, not about this run
+  assert.match(channelAddOutcome(false, 0, { noLongForm: true, hasLive: true }), /Shorts/);
+  // …and "approved" with nothing to approve is still a zero: claiming "0 סרטונים אושרו"
+  // would be nonsense.
+  assert.equal(channelAddOutcome(true, 0, { hasLive: true }), 'הערוץ סונכרן ✅');
+
+  // Junk input must never throw, and must never invent a scary message: with no diagnosis
+  // at all the optimistic default is the right one.
+  assert.equal(channelAddOutcome(), 'הערוץ סונכרן ✅');
+  assert.equal(channelAddOutcome(false, 0), 'הערוץ סונכרן ✅');
+  assert.equal(channelAddOutcome(false, 0, null), 'הערוץ סונכרן ✅');
+  assert.equal(channelAddOutcome(false, -5), 'הערוץ סונכרן ✅');
 });
 
 test('attentionDot: CONTENT wins the dot, and the colour names the errand (v1.0.24)', () => {
