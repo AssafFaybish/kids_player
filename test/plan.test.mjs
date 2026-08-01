@@ -8,6 +8,7 @@ import {
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   shouldAskShareProfile,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
+  planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext
 } from '../www/js/plan.js';
 
@@ -94,6 +95,58 @@ test('shouldAskShareProfile: only when the answer changes where the video lands'
   assert.equal(shouldAskShareProfile([{ profileId: 'p1' }, { profileId: 'p2' }]), true);
   // junk entries are ignored rather than counted as profiles
   assert.equal(shouldAskShareProfile([A, null, {}]), false);
+});
+
+test('planChannelLogo: a keyless sync must NOT suppress the scrape (v1.0.24)', () => {
+  const now = 1_000_000_000_000;
+  // THE FIELD BUG. A brand-new channel: channels.list ran (or, keyless, answered instantly
+  // with nothing) and the old code stamped `logoTriedAt` either way, which gated the
+  // page-scrape — the one path that demonstrably works without a key. The channel then
+  // showed 📺 for a WEEK, starting the moment the parent added it.
+  assert.deepEqual(planChannelLogo({}, { hasKey: false, now }), { api: false, scrape: true },
+    'no key ⇒ no API call is possible, but the scrape is exactly what must run');
+  assert.deepEqual(planChannelLogo({}, { hasKey: true, now }), { api: true, scrape: true });
+  // An API attempt that came back empty may gate the API path — never the scrape.
+  const apiTried = { logoApiTriedAt: now - 60_000 };
+  assert.deepEqual(planChannelLogo(apiTried, { hasKey: true, now }), { api: false, scrape: true });
+
+  // A logo we HAVE is left alone: existing libraries are never re-scraped wholesale.
+  const good = { logoUrl: 'https://yt3/x=s240', logoFetchedAt: now - 90 * 86400_000 };
+  assert.deepEqual(planChannelLogo(good, { hasKey: true, now }), { api: false, scrape: false },
+    'an old but working avatar is not stale — age alone is not a reason to refetch');
+});
+
+test('planChannelLogo: an avatar that FAILS TO LOAD becomes fetchable again (v1.0.24)', () => {
+  const now = 1_000_000_000_000;
+  const url = 'https://yt3/x=s240';
+  // The channel rebranded: the stored URL 404s, `img.onerror` swapped in 📺, and both
+  // fetch paths used to skip any channel that already had a logoUrl — permanently.
+  const broken = { logoUrl: url, logoFetchedAt: now - 86400_000 };
+  const failedAt = now - 1000;
+  assert.deepEqual(planChannelLogo(broken, { hasKey: true, failedAt, now }), { api: true, scrape: true });
+
+  // A failure that PREDATES the current URL is already answered — that logo was replaced.
+  const healed = { logoUrl: url, logoFetchedAt: now - 1000 };
+  assert.deepEqual(planChannelLogo(healed, { hasKey: true, failedAt: now - 86400_000, now }),
+    { api: false, scrape: false });
+
+  // The retry windows still bound the traffic: the scrape is a full page fetch, so a
+  // channel whose avatar simply cannot be loaded here re-scrapes weekly, not every sync.
+  assert.equal(planChannelLogo({ ...broken, logoTriedAt: now - 60_000 },
+    { hasKey: true, failedAt, now }).scrape, false);
+  assert.equal(planChannelLogo({ ...broken, logoTriedAt: now - LOGO_SCRAPE_RETRY_MS - 1 },
+    { hasKey: true, failedAt, now }).scrape, true);
+  assert.equal(planChannelLogo({ ...broken, logoApiTriedAt: now - LOGO_API_RETRY_MS - 1 },
+    { hasKey: true, failedAt, now }).api, true, 'the batched API call retries a full day sooner');
+
+  // `logoApiTriedAt` is a NEW field on purpose: every channel already on a device passes
+  // the API gate exactly once after the update, which heals the ones the old bug stranded.
+  const stranded = { logoUrl: '', logoTriedAt: now - 86400_000 }; // falsely "tried" yesterday
+  assert.equal(planChannelLogo(stranded, { hasKey: true, now }).api, true);
+  assert.equal(planChannelLogo(stranded, { hasKey: true, now }).scrape, false, 'weekly gate holds');
+
+  assert.deepEqual(planChannelLogo(null, { hasKey: false, now }), { api: false, scrape: true },
+    'never throws on a channel record that does not exist yet');
 });
 
 test('attentionDot: CONTENT wins the dot, and the colour names the errand (v1.0.24)', () => {

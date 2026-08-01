@@ -259,6 +259,41 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.24 — **A CHANNEL FOLDER SHOWING 📺 IS A BUG, AND IT HAD TWO INDEPENDENT CAUSES.**
+  Reported from the field on @rotemama4kids. NOT the channel and NOT the parser: both
+  `yt.fetchChannelMeta` and the keyless `yt.scrapeChannelLogo` return a good avatar for it
+  today (verified against the live page), and `extractChannelLogoFromHtml` matches the real
+  HTML. The two defects, both now pinned by `plan.planChannelLogo`:
+  - **`logoTriedAt` WAS STAMPED FOR AN ATTEMPT THAT NEVER HAPPENED.** The channels.list
+    writer stamped it unconditionally — but `fetchChannelMeta` with no key returns empty
+    logos WITHOUT making a request, and its error branch does the same. The keyless
+    page-scrape fifteen lines below is gated on that field, so the ONLY working fallback was
+    suppressed for a WEEK starting on a channel's very first sync — exactly when the parent
+    is looking at the new tile. The scrape (the last resort) now owns `logoTriedAt`; the API
+    path owns `logoApiTriedAt`; only a real URL stamps `logoFetchedAt`.
+  - **A STORED URL THAT WILL NOT LOAD IS WORSE THAN NO URL.** `img.onerror` silently swaps
+    in the emoji, and BOTH fetch paths skipped any channel that already had a `logoUrl` — so
+    a channel that rebrands (old avatar URL 404s) loses its picture forever. The renderer now
+    calls `noteLogoFailure`, and a failure newer than `logoFetchedAt` marks the URL known-bad.
+    **The marker lives in `meta` (`db.getLogoFailedAt`/`setLogoFailedAt`), NOT on the channel
+    record** — 13 sync call sites read a channel, spend seconds on the network and write the
+    whole snapshot back, so a marker on the record is reverted by whichever stage is in
+    flight. That is measured, not theoretical: it swallowed the first version of this fix.
+    It is per-device by nature anyway. The scrape loop RE-READS the record before writing,
+    for the same reason.
+  `logoApiTriedAt` being a NEW field is the migration: every channel already on a device
+  passes the API gate exactly once after the update, which heals the ones stranded by the
+  first defect. Retry budgets differ by cost — API 24h (batched, ~1 unit), scrape 7 days (a
+  1.5MB page fetch each). The parent's channel list rendered an EMPTY `<img>` for a
+  logo-less channel (not even the 📺); it now shares the same fallback and reporting.
+  DECISION (2026-08-01): the `fallbackThumbUrl` stage still requires a LIVE video — a
+  thumbnail the parent has not approved must not appear anywhere, so a channel whose whole
+  backlog is pending keeps 📺 in the parent's list until the first approval.
+  NOT DONE, and deliberately: a candidate chain over the two Google avatar hosts
+  (`yt3.ggpht.com` ⇄ `yt3.googleusercontent.com`). It looked necessary because the sandboxed
+  preview browser loaded only one of them — but all four host×size forms answer 200 with
+  real bytes over the real network, so that was an artifact of the test environment and the
+  code would have been speculative complexity justified by a false measurement.
 - v1.0.24 — **A DOT THAT MEANS TWO THINGS MEANS NOTHING.** A manual-approval channel already
   parked its new uploads in the queue (`plan.js` `needsApproval`, unchanged) — the failure was
   purely that nobody could TELL. The gate dot lit for `pending > 0 || updateReady` in the same

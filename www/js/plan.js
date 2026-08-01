@@ -393,6 +393,60 @@ export function planGiftRunawayRepair(states, { baseline = 12, floor = 60, sortK
 }
 
 /** Folder ids that are just "everything loose" — no identity of their own. */
+/** Channel-avatar retry windows. The API call is batched and ~free; the scrape is a
+ *  full 1.5MB page fetch, one channel at a time — hence the two very different budgets. */
+export const LOGO_API_RETRY_MS = 24 * 60 * 60 * 1000;
+export const LOGO_SCRAPE_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * v1.0.24 — PURE: should this sync try to (re)fetch the channel's avatar, and how?
+ *
+ * A channel folder with no avatar renders the 📺 emoji, which is exactly what a folder of
+ * VIDEOS should not look like — the logo is how a non-reading child tells one channel from
+ * another. Two separate defects made that permanent:
+ *
+ *  1. `logoTriedAt` used to be stamped by the channels.list writer even when NOTHING was
+ *     tried — keyless mode returns empty logos without making a request, and so does the
+ *     error branch. The keyless page-scrape immediately below is gated on that same field,
+ *     so the fallback was suppressed for a WEEK on a channel's very first sync, which is
+ *     precisely when the parent is looking at the new tile. The scrape now owns
+ *     `logoTriedAt` (it is the last resort) and the API path owns `logoApiTriedAt`.
+ *  2. A stored URL the browser cannot LOAD is worse than no URL: the tile silently falls
+ *     back to the emoji (`img.onerror`) and nothing ever re-asked, because both fetch
+ *     paths skipped any channel that already had a `logoUrl`. Avatars do go stale — a
+ *     channel that rebrands 404s its old URL forever. The renderer now records
+ *     `logoFailedAt`, and a failure NEWER than the fetch marks the URL known-bad.
+ *
+ * Absent a recorded failure a stored logo is trusted, so existing libraries are never
+ * re-scraped wholesale. The `logoApiTriedAt` field being NEW is deliberate: every channel
+ * already on a device passes the API gate exactly once after the update, which is what
+ * heals the channels the first defect stranded — no migration needed.
+ *
+ * `failedAt` is passed IN rather than read off the record, and it lives in `meta` on the
+ * caller's side. Two reasons, one of them measured: (a) whether an image renders is a
+ * property of THIS device's WebView, like every other per-device channel field the Drive
+ * layer strips — it must never travel; and (b) the sync's stages read a channel record,
+ * spend seconds on the network, then write the whole snapshot back, so a marker stored on
+ * the record is silently reverted by whichever stage happens to be in flight. That is not
+ * hypothetical: it is exactly what swallowed the first version of this fix.
+ *
+ * @param ch       the channel record ({} for one that does not exist yet)
+ * @param hasKey   is a YouTube API key configured (no key ⇒ the API path cannot run)
+ * @param failedAt when the renderer last failed to LOAD the stored logoUrl (0 = never)
+ * @returns { api, scrape } — whether each path should run now
+ */
+export function planChannelLogo(ch, { hasKey = false, failedAt = 0, now = Date.now() } = {}) {
+  const c = ch || {};
+  const failed = !!failedAt && failedAt >= (c.logoFetchedAt || 0);
+  const stale = !c.logoUrl || failed;
+  if (!stale) return { api: false, scrape: false };
+  const fresh = (at, win) => !!at && now - at < win;
+  return {
+    api: !!hasKey && !fresh(c.logoApiTriedAt, LOGO_API_RETRY_MS),
+    scrape: !fresh(c.logoTriedAt, LOGO_SCRAPE_RETRY_MS)
+  };
+}
+
 /**
  * v1.0.21 — PURE: may this RSS entry enter the library?
  * Shorts and live streams never do. Kept as a named predicate so an INVERSION

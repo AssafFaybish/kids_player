@@ -431,6 +431,23 @@ export async function getChannel(channelId) {
 export async function putChannel(rec) {
   await tx(['channels'], 'readwrite', (c) => { c.put(rec); });
 }
+
+/**
+ * v1.0.24 — "this device's WebView could not LOAD the channel's stored avatar".
+ *
+ * Deliberately in `meta`, NOT on the channel record. The sync's stages read a channel,
+ * spend seconds on the network, and write the whole snapshot back (13 call sites do this),
+ * so a marker written by the renderer mid-sync is silently reverted — measured, and it
+ * swallowed the first version of this fix. It is also per-device by nature, like every
+ * other channel field `drive.stripPerDeviceChannel` keeps off the wire.
+ */
+const logoFailKey = (channelId) => 'logofail:' + channelId;
+export async function getLogoFailedAt(channelId) {
+  return Number(await getMeta(logoFailKey(channelId))) || 0;
+}
+export async function setLogoFailedAt(channelId, at) {
+  await putMeta(logoFailKey(channelId), at || 0);
+}
 export async function listLibraryChannels(libraryId) {
   const db = await openDb();
   const idx = db.transaction('libraryChannels').objectStore('libraryChannels').index('by_library');

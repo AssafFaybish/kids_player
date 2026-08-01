@@ -535,6 +535,38 @@ async function loadGiftStates() {
 }
 
 /* ---------------- Home: folders (F10) ---------------- */
+
+/**
+ * v1.0.24 — the channel's avatar did not LOAD. Record it, so the next sync can go and get
+ * a fresh URL (pure `plan.planChannelLogo`).
+ *
+ * Without this the failure is invisible AND permanent: `img.onerror` quietly swaps in the
+ * 📺 emoji, and both fetch paths skipped any channel that already had a `logoUrl` — so a
+ * channel that rebranded (its old avatar URL now 404s) lost its picture forever, and the
+ * child lost the only thing that tells one folder from another. The stored URL is NOT
+ * cleared here: a moment offline must not throw away a perfectly good avatar, and the
+ * sync overwrites it only once it holds a replacement.
+ *
+ * Once per channel per session — the same tile re-renders on every home entry, and each
+ * write bumps `db.dataVersion()`, which is what the folder cache keys off.
+ */
+const logoFailuresNoted = new Set();
+function noteLogoFailure(channelId) {
+  if (!channelId || logoFailuresNoted.has(channelId)) return;
+  logoFailuresNoted.add(channelId);
+  db.setLogoFailedAt(channelId, Date.now()).catch(() => {});
+}
+
+/** Show a channel avatar; on failure fall back to the emoji AND report it (see above). */
+function mountChannelLogo(host, url, channelId, emoji) {
+  if (!url) { host.textContent = emoji; return; }
+  const img = document.createElement('img');
+  img.alt = '';
+  img.onerror = () => { img.remove(); host.textContent = emoji; noteLogoFailure(channelId); };
+  img.src = url;
+  host.appendChild(img);
+}
+
 function folderTile(f) {
   const btn = document.createElement('button');
   btn.className = 'tile tile-folder' + (f.isNew ? ' folder-new' : '');
@@ -543,15 +575,8 @@ function folderTile(f) {
 
   const logo = document.createElement('span');
   logo.className = 'folder-logo';
-  if (f.logoUrl) {
-    const img = document.createElement('img');
-    img.src = f.logoUrl;
-    img.alt = '';
-    img.onerror = () => { img.remove(); logo.textContent = f.emoji; };
-    logo.appendChild(img);
-  } else {
-    logo.textContent = f.emoji;
-  }
+  if (f.logoUrl) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
+  else logo.textContent = f.emoji;
   const nm = document.createElement('span');
   nm.className = 'folder-name';
   nm.textContent = f.title;
@@ -681,7 +706,10 @@ async function buildFolders() {
       out.push({
         id: 'ch:' + lc.channelId, scope: lib, title: lc.titleOverride || ch.title || 'ערוץ',
         // logo → persisted per-channel fallback thumbnail → 📺 emoji (v1.0.6):
-        // every channel folder must stay visually distinct for a non-reading child
+        // every channel folder must stay visually distinct for a non-reading child.
+        // v1.0.24: channelId rides along so a tile whose image FAILS TO LOAD can say so
+        // (noteLogoFailure) — that failure is otherwise invisible and permanent.
+        channelId: lc.channelId,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
       });
     }
@@ -704,14 +732,14 @@ async function buildFolders() {
       // subscribed but nothing imported yet — the singles still need a home
       const ch = (await db.getChannel(chId)) || {};
       out.push({
-        id: 'ch:' + chId, scope: lib, title: ch.title || 'ערוץ',
+        id: 'ch:' + chId, scope: lib, title: ch.title || 'ערוץ', channelId: chId,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count: recs.length
       });
     }
     for (const g of grouping.groups) {
       const ch = (await db.getChannel(g.channelId)) || {};
       out.push({
-        id: 'grp:' + g.channelId, scope: lib, title: g.title,
+        id: 'grp:' + g.channelId, scope: lib, title: g.title, channelId: g.channelId,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '🎞️',
         count: g.keys.length, grouped: true
       });
@@ -945,11 +973,7 @@ async function openFolder(fid) {
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
   if (f && f.logoUrl) {
-    const img = document.createElement('img');
-    img.src = f.logoUrl;
-    img.alt = '';
-    img.onerror = () => { img.remove(); logoTop.textContent = f.emoji || '📺'; };
-    logoTop.appendChild(img);
+    mountChannelLogo(logoTop, f.logoUrl, f.channelId, f.emoji || '📺');
     logoTop.classList.remove('hidden');
   } else if (f && f.emoji && !f.isNew) {
     logoTop.textContent = f.emoji;
@@ -1939,7 +1963,13 @@ async function refreshChannelsList() {
     logo.style.width = '46px';
     logo.style.aspectRatio = '1';
     logo.style.borderRadius = '50%';
-    if (ch.logoUrl) logo.src = ch.logoUrl;
+    // v1.0.24: a channel with no avatar used to render an EMPTY <img> here — a blank hole,
+    // not even the 📺 the home screen falls back to. And a URL that failed to load was
+    // never reported, so it could never be replaced.
+    if (ch.logoUrl) {
+      logo.src = ch.logoUrl;
+      logo.onerror = () => { logo.removeAttribute('src'); noteLogoFailure(lc.channelId); };
+    }
     const body = document.createElement('div');
     body.className = 'li-body';
     const title = document.createElement('div');
