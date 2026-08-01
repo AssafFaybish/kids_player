@@ -37,6 +37,24 @@ test('a rejected record is NOT revived by a peer\'s stale approval (v1.0.23)', (
   assert.equal(out.approvedAt, null, 'and it no longer claims to be approved');
 });
 
+test('settleCuration is IDEMPOTENT for all three states', () => {
+  // It runs on every sync merge AND on every Drive apply, so a value that drifts each pass
+  // (a restamped timestamp, a homeFolderId overwritten with the parking slot) would rewrite
+  // the whole library on every sync and re-push it to Drive forever.
+  const cases = [
+    { key: 'a', state: 'live', folderId: 'ch:UC1', approvedAt: 100 },
+    { key: 'b', state: 'pending', folderId: 'ch:UC1' },
+    { key: 'c', state: 'rejected', folderId: 'ch:UC1' }
+  ];
+  for (const start of cases) {
+    const once = settleCuration({ ...start }, 'sheet', 500);
+    const twice = settleCuration({ ...once }, 'sheet', 900); // a LATER "now" must change nothing
+    assert.deepEqual(twice, once, `settleCuration drifted for state=${start.state}`);
+    // and the parked ones never lose the home they must be restored to
+    if (start.state !== 'live') assert.equal(twice.homeFolderId, 'ch:UC1');
+  }
+});
+
 test('settleCuration parks a rejection and REMEMBERS where it belongs', () => {
   const rec = settleCuration({ key: 'yt:a', state: 'rejected', folderId: 'ch:UC1' }, 'sheet', 500);
   assert.equal(rec.folderId, PARKED.rejected);

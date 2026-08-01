@@ -138,6 +138,48 @@ test('a peer\'s approval arrives REACHABLE, not parked (v1.0.22)', () => {
   assert.equal(stillWaiting.folderId, '~pending');
 });
 
+test('a REJECTION travels through the Drive doc, and the merge stays order-independent (v1.0.23)', () => {
+  // The cross-device half of the rejected list. Device A rejected the video at t=900;
+  // device B still holds the copy it approved at t=100 and pushes it. Whichever order the
+  // two documents meet in, the child must not get it back.
+  const doc = (over) => ({
+    kind: 'kids-player-db', schema: 1, exportedAt: 1, profiles: [], profileState: {}, profileSources: {},
+    libraries: { 'lib:x': { sheetUrl: null, denylist: [], channels: [], libraryChannels: [], videos: [vid('yt:aaaaaaaaaaa', over)] } }
+  });
+  const rejectedOnA = doc({ state: 'rejected', rejectedAt: 900, approvedAt: null, folderId: '~rejected', homeFolderId: 'ch:UC1' });
+  const liveOnB = doc({ state: 'live', approvedAt: 100, folderId: 'ch:UC1' });
+  const pick = (x, y) => mergeDbFiles(x, y).libraries['lib:x'].videos[0];
+
+  for (const [name, m] of [['A,B', pick(rejectedOnA, liveOnB)], ['B,A', pick(liveOnB, rejectedOnA)]]) {
+    assert.equal(m.state, 'rejected', `merge(${name}) revived a rejected video`);
+    assert.equal(m.approvedAt, null, `merge(${name}) still claims it is approved`);
+  }
+  // and the mirror image: an approval made LATER than the rejection must win
+  const laterApproval = doc({ state: 'live', approvedAt: 5000, folderId: 'ch:UC1' });
+  assert.equal(pick(rejectedOnA, laterApproval).state, 'live', 'the parent changed their mind');
+  assert.equal(pick(laterApproval, rejectedOnA).state, 'live');
+  // idempotence: merging a doc with itself must not disturb the decision
+  assert.equal(pick(rejectedOnA, rejectedOnA).state, 'rejected');
+  assert.equal(pick(rejectedOnA, rejectedOnA).rejectedAt, 900);
+});
+
+test('serializeDb round-trips the rejected shape (v1.0.23)', () => {
+  // If `rejectedAt` or the '~rejected' parking slot did not survive serialization, the
+  // rejection would arrive on the peer as an undated one — and resolveCuration compares
+  // exactly that timestamp, so any live copy would then outrank it.
+  const doc = {
+    profiles: [], profileState: {}, profileSources: {},
+    libraries: { 'lib:x': { sheetUrl: null, denylist: [], channels: [], libraryChannels: [],
+      videos: [vid('yt:aaaaaaaaaaa', { state: 'rejected', rejectedAt: 4242, approvedAt: null, folderId: '~rejected', homeFolderId: 'ch:UC1' })] } }
+  };
+  const back = parseDb(serializeDb(doc));
+  const v = back.libraries['lib:x'].videos[0];
+  assert.equal(v.state, 'rejected');
+  assert.equal(v.rejectedAt, 4242, 'the decision timestamp must survive the round trip');
+  assert.equal(v.folderId, '~rejected');
+  assert.equal(v.homeFolderId, 'ch:UC1', 'without this the peer cannot restore it anywhere');
+});
+
 test('serializeDb refusal list: no localPath, no thumbId, no backfillCursor', () => {
   const json = serializeDb({
     profiles: [],
