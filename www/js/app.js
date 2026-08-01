@@ -2384,10 +2384,20 @@ async function parentAdd() {
     if (approved) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
     maybeSchedulePush();
     // Say what actually happened. "הערוץ סונכרן ✅" over a backlog of 109 unapproved
-    // videos is how this bug stayed invisible (v1.0.22).
+    // videos is how this bug stayed invisible (v1.0.22). v1.0.25: a count of ZERO used to
+    // read the same reassuring way, and until the planSyncDispatch fix it was usually a
+    // LIE — the forced sync had joined the launch run and never looked at this channel at
+    // all. Now that zero is real, name which zero it is.
+    let tail = 'הערוץ סונכרן ✅';
+    if (!approved && !count) {
+      const ch = await db.getChannel(channelId).catch(() => null);
+      const live = await db.countFolder(libScope, 'ch:' + channelId).catch(() => 0);
+      if (ch && ch.noLongForm) tail = 'הערוץ נוסף, אבל הוא מפרסם רק Shorts — לא נמשכו ממנו סרטונים';
+      else if (!live) tail = 'הערוץ נוסף, אבל לא נמצאו בו סרטונים';
+    }
     msg.textContent = approved ? `הערוץ נוסף ו-${count} סרטונים אושרו ✅`
       : count ? `הערוץ נוסף. ${count} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`
-        : 'הערוץ סונכרן ✅';
+        : tail;
     msg.className = 'form-msg ok';
     return;
   }

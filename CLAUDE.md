@@ -259,6 +259,34 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.25 — **A FORCED SYNC CHAINS, NEVER JOINS — AND NOW THE CODE ACTUALLY DOES IT.**
+  v1.0.21 wrote that sentence in the comment above `syncLibrary` and then shipped
+  `if (!opts.force || cur.force) return cur.promise`, which JOINS whenever the RUNNING sync
+  is itself forced. The first sync of every launch IS forced (`launchSyncDone`, app.js) and
+  takes minutes on a real library — a page fetch per channel logo, up to 40 backfill pages —
+  so the collision was ROUTINE, not rare. Everything the parent did inside that window rode
+  a run that had already read the library at [sync2.js:266](www/js/sync2.js:266):
+  - **adding a channel imported NOTHING.** The run listed the channels before the new one
+    existed, finished "successfully", `offerChannelApproval` found 0 pending videos so the
+    three-way dialog never appeared, and the parent was told "הערוץ סונכרן ✅" over an empty
+    import. Pressing "רענון נתונים" (no run in flight) fixed it — exactly how it was
+    reported from the field.
+  - **every `refreshAfterAdd` path silently regressed to the v1.0.21 bug**: no
+    `srcChannelId` (the video sits in the loose list instead of its channel folder) and no
+    `giftRank` (not a 🎁).
+  The decision is now pure `plan.planSyncDispatch` → `'start'|'join-running'|'join-queued'|
+  'queue'`. **`join-queued` is load-bearing, not an optimisation**: a QUEUED run has read
+  nothing yet, so it is guaranteed to observe the caller's write — without it three adds in
+  a row would queue three full library sweeps. Measured in the browser 2026-08-02: with the
+  old code two overlapping forced calls returned the IDENTICAL promise; with the fix they
+  are separate runs, the second starting after the first ends.
+  **`onProgress` now fans out to every caller a run serves** (`entry.listeners`). A joined
+  caller used to lose its callback entirely — measured: the second caller received zero
+  progress events — which is why the add-a-channel loading screen sat frozen on its first
+  step for the whole run. A comment cannot fail a test, so `invariants.test.mjs` pins that
+  `syncLibrary` delegates to the helper and handles every branch it can return.
+  Also: a channel add reporting ZERO now says WHICH zero (Shorts-only channel vs. nothing
+  found) instead of the reassuring "הערוץ סונכרן ✅" that hid this for a release.
 - v1.0.24 — **A CHANNEL FOLDER SHOWING 📺 IS A BUG, AND IT HAD TWO INDEPENDENT CAUSES.**
   Reported from the field on @rotemama4kids. NOT the channel and NOT the parser: both
   `yt.fetchChannelMeta` and the keyless `yt.scrapeChannelLogo` return a good avatar for it

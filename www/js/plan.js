@@ -15,6 +15,42 @@ const DIFF_FIELDS = [
 const changed = (a, b) => DIFF_FIELDS.some((f) => (a[f] ?? null) !== (b[f] ?? null));
 
 /**
+ * v1.0.25 — PURE: a caller asked for a sync. Start one, or ride an existing one?
+ *
+ * FIELD BUG this fixes. v1.0.21 declared "a FORCED sync CHAINS, NEVER JOINS" and wrote the
+ * comment above `syncLibrary` saying so — but the condition it shipped was
+ * `if (!opts.force || cur.force) return cur.promise`, which JOINS whenever the running sync
+ * is itself forced. The first sync of every launch IS forced and takes minutes on a real
+ * library (a page fetch per channel logo, up to 40 backfill pages). So everything a parent
+ * did inside that window rode a run that had ALREADY read the library:
+ *   - adding a channel: the run listed the channels before the new one existed, finished
+ *     "successfully", and `offerChannelApproval` then found 0 pending videos — so the
+ *     three-way dialog never appeared and the parent was told "הערוץ סונכרן ✅" over an
+ *     empty import. Pressing "רענון נתונים" (no run in flight) fixed it, which is exactly
+ *     how it was reported from the field;
+ *   - every `refreshAfterAdd` path: the new record kept no `srcChannelId` (so it sat in the
+ *     loose list instead of its channel folder) and no `giftRank` (so it was not a 🎁) —
+ *     the precise bug `refreshAfterAdd` was written to prevent, reintroduced by the race.
+ *
+ * The rule, and why each branch is the correct one:
+ *   - not forced          → 'join-running'. The caller wrote nothing; any recent run answers it.
+ *   - forced, one QUEUED  → 'join-queued'. A queued run has not read anything yet, so it is
+ *                           guaranteed to observe this caller's writes. This branch is what
+ *                           keeps three adds in a row from queueing three full sweeps.
+ *   - forced, one RUNNING → 'queue'. It has already read; only a later run can see us.
+ *   - nothing in flight   → 'start'.
+ *
+ * @param running whether a run is currently executing
+ * @param queued  whether a run is already queued behind it (not yet started)
+ * @param force   does this caller need state as of NOW (it just wrote something)?
+ */
+export function planSyncDispatch({ running = false, queued = false, force = false } = {}) {
+  if (!running) return 'start';
+  if (!force) return 'join-running';
+  return queued ? 'join-queued' : 'queue';
+}
+
+/**
  * @param candidates  enriched candidate records for ONE scope:
  *   { scopeId,key,type,id,url,srcUrl,driveId, title,titleSource,thumbUrl,
  *     channelId,folderId,origin,publishedAt,rowIndex, autoApprove }
