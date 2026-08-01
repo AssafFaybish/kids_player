@@ -393,6 +393,60 @@ export function planGiftRunawayRepair(states, { baseline = 12, floor = 60, sortK
 }
 
 /** Folder ids that are just "everything loose" — no identity of their own. */
+/** Channel-avatar retry windows. The API call is batched and ~free; the scrape is a
+ *  full 1.5MB page fetch, one channel at a time — hence the two very different budgets. */
+export const LOGO_API_RETRY_MS = 24 * 60 * 60 * 1000;
+export const LOGO_SCRAPE_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * v1.0.24 — PURE: should this sync try to (re)fetch the channel's avatar, and how?
+ *
+ * A channel folder with no avatar renders the 📺 emoji, which is exactly what a folder of
+ * VIDEOS should not look like — the logo is how a non-reading child tells one channel from
+ * another. Two separate defects made that permanent:
+ *
+ *  1. `logoTriedAt` used to be stamped by the channels.list writer even when NOTHING was
+ *     tried — keyless mode returns empty logos without making a request, and so does the
+ *     error branch. The keyless page-scrape immediately below is gated on that same field,
+ *     so the fallback was suppressed for a WEEK on a channel's very first sync, which is
+ *     precisely when the parent is looking at the new tile. The scrape now owns
+ *     `logoTriedAt` (it is the last resort) and the API path owns `logoApiTriedAt`.
+ *  2. A stored URL the browser cannot LOAD is worse than no URL: the tile silently falls
+ *     back to the emoji (`img.onerror`) and nothing ever re-asked, because both fetch
+ *     paths skipped any channel that already had a `logoUrl`. Avatars do go stale — a
+ *     channel that rebrands 404s its old URL forever. The renderer now records
+ *     `logoFailedAt`, and a failure NEWER than the fetch marks the URL known-bad.
+ *
+ * Absent a recorded failure a stored logo is trusted, so existing libraries are never
+ * re-scraped wholesale. The `logoApiTriedAt` field being NEW is deliberate: every channel
+ * already on a device passes the API gate exactly once after the update, which is what
+ * heals the channels the first defect stranded — no migration needed.
+ *
+ * `failedAt` is passed IN rather than read off the record, and it lives in `meta` on the
+ * caller's side. Two reasons, one of them measured: (a) whether an image renders is a
+ * property of THIS device's WebView, like every other per-device channel field the Drive
+ * layer strips — it must never travel; and (b) the sync's stages read a channel record,
+ * spend seconds on the network, then write the whole snapshot back, so a marker stored on
+ * the record is silently reverted by whichever stage happens to be in flight. That is not
+ * hypothetical: it is exactly what swallowed the first version of this fix.
+ *
+ * @param ch       the channel record ({} for one that does not exist yet)
+ * @param hasKey   is a YouTube API key configured (no key ⇒ the API path cannot run)
+ * @param failedAt when the renderer last failed to LOAD the stored logoUrl (0 = never)
+ * @returns { api, scrape } — whether each path should run now
+ */
+export function planChannelLogo(ch, { hasKey = false, failedAt = 0, now = Date.now() } = {}) {
+  const c = ch || {};
+  const failed = !!failedAt && failedAt >= (c.logoFetchedAt || 0);
+  const stale = !c.logoUrl || failed;
+  if (!stale) return { api: false, scrape: false };
+  const fresh = (at, win) => !!at && now - at < win;
+  return {
+    api: !!hasKey && !fresh(c.logoApiTriedAt, LOGO_API_RETRY_MS),
+    scrape: !fresh(c.logoTriedAt, LOGO_SCRAPE_RETRY_MS)
+  };
+}
+
 /**
  * v1.0.21 — PURE: may this RSS entry enter the library?
  * Shorts and live streams never do. Kept as a named predicate so an INVERSION
@@ -538,6 +592,73 @@ export function shouldAskShareProfile(targets) {
   const list = (targets || []).filter((t) => t && t.profileId);
   if (list.length < 2) return false;
   return new Set(list.map((t) => t.scope || 'prof:' + t.profileId)).size > 1;
+}
+
+/**
+ * v1.0.24 — PURE: what does the dot on the 🔒 gate button MEAN right now?
+ *
+ * One dot has always stood for two unrelated errands: content waiting for a decision, and
+ * an app update ready to install. The parent could not tell them apart, so the routine
+ * one — a manual-approval channel published something and the child cannot see it until
+ * someone says yes — looked exactly like the rare one and got learned as "ignorable".
+ *
+ * Colour is now the destination: 'info' (blue) is content, and tapping lands on ממתינים;
+ * 'alert' (red) is the update, and tapping lands on אודות where the install button lives.
+ * Content WINS a tie: it is the errand with a child waiting at the other end, and the
+ * update keeps its own red dot on the אודות tab regardless.
+ */
+export function attentionDot({ pending = 0, updateReady = false } = {}) {
+  if (pending > 0) return 'info';
+  if (updateReady) return 'alert';
+  return null;
+}
+
+/** The parent screen's tabs, in order. app.js renders from this list. */
+export const PARENT_TAB_IDS = ['about', 'approve', 'add', 'sources', 'settings'];
+
+/**
+ * v1.0.24 — PURE: which parent-screen tab opens?
+ *
+ * `parentTab` is sticky across visits (v1.0.14 lands on אודות the first time). Anything
+ * waiting for approval overrides that stickiness EVERY visit, not once: the queue is the
+ * only tab whose content is blocking a child, and a parent who crossed the PIN while the
+ * blue dot was lit came for it. Once the queue is empty the sticky tab is restored, so
+ * the override can never strand a parent who lives in הגדרות.
+ *
+ * @param sticky  the tab the parent last used
+ * @param pending how many records are waiting for a decision
+ * @param tabs    the valid tab list (a sticky value not in it falls back to the first)
+ */
+export function parentLandingTab(sticky, pending = 0, tabs = PARENT_TAB_IDS) {
+  const list = Array.isArray(tabs) && tabs.length ? tabs : PARENT_TAB_IDS;
+  if (pending > 0 && list.includes('approve')) return 'approve';
+  return list.includes(sticky) ? sticky : list[0];
+}
+
+/**
+ * v1.0.24 — PURE: what do the two bulk buttons in the ממתינים tab act on?
+ *
+ * The tab gained per-row checkboxes (the same mechanism as the new-channel picker), and a
+ * bulk button that does not SAY its scope is a trap: "דחיית הכול" pressed while three rows
+ * are ticked must not throw out thirty. So the scope is derived here and written into the
+ * label — with nothing ticked the buttons keep their v1.0.4 meaning (the whole queue,
+ * including rows past the 200-row display cap), and one tick narrows both of them.
+ *
+ * Nothing is ticked by default, unlike the picker: there a channel was just added and is
+ * presumed wanted, here the parent is triaging a drip and pre-ticking would put a
+ * whole-queue action one tap away under a label that reads like a selection.
+ *
+ * @param selected how many displayed rows are ticked
+ * @param total    how many records are in the queue
+ * @returns { scope: 'all'|'selected', count, approve, reject } — count is what will happen
+ */
+export function pendingBulkAction(selected = 0, total = 0) {
+  const sel = Math.max(0, selected | 0);
+  const all = Math.max(0, total | 0);
+  if (sel <= 0) {
+    return { scope: 'all', count: all, approve: '✅ אישור הכול', reject: '🗑️ דחיית הכול' };
+  }
+  return { scope: 'selected', count: sel, approve: `✅ אישור ${sel}`, reject: `🗑️ דחיית ${sel}` };
 }
 
 /**

@@ -245,6 +245,23 @@ test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   }
 });
 
+test('every $(id) the code asks for EXISTS in index.html', () => {
+  // `$` is `document.getElementById`, and this app has no bundler, no type checker and no
+  // JSX — a renamed or forgotten id is not a build error. It is `null.classList`, thrown
+  // during mount, which is a BLANK SCREEN on a family's tablet with the whole library
+  // still intact behind it. Cheap to pin, and it catches the exact mistake that adding a
+  // control to a panel invites: wiring the handler and forgetting the markup.
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+  const missing = [];
+  for (const [p, body] of MODULES) {
+    for (const m of body.matchAll(/\$\('([^']+)'\)/g)) {
+      if (!ids.has(m[1])) missing.push(`${p}: $('${m[1]}')`);
+    }
+  }
+  assert.deepEqual(missing, [], 'these ids are read from JS but are not in index.html');
+});
+
 test('the version chain is not one deletable line', () => {
   // EVERY APK's version comes from one `apply from` at the END of a CAPACITOR-GENERATED
   // file. `npx cap add android` regenerates that file, and its own defaultConfig still says

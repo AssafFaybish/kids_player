@@ -371,8 +371,9 @@ body {
 .tab-badge {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 20px; height: 20px; border-radius: 10px; padding: 0 5px;
-  /* RED (v1.0.4): the pending count is an attention signal, not a neutral stat */
-  background: var(--danger); color: #fff; font-size: 12px; margin-inline-start: 4px;
+  /* BLUE since v1.0.24: this counts CONTENT waiting for a decision, and it must match the
+     gate dot that sent the parent here. Red is now reserved for the app update. */
+  background: var(--brand); color: #fff; font-size: 12px; margin-inline-start: 4px;
 }
 
 /* ---------- Attention dots (v1.0.4): "the parent should come look" ---------- */
@@ -382,6 +383,10 @@ body {
   background: var(--danger); border: 2px solid #fff;
   pointer-events: none;
 }
+/* v1.0.24 — the dot's COLOUR is its destination (pure `plan.attentionDot`): blue means
+   content is waiting and the tap lands on ממתינים; red (the default above) means an app
+   update, and the tap lands on אודות. One dot for two errands taught parents to ignore it. */
+.attn-dot-info { background: var(--brand); }
 .attn-dot-inline { position: static; display: inline-block; vertical-align: super; width: 10px; height: 10px; border: none; margin-inline-start: 2px; }
 .switch-row {
   display: flex; align-items: center; gap: 12px; padding: 12px 0;
@@ -768,6 +773,12 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .pick-cb { width: 26px; height: 26px; flex: 0 0 auto; accent-color: var(--brand); }
 .pick-off { opacity: 0.45; }
 .pick-off .li-title { text-decoration: line-through; }
+
+/* v1.0.24 — the ממתינים queue reuses .pick-cb but NOT .pick-off. In the picker an unticked
+   row is a video about to be REJECTED, so striking it through is the truth; in the queue an
+   unticked row is merely outside the current bulk action, and dimming half the list would
+   read as "these are already thrown out". Selection is shown on the SELECTED rows instead. */
+.parent-list li.li-sel { background: #eaf3ff; box-shadow: 0 0 0 2px var(--brand) inset; }
 
 .rejected-box { margin-top: 18px; border-top: 2px dashed #d8d5f0; padding-top: 12px; }
 .rejected-summary { font-size: 19px; font-weight: 700; color: var(--muted); cursor: pointer; padding: 8px 0; }

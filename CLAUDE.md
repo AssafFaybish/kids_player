@@ -259,6 +259,83 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.24 — **A CHANNEL FOLDER SHOWING 📺 IS A BUG, AND IT HAD TWO INDEPENDENT CAUSES.**
+  Reported from the field on @rotemama4kids. NOT the channel and NOT the parser: both
+  `yt.fetchChannelMeta` and the keyless `yt.scrapeChannelLogo` return a good avatar for it
+  today (verified against the live page), and `extractChannelLogoFromHtml` matches the real
+  HTML. The two defects, both now pinned by `plan.planChannelLogo`:
+  - **`logoTriedAt` WAS STAMPED FOR AN ATTEMPT THAT NEVER HAPPENED.** The channels.list
+    writer stamped it unconditionally — but `fetchChannelMeta` with no key returns empty
+    logos WITHOUT making a request, and its error branch does the same. The keyless
+    page-scrape fifteen lines below is gated on that field, so the ONLY working fallback was
+    suppressed for a WEEK starting on a channel's very first sync — exactly when the parent
+    is looking at the new tile. The scrape (the last resort) now owns `logoTriedAt`; the API
+    path owns `logoApiTriedAt`; only a real URL stamps `logoFetchedAt`.
+  - **A STORED URL THAT WILL NOT LOAD IS WORSE THAN NO URL.** `img.onerror` silently swaps
+    in the emoji, and BOTH fetch paths skipped any channel that already had a `logoUrl` — so
+    a channel that rebrands (old avatar URL 404s) loses its picture forever. The renderer now
+    calls `noteLogoFailure`, and a failure newer than `logoFetchedAt` marks the URL known-bad.
+    **The marker lives in `meta` (`db.getLogoFailedAt`/`setLogoFailedAt`), NOT on the channel
+    record** — 13 sync call sites read a channel, spend seconds on the network and write the
+    whole snapshot back, so a marker on the record is reverted by whichever stage is in
+    flight. That is measured, not theoretical: it swallowed the first version of this fix.
+    It is per-device by nature anyway. The scrape loop RE-READS the record before writing,
+    for the same reason.
+  `logoApiTriedAt` being a NEW field is the migration: every channel already on a device
+  passes the API gate exactly once after the update, which heals the ones stranded by the
+  first defect. Retry budgets differ by cost — API 24h (batched, ~1 unit), scrape 7 days (a
+  1.5MB page fetch each). The parent's channel list rendered an EMPTY `<img>` for a
+  logo-less channel (not even the 📺); it now shares the same fallback and reporting.
+  DECISION (2026-08-01): the `fallbackThumbUrl` stage still requires a LIVE video — a
+  thumbnail the parent has not approved must not appear anywhere, so a channel whose whole
+  backlog is pending keeps 📺 in the parent's list until the first approval.
+  NOT DONE, and deliberately: a candidate chain over the two Google avatar hosts
+  (`yt3.ggpht.com` ⇄ `yt3.googleusercontent.com`). It looked necessary because the sandboxed
+  preview browser loaded only one of them — but all four host×size forms answer 200 with
+  real bytes over the real network, so that was an artifact of the test environment and the
+  code would have been speculative complexity justified by a false measurement.
+- v1.0.24 — **A DOT THAT MEANS TWO THINGS MEANS NOTHING.** A manual-approval channel already
+  parked its new uploads in the queue (`plan.js` `needsApproval`, unchanged) — the failure was
+  purely that nobody could TELL. The gate dot lit for `pending > 0 || updateReady` in the same
+  red, and the parent screen landed on אודות, so the routine errand (a video the child cannot
+  see until someone says yes) was indistinguishable from the rare one and got learned as
+  ignorable. Now the dot's COLOUR IS ITS DESTINATION (pure `plan.attentionDot` →
+  `'info'|'alert'|null`): **blue** (`.attn-dot-info`, `--brand`) = content waiting, and crossing
+  the PIN lands on ממתינים; **red** (the default) = an app update, landing on אודות. A tie goes
+  to the content — a child is waiting at the other end of it, and the update keeps its own
+  `about-dot` regardless. The `#pending-badge` turned blue to match: a parent who followed a
+  blue dot must not arrive at a red count.
+  **THE LANDING TAB IS DECIDED BEFORE THE VIEW IS SHOWN.** `enterParent` awaits `pendingTotal()`
+  and feeds pure `parentLandingTab(sticky, pending)`; deciding inside `refreshParent` would
+  render אודות and visibly jump, because `setParentTab` runs there BEFORE the lists are
+  awaited. The override fires on EVERY visit while the queue is non-empty (not once), and an
+  empty queue restores the sticky tab so it can never strand a parent who lives in הגדרות.
+  Two consequences of awaiting before navigating, both load-bearing: `enterParent` bails
+  unless `nav.isActive('pin')` (hardware-back during that yield means the parent changed their
+  mind, and replacing whatever is on top would be a real bug), and `pendingTotal` falls back to
+  `db.getSources(...).libraryId` when `libScope` is still null — that global is published by
+  `buildFolders`, i.e. only after a home render, so asking earlier counted ZERO and reported an
+  empty queue that was full. `PARENT_TAB_IDS` moved to plan.js next to the helper that
+  validates against it. `refreshPendingList` now ends with `refreshGateDot()`: rejecting the
+  last waiting video used to leave the dot lit until something re-rendered the home.
+- v1.0.24 — **THE ממתינים QUEUE HAS THE PICKER'S SELECTION, WITH ONE DELIBERATE DIFFERENCE.**
+  Per-row `.pick-cb` checkboxes + `#pending-all`/`#pending-none` (סמן הכול / נקה בחירה), whole
+  row as the tap target — the same mechanism as `view-pick`. It does NOT reuse `.pick-off`:
+  there an unticked row is a video about to be REJECTED so the strike-through is the truth,
+  here it is merely outside the current bulk action and dimming half the list would read as
+  "already thrown out". Selected rows get `.li-sel` instead. **Nothing is ticked by default**,
+  unlike the picker (a freshly added channel is presumed wanted; this queue is a drip being
+  triaged, and pre-ticking puts a whole-queue action one tap away under a label that reads
+  like a selection). `approve-all`/`reject-all` are SELECTION-AWARE via pure
+  `plan.pendingBulkAction`: with nothing ticked they keep their v1.0.4 whole-queue meaning —
+  the only way to reach rows past `PARENT_LIST_CAP` — and one tick narrows both and rewrites
+  the label, so "דחיית הכול" can never throw out thirty when three are ticked. Selecting all
+  200 rendered rows is still a SELECTION, never the 250-row queue. `collectPending` was split
+  out of `refreshPendingList` so the handlers can read fresh records WITHOUT re-rendering:
+  re-rendering clears the ticks, and cancelling the confirm dialog would then leave the parent
+  with nothing selected. The row-click handler skips `e.target.closest('button')` — a tap on
+  ✅/🗑️ must never also flip the selection. Selection ids are `scopeId \0 key`: one `yt:<id>`
+  can sit in both the shared and the personal scope and `approvePending` takes ONE scope.
 - v1.0.23 — **A SHARE FROM ANDROID ASKS WHICH PROFILE, BUT ONLY WHEN THAT CHANGES ANYTHING.**
   `share.handleShare` routed everything to `activeProfileId` with no question. It now consults
   an optional `profileChooser` callback (`app.chooseShareProfile`), gated by pure
@@ -424,8 +501,9 @@ pins that the consumers follow the config and that every address is well-formed.
   check path honors it); one-time Google-connect screen before profiles (`gauth.introDone`
   pref; restores profiles + per-profile sheet via the Drive doc's additive `profileSources`);
   folder tiles restyled + keyless channel-logo scrape (`yt.scrapeChannelLogo`, weekly retry);
-  real exit via `KidsNative.exitApp`; red attention dots (`gate-dot` = pending>0 or update
-  ready, `settings-dot` + red pending badge inside the parent screen).
+  real exit via `KidsNative.exitApp`; attention dots (`gate-dot`, `about-dot` + the pending
+  badge inside the parent screen) — see v1.0.24 for what the colours mean now. There is no
+  `settings-dot`: the update UI moved to the About tab in v1.0.8 and took the dot with it.
 - v1.0.5: in-place delete from the watch page (`watch-delete` → parameterized PIN gate
   `startPin(mode, {onSuccess, replace, title})` — replace:true so back never lands on a
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share

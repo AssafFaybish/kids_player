@@ -16,7 +16,8 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
-  resolveWatchContext, shouldAskShareProfile } from './plan.js';
+  resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
+  pendingBulkAction, PARENT_TAB_IDS } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -121,14 +122,32 @@ async function askExit() {
   exitApp();
 }
 
-/* ---------------- Attention (v1.0.4): red dots for the parent ---------------- */
+/* ---------------- Attention (v1.0.4): dots for the parent ---------------- */
+/**
+ * How many records are waiting for a parental decision, across BOTH of the profile's
+ * scopes (the shared library and the personal one). `limit: 1` because only `total`
+ * is read — this runs on every home render and again on every parent-screen entry.
+ */
+async function pendingTotal() {
+  let pending = 0;
+  // `libScope` is published by buildFolders, i.e. only once a home render has completed.
+  // Anything that asks earlier (the gate tapped while the profile is still activating)
+  // would otherwise count ZERO and report a queue that is actually full — no dot, and the
+  // parent screen landing on אודות. Falling back to the stored value costs one read, and
+  // only in that window.
+  let lib = libScope;
+  if (!lib && activeProfileId) {
+    try { lib = (await db.getSources(activeProfileId) || {}).libraryId || null; } catch {}
+  }
+  const scopes = [lib, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
+  for (const s of scopes) pending += (await db.pagePending(s, { limit: 1 })).total;
+  return pending;
+}
+
 /** attention = pending approvals waiting OR an update ready to install. */
 async function computeAttention() {
   let pending = 0;
-  try {
-    const scopes = [libScope, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
-    for (const s of scopes) pending += (await db.pagePending(s, { limit: 1 })).total;
-  } catch {}
+  try { pending = await pendingTotal(); } catch {}
   let updateReady = false;
   try {
     const upd = await import('./update.js');
@@ -202,11 +221,21 @@ function refreshAfterAdd({ parent = false } = {}) {
   }).catch(() => {});
 }
 
-/** The red dot on the 🔒 gate button — the parent's cue to come look. */
+/**
+ * The dot on the 🔒 gate button — the parent's cue to come look.
+ *
+ * v1.0.24: its COLOUR names the errand (pure `plan.attentionDot`). Blue = content is
+ * waiting for a decision, and crossing the PIN lands straight on ממתינים; red = an app
+ * update. The two used to share one red dot, so the routine errand (a manual-approval
+ * channel published something the child cannot see yet) was indistinguishable from the
+ * rare one — and a signal that means two things gets learned as meaning nothing.
+ */
 async function refreshGateDot() {
   try {
-    const a = await computeAttention();
-    $('gate-dot').classList.toggle('hidden', !(a.pending > 0 || a.updateReady));
+    const kind = attentionDot(await computeAttention());
+    const dot = $('gate-dot');
+    dot.classList.toggle('hidden', !kind);
+    dot.classList.toggle('attn-dot-info', kind === 'info');
   } catch {}
 }
 
@@ -506,6 +535,38 @@ async function loadGiftStates() {
 }
 
 /* ---------------- Home: folders (F10) ---------------- */
+
+/**
+ * v1.0.24 — the channel's avatar did not LOAD. Record it, so the next sync can go and get
+ * a fresh URL (pure `plan.planChannelLogo`).
+ *
+ * Without this the failure is invisible AND permanent: `img.onerror` quietly swaps in the
+ * 📺 emoji, and both fetch paths skipped any channel that already had a `logoUrl` — so a
+ * channel that rebranded (its old avatar URL now 404s) lost its picture forever, and the
+ * child lost the only thing that tells one folder from another. The stored URL is NOT
+ * cleared here: a moment offline must not throw away a perfectly good avatar, and the
+ * sync overwrites it only once it holds a replacement.
+ *
+ * Once per channel per session — the same tile re-renders on every home entry, and each
+ * write bumps `db.dataVersion()`, which is what the folder cache keys off.
+ */
+const logoFailuresNoted = new Set();
+function noteLogoFailure(channelId) {
+  if (!channelId || logoFailuresNoted.has(channelId)) return;
+  logoFailuresNoted.add(channelId);
+  db.setLogoFailedAt(channelId, Date.now()).catch(() => {});
+}
+
+/** Show a channel avatar; on failure fall back to the emoji AND report it (see above). */
+function mountChannelLogo(host, url, channelId, emoji) {
+  if (!url) { host.textContent = emoji; return; }
+  const img = document.createElement('img');
+  img.alt = '';
+  img.onerror = () => { img.remove(); host.textContent = emoji; noteLogoFailure(channelId); };
+  img.src = url;
+  host.appendChild(img);
+}
+
 function folderTile(f) {
   const btn = document.createElement('button');
   btn.className = 'tile tile-folder' + (f.isNew ? ' folder-new' : '');
@@ -514,15 +575,8 @@ function folderTile(f) {
 
   const logo = document.createElement('span');
   logo.className = 'folder-logo';
-  if (f.logoUrl) {
-    const img = document.createElement('img');
-    img.src = f.logoUrl;
-    img.alt = '';
-    img.onerror = () => { img.remove(); logo.textContent = f.emoji; };
-    logo.appendChild(img);
-  } else {
-    logo.textContent = f.emoji;
-  }
+  if (f.logoUrl) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
+  else logo.textContent = f.emoji;
   const nm = document.createElement('span');
   nm.className = 'folder-name';
   nm.textContent = f.title;
@@ -652,7 +706,10 @@ async function buildFolders() {
       out.push({
         id: 'ch:' + lc.channelId, scope: lib, title: lc.titleOverride || ch.title || 'ערוץ',
         // logo → persisted per-channel fallback thumbnail → 📺 emoji (v1.0.6):
-        // every channel folder must stay visually distinct for a non-reading child
+        // every channel folder must stay visually distinct for a non-reading child.
+        // v1.0.24: channelId rides along so a tile whose image FAILS TO LOAD can say so
+        // (noteLogoFailure) — that failure is otherwise invisible and permanent.
+        channelId: lc.channelId,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
       });
     }
@@ -675,14 +732,14 @@ async function buildFolders() {
       // subscribed but nothing imported yet — the singles still need a home
       const ch = (await db.getChannel(chId)) || {};
       out.push({
-        id: 'ch:' + chId, scope: lib, title: ch.title || 'ערוץ',
+        id: 'ch:' + chId, scope: lib, title: ch.title || 'ערוץ', channelId: chId,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count: recs.length
       });
     }
     for (const g of grouping.groups) {
       const ch = (await db.getChannel(g.channelId)) || {};
       out.push({
-        id: 'grp:' + g.channelId, scope: lib, title: g.title,
+        id: 'grp:' + g.channelId, scope: lib, title: g.title, channelId: g.channelId,
         logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '🎞️',
         count: g.keys.length, grouped: true
       });
@@ -916,11 +973,7 @@ async function openFolder(fid) {
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
   if (f && f.logoUrl) {
-    const img = document.createElement('img');
-    img.src = f.logoUrl;
-    img.alt = '';
-    img.onerror = () => { img.remove(); logoTop.textContent = f.emoji || '📺'; };
-    logoTop.appendChild(img);
+    mountChannelLogo(logoTop, f.logoUrl, f.channelId, f.emoji || '📺');
     logoTop.classList.remove('hidden');
   } else if (f && f.emoji && !f.isNew) {
     logoTop.textContent = f.emoji;
@@ -1303,10 +1356,28 @@ async function refreshDonateUi() {
 }
 
 /* ---------------- Parent screen (tabs: about / approve / add / sources / settings) ---------------- */
-function enterParent() { refreshParent(); nav.replace('parent'); } // replaces 'pin' on the stack
+/**
+ * v1.0.24 — the landing tab is DECIDED before the view is shown, never corrected after.
+ * `refreshParent` calls `setParentTab` before it awaits the lists, so choosing the tab
+ * from the pending count inside it would render אודות and then visibly jump.
+ *
+ * The count is one indexed COUNT per scope, but awaiting it still yields to the event
+ * loop — if hardware-back left the pin view in that window the parent changed their mind,
+ * and replacing whatever is on top now with the parent screen would be a real bug.
+ */
+async function enterParent() {
+  let total = 0;
+  try { total = await pendingTotal(); } catch {}
+  parentTab = parentLandingTab(parentTab, total);
+  if (!nav.isActive('pin')) return;
+  refreshParent();
+  nav.replace('parent'); // replaces 'pin' on the stack
+}
 
-// v1.0.14: "אודות" is the first tab AND the landing tab of the parent screen
-const PARENT_TABS = ['about', 'approve', 'add', 'sources', 'settings'];
+// v1.0.14: "אודות" is the first tab AND the default landing tab of the parent screen.
+// v1.0.24: the list itself lives in plan.js, next to `parentLandingTab` which validates
+// against it — two hand-kept copies would let the override name a tab that does not exist.
+const PARENT_TABS = PARENT_TAB_IDS;
 let parentTab = 'about';
 
 function setParentTab(name) {
@@ -1590,8 +1661,37 @@ async function maybeSchedulePush() {
   schedulePush(profiles);
 }
 
-function parentRow({ rec, onDelete, onApprove }) {
+/**
+ * One row of a parent list.
+ *
+ * `select` (v1.0.24, ממתינים only) turns the row into a selectable one: `{ id, checked,
+ * onToggle }`. It reuses the picker's `.pick-cb` and its whole-row tap target, but NOT
+ * `.pick-off` — see the CSS note: an unticked row here is simply outside the current bulk
+ * action, not a video about to be thrown out.
+ */
+function parentRow({ rec, onDelete, onApprove, select = null }) {
   const li = document.createElement('li');
+  if (select) {
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'pick-cb';
+    cb.checked = !!select.checked;
+    li.dataset.sel = select.id;
+    li.classList.toggle('li-sel', cb.checked);
+    const apply = (on) => {
+      cb.checked = on;
+      li.classList.toggle('li-sel', on);
+      select.onToggle(rec, on);
+    };
+    cb.addEventListener('change', () => apply(cb.checked));
+    // The whole row toggles (a bare checkbox is a cruel target on a tablet) — but this row
+    // also carries ✅ and 🗑️, and a tap on either must NEVER also flip the selection.
+    li.addEventListener('click', (e) => {
+      if (e.target === cb || (e.target.closest && e.target.closest('button'))) return;
+      apply(!cb.checked);
+    });
+    li.appendChild(cb);
+  }
   const img = document.createElement('img');
   img.className = 'li-thumb';
   setThumb(img, rec);
@@ -1698,24 +1798,86 @@ async function enqueueApprovedForSheet(recs) {
   } catch {}
 }
 
-/** Pending queue (channel discoveries / quarantined sheet rows / shares). */
-async function refreshPendingList() {
+/**
+ * v1.0.24 — which rows of the ממתינים queue are ticked.
+ *
+ * Keyed by scope AND key: the same `yt:<id>` can sit in the shared library and in the
+ * personal scope at once, and `db.approvePending` takes ONE scope — acting on the wrong
+ * copy would silently leave the other one waiting. NUL is the separator because it is the
+ * one character a scopeId (`lib:…`/`prof:…`) and a key (`yt:…`) can never contain, so two
+ * different pairs can never collide into a single id.
+ */
+const pendingSel = new Set();
+const selIdOf = (rec) => rec.scopeId + '\u0000' + rec.key;
+let pendingShownTotal = 0;
+
+/** Bulk buttons follow the selection; the label always names what will actually happen. */
+function paintPendingBulk() {
+  const act = pendingBulkAction(pendingSel.size, pendingShownTotal);
+  $('approve-all').textContent = act.approve;
+  $('reject-all').textContent = act.reject;
+  $('pending-bulk').classList.toggle('hidden', pendingShownTotal === 0);
+  // "סמן הכול / נקה בחירה" needs at least two rows to mean anything
+  $('pending-sel').classList.toggle('hidden', pendingShownTotal < 2);
+}
+
+/**
+ * Tick or clear every RENDERED row. Rows past `PARENT_LIST_CAP` have no checkbox and so
+ * can never be selected — covering those is exactly what the unselected "אישור הכול" /
+ * "דחיית הכול" scope is for.
+ */
+function setPendingSelection(on) {
+  pendingSel.clear();
+  for (const li of $('pending-list').children) {
+    const cb = li.querySelector('.pick-cb');
+    if (!cb) continue;
+    cb.checked = on;
+    li.classList.toggle('li-sel', on);
+    if (on) pendingSel.add(li.dataset.sel);
+  }
+  paintPendingBulk();
+}
+
+/**
+ * Read the queue WITHOUT touching the DOM. Split out in v1.0.24 so the bulk handlers can
+ * see fresh records before a confirm dialog: re-rendering first would clear the parent's
+ * ticks, and cancelling the dialog would leave them with nothing selected.
+ */
+async function collectPending() {
   const scopes = [libScope, db.profScope(activeProfileId)].filter(Boolean);
   const all = [];
-  let grandTotal = 0;
+  let total = 0;
   for (const s of scopes) {
     const r = await db.pagePending(s, { limit: 500 });
     all.push(...r.items);
-    grandTotal += r.total;
+    total += r.total;
   }
+  return { all, total };
+}
+
+/** Pending queue (channel discoveries / quarantined sheet rows / shares). */
+async function refreshPendingList() {
+  const { all, total: grandTotal } = await collectPending();
   const badge = $('pending-badge');
   badge.textContent = grandTotal;
   badge.classList.toggle('hidden', grandTotal === 0);
   const ul = $('pending-list');
   ul.innerHTML = '';
+  // Every rebuild follows a mutation, so a surviving tick could point at a row that is no
+  // longer here (or is now live). Callers that need the selection snapshot it first.
+  pendingSel.clear();
+  pendingShownTotal = grandTotal;
   for (const rec of all.slice(0, PARENT_LIST_CAP)) {
     ul.appendChild(parentRow({
       rec,
+      select: {
+        id: selIdOf(rec),
+        checked: false,
+        onToggle: (r, on) => {
+          if (on) pendingSel.add(selIdOf(r)); else pendingSel.delete(selIdOf(r));
+          paintPendingBulk();
+        }
+      },
       onApprove: async () => {
         await db.approvePending(rec.scopeId, [rec.key]);
         await enqueueApprovedForSheet([rec]);
@@ -1736,6 +1898,10 @@ async function refreshPendingList() {
       }
     }));
   }
+  paintPendingBulk();
+  // v1.0.24: the queue and the gate dot must never disagree. Rejecting the last waiting
+  // video used to leave the dot lit until something happened to re-render the home.
+  refreshGateDot();
   await refreshRejectedList();
   return all;
 }
@@ -1797,7 +1963,13 @@ async function refreshChannelsList() {
     logo.style.width = '46px';
     logo.style.aspectRatio = '1';
     logo.style.borderRadius = '50%';
-    if (ch.logoUrl) logo.src = ch.logoUrl;
+    // v1.0.24: a channel with no avatar used to render an EMPTY <img> here — a blank hole,
+    // not even the 📺 the home screen falls back to. And a URL that failed to load was
+    // never reported, so it could never be replaced.
+    if (ch.logoUrl) {
+      logo.src = ch.logoUrl;
+      logo.onerror = () => { logo.removeAttribute('src'); noteLogoFailure(lc.channelId); };
+    }
     const body = document.createElement('div');
     body.className = 'li-body';
     const title = document.createElement('div');
@@ -2855,8 +3027,26 @@ function wire() {
   for (const t of PARENT_TABS) $('tab-' + t).addEventListener('click', () => setParentTab(t));
   $('add-btn').addEventListener('click', parentAdd);
 
+  $('pending-all').addEventListener('click', () => setPendingSelection(true));
+  $('pending-none').addEventListener('click', () => setPendingSelection(false));
+
+  /**
+   * v1.0.24 — what the two bulk buttons act on: the ticked rows, or the WHOLE queue when
+   * nothing is ticked (their original v1.0.4 meaning, which also reaches the rows past the
+   * display cap). `plan.pendingBulkAction` writes that scope into the button labels, so the
+   * two can never disagree about what a press is about to do.
+   */
+  const bulkTargets = async () => {
+    const sel = new Set(pendingSel);
+    const { all } = await collectPending(); // read only — the ticks must survive a cancel
+    // A ticked row that vanished meanwhile (another device approved it, a sync moved it)
+    // simply drops out — never fall back to the whole queue.
+    return sel.size ? all.filter((r) => sel.has(selIdOf(r))) : all;
+  };
+
   $('approve-all').addEventListener('click', async () => {
-    const pend = await refreshPendingList();
+    const pend = await bulkTargets();
+    if (!pend.length) return;
     const byScope = new Map();
     for (const r of pend) {
       if (!byScope.has(r.scopeId)) byScope.set(r.scopeId, []);
@@ -2872,12 +3062,13 @@ function wire() {
     refreshAfterAdd({ parent: true }); // newly-live records need enrichment + gift ranks
   });
   $('reject-all').addEventListener('click', async () => {
-    const pend = await refreshPendingList();
+    const pend = await bulkTargets();
+    if (!pend.length) return;
     const yes = await confirmKid({
       emoji: '🗑️', title: `לדחות ${pend.length} סרטונים?`,
       // v1.0.23: no longer a one-way door — say so, or the parent won't dare press it
       text: 'הם יעברו לרשימת הדחויים ולא יופיעו אצל הילד. אפשר להחזיר אותם משם בכל עת.',
-      ok: 'דחיית הכול', cancel: 'ביטול', danger: true
+      ok: `דחייה (${pend.length})`, cancel: 'ביטול', danger: true
     });
     if (!yes) return;
     const byScope = new Map();

@@ -21,7 +21,8 @@ import { classifySourceRow } from './classify.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
-  acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage
+  acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
+  planChannelLogo
 } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
@@ -33,7 +34,8 @@ import {
   listLibraryChannels, putLibraryChannel, deleteLibraryChannel,
   loadDenySet, loadMergeIndex, putVideos, setVideoFields, deleteVideoRaw, deleteVideo,
   getVideo, unDeny,
-  putVideoStates, getMeta, putMeta, profScope, countFolder, pageFolder
+  putVideoStates, getMeta, putMeta, profScope, countFolder, pageFolder,
+  getLogoFailedAt, setLogoFailedAt
 } from './db.js';
 
 const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
@@ -267,19 +269,32 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   const needMeta = [];
   for (const lc of libChannels) {
     const ch = await getChannel(lc.channelId);
-    if (!ch || !ch.uploadsPlaylistId || (!ch.title && key) || (!ch.logoUrl && key && !ch.logoTriedAt)) needMeta.push(lc.channelId);
+    // v1.0.24: the logo half of this condition is `planChannelLogo(...).api` — see the
+    // helper for the two defects that made a missing avatar permanent.
+    const failedAt = await getLogoFailedAt(lc.channelId);
+    if (!ch || !ch.uploadsPlaylistId || (!ch.title && key)
+      || planChannelLogo(ch, { hasKey: !!key, failedAt }).api) needMeta.push(lc.channelId);
   }
   if (needMeta.length) {
     const metaMap = await yt.fetchChannelMeta(needMeta, key);
     for (const [channelId, m] of metaMap) {
       const prev = (await getChannel(channelId)) || { channelId };
-      await putChannel({
+      // NEVER stamp a "we tried" marker for an attempt that did not happen: with no key
+      // fetchChannelMeta answers with empty logos WITHOUT making a request, and the
+      // page-scrape below is gated on `logoTriedAt` — which is how one keyless sync used
+      // to suppress the working fallback for a week. `logoTriedAt` belongs to the scrape;
+      // this path owns `logoApiTriedAt`, and only a real URL updates `logoFetchedAt`.
+      const rec = {
         ...prev, channelId,
         title: m.title || prev.title || '',
         logoUrl: m.logoUrl || prev.logoUrl || '',
-        logoTriedAt: Date.now(),
         uploadsPlaylistId: m.uploadsPlaylistId || prev.uploadsPlaylistId || null
-      });
+      };
+      if (key) rec.logoApiTriedAt = Date.now();
+      if (m.logoUrl) rec.logoFetchedAt = Date.now();
+      await putChannel(rec);
+      // a fresh URL answers the recorded load failure; leaving it set would re-fetch forever
+      if (m.logoUrl) await setLogoFailedAt(channelId, 0);
     }
   }
 
@@ -289,18 +304,23 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   // Each scrape is a full page fetch, one channel at a time, and this loop sits
   // between pct 12 and pct 30 — on a fresh library it can dominate the whole run.
   // Reporting per channel is what stops it from looking like a hang (v1.0.18).
-  const LOGO_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
   let logoDone = 0;
   for (const lc of libChannels) {
     if (aborted()) return { ok: false, error: 'aborted' };
     const ch = (await getChannel(lc.channelId)) || { channelId: lc.channelId };
     logoDone += 1;
-    if (ch.logoUrl) continue;
-    if (ch.logoTriedAt && Date.now() - ch.logoTriedAt < LOGO_RETRY_MS) continue;
+    if (!planChannelLogo(ch, { failedAt: await getLogoFailedAt(lc.channelId) }).scrape) continue;
     report('logos', 12 + Math.round((logoDone / Math.max(1, libChannels.length)) * 16),
       `מביאים תמונות ערוצים… ${logoDone}/${libChannels.length}`);
     const logoUrl = await yt.scrapeChannelLogo(lc.channelId);
-    await putChannel({ ...ch, logoUrl: logoUrl || '', logoTriedAt: Date.now() });
+    // The scrape is the LAST resort, so it owns the weekly retry clock — stamped whether it
+    // found anything or not. Re-read: the scrape is a full page fetch and other stages write
+    // this same record while it runs, so the snapshot from before it is already stale.
+    const fresh = (await getChannel(lc.channelId)) || ch;
+    const rec = { ...fresh, logoUrl: logoUrl || fresh.logoUrl || '', logoTriedAt: Date.now() };
+    if (logoUrl) rec.logoFetchedAt = Date.now();
+    await putChannel(rec);
+    if (logoUrl) await setLogoFailedAt(lc.channelId, 0);
   }
 
   /* ---------- stages: rss + backfill → candidates ---------- */

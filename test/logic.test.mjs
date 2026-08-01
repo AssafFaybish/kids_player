@@ -97,3 +97,4 @@ test('listForDisplay orders correctly per mode', () => {
   // does not mutate the input
   assert.deepEqual(items.map((i) => i.key), ['a', 'b', 'c']);
 });
+
