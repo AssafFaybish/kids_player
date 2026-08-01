@@ -261,9 +261,10 @@ export async function approvePending(scopeId, keys) {
     for (const key of keys) {
       const r = videos.get([scopeId, key]);
       r.onsuccess = () => {
-        if (r.result && r.result.state === 'pending') {
+        // v1.0.23: also un-rejects — the parent's rejected list restores straight to live
+        if (r.result && (r.result.state === 'pending' || r.result.state === 'rejected')) {
           videos.put({
-            ...r.result, state: 'live', approvedAt: now, updatedAt: now,
+            ...r.result, state: 'live', approvedAt: now, rejectedAt: null, updatedAt: now,
             folderId: r.result.homeFolderId || r.result.folderId // un-park (see plan.js)
           });
         }
@@ -272,13 +273,89 @@ export async function approvePending(scopeId, keys) {
   });
 }
 
+/**
+ * v1.0.23 — REJECT WITHOUT DESTROYING. The record is parked in '~rejected' (invisible to
+ * the child, `by_folder_sort` never reaches it) and NO tombstone is written, so the parent
+ * can pull it back out. That is the whole point: the old `rejectPending` called
+ * `deleteVideo`, which erased the row AND wrote a deny-list tombstone whose only undeny
+ * path is a sheet re-add — and a video inside a channel has no sheet row, so a rejection
+ * was final and unappealable.
+ *
+ * `rejectedAt` is the timestamp `normalize.resolveCuration` compares, which is how the
+ * rejection beats a peer's stale 'live' copy instead of being silently revived by it.
+ * No sheet removal row is written here — that would deny the key on every device
+ * permanently, defeating the restore. Emptying the list (`purgeRejected`) is what makes it
+ * permanent.
+ */
+export async function rejectPending(scopeId, keys) {
+  const now = Date.now();
+  await tx(['videos'], 'readwrite', (videos) => {
+    for (const key of keys) {
+      const r = videos.get([scopeId, key]);
+      r.onsuccess = () => {
+        const rec = r.result;
+        if (!rec || rec.state === 'rejected') return;
+        videos.put({
+          ...rec, state: 'rejected', rejectedAt: now, approvedAt: null, updatedAt: now,
+          // remember the real home BEFORE parking, or a restore has nowhere to go
+          homeFolderId: rec.homeFolderId || (rec.folderId === '~pending' ? null : rec.folderId) || 'sheet',
+          folderId: '~rejected'
+        });
+      };
+    }
+  });
+}
+
+/** v1.0.23 — back to the approval queue (the parent wants to look again, not to approve). */
+export async function restoreRejected(scopeId, keys) {
+  const now = Date.now();
+  await tx(['videos'], 'readwrite', (videos) => {
+    for (const key of keys) {
+      const r = videos.get([scopeId, key]);
+      r.onsuccess = () => {
+        if (r.result && r.result.state === 'rejected') {
+          videos.put({ ...r.result, state: 'pending', rejectedAt: null, updatedAt: now, folderId: '~pending' });
+        }
+      };
+    }
+  });
+}
+
+/**
+ * v1.0.23 — "מחק לצמיתות": empty the rejected list for real. THIS is the destructive one —
+ * atomic delete + deny-list tombstone, the same call the library's 🗑️ makes, so the
+ * deletion travels to every device and nothing can resurrect it. Deliberately writes no
+ * sheet removal rows: this is a bulk operation and hundreds of `# הוסר` rows would wreck
+ * the sheet (the same reason bulk reject-all never wrote them).
+ */
+export async function purgeRejected(scopeId, keys) {
+  for (const key of keys) await deleteVideo(scopeId, key, 'parent-reject');
+}
+
+/** Page the rejected list, newest decision first. Same index as pagePending. */
+export async function pageRejected(scopeId, { limit = 200 } = {}) {
+  const db = await openDb();
+  const idx = db.transaction('videos').objectStore('videos').index('by_state');
+  const range = IDBKeyRange.bound([scopeId, 'rejected', -Infinity], [scopeId, 'rejected', Infinity]);
+  const total = await preq(idx.count(range));
+  const items = await new Promise((resolve, reject) => {
+    const out = [];
+    const req = idx.openCursor(range, 'prev');
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) return resolve(out);
+      out.push(cur.value);
+      if (out.length >= limit) return resolve(out);
+      cur.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  return { items, total };
+}
+
 /** Remove WITHOUT a tombstone (e.g. a legacy record that migrated into the library scope). */
 export async function deleteVideoRaw(scopeId, key) {
   await tx(['videos'], 'readwrite', (videos) => { videos.delete([scopeId, key]); });
-}
-
-export async function rejectPending(scopeId, keys) {
-  for (const key of keys) await deleteVideo(scopeId, key, 'parent-reject');
 }
 
 /* ---------------- per-profile gift/unwrap state ---------------- */

@@ -61,6 +61,28 @@
     </section>
 
     <!-- ===================== WHAT'S NEW (v1.0.13) ===================== -->
+    <!-- v1.0.23: PICK WHICH VIDEOS TO KEEP from a newly added channel. Same skeleton as
+         view-whatsnew on purpose: only the list scrolls, so the confirm button can never be
+         pushed off-screen by a 109-item channel. -->
+    <section id="view-pick" class="view">
+      <div class="wn-wrap">
+        <header class="wn-head">
+          <div class="wn-emoji">✅</div>
+          <h1 id="pick-title" class="wn-title">אילו סרטונים להשאיר?</h1>
+          <p id="pick-sub" class="modal-text"></p>
+          <div class="row-btns">
+            <button id="pick-all" class="btn btn-small" type="button">סמן הכול</button>
+            <button id="pick-none" class="btn btn-small" type="button">נקה בחירה</button>
+          </div>
+        </header>
+        <div id="pick-body" class="wn-body"><ul id="pick-list" class="parent-list"></ul></div>
+        <div class="wn-actions">
+          <button id="pick-ok" class="btn btn-primary wn-ok" type="button">אישור</button>
+          <button id="pick-cancel" class="text-btn" type="button">אחר כך</button>
+        </div>
+      </div>
+    </section>
+
     <section id="view-whatsnew" class="view">
       <div class="wn-wrap">
         <header class="wn-head">
@@ -304,6 +326,19 @@
         </div>
         <div id="approve-msg" class="form-msg"></div>
         <ul id="pending-list" class="parent-list"></ul>
+
+        <!-- v1.0.23: REJECTED, and recoverable. A rejection used to erase the record and
+             write a permanent tombstone; now it parks here where the parent can pull items
+             back out. Collapsed by default — it is an archive, not a to-do list. Emptying
+             it ("מחק לצמיתות") is the destructive step that finally tombstones them. -->
+        <details id="rejected-box" class="rejected-box hidden">
+          <summary id="rejected-summary" class="rejected-summary">דחויים</summary>
+          <p class="form-msg">הילד לא רואה אותם. אפשר להחזיר סרטון לתור האישורים, או לרוקן את הרשימה לגמרי.</p>
+          <div class="row-btns">
+            <button id="purge-rejected" class="btn btn-small btn-danger" type="button">🗑️ מחק לצמיתות</button>
+          </div>
+          <ul id="rejected-list" class="parent-list"></ul>
+        </details>
       </div>
 
       <!-- Add a single video / a whole channel -->
@@ -519,6 +554,11 @@
       <div class="modal-btns">
         <!-- cancel FIRST in DOM = RIGHTMOST in RTL = the safe choice under the thumb -->
         <button id="modal-cancel" class="btn modal-btn" type="button"></button>
+        <!-- v1.0.23: an optional THIRD choice, hidden unless `third` is passed. It exists
+             because a three-way question ("auto-approve / pick manually / later") could
+             otherwise only be built by mapping one answer onto an accidental dismiss —
+             and a dismiss must never count as an answer. -->
+        <button id="modal-third" class="btn modal-btn hidden" type="button"></button>
         <button id="modal-ok" class="btn modal-btn" type="button"></button>
       </div>
     </div>

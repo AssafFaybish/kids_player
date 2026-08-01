@@ -77,6 +77,30 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   merged records (real bug once).
 - Pending records are PARKED in `folderId:'~pending'` (kid folder queries must never see them);
   approval restores `homeFolderId`.
+- **THERE ARE THREE CURATION STATES, AND 'rejected' IS NOT A DELETION** (v1.0.23).
+  `normalize.PARKED` names both parking slots (`~pending`, `~rejected`) — a record the child
+  must not see is moved OUT of its real folder, because `by_folder_sort` has no state
+  component and state alone would not hide it. `db.rejectPending` now PARKS instead of
+  calling `deleteVideo`: the record survives, no tombstone is written, and the parent can
+  pull it back from the rejected list (`db.restoreRejected` → pending). The old behaviour was
+  unappealable — `deleteVideo` erased the row AND wrote a deny tombstone whose only undeny
+  path is a sheet re-add, and a video inside a channel has no sheet row at all.
+  `db.purgeRejected` ("מחק לצמיתות") is the ONLY destructive step and it is the old path:
+  delete + tombstone, so it travels to every device. Neither soft-reject nor purge writes
+  `# הוסר` sheet rows — a removal row denies the key everywhere forever (defeating restore),
+  and bulk rows wreck the sheet (the same reason bulk reject-all never wrote them).
+- **A REJECTION MUST SURVIVE EVERY LATER SYNC.** A channel video is re-offered by the RSS
+  pass every 30 minutes and by every backfill page, so anything that forgets the rejection
+  hands the child back exactly what the parent threw out. Two layers, both deliberate:
+  `normalize.resolveCuration` (pure) decides curation for any two copies of one video — **the
+  LATER parental decision wins**, `pending` is never a decision, and a tie resolves to
+  `'rejected'` (hiding a wanted video is a complaint; showing a rejected one is a betrayal);
+  and `plan.planMutations`' prior branch pins `prior.state` for pending/rejected. The pure
+  helper is the mechanism — the plan.js line is a second layer and no test fails without it
+  (its own comment says so; do not read it as load-bearing).
+- `mergeVideoRecord` no longer promotes with "a live loser beats a pending survivor" — it
+  delegates to `resolveCuration`, so a peer's stale `live` copy cannot revive a rejection
+  that happened later on another device.
 - **APPROVAL IS DECIDED BEFORE ANY MERGE, AND A MERGE MAY NEVER GRANT IT** (v1.0.22).
   `base.state` in `planMutations` defaulted to `'live'` and the `quarantine || !autoApprove`
   routing lived only in the brand-new branch at the bottom — so the titleTwin branch
@@ -235,6 +259,26 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.23 — **A NEW CHANNEL ASKS THREE QUESTIONS, NOT TWO.** `offerChannelApproval` now
+  raises a three-way choice (decision 2026-08-01): **אישור אוטומטי** (everything now and
+  every future upload, + the auto-approve flag), **בחירה ידנית** (→ `view-pick`), or
+  **אחר כך** (all stay waiting). The third option needed a REAL third modal button
+  (`modal-third`, optional `third:` in `ui/modal.js`, `askKid` → `'third'`): mapping an
+  answer onto an accidental dismiss would let a child poking the scrim decide what reaches
+  them. `.modal-btns` wraps, because three Hebrew labels do not fit one phone row.
+  `view-pick` lists every waiting video of that channel with **everything ticked** (a channel
+  is usually added because it is wanted, so the job is unticking a few — only safe because
+  unticking is now reversible), whole-row tap targets, סמן הכול / נקה בחירה, and a live count
+  in the confirm button. Ticked → live; unticked → `'rejected'`. It reuses view-whatsnew's
+  skeleton so only the list scrolls and 109 items can never push the confirm button
+  off-screen — and **`#view-pick.active` must carry the centering flex**, or the fixed-width
+  `.wn-wrap` pins itself to the RTL right edge (measured: 560px at left:720 of 1280).
+  The rejected archive lives inside the ממתינים tab as a collapsed `<details>` (`#rejected-box`,
+  hidden at zero) with per-row restore ✅ and per-row permanent delete 🗑️, plus
+  "מחק לצמיתות" to empty it. `parentRow` renders 🗑️ only when given an `onDelete` — it used
+  to bind `undefined` unconditionally, so a caller that omits it drew a dead button.
+  Asking is scoped to the paths where the parent is PRESENT (parent screen + share). A channel
+  from the SHEET keeps today's behaviour: column C already carries the auto/manual answer.
 - v1.0.22 — **ADDING A CHANNEL ASKS ONCE, AND SAYS WHAT ACTUALLY HAPPENED.** A channel
   added in the parent screen is created `autoApprove:false`, so its ENTIRE back catalogue
   landed in the approval queue while the message read "הערוץ סונכרן ✅" — the parent had no

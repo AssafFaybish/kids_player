@@ -118,8 +118,17 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
 
     if (prior) {
       const merged = mergeVideoRecord({ ...prior, scopeId: c.scopeId, key }, base);
-      // an existing record keeps its curation: a pending item stays pending (parked)
-      if (prior.state === 'pending') merged.state = 'pending';
+      // An existing record keeps its curation: pending stays pending (parked) and — v1.0.23
+      // — rejected stays rejected. The candidate arriving here is the same channel video the
+      // RSS pass re-offers every 30 minutes, so a sync that undid rejections would hand the
+      // child back everything the parent threw out.
+      // HONESTY NOTE: the 'rejected' half is a SECOND layer, not the mechanism.
+      // `normalize.resolveCuration` already keeps it, because `base` reaches this branch
+      // with `approvedAt: null` (only the brand-new branch stamps it) and any rejectedAt
+      // beats 0. Removing this line alone therefore breaks no test. It stays as a local
+      // statement of intent and as cover if `base` ever starts carrying a real approval —
+      // do not read it as the thing that makes rejection stick.
+      if (prior.state === 'pending' || prior.state === 'rejected') merged.state = prior.state;
       settleCuration(merged, prior.homeFolderId || base.homeFolderId || base.folderId, now);
       if (!existing.has(key) || changed(existing.get(key), merged)) puts.set(key, merged);
       continue;
