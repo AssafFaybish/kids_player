@@ -7,6 +7,7 @@ import {
   sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   shouldAskShareProfile,
+  attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   resolveWatchContext
 } from '../www/js/plan.js';
 
@@ -93,6 +94,74 @@ test('shouldAskShareProfile: only when the answer changes where the video lands'
   assert.equal(shouldAskShareProfile([{ profileId: 'p1' }, { profileId: 'p2' }]), true);
   // junk entries are ignored rather than counted as profiles
   assert.equal(shouldAskShareProfile([A, null, {}]), false);
+});
+
+test('attentionDot: CONTENT wins the dot, and the colour names the errand (v1.0.24)', () => {
+  // One red dot used to mean both "videos are waiting for you" and "an app update is
+  // ready". The parent could not tell them apart, so the routine errand — a manual-approval
+  // channel published something the child cannot see yet — looked like the rare one.
+  assert.equal(attentionDot({ pending: 3, updateReady: false }), 'info', 'content → blue');
+  assert.equal(attentionDot({ pending: 0, updateReady: true }), 'alert', 'update only → red');
+  assert.equal(attentionDot({ pending: 0, updateReady: false }), null, 'nothing → no dot');
+  // A TIE goes to the content: a child is waiting at the other end of it, and the update
+  // keeps its own dot on the אודות tab either way.
+  assert.equal(attentionDot({ pending: 1, updateReady: true }), 'info');
+  // never throws on a missing/partial attention object — this runs on every home render
+  assert.equal(attentionDot(), null);
+  assert.equal(attentionDot({}), null);
+  assert.equal(attentionDot({ pending: 2 }), 'info');
+});
+
+test('parentLandingTab: a waiting queue overrides the sticky tab, EVERY visit (v1.0.24)', () => {
+  assert.equal(parentLandingTab('about', 4), 'approve', 'pending → land on the queue');
+  assert.equal(parentLandingTab('settings', 1), 'approve', 'the override beats stickiness');
+  // …and it is not a one-shot: the same parent coming back to a still-full queue lands
+  // there again. The queue is the only tab whose content is blocking a child.
+  assert.equal(parentLandingTab('approve', 1), 'approve');
+  // Empty queue ⇒ the sticky tab is restored, so the override can never strand a parent
+  // who lives in הגדרות.
+  assert.equal(parentLandingTab('settings', 0), 'settings');
+  assert.equal(parentLandingTab('about', 0), 'about', 'v1.0.14 default survives');
+  // A sticky value that is not a real tab would hide every panel (setParentTab matches by
+  // name), so it falls back to the first tab rather than rendering an empty screen.
+  assert.equal(parentLandingTab('nope', 0), PARENT_TAB_IDS[0]);
+  assert.equal(parentLandingTab(null, 0), 'about');
+  assert.equal(parentLandingTab(undefined, 0), 'about');
+  // the tab list is the one app.js renders from — a second hand-kept copy could name a
+  // tab that does not exist
+  assert.ok(PARENT_TAB_IDS.includes('approve'));
+  assert.deepEqual(PARENT_TAB_IDS, ['about', 'approve', 'add', 'sources', 'settings']);
+});
+
+test('pendingBulkAction: the button SAYS what it is about to act on (v1.0.24)', () => {
+  // Nothing ticked ⇒ the buttons keep their original whole-queue meaning, which is also
+  // the only way to reach rows past the 200-row display cap.
+  const none = pendingBulkAction(0, 30);
+  assert.equal(none.scope, 'all');
+  assert.equal(none.count, 30);
+  assert.match(none.approve, /הכול/);
+  assert.match(none.reject, /הכול/);
+
+  // One tick narrows BOTH buttons. This is the whole point: "דחיית הכול" pressed while
+  // three rows are ticked must not throw out thirty.
+  const some = pendingBulkAction(3, 30);
+  assert.equal(some.scope, 'selected');
+  assert.equal(some.count, 3);
+  assert.match(some.approve, /3/);
+  assert.match(some.reject, /3/);
+  assert.ok(!some.approve.includes('הכול'), 'a narrowed action must not read as "all"');
+  assert.ok(!some.reject.includes('הכול'));
+
+  // Selecting every row is still a SELECTION, not the whole queue: with 250 pending and
+  // 200 rendered rows, ticking all 200 must not silently act on 250.
+  const capped = pendingBulkAction(200, 250);
+  assert.equal(capped.scope, 'selected');
+  assert.equal(capped.count, 200);
+
+  // garbage in never produces a whole-queue action by accident
+  assert.equal(pendingBulkAction(-5, 10).scope, 'all');
+  assert.equal(pendingBulkAction().scope, 'all');
+  assert.equal(pendingBulkAction().count, 0);
 });
 
 test('THE CHURN INVARIANT holds for rejected records too (v1.0.23)', () => {

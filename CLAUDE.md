@@ -259,6 +259,48 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.24 — **A DOT THAT MEANS TWO THINGS MEANS NOTHING.** A manual-approval channel already
+  parked its new uploads in the queue (`plan.js` `needsApproval`, unchanged) — the failure was
+  purely that nobody could TELL. The gate dot lit for `pending > 0 || updateReady` in the same
+  red, and the parent screen landed on אודות, so the routine errand (a video the child cannot
+  see until someone says yes) was indistinguishable from the rare one and got learned as
+  ignorable. Now the dot's COLOUR IS ITS DESTINATION (pure `plan.attentionDot` →
+  `'info'|'alert'|null`): **blue** (`.attn-dot-info`, `--brand`) = content waiting, and crossing
+  the PIN lands on ממתינים; **red** (the default) = an app update, landing on אודות. A tie goes
+  to the content — a child is waiting at the other end of it, and the update keeps its own
+  `about-dot` regardless. The `#pending-badge` turned blue to match: a parent who followed a
+  blue dot must not arrive at a red count.
+  **THE LANDING TAB IS DECIDED BEFORE THE VIEW IS SHOWN.** `enterParent` awaits `pendingTotal()`
+  and feeds pure `parentLandingTab(sticky, pending)`; deciding inside `refreshParent` would
+  render אודות and visibly jump, because `setParentTab` runs there BEFORE the lists are
+  awaited. The override fires on EVERY visit while the queue is non-empty (not once), and an
+  empty queue restores the sticky tab so it can never strand a parent who lives in הגדרות.
+  Two consequences of awaiting before navigating, both load-bearing: `enterParent` bails
+  unless `nav.isActive('pin')` (hardware-back during that yield means the parent changed their
+  mind, and replacing whatever is on top would be a real bug), and `pendingTotal` falls back to
+  `db.getSources(...).libraryId` when `libScope` is still null — that global is published by
+  `buildFolders`, i.e. only after a home render, so asking earlier counted ZERO and reported an
+  empty queue that was full. `PARENT_TAB_IDS` moved to plan.js next to the helper that
+  validates against it. `refreshPendingList` now ends with `refreshGateDot()`: rejecting the
+  last waiting video used to leave the dot lit until something re-rendered the home.
+- v1.0.24 — **THE ממתינים QUEUE HAS THE PICKER'S SELECTION, WITH ONE DELIBERATE DIFFERENCE.**
+  Per-row `.pick-cb` checkboxes + `#pending-all`/`#pending-none` (סמן הכול / נקה בחירה), whole
+  row as the tap target — the same mechanism as `view-pick`. It does NOT reuse `.pick-off`:
+  there an unticked row is a video about to be REJECTED so the strike-through is the truth,
+  here it is merely outside the current bulk action and dimming half the list would read as
+  "already thrown out". Selected rows get `.li-sel` instead. **Nothing is ticked by default**,
+  unlike the picker (a freshly added channel is presumed wanted; this queue is a drip being
+  triaged, and pre-ticking puts a whole-queue action one tap away under a label that reads
+  like a selection). `approve-all`/`reject-all` are SELECTION-AWARE via pure
+  `plan.pendingBulkAction`: with nothing ticked they keep their v1.0.4 whole-queue meaning —
+  the only way to reach rows past `PARENT_LIST_CAP` — and one tick narrows both and rewrites
+  the label, so "דחיית הכול" can never throw out thirty when three are ticked. Selecting all
+  200 rendered rows is still a SELECTION, never the 250-row queue. `collectPending` was split
+  out of `refreshPendingList` so the handlers can read fresh records WITHOUT re-rendering:
+  re-rendering clears the ticks, and cancelling the confirm dialog would then leave the parent
+  with nothing selected. The row-click handler skips `e.target.closest('button')` — a tap on
+  ✅/🗑️ must never also flip the selection. Selection ids are `scopeId \0 key`: one `yt:<id>`
+  can sit in both the shared and the personal scope and `approvePending` takes ONE scope.
 - v1.0.23 — **A SHARE FROM ANDROID ASKS WHICH PROFILE, BUT ONLY WHEN THAT CHANGES ANYTHING.**
   `share.handleShare` routed everything to `activeProfileId` with no question. It now consults
   an optional `profileChooser` callback (`app.chooseShareProfile`), gated by pure
@@ -424,8 +466,9 @@ pins that the consumers follow the config and that every address is well-formed.
   check path honors it); one-time Google-connect screen before profiles (`gauth.introDone`
   pref; restores profiles + per-profile sheet via the Drive doc's additive `profileSources`);
   folder tiles restyled + keyless channel-logo scrape (`yt.scrapeChannelLogo`, weekly retry);
-  real exit via `KidsNative.exitApp`; red attention dots (`gate-dot` = pending>0 or update
-  ready, `settings-dot` + red pending badge inside the parent screen).
+  real exit via `KidsNative.exitApp`; attention dots (`gate-dot`, `about-dot` + the pending
+  badge inside the parent screen) — see v1.0.24 for what the colours mean now. There is no
+  `settings-dot`: the update UI moved to the About tab in v1.0.8 and took the dot with it.
 - v1.0.5: in-place delete from the watch page (`watch-delete` → parameterized PIN gate
   `startPin(mode, {onSuccess, replace, title})` — replace:true so back never lands on a
   torn-down player → confirm → deleteVideo in EVERY scope holding the key → home); share

@@ -321,9 +321,16 @@
 
       <!-- Pending approval (F10/F12): new channel/shared content waits here -->
       <div id="panel-approve" class="panel hidden">
-        <div class="row-btns">
+        <!-- v1.0.24: the bulk row is SELECTION-AWARE. With nothing ticked these two keep their
+             original whole-queue meaning; one tick narrows both, and the label says so
+             (pure `plan.pendingBulkAction`). Hidden entirely while the queue is empty. -->
+        <div id="pending-bulk" class="row-btns hidden">
           <button id="approve-all" class="btn btn-primary" type="button">✅ אישור הכול</button>
           <button id="reject-all" class="btn btn-small btn-danger" type="button">🗑️ דחיית הכול</button>
+        </div>
+        <div id="pending-sel" class="row-btns hidden">
+          <button id="pending-all" class="btn btn-small" type="button">סמן הכול</button>
+          <button id="pending-none" class="btn btn-small" type="button">נקה בחירה</button>
         </div>
         <div id="approve-msg" class="form-msg"></div>
         <ul id="pending-list" class="parent-list"></ul>

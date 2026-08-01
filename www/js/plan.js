@@ -541,6 +541,73 @@ export function shouldAskShareProfile(targets) {
 }
 
 /**
+ * v1.0.24 — PURE: what does the dot on the 🔒 gate button MEAN right now?
+ *
+ * One dot has always stood for two unrelated errands: content waiting for a decision, and
+ * an app update ready to install. The parent could not tell them apart, so the routine
+ * one — a manual-approval channel published something and the child cannot see it until
+ * someone says yes — looked exactly like the rare one and got learned as "ignorable".
+ *
+ * Colour is now the destination: 'info' (blue) is content, and tapping lands on ממתינים;
+ * 'alert' (red) is the update, and tapping lands on אודות where the install button lives.
+ * Content WINS a tie: it is the errand with a child waiting at the other end, and the
+ * update keeps its own red dot on the אודות tab regardless.
+ */
+export function attentionDot({ pending = 0, updateReady = false } = {}) {
+  if (pending > 0) return 'info';
+  if (updateReady) return 'alert';
+  return null;
+}
+
+/** The parent screen's tabs, in order. app.js renders from this list. */
+export const PARENT_TAB_IDS = ['about', 'approve', 'add', 'sources', 'settings'];
+
+/**
+ * v1.0.24 — PURE: which parent-screen tab opens?
+ *
+ * `parentTab` is sticky across visits (v1.0.14 lands on אודות the first time). Anything
+ * waiting for approval overrides that stickiness EVERY visit, not once: the queue is the
+ * only tab whose content is blocking a child, and a parent who crossed the PIN while the
+ * blue dot was lit came for it. Once the queue is empty the sticky tab is restored, so
+ * the override can never strand a parent who lives in הגדרות.
+ *
+ * @param sticky  the tab the parent last used
+ * @param pending how many records are waiting for a decision
+ * @param tabs    the valid tab list (a sticky value not in it falls back to the first)
+ */
+export function parentLandingTab(sticky, pending = 0, tabs = PARENT_TAB_IDS) {
+  const list = Array.isArray(tabs) && tabs.length ? tabs : PARENT_TAB_IDS;
+  if (pending > 0 && list.includes('approve')) return 'approve';
+  return list.includes(sticky) ? sticky : list[0];
+}
+
+/**
+ * v1.0.24 — PURE: what do the two bulk buttons in the ממתינים tab act on?
+ *
+ * The tab gained per-row checkboxes (the same mechanism as the new-channel picker), and a
+ * bulk button that does not SAY its scope is a trap: "דחיית הכול" pressed while three rows
+ * are ticked must not throw out thirty. So the scope is derived here and written into the
+ * label — with nothing ticked the buttons keep their v1.0.4 meaning (the whole queue,
+ * including rows past the 200-row display cap), and one tick narrows both of them.
+ *
+ * Nothing is ticked by default, unlike the picker: there a channel was just added and is
+ * presumed wanted, here the parent is triaging a drip and pre-ticking would put a
+ * whole-queue action one tap away under a label that reads like a selection.
+ *
+ * @param selected how many displayed rows are ticked
+ * @param total    how many records are in the queue
+ * @returns { scope: 'all'|'selected', count, approve, reject } — count is what will happen
+ */
+export function pendingBulkAction(selected = 0, total = 0) {
+  const sel = Math.max(0, selected | 0);
+  const all = Math.max(0, total | 0);
+  if (sel <= 0) {
+    return { scope: 'all', count: all, approve: '✅ אישור הכול', reject: '🗑️ דחיית הכול' };
+  }
+  return { scope: 'selected', count: sel, approve: `✅ אישור ${sel}`, reject: `🗑️ דחיית ${sel}` };
+}
+
+/**
  * v1.0.20 — PURE: may the home render its ONE folder's videos flat, with no tile?
  *
  * The rule exists for the sheet-only setup: when the only folder is the shared
