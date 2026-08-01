@@ -95,6 +95,33 @@ test('shouldAskShareProfile: only when the answer changes where the video lands'
   assert.equal(shouldAskShareProfile([A, null, {}]), false);
 });
 
+test('THE CHURN INVARIANT holds for rejected records too (v1.0.23)', () => {
+  // The most valuable assertion in this suite is "run the plan twice ⇒ empty second diff",
+  // and a third curation state is exactly the kind of change that quietly breaks it. What
+  // this pins is that `state` and `folderId` SETTLE: if a re-seen rejected candidate flipped
+  // between 'rejected' and something else, or between '~rejected' and its home, every sync
+  // would rewrite every rejected row and re-push the whole library to Drive.
+  // NOTE, measured: a drifting `rejectedAt` does NOT churn here — it is not in DIFF_FIELDS,
+  // so `changed()` never sees it. That drift is caught by settleCuration's own idempotence
+  // test in normalize.test.mjs; do not expect this test to cover it.
+  const c = cand({ autoApprove: true });
+  const existing = new Map();
+  const p1 = planMutations({ candidates: [c], existing, denySet: new Set(), now: 1000 });
+  for (const put of p1.puts) existing.set(put.key, put);
+  // the parent rejects it (what db.rejectPending writes)
+  const rec = existing.get(c.key);
+  existing.set(c.key, {
+    ...rec, state: 'rejected', rejectedAt: 2000, approvedAt: null,
+    homeFolderId: rec.folderId, folderId: '~rejected'
+  });
+  const p2 = planMutations({ candidates: [c], existing, denySet: new Set(), now: 3000 });
+  for (const put of p2.puts) existing.set(put.key, put);
+  const p3 = planMutations({ candidates: [c], existing, denySet: new Set(), now: 4000 });
+  assert.deepEqual(p3.puts, [], 'a re-seen REJECTED video rewrote its record (churn)');
+  assert.equal(existing.get(c.key).state, 'rejected');
+  assert.equal(existing.get(c.key).rejectedAt, 2000, 'the decision timestamp must not drift');
+});
+
 test('quarantine forces pending regardless of autoApprove (post-migration first sync)', () => {
   const p = planMutations({ candidates: [cand({ autoApprove: true })], existing: new Map(), denySet: new Set(), quarantine: true });
   assert.equal(p.puts[0].state, 'pending');
