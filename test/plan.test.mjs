@@ -49,6 +49,29 @@ test('autoApprove=false routes new videos to pending; approval survives re-sync'
   assert.equal(put.folderId, 'ch:' + CH);
 });
 
+test('a REJECTED record survives every later sync (v1.0.23)', () => {
+  // THE guard for the rejected list. A channel video is re-offered by the RSS pass every
+  // 30 minutes and by every backfill page, so if the `prior` branch did not pin 'rejected'
+  // the way it pins 'pending', each sync would quietly hand the child back everything the
+  // parent threw out — and the parent would have no idea why.
+  const c = cand({ autoApprove: true }); // even an auto-approving channel must not revive it
+  const existing = new Map([[c.key, {
+    ...cand(), key: c.key, state: 'rejected', rejectedAt: 500, approvedAt: null,
+    folderId: '~rejected', homeFolderId: 'ch:' + CH, normTitle: 'שיר', addedAt: 10,
+    sortKey: 1000, title: 'שיר', titleSource: 'rss', thumbUrl: 'x', thumbId: null,
+    localPath: null, url: null, srcUrl: '', publishedAt: 1000, rowIndex: null, origin: 'channel'
+  }]]);
+  for (let round = 0; round < 3; round++) {
+    const p = planMutations({ candidates: [c], existing, denySet: new Set(), now: 1000 + round });
+    for (const put of p.puts) {
+      assert.equal(put.state, 'rejected', `round ${round}: the sync revived a rejected video`);
+      assert.equal(put.folderId, '~rejected', `round ${round}: it left the parking slot`);
+      existing.set(put.key, put);
+    }
+    assert.ok(!p.newLiveKeys.includes(c.key), `round ${round}: counted as newly live`);
+  }
+});
+
 test('quarantine forces pending regardless of autoApprove (post-migration first sync)', () => {
   const p = planMutations({ candidates: [cand({ autoApprove: true })], existing: new Map(), denySet: new Set(), quarantine: true });
   assert.equal(p.puts[0].state, 'pending');

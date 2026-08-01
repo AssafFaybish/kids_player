@@ -355,6 +355,9 @@ function registerViews() {
   nav.register('sheet-setup', { onBack: () => { finishSheetSetup(); return true; } });
   // v1.0.13: back on the what's-new screen CANCELS the update (user decision)
   nav.register('whatsnew', { onLeave: () => closeWhatsNew(false) });
+  // v1.0.23 — leaving the picker ANY way (back, hardware back, a later navigation) must
+  // resolve its promise, or the caller awaits forever and the add flow never finishes.
+  nav.register('pick', { onLeave: () => { const h = pickHandlers; pickHandlers = null; if (h) h.cancel(); } });
   nav.register('profiles', { onBack: () => { askExit(); return true; } });
   nav.register('create-profile', {
     onBack: () => {
@@ -1605,10 +1608,14 @@ function parentRow({ rec, onDelete, onApprove }) {
     ok.addEventListener('click', onApprove);
     li.appendChild(ok);
   }
-  const del = document.createElement('button');
-  del.className = 'li-del'; del.type = 'button'; del.textContent = '🗑️';
-  del.addEventListener('click', onDelete);
-  li.appendChild(del);
+  // v1.0.23: only when there IS a handler. It used to bind `undefined` unconditionally, so
+  // a caller that omits onDelete rendered a 🗑️ that looks live and does nothing.
+  if (onDelete) {
+    const del = document.createElement('button');
+    del.className = 'li-del'; del.type = 'button'; del.textContent = '🗑️';
+    del.addEventListener('click', onDelete);
+    li.appendChild(del);
+  }
   return li;
 }
 
@@ -1711,16 +1718,62 @@ async function refreshPendingList() {
         maybeSchedulePush();
       },
       onDelete: async () => {
-        await db.rejectPending(rec.scopeId, [rec.key]); // tombstoned — never comes back
-        // v1.0.12: a deliberate single rejection of a CHANNEL video travels via a
-        // '# הוסר' row (bulk reject-all deliberately does NOT — hundreds of rows
-        // would wreck the sheet; that stays a local queue cleanup).
-        if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
+        // v1.0.23: parked in '~rejected', NOT tombstoned — the parent can pull it back out
+        // of the rejected list below. No '# הוסר' sheet row either: that denies the key on
+        // every device permanently and would defeat the restore. Emptying the rejected list
+        // is what makes it final.
+        await db.rejectPending(rec.scopeId, [rec.key]);
         await refreshPendingList();
       }
     }));
   }
+  await refreshRejectedList();
   return all;
+}
+
+/** Every rejected record across the profile's scopes, newest rejection first. */
+async function collectRejected() {
+  const scopes = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  const out = [];
+  for (const s of scopes) out.push(...(await db.pageRejected(s, { limit: 500 })).items);
+  return out.sort((a, b) => (b.rejectedAt || 0) - (a.rejectedAt || 0));
+}
+
+/**
+ * v1.0.23 — the rejected archive. Rendered from inside refreshPendingList so the two lists
+ * can never disagree about what is where: one rejection moves a row from one to the other.
+ */
+async function refreshRejectedList() {
+  const rej = await collectRejected();
+  const box = $('rejected-box');
+  box.classList.toggle('hidden', rej.length === 0);
+  $('rejected-summary').textContent = `דחויים (${rej.length})`;
+  const ul = $('rejected-list');
+  ul.innerHTML = '';
+  for (const rec of rej.slice(0, PARENT_LIST_CAP)) {
+    ul.appendChild(parentRow({
+      rec,
+      // ↩️ back to the approval queue — deliberately NOT straight to live: the parent is
+      // reconsidering, and the queue is where a decision gets made.
+      onApprove: async () => {
+        await db.restoreRejected(rec.scopeId, [rec.key]);
+        await refreshPendingList();
+        maybeSchedulePush();
+      },
+      // per-item permanent delete, confirmed: this is the one action here with no way back
+      onDelete: async () => {
+        const yes = await confirmKid({
+          emoji: '🗑️', title: 'למחוק את הסרטון לצמיתות?',
+          text: 'הוא לא יחזור — גם לא בסנכרון הבא ולא במכשירים האחרים.',
+          ok: 'מחיקה', cancel: 'ביטול', danger: true
+        });
+        if (!yes) return;
+        await db.purgeRejected(rec.scopeId, [rec.key]);
+        await refreshPendingList();
+        maybeSchedulePush();
+      }
+    }));
+  }
 }
 
 async function refreshChannelsList() {
@@ -1913,24 +1966,142 @@ async function offerChannelApproval(channelId) {
   const keys = await pendingKeysOfChannel(channelId);
   if (!keys.length) return { approved: false, count: 0 };
   const ch = (await db.getChannel(channelId)) || {};
-  const yes = await confirmKid({
-    emoji: '✅',
-    title: `לאשר את ${keys.length} הסרטונים של ${ch.title ? '"' + ch.title + '"' : 'הערוץ'}?`,
-    text: 'הם ייכנסו מיד לתיקיית הערוץ אצל הילד, וגם סרטונים חדשים שיעלו בערוץ יאושרו אוטומטית. '
-      + '"רק לסקירה" ישאיר את כולם ברשימת הממתינים במסך ההורים.',
-    ok: 'אישור הכול', cancel: 'רק לסקירה'
+  const name = ch.title ? '"' + ch.title + '"' : 'הערוץ';
+  // v1.0.23 — THREE answers, because "yes / no" could not express the middle one. The
+  // third button is a real button: mapping an answer onto an accidental dismiss would let
+  // a child poking the scrim decide what reaches them.
+  const answer = await askKid({
+    emoji: '📺',
+    title: `${keys.length} סרטונים ב${name}. מה לעשות איתם?`,
+    text: 'אישור אוטומטי: הכול נכנס מיד, וגם כל סרטון חדש שיעלה בערוץ בעתיד — בלי לשאול שוב. '
+      + 'בחירה ידנית: תראו את כל הסרטונים ותסמנו אילו להשאיר. '
+      + 'אחר כך: הכול ממתין בטאב "ממתינים" עד שתחליטו.',
+    ok: 'אישור אוטומטי', third: 'בחירה ידנית', cancel: 'אחר כך'
   });
-  if (!yes) return { approved: false, count: keys.length };
-  const lc = (await db.listLibraryChannels(libScope)).find((c) => c.channelId === channelId);
-  if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
-  await db.approvePending(libScope, keys);
-  // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
-  // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
-  // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
-  // later then asks ITS parent the same question instead of inheriting our answer.
-  await enqueueChannelSheetRow(channelId, 'auto');
-  return { approved: true, count: keys.length };
+
+  if (answer === 'ok') {
+    const lc = (await db.listLibraryChannels(libScope)).find((c) => c.channelId === channelId);
+    if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
+    await db.approvePending(libScope, keys);
+    // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
+    // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
+    // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
+    // later then asks ITS parent the same question instead of inheriting our answer.
+    await enqueueChannelSheetRow(channelId, 'auto');
+    return { approved: true, count: keys.length };
+  }
+
+  if (answer === 'third') {
+    const picked = await pickChannelVideos(channelId, name);
+    return { approved: false, count: keys.length, picked };
+  }
+  // 'cancel' (אחר כך) and 'dismiss' both leave everything waiting — the safe default.
+  return { approved: false, count: keys.length };
 }
+
+/**
+ * v1.0.23 — the MANUAL choice: show every waiting video of one channel and keep only the
+ * ticked ones. Everything unticked becomes 'rejected' — parked, invisible to the child, and
+ * recoverable from the parent's rejected list (decision 2026-08-01: the parent asked for a
+ * list they can pull things back out of, so this must NOT tombstone).
+ *
+ * Everything starts TICKED (the parent's choice): a channel is usually added because it is
+ * wanted, so the common job is unticking a few. That is only safe BECAUSE unticking is
+ * reversible — with the old permanent rejection, defaulting to "all" would have been a trap.
+ * -> { kept, rejected } | null when the parent backed out
+ */
+function pickChannelVideos(channelId, name) {
+  return new Promise((resolve) => {
+    (async () => {
+      const { compareForDisplay } = await import('./order.js');
+      const { items } = await db.pagePending(libScope, { limit: 5000 });
+      const recs = items.filter((r) => r.channelId === channelId).sort(compareForDisplay);
+      const chosen = new Set(recs.map((r) => r.key)); // all ticked
+      const ul = $('pick-list');
+      const boxes = new Map();
+
+      const paint = () => {
+        $('pick-sub').textContent = `${name} · נבחרו ${chosen.size} מתוך ${recs.length}`;
+        $('pick-ok').textContent = chosen.size === recs.length ? 'להשאיר את כולם' : `להשאיר ${chosen.size}`;
+      };
+      ul.innerHTML = '';
+      for (const rec of recs) {
+        const li = document.createElement('li');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.className = 'pick-cb';
+        const img = document.createElement('img');
+        img.className = 'li-thumb';
+        setThumb(img, rec);
+        const body = document.createElement('div');
+        body.className = 'li-body';
+        const title = document.createElement('div');
+        title.className = 'li-title';
+        title.textContent = rec.title || '(ללא שם)';
+        body.appendChild(title);
+        // the whole row toggles — a checkbox alone is a cruel target on a tablet
+        const toggle = () => {
+          cb.checked = !cb.checked;
+          if (cb.checked) chosen.add(rec.key); else chosen.delete(rec.key);
+          li.classList.toggle('pick-off', !cb.checked);
+          paint();
+        };
+        li.addEventListener('click', (e) => { if (e.target !== cb) toggle(); });
+        cb.addEventListener('change', () => {
+          if (cb.checked) chosen.add(rec.key); else chosen.delete(rec.key);
+          li.classList.toggle('pick-off', !cb.checked);
+          paint();
+        });
+        boxes.set(rec.key, { cb, li });
+        li.appendChild(cb);
+        li.appendChild(img);
+        li.appendChild(body);
+        ul.appendChild(li);
+      }
+      const setAll = (on) => {
+        chosen.clear();
+        for (const [key, { cb, li }] of boxes) {
+          cb.checked = on;
+          li.classList.toggle('pick-off', !on);
+          if (on) chosen.add(key);
+        }
+        paint();
+      };
+      paint();
+
+      let settled = false;
+      const finish = async (commit) => {
+        if (settled) return;
+        settled = true;
+        if (!commit) { resolve(null); return; }
+        const keep = recs.filter((r) => chosen.has(r.key)).map((r) => r.key);
+        const drop = recs.filter((r) => !chosen.has(r.key)).map((r) => r.key);
+        if (keep.length) {
+          await db.approvePending(libScope, keep);
+          await enqueueApprovedForSheet(recs.filter((r) => chosen.has(r.key)));
+        }
+        if (drop.length) await db.rejectPending(libScope, drop); // parked, NOT tombstoned
+        await loadGiftStates();
+        await Promise.all([refreshPendingList(), refreshParentList(), refreshChannelsList()]);
+        renderHome();
+        if (keep.length) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
+        maybeSchedulePush();
+        resolve({ kept: keep.length, rejected: drop.length });
+      };
+
+      pickHandlers = {
+        ok: () => finish(true).catch(() => resolve(null)),
+        cancel: () => finish(false),
+        all: () => setAll(true),
+        none: () => setAll(false)
+      };
+      nav.go('pick');
+    })().catch(() => resolve(null));
+  });
+}
+
+let pickHandlers = null;
 
 async function ensureSources() {
   let src = await db.getSources(activeProfileId);
@@ -2646,13 +2817,45 @@ function wire() {
     const pend = await refreshPendingList();
     const yes = await confirmKid({
       emoji: '🗑️', title: `לדחות ${pend.length} סרטונים?`,
-      text: 'הם לא יופיעו שוב, גם לא בסנכרונים הבאים.',
+      // v1.0.23: no longer a one-way door — say so, or the parent won't dare press it
+      text: 'הם יעברו לרשימת הדחויים ולא יופיעו אצל הילד. אפשר להחזיר אותם משם בכל עת.',
       ok: 'דחיית הכול', cancel: 'ביטול', danger: true
     });
     if (!yes) return;
-    for (const r of pend) await db.rejectPending(r.scopeId, [r.key]);
+    const byScope = new Map();
+    for (const r of pend) {
+      if (!byScope.has(r.scopeId)) byScope.set(r.scopeId, []);
+      byScope.get(r.scopeId).push(r.key);
+    }
+    for (const [scope, keys] of byScope) await db.rejectPending(scope, keys); // one tx per scope
     await refreshPendingList();
   });
+
+  // v1.0.23 — the ONLY destructive step in the rejected flow: empty the list for real.
+  $('purge-rejected').addEventListener('click', async () => {
+    const rej = await collectRejected();
+    if (!rej.length) return;
+    const yes = await confirmKid({
+      emoji: '🗑️', title: `למחוק ${rej.length} סרטונים לצמיתות?`,
+      text: 'רשימת הדחויים תתרוקן. זו מחיקה סופית — הסרטונים לא יחזרו, גם לא בסנכרון '
+        + 'ובשאר המכשירים. כדי לשמור על אחד מהם, החזירו אותו לתור האישורים לפני המחיקה.',
+      ok: 'מחיקה לצמיתות', cancel: 'ביטול', danger: true
+    });
+    if (!yes) return;
+    const byScope = new Map();
+    for (const r of rej) {
+      if (!byScope.has(r.scopeId)) byScope.set(r.scopeId, []);
+      byScope.get(r.scopeId).push(r.key);
+    }
+    for (const [scope, keys] of byScope) await db.purgeRejected(scope, keys);
+    await refreshPendingList();
+    maybeSchedulePush(); // the tombstones must reach the other devices
+  });
+
+  $('pick-ok').addEventListener('click', () => { const h = pickHandlers; if (h) { pickHandlers = null; h.ok(); } if (nav.isActive('pick')) nav.back(); });
+  $('pick-cancel').addEventListener('click', () => { if (nav.isActive('pick')) nav.back(); }); // onLeave cancels
+  $('pick-all').addEventListener('click', () => pickHandlers && pickHandlers.all());
+  $('pick-none').addEventListener('click', () => pickHandlers && pickHandlers.none());
 
   $('export-btn').addEventListener('click', async () => {
     const msg = $('add-msg');

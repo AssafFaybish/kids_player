@@ -610,8 +610,11 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .modal-emoji { font-size: 56px; line-height: 1.1; }
 .modal-title { font-size: 24px; margin: 10px 0 4px; color: var(--ink); }
 .modal-text { font-size: 17px; color: var(--muted); margin: 0 0 18px; }
-.modal-btns { display: flex; gap: 12px; }
-.modal-btn { flex: 1; min-height: var(--tap); font-size: 22px; }
+/* v1.0.23: a THIRD button may appear (auto / manual / later). Three Hebrew labels do not
+   fit one row on a phone, so the row wraps and each button keeps a full tap target
+   instead of squeezing to an unreadable sliver. */
+.modal-btns { display: flex; gap: 12px; flex-wrap: wrap; }
+.modal-btn { flex: 1 1 46%; min-height: var(--tap); font-size: 22px; }
 .modal-danger { background: #ffe2e3; color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .modal-card { animation: none; } }
 
@@ -658,8 +661,12 @@ html.tv .tile:active, html.tv button:active { transform: none; }
    A real screen, not a dialog: release notes can run long, so the NOTES scroll
    while the header and the action button stay put (the old modal had no
    max-height and long English bodies overflowed the card). */
-#view-whatsnew { min-height: 100dvh; }
-#view-whatsnew.active { display: flex; align-items: center; justify-content: center; }
+/* v1.0.23: view-pick shares this skeleton. The centering MUST be listed here for every
+   view that uses .wn-wrap — the wrap is a fixed-width flex column, so without it the
+   generic `.view.active { display: block }` leaves it pinned to the RTL right edge
+   (measured: 560px wide at left:720 of a 1280 viewport). */
+#view-whatsnew, #view-pick { min-height: 100dvh; }
+#view-whatsnew.active, #view-pick.active { display: flex; align-items: center; justify-content: center; }
 .wn-wrap {
   display: flex; flex-direction: column; gap: 12px;
   width: min(94vw, 560px); max-height: 92dvh;
@@ -754,3 +761,13 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   .profiles-title { font-size: 24px; }
   .chip-name { display: none; }
 }
+
+/* ---------- v1.0.23: pick-which-videos + the rejected archive ---------- */
+/* The picker reuses .parent-list rows, plus a checkbox and a dimmed "off" state. The whole
+   row is the tap target (see app.js) — a bare checkbox is a cruel target on a tablet. */
+.pick-cb { width: 26px; height: 26px; flex: 0 0 auto; accent-color: var(--brand); }
+.pick-off { opacity: 0.45; }
+.pick-off .li-title { text-decoration: line-through; }
+
+.rejected-box { margin-top: 18px; border-top: 2px dashed #d8d5f0; padding-top: 12px; }
+.rejected-summary { font-size: 19px; font-weight: 700; color: var(--muted); cursor: pointer; padding: 8px 0; }

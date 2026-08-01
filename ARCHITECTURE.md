@@ -54,7 +54,7 @@ Native (android/, canonical copies in native-reference/): `MainActivity.java`
 
 | Store | keyPath | Notes |
 |---|---|---|
-| `videos` | `[scopeId, key]` | scopeId: `lib:<fnv1a(sheetKey)>` (shared per input sheet) or `prof:<profileId>` (personal). Indexes: by_folder_sort `[scope,folder,sortKey]`, by_state, by_channel_title, by_key. Pending rows live in folder `'~pending'` + `homeFolderId`. |
+| `videos` | `[scopeId, key]` | scopeId: `lib:<fnv1a(sheetKey)>` (shared per input sheet) or `prof:<profileId>` (personal). Indexes: by_folder_sort `[scope,folder,sortKey]`, by_state, by_channel_title, by_key. Parked rows live in `'~pending'` / `'~rejected'` (normalize.PARKED) + `homeFolderId`; state is one of live|pending|rejected, and 'rejected' is NOT a deletion (v1.0.23). |
 | `profileVideoState` | `[profileId, key]` | gift state per CHILD: `{giftRank}` XOR `{unwrappedAt}`. by_gift index is SPARSE (deleting giftRank removes from index → the "חדשים" folder is a pure range scan). |
 | `channels` | `channelId` | global metadata + backfillCursor/backfillDone/lastRssCheckedAt |
 | `libraryChannels` | `[libraryId, channelId]` | subscription + autoApprove toggle (+ source: sheet flag vs UI) |
