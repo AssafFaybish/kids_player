@@ -26,11 +26,16 @@ let onAdded = () => {};
 // resolves 'live' | 'pending' | 'channel' | 'discard'. When absent (or it throws),
 // everything falls back to the old silent pending routing — a share is never lost.
 let interactive = null;
+// v1.0.23: app.js decides WHICH profile a share lands in when the app already has one
+// active. Resolves a profileId (it may have switched the app into it), or null to abort.
+// Absent (browser preview) ⇒ the active profile, i.e. exactly the old behaviour.
+let chooseProfile = null;
 
-export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler } = {}) {
+export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler, profileChooser } = {}) {
   if (profileIdGetter) getPid = profileIdGetter;
   if (onShareAdded) onAdded = onShareAdded;
   if (interactiveHandler) interactive = interactiveHandler;
+  if (profileChooser) chooseProfile = profileChooser;
   const plug = kidsNative();
   if (!plug || !plug.addListener) return; // browser preview / plugin absent
   plug.addListener('shareReceived', (o) => { handleShare(o).catch(() => {}); });
@@ -45,11 +50,13 @@ export async function drainShareQueue() {
   try { queue = JSON.parse((await prefGet(K_QUEUE)) || '[]'); } catch {}
   if (!Array.isArray(queue) || !queue.length) return;
   await prefSet(K_QUEUE, '[]');
-  for (const s of queue) await handleShare(s).catch(() => {});
+  // alreadyRouted: these arrived with NO profile active, and the parent has just picked one
+  // by entering it. That tap is the routing decision — do not ask a second time (v1.0.23).
+  for (const s of queue) await handleShare(s, { alreadyRouted: true }).catch(() => {});
 }
 
-async function handleShare(o) {
-  const pid = getPid();
+async function handleShare(o, { alreadyRouted = false } = {}) {
+  let pid = getPid();
   if (!pid) { // no profile active yet — stash (cap 50, dedupe by text)
     let queue = [];
     try { queue = JSON.parse((await prefGet(K_QUEUE)) || '[]'); } catch {}
@@ -60,6 +67,18 @@ async function handleShare(o) {
 
   const c = classifyShared(o.text, o.subject);
   if (!c) return; // the safety boundary held — not a playable link
+
+  // v1.0.23 — WHICH profile? Only asked when the app already has one active, i.e. the
+  // parent shared into a RUNNING app and we would otherwise pick for them silently. The
+  // cold-start path deliberately does not ask: it lands on the profile picker anyway, and
+  // the profile the parent then taps IS the answer (asking again would be the same question
+  // twice). `alreadyRouted` marks a share replayed from that queue.
+  if (!alreadyRouted && chooseProfile) {
+    let chosen;
+    try { chosen = await chooseProfile(c); } catch { chosen = pid; }
+    if (!chosen) return; // the parent backed out — nothing written, nothing lost
+    pid = chosen;
+  }
 
   if (c.kind === 'channel') { await handleChannelShare(pid, c); return; }
 

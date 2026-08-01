@@ -521,6 +521,26 @@ export function resolveWatchContext({
 const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
 
 /**
+ * v1.0.23 — PURE: when a link is shared into the app from Android, should we ask the parent
+ * WHICH profile it goes to?
+ *
+ * Only when the answer can change where it lands. Two profiles that follow the SAME input
+ * sheet share one library scope (`lib:<fnv1a(sheet)>`), so a video added to either is the
+ * same row in the same library and both children see it — asking there is noise, and noise
+ * trains a parent to tap through dialogs without reading them. With one profile there is
+ * nothing to ask at all.
+ *
+ * @param targets [{ profileId, scope }] — scope is the profile's libraryId, or its personal
+ *        `prof:<id>` scope when it has no sources record yet. A missing scope counts as
+ *        DISTINCT: a profile that has never synced is its own destination.
+ */
+export function shouldAskShareProfile(targets) {
+  const list = (targets || []).filter((t) => t && t.profileId);
+  if (list.length < 2) return false;
+  return new Set(list.map((t) => t.scope || 'prof:' + t.profileId)).size > 1;
+}
+
+/**
  * v1.0.20 — PURE: may the home render its ONE folder's videos flat, with no tile?
  *
  * The rule exists for the sheet-only setup: when the only folder is the shared

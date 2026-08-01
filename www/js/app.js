@@ -16,7 +16,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
-  resolveWatchContext } from './plan.js';
+  resolveWatchContext, shouldAskShareProfile } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -358,7 +358,16 @@ function registerViews() {
   // v1.0.23 — leaving the picker ANY way (back, hardware back, a later navigation) must
   // resolve its promise, or the caller awaits forever and the add flow never finishes.
   nav.register('pick', { onLeave: () => { const h = pickHandlers; pickHandlers = null; if (h) h.cancel(); } });
-  nav.register('profiles', { onBack: () => { askExit(); return true; } });
+  nav.register('profiles', {
+    // v1.0.23: while this screen is choosing a share's destination, back means "no
+    // decision" — resolve the chooser instead of asking whether to exit the app.
+    onBack: () => {
+      if (shareProfileCancel) { const c = shareProfileCancel; shareProfileCancel = null; c(); nav.back(); return true; }
+      askExit();
+      return true;
+    },
+    onLeave: () => { const c = shareProfileCancel; shareProfileCancel = null; if (c) c(); }
+  });
   nav.register('create-profile', {
     onBack: () => {
       if (profiles.length > 0) { renderProfiles(); nav.reset('profiles'); }
@@ -2546,7 +2555,14 @@ async function connectGoogleFirstLaunch() {
 }
 
 /* ---------------- Profiles ---------------- */
-function renderProfiles() {
+/**
+ * The profile picker. `onPick` (v1.0.23) makes it a SELECTION screen instead of the
+ * activation screen — used to route an Android share. Selection and activation used to be
+ * inseparable (every tile hard-wired `activateProfile`), so there was no way to ask "which
+ * child?" about anything.
+ */
+function renderProfiles({ onPick = null, title = null } = {}) {
+  $('profiles-title').textContent = title || 'מי צופה? 🍿';
   const grid = $('profiles-grid');
   grid.innerHTML = '';
   for (const p of profiles) {
@@ -2562,9 +2578,12 @@ function renderProfiles() {
     nm.textContent = p.name;
     btn.appendChild(av);
     btn.appendChild(nm);
-    btn.addEventListener('click', () => activateProfile(p.id));
+    btn.addEventListener('click', () => (onPick ? onPick(p.id) : activateProfile(p.id)));
     grid.appendChild(btn);
   }
+  // No "new profile" tile while choosing a share target: creating a profile runs the sheet
+  // wizard and its own activation, which would abandon the share mid-flight.
+  if (onPick) return;
   const add = document.createElement('button');
   add.className = 'profile-tile profile-add';
   add.type = 'button';
@@ -2579,6 +2598,45 @@ function renderProfiles() {
   add.addEventListener('click', openCreateProfile);
   grid.appendChild(add);
 }
+
+/**
+ * v1.0.23 — WHICH profile does this shared link go to?
+ *
+ * Only asked when the answer changes anything (`plan.shouldAskShareProfile`): one profile,
+ * or several that follow the same sheet and therefore share one library scope, means the
+ * video lands in the same place regardless and the dialog would be noise.
+ *
+ * The parent's decision (2026-08-01) is that choosing also SWITCHES the app into that
+ * profile — so the picker resolves through `activateProfile`, and the share's own PIN +
+ * confirm flow then runs inside the chosen profile.
+ * -> profileId | null (backed out)
+ */
+async function chooseShareProfile() {
+  const targets = [];
+  for (const p of profiles) {
+    const src = await db.getSources(p.id);
+    targets.push({ profileId: p.id, scope: (src && src.libraryId) || db.profScope(p.id) });
+  }
+  if (!shouldAskShareProfile(targets)) return activeProfileId || (profiles[0] && profiles[0].id) || null;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (id) => { if (settled) return; settled = true; shareProfileCancel = null; resolve(id); };
+    shareProfileCancel = () => done(null); // back / any navigation away = no decision
+    renderProfiles({
+      title: 'לאיזה פרופיל להוסיף?',
+      onPick: async (id) => {
+        if (settled) return;
+        settled = true;
+        shareProfileCancel = null;
+        await activateProfile(id); // resets nav to that profile's gallery
+        resolve(id);
+      }
+    });
+    nav.go('profiles');
+  });
+}
+let shareProfileCancel = null;
 
 function renderAvatarGrid() {
   const grid = $('avatar-grid');
@@ -3270,6 +3328,7 @@ async function init() {
   initShareTarget({
     profileIdGetter: () => activeProfileId,
     interactiveHandler: handleShareInteractive,
+    profileChooser: chooseShareProfile, // v1.0.23 — asked only when it changes the outcome
     onShareAdded: async ({ pending, channelAdded, channelFailed, title }) => {
       if (channelFailed) {
         await alertKid({ emoji: '😕', title: 'לא הצלחנו לזהות את הערוץ', text: 'אפשר לנסות דרך מסך ההורים ← הוספה.', ok: 'בסדר' });

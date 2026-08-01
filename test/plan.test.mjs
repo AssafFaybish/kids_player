@@ -6,6 +6,7 @@ import {
   planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
   sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
+  shouldAskShareProfile,
   resolveWatchContext
 } from '../www/js/plan.js';
 
@@ -70,6 +71,28 @@ test('a REJECTED record survives every later sync (v1.0.23)', () => {
     }
     assert.ok(!p.newLiveKeys.includes(c.key), `round ${round}: counted as newly live`);
   }
+});
+
+test('shouldAskShareProfile: only when the answer changes where the video lands', () => {
+  const A = { profileId: 'p1', scope: 'lib:aaa' };
+  const B = { profileId: 'p2', scope: 'lib:bbb' };
+  const sameSheet = { profileId: 'p2', scope: 'lib:aaa' };
+
+  assert.equal(shouldAskShareProfile([A, B]), true, 'different libraries → the choice matters');
+  assert.equal(shouldAskShareProfile([A]), false, 'one profile → nothing to ask');
+  assert.equal(shouldAskShareProfile([]), false);
+  assert.equal(shouldAskShareProfile(null), false, 'never throws on a missing list');
+  // THE case this helper exists for: two children on ONE family sheet share the library
+  // scope, so the video is the same row either way. Asking would train the parent to tap
+  // through the dialog without reading it.
+  assert.equal(shouldAskShareProfile([A, sameSheet]), false, 'same sheet ⇒ same destination');
+  // three profiles, two sheets → still a real choice
+  assert.equal(shouldAskShareProfile([A, sameSheet, B]), true);
+  // a profile with no sources yet is its own destination, so it counts as distinct
+  assert.equal(shouldAskShareProfile([A, { profileId: 'p3' }]), true);
+  assert.equal(shouldAskShareProfile([{ profileId: 'p1' }, { profileId: 'p2' }]), true);
+  // junk entries are ignored rather than counted as profiles
+  assert.equal(shouldAskShareProfile([A, null, {}]), false);
 });
 
 test('quarantine forces pending regardless of autoApprove (post-migration first sync)', () => {
