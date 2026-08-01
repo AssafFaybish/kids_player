@@ -259,6 +259,26 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.23 — **A SHARE FROM ANDROID ASKS WHICH PROFILE, BUT ONLY WHEN THAT CHANGES ANYTHING.**
+  `share.handleShare` routed everything to `activeProfileId` with no question. It now consults
+  an optional `profileChooser` callback (`app.chooseShareProfile`), gated by pure
+  `plan.shouldAskShareProfile(targets)`: **two profiles that follow the same sheet share one
+  library scope**, so the video is the same row either way and asking would be noise that
+  trains the parent to tap through dialogs. One profile ⇒ never ask. A profile with no
+  sources counts as its own destination.
+  Choosing also SWITCHES to that profile (decision 2026-08-01), so the picker resolves
+  through `activateProfile` and the share's PIN+confirm then runs inside it.
+  `renderProfiles({ onPick, title })` is what made this possible — every tile used to
+  hard-wire `activateProfile`, so selection and activation were inseparable and nothing could
+  ask "which child?". In pick mode the ➕ tile is HIDDEN: creating a profile runs the sheet
+  wizard and its own activation, which would abandon the share mid-flight.
+  **THE COLD-START PATH DELIBERATELY DOES NOT ASK.** A share arriving with no active profile
+  is stashed in Preferences and replayed by `drainShareQueue` — which passes
+  `alreadyRouted:true` — because that boot lands on the profile picker anyway and the profile
+  the parent taps IS the answer. Asking again would be the same question twice.
+  Backing out of the picker writes NOTHING (no stash, no record): `nav.register('profiles')`
+  gained an `onLeave`/`onBack` that resolves the chooser with null, so the awaiting share
+  cannot hang forever.
 - v1.0.23 — **A NEW CHANNEL ASKS THREE QUESTIONS, NOT TWO.** `offerChannelApproval` now
   raises a three-way choice (decision 2026-08-01): **אישור אוטומטי** (everything now and
   every future upload, + the auto-approve flag), **בחירה ידנית** (→ `view-pick`), or
