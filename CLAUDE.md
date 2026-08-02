@@ -262,6 +262,28 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.28 — **THE SIMPLIFICATION PASS** (parent's request: a user who knows no technical
+  terms). Five changes, one chain:
+  - **The YouTube-API-key form is GONE from the UI.** The target user cannot mint a Google
+    Cloud key, so the form only frightened. A key saved in the PAST keeps working —
+    `yt.getApiKey` still reads the stored `yt:apiKey` override first. Never re-add the form;
+    developers have GOOGLE_CLOUD_SETUP.md.
+  - **The parent's library list folds away** (`#library-box` + `plan.groupLibraryByFolder`,
+    pure + tested): one closed line, inside it one `<details>` per folder the CHILD sees,
+    all closed by default. Grouping is by HOME folder; unsubscribed leftovers group under
+    their remembered title rather than vanish; the PARENT_LIST_CAP promise became
+    per-section. A rebuild keeps whatever sections were open.
+  - **Switching profiles MID-SESSION always asks for the code** — the `exitLockOn()`
+    conditional is gone (a sibling switch changes whose library/gifts/settings are live;
+    that is a parental act). The BOOT picker stays free, same decision. Still fails CLOSED;
+    the invariants guard now bans any free-standing `backToProfiles` in `onProfileChip`.
+  - **The landing page sells the app, not its permission model** — the scopes section is
+    one plain privacy card (privacy/terms links KEPT — OAuth verification points at them),
+    plus a new "איך מוסיפים תוכן" section. Functional warnings stay (Android's install
+    prompts, Google's "we don't know this app" screen) — preparation, not jargon.
+  - **`summary` joined the D-pad focusable selector** — every folded section (the rejected
+    archive since v1.0.23, now the whole library list) was UNREACHABLE from a TV remote.
+    Enter toggles natively; focus was the entire gap.
 - v1.0.27 — **NO STEP OF ADDING A CHANNEL IS SILENT ANY MORE.** Field report: "the add
   takes a while — fine — but between clicks I cannot tell whether it is still working or
   waiting for me." Only the long import ever showed the loading screen; resolve, subscribe,

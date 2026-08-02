@@ -21,8 +21,13 @@ function candidates() {
     ? document.getElementById('modal')
     : document.querySelector('.view.active');
   if (!scope) return [];
+  // v1.0.28: `summary` is focusable and toggles its <details> natively on Enter — but it
+  // was missing here, so every folded section (the rejected archive since v1.0.23, the
+  // whole grouped library list now) was simply UNREACHABLE from a TV remote. Rows inside
+  // a CLOSED section have offsetParent null, so the existing visibility filter already
+  // keeps them out until the section opens.
   return [...scope.querySelectorAll(
-    'button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])'
+    'button, input, select, textarea, summary, [href], [tabindex]:not([tabindex="-1"])'
   )].filter((el) => !el.disabled && el.offsetParent !== null);
 }
 
