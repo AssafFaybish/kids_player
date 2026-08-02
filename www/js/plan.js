@@ -106,6 +106,30 @@ export function playlistVideoFolder({ ownerChannelId, playlistId, subscribedChan
 }
 
 /**
+ * v1.0.29 — PURE: which profile does the app open INTO on launch?
+ *
+ * Parent's request: the last-used profile loads automatically, so a child who owns the
+ * device lands straight in their library. DEVICE-LOCAL BY DESIGN: the stored id lives in
+ * Preferences (never synced — the settings channel is a different mechanism), because one
+ * Google account often serves several devices, each belonging to a DIFFERENT child.
+ *
+ * Falls back to the picker (null) in exactly three cases, each load-bearing:
+ *  - nothing stored (first launch, or a fresh install);
+ *  - the stored id no longer exists (the profile was deleted, possibly on a peer device —
+ *    auto-entering a ghost would crash activation or resurrect a tombstoned profile's UI);
+ *  - a SHARE is queued from a cold start: since v1.0.23 the boot picker IS the share's
+ *    routing question ("the profile the parent taps is the answer", alreadyRouted:true) —
+ *    auto-skipping it would route the share with nobody having chosen a destination.
+ */
+export function planBootProfile({ storedId, profileIds, hasQueuedShare = false } = {}) {
+  if (hasQueuedShare) return null;
+  const id = String(storedId || '');
+  if (!id) return null;
+  const ids = profileIds instanceof Set ? profileIds : new Set(profileIds || []);
+  return ids.has(id) ? id : null;
+}
+
+/**
  * v1.0.28 — PURE: group the parent's library list by the folder the child sees.
  *
  * The הוספה tab used to render one flat list of every live video (capped at

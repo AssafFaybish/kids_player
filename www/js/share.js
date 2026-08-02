@@ -50,6 +50,12 @@ export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHand
 }
 
 /** Called on profile activation: absorb shares that arrived with no active profile. */
+/** v1.0.29: is a cold-start share waiting? The boot flow must show the PICKER then —
+    it is that share's routing question (v1.0.23) — instead of auto-resuming a profile. */
+export async function hasQueuedShares() {
+  try { return ((await prefGet(K_QUEUE)) || '[]') !== '[]'; } catch { return false; }
+}
+
 export async function drainShareQueue() {
   let queue = [];
   try { queue = JSON.parse((await prefGet(K_QUEUE)) || '[]'); } catch {}
