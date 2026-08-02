@@ -26,6 +26,26 @@ export function parseVersion(v) {
   const m = clean.match(/^v?(\d+)\.(\d+)\.(\d+)/);
   return m ? [+m[1], +m[2], +m[3]] : null;
 }
+/**
+ * v1.0.26 — PURE: can a device ever be OFFERED this version?
+ *
+ * `parseVersion` reads exactly THREE components, so a fourth is not "smaller" — it is
+ * INVISIBLE. `1.0.26.1` parses to [1,0,26], compares EQUAL to an installed `1.0.26`, and
+ * `resolveUpdateStatus` answers 'up-to-date'. The release exists, the website serves it,
+ * and not one installed app will ever offer it.
+ *
+ * This has now happened FOUR times — v1.0.4.1, v1.0.19.1, v1.0.21.1, v1.0.26.1 — and the
+ * last one carried the share fix that was reported from the field. Widening parseVersion
+ * is the wrong repair: three components is what every released app already compares by,
+ * so a four-part tag would still be undeliverable to every device already out there.
+ * The only fix that helps is refusing to publish one, which is why the release scripts
+ * call this BEFORE they build.
+ */
+export function versionIsDeliverable(v) {
+  const clean = String(v ?? '').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff]/g, '').trim();
+  return /^v?\d+\.\d+\.\d+$/.test(clean);
+}
+
 export function compareVersions(a, b) {
   const A = parseVersion(a);
   const B = parseVersion(b);

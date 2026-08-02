@@ -49,6 +49,16 @@ else
   V="$(node -p "require('./package.json').version")"
 fi
 TAG="v$V"
+
+# v1.0.26: REFUSE A VERSION NO DEVICE CAN RECEIVE. update.parseVersion reads exactly three
+# components, so "1.0.26.1" compares EQUAL to an installed "1.0.26" and every app answers
+# "up-to-date". Four such releases have been published and not one reached a single
+# device — the last carried a field-reported fix. Checked BEFORE the build, so a typo
+# costs a second rather than a whole release cycle.
+if ! node -e "import('./www/js/update.js').then(m => process.exit(m.versionIsDeliverable(process.argv[1]) ? 0 : 1))" "$V"; then
+  die "Version '$V' can never reach a device: update.parseVersion reads three components, so it is indistinguishable from '$(printf '%s' "$V" | cut -d. -f1-3)'. Use a real third-component bump (e.g. 1.0.27)."
+fi
+
 APK="$APK_DIR/kids-player-$TAG.apk"
 # v1.0.19: a SECOND asset under a version-less name. GitHub resolves
 # /releases/latest/download/<name> only for an exactly-named asset, so a stable name

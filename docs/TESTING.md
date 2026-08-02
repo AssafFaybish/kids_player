@@ -169,6 +169,10 @@ for anything destructive, and purge it afterwards.
 
 See [PUBLISHING.md](../PUBLISHING.md). The two that keep going wrong:
 
+0. **A four-component version reaches nobody.** `parseVersion` reads three, so `1.0.26.1`
+   compares EQUAL to an installed `1.0.26` and every app answers "up-to-date". Both release
+   scripts now refuse one before building (`update.versionIsDeliverable`) — it had already
+   happened four times, most recently to the release carrying the field-reported share fix.
 1. **Every release needs BOTH APK names** — `kids-player-v<X.Y.Z>.apk` (humans + the
    updater's exact match) **and** `kids-player.apk` (the stable name the website button
    redirects to). v1.0.24 shipped only the first; v1.0.25 only the second.

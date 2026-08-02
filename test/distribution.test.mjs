@@ -93,3 +93,38 @@ test('the install steps do not name a versioned file the button no longer serves
   assert.doesNotMatch(steps, /kids-player-v/,
     'install steps still describe picking a versioned file from a list');
 });
+
+/* ---------------- a version no device can receive (v1.0.26) ---------------- */
+
+test('versionIsDeliverable: a FOURTH component is invisible, not smaller', async () => {
+  const m = await import('../www/js/update.js');
+  for (const ok of ['1.0.26', 'v1.0.26', '0.0.1', '10.20.30', ' 1.0.26 ']) {
+    assert.equal(m.versionIsDeliverable(ok), true, ok);
+  }
+  // Every four-part release this project has actually published. NOT ONE of them could
+  // reach a single device, and v1.0.26.1 carried the field-reported share fix.
+  for (const bad of ['1.0.4.1', '1.0.19.1', '1.0.21.1', '1.0.26.1', 'v1.0.26.1']) {
+    assert.equal(m.versionIsDeliverable(bad), false, bad);
+    // the reason, demonstrated rather than asserted in prose:
+    assert.deepEqual(m.parseVersion(bad), m.parseVersion(bad.split('.').slice(0, 3).join('.')));
+    assert.equal(m.compareVersions(bad, bad.split('.').slice(0, 3).join('.')), 0);
+  }
+  for (const junk of ['', '1.0', 'abc', '1.0.26-beta', null, undefined, {}, 1.026]) {
+    assert.equal(m.versionIsDeliverable(junk), false, JSON.stringify(junk));
+  }
+});
+
+test('an undeliverable version is refused by BOTH release scripts, before the build', async () => {
+  // A guard in only one script is no guard: release.ps1 is the Windows one-command path
+  // and would happily publish the tag that release.sh just rejected.
+  const sh = read('release.sh');
+  const ps = read('release.ps1');
+  for (const [name, body] of [['release.sh', sh], ['release.ps1', ps]]) {
+    assert.match(body, /versionIsDeliverable/, `${name} does not check the version is reachable`);
+    // BEFORE the build: catching it after a signed APK exists wastes the whole cycle and
+    // invites publishing it anyway.
+    const guard = body.indexOf('versionIsDeliverable');
+    const build = body.search(/apk:release|assembleRelease|npm run apk/);
+    assert.ok(build === -1 || guard < build, `${name} checks the version only after building`);
+  }
+});
