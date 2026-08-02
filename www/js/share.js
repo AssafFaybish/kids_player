@@ -31,12 +31,16 @@ let interactive = null;
 // active. Resolves a profileId (it may have switched the app into it), or null to abort.
 // Absent (browser preview) ⇒ the active profile, i.e. exactly the old behaviour.
 let chooseProfile = null;
+// v1.0.26: app.js shows a toast for EVERY outcome. Absent (browser preview) ⇒ silent,
+// exactly as before.
+let onResult = () => {};
 
-export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler, profileChooser } = {}) {
+export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler, profileChooser, resultHandler } = {}) {
   if (profileIdGetter) getPid = profileIdGetter;
   if (onShareAdded) onAdded = onShareAdded;
   if (interactiveHandler) interactive = interactiveHandler;
   if (profileChooser) chooseProfile = profileChooser;
+  if (resultHandler) onResult = resultHandler;
   const plug = kidsNative();
   if (!plug || !plug.addListener) return; // browser preview / plugin absent
   plug.addListener('shareReceived', (o) => { handleShare(o).catch(() => {}); });
@@ -56,18 +60,33 @@ export async function drainShareQueue() {
   for (const s of queue) await handleShare(s, { alreadyRouted: true }).catch(() => {});
 }
 
+/**
+ * v1.0.26 — every route ends in a REASON, and the caller reports it.
+ *
+ * FIELD BUG: this function had seven silent `return`s and no success path either, so a
+ * parent sharing from YouTube saw the same thing — nothing — whether the video was added,
+ * parked for approval, a duplicate, previously deleted, or dropped. "Sharing does not
+ * work" was unanswerable from inside the app. Reasons map to text in pure
+ * `plan.shareOutcome`.
+ */
 async function handleShare(o, { alreadyRouted = false } = {}) {
+  const reason = await routeShare(o, { alreadyRouted });
+  try { onResult(reason); } catch {}
+  return reason;
+}
+
+async function routeShare(o, { alreadyRouted = false } = {}) {
   let pid = getPid();
   if (!pid) { // no profile active yet — stash (cap 50, dedupe by text)
     let queue = [];
     try { queue = JSON.parse((await prefGet(K_QUEUE)) || '[]'); } catch {}
     if (!queue.some((q) => q.text === o.text)) queue.push({ text: o.text, subject: o.subject, at: o.at });
     await prefSet(K_QUEUE, JSON.stringify(queue.slice(-50)));
-    return;
+    return 'no-profile';
   }
 
   const c = classifyShared(o.text, o.subject);
-  if (!c) return; // the safety boundary held — not a playable link
+  if (!c) return 'unsupported'; // the safety boundary held — not a playable link
 
   // v1.0.23 — WHICH profile? Only asked when the app already has one active, i.e. the
   // parent shared into a RUNNING app and we would otherwise pick for them silently. The
@@ -77,11 +96,11 @@ async function handleShare(o, { alreadyRouted = false } = {}) {
   if (!alreadyRouted && chooseProfile) {
     let chosen;
     try { chosen = await chooseProfile(c); } catch { chosen = pid; }
-    if (!chosen) return; // the parent backed out — nothing written, nothing lost
+    if (!chosen) return 'cancelled'; // the parent backed out — nothing written, nothing lost
     pid = chosen;
   }
 
-  if (c.kind === 'channel') { await handleChannelShare(pid, c); return; }
+  if (c.kind === 'channel' || c.kind === 'playlist') return handleSourceShare(pid, c);
 
   const src = await db.getSources(pid);
   // v1.0.6: shares land in the SHARED library folder ('sheet') when sources exist —
@@ -90,10 +109,12 @@ async function handleShare(o, { alreadyRouted = false } = {}) {
   const lib = src && src.libraryId;
   const scope = lib || db.profScope(pid);
   const homeFolder = lib ? 'sheet' : 'mine';
-  if (await db.getVideo(scope, c.key)) return; // idempotent on double delivery
-  if (lib && await db.getVideo(db.profScope(pid), c.key)) return;
-  if ((await db.loadDenySet(scope)).has(c.key)) return; // deleted stays deleted
-  if (lib && (await db.loadDenySet(db.profScope(pid))).has(c.key)) return;
+  if (await db.getVideo(scope, c.key)) return 'duplicate'; // idempotent on double delivery
+  if (lib && await db.getVideo(db.profScope(pid), c.key)) return 'duplicate';
+  // Deleted stays deleted — but SAY so. A parent who deleted a video months ago and then
+  // shares it again gets no record and, until now, no explanation either.
+  if ((await db.loadDenySet(scope)).has(c.key)) return 'denied';
+  if (lib && (await db.loadDenySet(db.profScope(pid))).has(c.key)) return 'denied';
 
   // v1.0.7: the interactive PIN+confirm flow decides; without it (browser preview,
   // handler error) the old toggle-based routing still applies. A declined/cancelled
@@ -102,7 +123,7 @@ async function handleShare(o, { alreadyRouted = false } = {}) {
   if (interactive) {
     try { decision = await interactive(c); } catch { decision = null; }
   }
-  if (decision === 'discard') return;
+  if (decision === 'discard') return 'cancelled';
   // v1.0.25: the fallback toggle moved to the synced per-profile settings. Defaulting to
   // TRUE is the whole point of this branch — it runs when the interactive PIN+confirm
   // flow is unavailable or threw, and a share must never reach the child unasked.
@@ -131,38 +152,60 @@ async function handleShare(o, { alreadyRouted = false } = {}) {
     } catch {}
   }
   try { onAdded({ key: c.key, title: c.title, pending: requireApproval }); } catch {}
+  return requireApproval ? 'pending' : 'added';
 }
 
 /**
- * v1.0.7: a shared CHANNEL link — behaves exactly like adding a channel in the parent
- * screen: PIN + confirm (interactive handler), resolve the reference, subscribe with
- * approval-required default, register a sheet row, then sync pulls its videos.
- * Without the interactive handler a channel share is ignored (subscribing a whole
- * channel silently is too big a side effect for a fallback path).
+ * A shared CHANNEL or PLAYLIST. PIN + confirm, subscribe, register a sheet row, then let
+ * `onAdded` import it and ask what to do with the back catalogue (app.js owns the loading
+ * screen and the dialog; this layer may not import ui/*).
  *
- * v1.0.25: "behaves exactly like the parent screen" is now TRUE. This used to fire the
- * sync without awaiting it and report success immediately, so the whole back catalogue
- * landed in ממתינים with no dialog and no count — the v1.0.22 bug, still live on this
- * path. The import and the question belong to app.js (they need the loading screen and
- * the modal, neither of which this layer may import), so `onAdded` owns them and this
- * function stops at subscribing.
+ * v1.0.26 — three silent drops removed. Each returned bare and the parent saw nothing:
+ *  - `decision !== 'channel'` swallowed a declined confirm AND the case where the PIN
+ *    screen or a modal was already up (handleShareInteractive answers null for a channel
+ *    there), which is easy to hit when the share arrives into a running app;
+ *  - `!lib` — a profile with no sources record yet — dropped the channel outright instead
+ *    of creating the record the parent-screen path creates for itself;
+ *  - a failed reference resolve reported `channelFailed` but nothing told the parent.
  */
-async function handleChannelShare(pid, c) {
-  if (!interactive) return;
+async function handleSourceShare(pid, c) {
+  const isPlaylist = c.kind === 'playlist';
+  if (!interactive) return 'cancelled'; // no way to ask — never subscribe silently
   let decision = null;
   try { decision = await interactive(c); } catch { decision = null; }
-  if (decision !== 'channel') return;
+  if (decision !== 'channel') return 'cancelled';
 
-  const src = await db.getSources(pid);
-  const lib = src && src.libraryId;
-  if (!lib) return; // no sources yet (pre-first-sync) — the parent screen path covers this
+  let src = await db.getSources(pid);
+  if (!src || !src.libraryId) {
+    // v1.0.26: create the sources record instead of giving up. The parent screen has always
+    // done this (ensureSources); the share path just returned, so a channel shared before
+    // the first sync vanished with no explanation.
+    try {
+      const { libraryIdFor } = await import('./util.js');
+      src = {
+        profileId: pid, schema: 1, sheetUrl: (src && src.sheetUrl) || null,
+        libraryId: (src && src.sheetUrl) ? libraryIdFor(src.sheetUrl) : 'lib:p:' + pid,
+        defaultAutoApprove: false, maxItemsPerChannel: 500, maxItemsTotal: 5000,
+        drive: (src && src.drive) || { enabled: false }, updatedAt: Date.now()
+      };
+      await db.putSources(src);
+    } catch { return 'no-library'; }
+  }
+  const lib = src.libraryId;
+  if (!lib) return 'no-library';
+
   try {
-    const yt = await import('./yt.js');
-    const channelId = await yt.resolveChannelRef(c.channelRef, await yt.getApiKey());
-    if (!channelId) { try { onAdded({ channelFailed: true }); } catch {} return; }
-    const known = (await db.listLibraryChannels(lib)).some((x) => x.channelId === channelId);
+    let sourceId = c.playlistId;
+    if (!isPlaylist) {
+      const yt = await import('./yt.js');
+      sourceId = await yt.resolveChannelRef(c.channelRef, await yt.getApiKey());
+    }
+    if (!sourceId) { try { onAdded({ channelFailed: true }); } catch {} return 'resolve-failed'; }
+
+    const known = (await db.listLibraryChannels(lib)).some((x) => x.channelId === sourceId);
     await db.putLibraryChannel({
-      libraryId: lib, channelId, autoApprove: false, autoApproveSource: 'ui',
+      libraryId: lib, channelId: sourceId, ...(isPlaylist ? { kind: 'playlist' } : {}),
+      autoApprove: false, autoApproveSource: 'ui',
       order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false,
       titleOverride: c.title || ''
     });
@@ -170,14 +213,19 @@ async function handleChannelShare(pid, c) {
       try {
         const { enqueueSheetRow } = await import('./sheetwrite.js');
         await enqueueSheetRow(pid, {
-          key: 'ch:' + channelId,
-          srcUrl: 'https://www.youtube.com/channel/' + channelId,
+          key: (isPlaylist ? 'pl:' : 'ch:') + sourceId,
+          srcUrl: isPlaylist
+            ? 'https://www.youtube.com/playlist?list=' + sourceId
+            : 'https://www.youtube.com/channel/' + sourceId,
           flag: 'manual'
         });
       } catch {}
     }
     // No sync here: `onAdded` awaits one behind the loading screen and then raises the
     // approval dialog. Firing one here too would just make the parent wait twice.
-    try { await onAdded({ channelAdded: channelId, title: c.title }); } catch {}
-  } catch { /* a failed resolve must not crash the share pipeline */ }
+    try { await onAdded({ channelAdded: sourceId, title: c.title, isPlaylist }); } catch {}
+    return isPlaylist ? 'playlist-added' : 'channel-added';
+  } catch {
+    return 'failed'; // a failed resolve must not crash the share pipeline — but must SHOW
+  }
 }

@@ -855,3 +855,24 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 }
 /* v1.0.26: per-row countdown in the rejected archive — informational, not alarming */
 .li-ttl { color: var(--muted); font-size: 12px; font-weight: 700; margin-top: 2px; }
+
+/* ---------- Toast (v1.0.26) ----------
+   The only non-blocking feedback channel. Above everything (a share can land while the
+   PIN screen or a confirm dialog is up) but never interactive — it must not swallow a tap
+   meant for what is underneath. */
+.toast {
+  position: fixed; z-index: 90;
+  inset-inline: 16px; bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  margin: 0 auto; max-width: 520px;
+  padding: 14px 18px; border-radius: 16px;
+  background: #2d2a4a; color: #fff;
+  font-size: 16px; font-weight: 700; text-align: center;
+  box-shadow: 0 10px 30px rgba(45, 42, 74, 0.4);
+  pointer-events: none;
+  opacity: 0; transform: translateY(14px);
+  transition: opacity .18s ease, transform .18s ease;
+}
+.toast-on { opacity: 1; transform: translateY(0); }
+.toast-ok { background: #1f7a46; }
+.toast-warn { background: #8a6d1f; }
+.toast-err { background: #a3323a; }

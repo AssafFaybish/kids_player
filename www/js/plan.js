@@ -144,6 +144,39 @@ export function planRejectedPurge(records, { now = Date.now(), days = 30 } = {})
 }
 
 /**
+ * v1.0.26 — PURE: what the parent is told after sharing a link from YouTube.
+ *
+ * FIELD BUG. `handleShare` had SEVEN silent `return`s and no success message either, so
+ * every possible outcome — added, parked for approval, duplicate, previously deleted,
+ * cancelled, unrecognised, no library yet — looked identical from the outside: nothing.
+ * A parent reported "sharing does not work" and there was no way, from the app, to learn
+ * which of the seven it was.
+ *
+ * Every route now ends here. `kind` is the toast colour; the TEXT carries the meaning.
+ */
+const SHARE_OUTCOMES = {
+  added: { kind: 'ok', text: 'נוסף ✅' },
+  pending: { kind: 'warn', text: 'נוסף וממתין לאישור — מסך ההורים ← ממתינים 👀' },
+  'channel-added': { kind: 'ok', text: 'הערוץ נוסף ✅' },
+  'playlist-added': { kind: 'ok', text: 'רשימת ההשמעה נוספה ✅' },
+  duplicate: { kind: 'warn', text: 'הסרטון כבר קיים בספרייה' },
+  denied: { kind: 'warn', text: 'הסרטון הזה נמחק בעבר. אפשר להוסיף אותו שוב ממסך ההורים ← הוספה' },
+  cancelled: { kind: 'warn', text: 'ההוספה בוטלה' },
+  'no-profile': { kind: 'warn', text: 'נשמר — ייכנס אחרי שתבחרו פרופיל' },
+  unsupported: { kind: 'err', text: 'הקישור לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ mp4)' },
+  'no-library': { kind: 'err', text: 'ההוספה נכשלה — אין עדיין רשימה לפרופיל הזה' },
+  'resolve-failed': { kind: 'err', text: 'לא הצלחנו לזהות את הערוץ' },
+  failed: { kind: 'err', text: 'ההוספה נכשלה. אפשר לנסות ממסך ההורים ← הוספה' }
+};
+
+export function shareOutcome(reason) {
+  return SHARE_OUTCOMES[reason] || SHARE_OUTCOMES.failed;
+}
+
+/** Every reason `share.handleShare` can answer with — the test pins the two lists match. */
+export const SHARE_REASONS = Object.keys(SHARE_OUTCOMES);
+
+/**
  * @param candidates  enriched candidate records for ONE scope:
  *   { scopeId,key,type,id,url,srcUrl,driveId, title,titleSource,thumbUrl,
  *     channelId,folderId,origin,publishedAt,rowIndex, autoApprove }
@@ -735,25 +768,6 @@ export function resolveWatchContext({
 
 const FLAT_FOLDER_IDS = new Set(['sheet', 'mine']);
 
-/**
- * v1.0.23 — PURE: when a link is shared into the app from Android, should we ask the parent
- * WHICH profile it goes to?
- *
- * Only when the answer can change where it lands. Two profiles that follow the SAME input
- * sheet share one library scope (`lib:<fnv1a(sheet)>`), so a video added to either is the
- * same row in the same library and both children see it — asking there is noise, and noise
- * trains a parent to tap through dialogs without reading them. With one profile there is
- * nothing to ask at all.
- *
- * @param targets [{ profileId, scope }] — scope is the profile's libraryId, or its personal
- *        `prof:<id>` scope when it has no sources record yet. A missing scope counts as
- *        DISTINCT: a profile that has never synced is its own destination.
- */
-export function shouldAskShareProfile(targets) {
-  const list = (targets || []).filter((t) => t && t.profileId);
-  if (list.length < 2) return false;
-  return new Set(list.map((t) => t.scope || 'prof:' + t.profileId)).size > 1;
-}
 
 /**
  * v1.0.24 — PURE: what does the dot on the 🔒 gate button MEAN right now?

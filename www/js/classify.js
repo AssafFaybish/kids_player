@@ -185,5 +185,20 @@ export function classifyShared(text, subject) {
       s.replace(/https?:\/\/[^\s<>"']+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
     return { kind: 'channel', channelRef: ref, title };
   }
+  // v1.0.26 — a shared PLAYLIST. classifySourceRow has understood these since v1.0.12, but
+  // the SHARE path never did, so sharing a playlist from YouTube answered "unsupported"
+  // while pasting the identical link in the parent screen worked.
+  for (const raw of (s.match(/https?:\/\/[^\s<>"']+/g) || [])) {
+    const u = raw.replace(/[)\]}>,.;:!?'"]+$/, '');
+    if (!/youtube\.com|youtu\.be/i.test(u)) continue;
+    // A watch link merely CARRYING &list= is a video, and classifyFromSharedText above has
+    // already claimed it — only a real /playlist link reaches here.
+    if (!/\/playlist\b/i.test(u)) continue;
+    const pl = u.match(/[?&]list=([A-Za-z0-9_-]{10,})/);
+    if (!pl) continue;
+    const title = String(subject || '').trim() ||
+      s.replace(/https?:\/\/[^\s<>"']+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    return { kind: 'playlist', playlistId: pl[1], title };
+  }
   return null;
 }

@@ -17,11 +17,12 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
+import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
-  resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
+  resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge } from './plan.js';
+  planProfilePurge, planRejectedPurge, shareOutcome } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -3247,11 +3248,14 @@ function renderProfiles({ onPick = null, title = null } = {}) {
 }
 
 /**
- * v1.0.23 — WHICH profile does this shared link go to?
+ * WHICH profile does this shared link go to?
  *
- * Only asked when the answer changes anything (`plan.shouldAskShareProfile`): one profile,
- * or several that follow the same sheet and therefore share one library scope, means the
- * video lands in the same place regardless and the dialog would be noise.
+ * v1.0.26: asked whenever there is MORE THAN ONE profile. v1.0.23 also skipped the question
+ * when several profiles followed the same sheet — the video lands in the same library row
+ * either way — but a parent reported not knowing where a shared video had gone, and "it
+ * does not matter" is only true of the DATA, not of what they can see. A single profile
+ * still skips: there is nothing to ask, and a one-tile picker teaches tapping without
+ * reading.
  *
  * The parent's decision (2026-08-01) is that choosing also SWITCHES the app into that
  * profile — so the picker resolves through `activateProfile`, and the share's own PIN +
@@ -3259,12 +3263,12 @@ function renderProfiles({ onPick = null, title = null } = {}) {
  * -> profileId | null (backed out)
  */
 async function chooseShareProfile() {
-  const targets = [];
-  for (const p of profiles) {
-    const src = await db.getSources(p.id);
-    targets.push({ profileId: p.id, scope: (src && src.libraryId) || db.profScope(p.id) });
-  }
-  if (!shouldAskShareProfile(targets)) return activeProfileId || (profiles[0] && profiles[0].id) || null;
+  // v1.0.26 — ASK WHENEVER THERE IS A CHOICE. v1.0.23 also skipped the question when two
+  // profiles happened to share one sheet (same library scope, same row either way), but a
+  // parent reported not knowing where a shared video had gone — and the answer "it does not
+  // matter" is only true of the DATA, not of what the parent can see. One profile still
+  // skips: there is nothing to ask, and a one-tile picker teaches tapping without reading.
+  if (profiles.length < 2) return activeProfileId || (profiles[0] && profiles[0].id) || null;
 
   return new Promise((resolve) => {
     let settled = false;
@@ -4070,6 +4074,13 @@ async function init() {
   initShareTarget({
     profileIdGetter: () => activeProfileId,
     interactiveHandler: handleShareInteractive,
+    // v1.0.26: EVERY outcome is reported. Sharing used to be silent on all of its routes —
+    // added, parked, duplicate, previously deleted, dropped — so "sharing does not work"
+    // could not be told apart from "it worked and you are looking at the wrong screen".
+    resultHandler: (reason) => {
+      const { kind, text } = shareOutcome(reason);
+      toast(text, kind);
+    },
     profileChooser: chooseShareProfile, // v1.0.23 — asked only when it changes the outcome
     onShareAdded: async ({ pending, channelAdded, channelFailed, title }) => {
       if (channelFailed) {
