@@ -65,6 +65,12 @@ test('extractChannelIdFromHtml: anchored shapes only — a decoy UC id must NOT 
     `x channel/${DECOY} y <link rel="canonical" href="https://www.youtube.com/channel/${REAL}">`), REAL);
   // the legacy shape still resolves (older cached pages)
   assert.equal(extractChannelIdFromHtml(`"channelId":"${REAL}"`), REAL);
+  // @BARDAK613 (field): the page HAS a "channelId" key, but it is a DECOY — the real id
+  // is in externalId. externalId must win over a decoy channelId, or the app subscribes
+  // to a stranger's channel and imports 0 of this channel's videos.
+  assert.equal(extractChannelIdFromHtml(
+    `"channelId":"${DECOY}" ... "externalId":"${REAL}"`), REAL,
+    'a decoy "channelId" beat the real externalId');
   // NO anchored shape ⇒ EMPTY, never the first UC-looking string: an occasional
   // failed resolve beats an occasional wrong channel in a child's library
   assert.equal(extractChannelIdFromHtml(`stuff channel/${DECOY} stuff`), '');
@@ -72,17 +78,27 @@ test('extractChannelIdFromHtml: anchored shapes only — a decoy UC id must NOT 
   assert.equal(extractChannelIdFromHtml(null), '');
 });
 
-test('resolveChannelRef: the API outranks the cache, and heals a poisoned entry', async () => {
-  // Source-level pin (the function does network+IDB): the cache return must sit AFTER
-  // the keyed API attempt — the old cache-first order made one bad scrape permanent.
+test('resolveChannelRef: the live scrape outranks the cache, so a poisoned entry heals', async () => {
+  // Source-level pin (the function does network+IDB, so behaviour is asserted by shape).
+  // TWO field bugs are pinned here, both from real channels:
+  //  - @RabbiRosenblum/@BARDAK613: the scrape must use the ANCHORED extractor, never the
+  //    loose first-`channel/UC` pattern (a decoy id sits before the real one);
+  //  - the healing must be INDEPENDENT of the shared built-in key's quota: on a KEYED
+  //    resolve the live scrape must run BEFORE the cache is ever returned, or a device
+  //    with a poisoned entry and an exhausted key is stuck forever (v1.0.28 → v1.0.29).
   const src = readFileSync(new URL('../www/js/yt.js', import.meta.url), 'utf8');
   const fn = src.slice(src.indexOf('export async function resolveChannelRef('));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  const apiAt = body.indexOf('apiGet(');
-  const cacheReturnAt = body.indexOf('return map[ck]');
-  assert.ok(apiAt > 0 && cacheReturnAt > 0, 'resolveChannelRef restructured — re-anchor');
-  assert.ok(apiAt < cacheReturnAt, 'cache consulted before the API — a poisoned entry is permanent again');
-  assert.match(body, /extractChannelIdFromHtml\(/, 'the scrape no longer uses the anchored extractor');
-  assert.doesNotMatch(body, /channel\\\/\(UC\[A-Za-z0-9_-\]\{22\}\)/,
+
+  // the only EARLY cache return is guarded by !key (keyless enrichment); the keyed path
+  // must never short-circuit to the cache before resolving live
+  assert.match(body, /if \(!key && map\[ck\]\) return map\[ck\]/,
+    'the early cache return is no longer keyless-only — a keyed add can hit a stale id');
+  const scrapeAt = body.indexOf('extractChannelIdFromHtml(');
+  const finalCacheAt = body.indexOf('return map[ck] || null');
+  assert.ok(scrapeAt > 0 && finalCacheAt > 0, 'resolveChannelRef restructured — re-anchor this guard');
+  assert.ok(scrapeAt < finalCacheAt, 'the cache is returned before the live scrape — a poisoned entry is permanent');
+  // and the extractor stays anchored (no loose first-UC fallback anywhere in the module)
+  assert.doesNotMatch(src, /match\(\/channel\\\/\(UC\[A-Za-z0-9_-\]\{22\}\)\//,
     'the loose first-UC-in-page pattern is back');
 });

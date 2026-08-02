@@ -93,13 +93,14 @@ export async function resolveChannelRef(ref, key) {
   const map = (await getMeta(cacheKey)) || {};
   const ck = ref.by + ':' + ref.value.toLowerCase();
 
+  // v1.0.29: a KEYLESS caller (per-video enrichment, `resolveChannelRef(ref, '')`) trusts
+  // the cache first — it runs N times per sync and must not scrape the channel page N
+  // times, and a slightly stale id there only affects GROUPING, never what reaches the
+  // child. A KEYED caller (every ADD path) skips this: for it the cache is the LAST
+  // resort, below both live resolutions, so a poisoned entry cannot survive the fix.
+  if (!key && map[ck]) return map[ck];
+
   let channelId = null;
-  // v1.0.28: THE API OUTRANKS THE CACHE when a key is available. The old order (cache
-  // first, forever) is what made a bad scrape PERMANENT: the built-in key's quota is
-  // shared by every family, one exhausted afternoon pushed a resolve onto the loose
-  // scrape, and the wrong id it answered was then served from cache for good. The API
-  // answer now refreshes the cache on every keyed resolve (~1 unit — channels.list),
-  // which also HEALS devices already carrying a poisoned entry.
   if (key) {
     const params = { part: 'id' };
     if (ref.by === 'handle') params.forHandle = ref.value;
@@ -109,15 +110,22 @@ export async function resolveChannelRef(ref, key) {
       channelId = r.data?.items?.[0]?.id || null;
     }
   }
-  if (!channelId && map[ck]) return map[ck];
+  // LIVE SCRAPE BEFORE THE CACHE (v1.0.29). v1.0.28 healed a poisoned entry only when the
+  // API succeeded — but the built-in key's quota is SHARED by every family, so an
+  // exhausted afternoon left `channelId` null and the old code then returned the poisoned
+  // cache WITHOUT trying the scrape. The anchored extractor resolves the real id keylessly
+  // (@BARDAK613: the page's own `"channelId"` is a DECOY, the real id is in `externalId`),
+  // so scraping before the cache makes healing independent of the shared key's quota.
   if (!channelId) {
-    // Keyless (and /c/ custom URLs, which the API can't resolve): scrape the public
-    // channel page for the canonical id. Zero quota; CapacitorHttp is CORS-free.
+    // Keyless too (and /c/ custom URLs the API can't resolve). Zero quota; CORS-free.
     try {
       channelId = extractChannelIdFromHtml(await httpGetText(channelPageUrl(ref))) || null;
     } catch { channelId = null; }
   }
-  if (channelId && map[ck] !== channelId) {
+  // The cache is the offline last resort — only when BOTH live paths failed.
+  if (!channelId) return map[ck] || null;
+
+  if (map[ck] !== channelId) {
     map[ck] = channelId;
     const { putMeta } = await import('./db.js');
     await putMeta(cacheKey, map);
