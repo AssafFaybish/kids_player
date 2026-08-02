@@ -3,6 +3,7 @@
 // because getting the encoding wrong looks exactly like "this channel doesn't exist".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { channelPageUrl } from '../www/js/yt.js';
 import { parseChannelRef } from '../www/js/classify.js';
 
@@ -45,4 +46,43 @@ test('every parseChannelRef shape that needs resolution produces a usable URL', 
     assert.match(page, /^https:\/\/www\.youtube\.com\/(?:@|c\/|user\/)\S+$/, `${u} -> ${page}`);
     assert.doesNotMatch(page, /\s/, 'a raw space would break the request: ' + page);
   }
+});
+
+/* ---------------- handle resolution (v1.0.28, @RabbiRosenblum field bug) ---------------- */
+
+test('extractChannelIdFromHtml: anchored shapes only — a decoy UC id must NOT win', async () => {
+  const { extractChannelIdFromHtml } = await import('../www/js/yt.js');
+  const REAL = 'UCJ3fCI2FnNMEeU2y-TcdU4Q';
+  const DECOY = 'UCpAxY1yuagUKEiIQWVMh7mj';
+  // the measured 2026 page shape: NO "channelId" key, a decoy UC string BEFORE the
+  // real id, identity carried by externalId + the canonical link
+  const modern = `...attribution "${DECOY}" ... href="/channel/${DECOY}/join" ...` +
+    `"externalId":"${REAL}" ... <link rel="canonical" href="https://www.youtube.com/channel/${REAL}">`;
+  assert.equal(extractChannelIdFromHtml(modern), REAL,
+    'the decoy won — the app would subscribe to a STRANGER\'S channel');
+  // canonical alone (the /c/ custom-URL case)
+  assert.equal(extractChannelIdFromHtml(
+    `x channel/${DECOY} y <link rel="canonical" href="https://www.youtube.com/channel/${REAL}">`), REAL);
+  // the legacy shape still resolves (older cached pages)
+  assert.equal(extractChannelIdFromHtml(`"channelId":"${REAL}"`), REAL);
+  // NO anchored shape ⇒ EMPTY, never the first UC-looking string: an occasional
+  // failed resolve beats an occasional wrong channel in a child's library
+  assert.equal(extractChannelIdFromHtml(`stuff channel/${DECOY} stuff`), '');
+  assert.equal(extractChannelIdFromHtml(''), '');
+  assert.equal(extractChannelIdFromHtml(null), '');
+});
+
+test('resolveChannelRef: the API outranks the cache, and heals a poisoned entry', async () => {
+  // Source-level pin (the function does network+IDB): the cache return must sit AFTER
+  // the keyed API attempt — the old cache-first order made one bad scrape permanent.
+  const src = readFileSync(new URL('../www/js/yt.js', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function resolveChannelRef('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  const apiAt = body.indexOf('apiGet(');
+  const cacheReturnAt = body.indexOf('return map[ck]');
+  assert.ok(apiAt > 0 && cacheReturnAt > 0, 'resolveChannelRef restructured — re-anchor');
+  assert.ok(apiAt < cacheReturnAt, 'cache consulted before the API — a poisoned entry is permanent again');
+  assert.match(body, /extractChannelIdFromHtml\(/, 'the scrape no longer uses the anchored extractor');
+  assert.doesNotMatch(body, /channel\\\/\(UC\[A-Za-z0-9_-\]\{22\}\)/,
+    'the loose first-UC-in-page pattern is back');
 });

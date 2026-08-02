@@ -262,6 +262,21 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.28 — **A HANDLE COULD RESOLVE TO A STRANGER'S CHANNEL, AND THE MISTAKE WAS
+  PERMANENT** (@RabbiRosenblum, field). Current channel pages no longer carry
+  `"channelId":"UC…"` at all, so the keyless scrape fell to its loose second pattern —
+  the FIRST `channel/UC…` anywhere in ~1.2MB of HTML — and a decoy UC id appears BEFORE
+  the real one (measured live). The wrong id was cached FOREVER (`handleMap` was consulted
+  before the API), so the subscription stayed empty — "הערוץ נוסף, אבל אין בו סרטונים" —
+  on every later attempt. The trigger is the BUILT-IN key's quota running out: it is
+  shared by every family, so one heavy afternoon pushes resolves onto the scrape.
+  - Pure `yt.extractChannelIdFromHtml`: ANCHORED shapes only (`externalId`, the canonical
+    link, legacy `channelId`) and NO bare-UC fallback — an occasionally failed resolve
+    beats an occasionally WRONG one; for this app a wrong channel is a safety hole.
+  - **THE API NOW OUTRANKS THE CACHE** when a key is available, refreshing `handleMap` on
+    every keyed resolve — which also HEALS devices already carrying a poisoned entry (the
+    user's own tablet). Tests pin the order (API before the cache return) and the decoy
+    case, both proven by planted regressions.
 - v1.0.28 — **THE SIMPLIFICATION PASS** (parent's request: a user who knows no technical
   terms). Five changes, one chain:
   - **The YouTube-API-key form is GONE from the UI.** The target user cannot mint a Google
