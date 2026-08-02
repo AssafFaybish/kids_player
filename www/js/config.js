@@ -28,6 +28,13 @@ export const AUTOPLAY_MAX_FAILURES = 5;
    the archive does not become a second library nobody prunes. */
 export const REJECTED_TTL_DAYS = 30;
 
+// v1.0.26 — how long a parent who forgot the code waits before it can be reset.
+// Long enough that a child will not sit through it, short enough that a locked-out parent
+// gets back in the next day. The wait is the UNIVERSAL path: it needs no device lock, no
+// permission and no network, so it also covers Android TV and the many children's tablets
+// that have no lock screen at all.
+export const PIN_RECOVERY_DELAY_HOURS = 24;
+
 /* Sync */
 export const MAX_ITEMS_PER_CHANNEL = 500;
 export const MAX_ITEMS_TOTAL = 5000;

@@ -1025,3 +1025,70 @@ test('an UNKNOWN reason still produces a failure message, never silence', () => 
   assert.ok(shareOutcome(null).text);
   assert.ok(shareOutcome('').text);
 });
+
+/* ---------------- PIN recovery (v1.0.26) ---------------- */
+
+test('planPinRecovery: no request is "none", and only a real timestamp starts a clock', async () => {
+  const { planPinRecovery } = await import('../www/js/plan.js');
+  const now = 1_000_000_000_000;
+  for (const bad of [undefined, null, 0, -1, NaN, 'nonsense', {}]) {
+    const p = planPinRecovery({ requestedAt: bad, now });
+    assert.equal(p.state, 'none', `requestedAt=${JSON.stringify(bad)}`);
+    assert.equal(p.msLeft, 0);
+  }
+  assert.equal(planPinRecovery({}).state, 'none');      // no argument at all
+  assert.equal(planPinRecovery().state, 'none');
+});
+
+test('planPinRecovery: waits the full window, then goes ready', async () => {
+  const { planPinRecovery } = await import('../www/js/plan.js');
+  const at = 1_000_000_000_000;
+  const H = 3600000;
+  assert.deepEqual(planPinRecovery({ requestedAt: at, now: at }),
+    { state: 'waiting', msLeft: 24 * H, hoursLeft: 24 });
+  assert.equal(planPinRecovery({ requestedAt: at, now: at + 23 * H }).state, 'waiting');
+  assert.equal(planPinRecovery({ requestedAt: at, now: at + 23 * H }).hoursLeft, 1);
+  // the boundary itself opens the door
+  assert.equal(planPinRecovery({ requestedAt: at, now: at + 24 * H }).state, 'ready');
+  assert.equal(planPinRecovery({ requestedAt: at, now: at + 99 * H }).state, 'ready');
+});
+
+test('planPinRecovery: a nonsense window falls back to 24h, NEVER to a short one', async () => {
+  const { planPinRecovery } = await import('../www/js/plan.js');
+  const at = 1_000_000_000_000;
+  // A `Math.max(1, Number(hours) || 24)` would clamp these to a ONE-HOUR wait — which for
+  // this feature means handing the parent screen to the child the same afternoon.
+  for (const bad of [0, -5, NaN, undefined, null, 'x', Infinity, -Infinity]) {
+    const p = planPinRecovery({ requestedAt: at, now: at + 2 * 3600000, hours: bad });
+    assert.equal(p.state, 'waiting', `hours=${JSON.stringify(bad)} must still be waiting`);
+    assert.equal(p.hoursLeft, 22, `hours=${JSON.stringify(bad)} must fall back to 24h`);
+  }
+  // an explicit, sane override is honoured
+  assert.equal(planPinRecovery({ requestedAt: at, now: at + 2 * 3600000, hours: 1 }).state, 'ready');
+});
+
+test('planPinRecovery: a clock moved BACKWARDS only ever lengthens the wait', async () => {
+  const { planPinRecovery } = await import('../www/js/plan.js');
+  const at = 1_000_000_000_000;
+  // requestedAt in the future — the safe direction, and it must not go negative or ready.
+  const p = planPinRecovery({ requestedAt: at + 50 * 3600000, now: at });
+  assert.equal(p.state, 'waiting');
+  assert.ok(p.msLeft > 24 * 3600000, 'a future request must not shorten the wait');
+  assert.ok(p.msLeft >= 0);
+});
+
+test('pinRecoveryLabel: never says "0 שעות", switches to minutes near the end', async () => {
+  const { planPinRecovery, pinRecoveryLabel } = await import('../www/js/plan.js');
+  const at = 1_000_000_000_000, H = 3600000;
+  assert.equal(pinRecoveryLabel(planPinRecovery({ requestedAt: at, now: at })),
+    'אפשר יהיה לאפס את קוד ההורים בעוד 24 שעות');
+  assert.match(pinRecoveryLabel(planPinRecovery({ requestedAt: at, now: at + 23.5 * H })), /30 דקות/);
+  // one second left must read as a minute, never as zero of anything
+  const nearly = pinRecoveryLabel(planPinRecovery({ requestedAt: at, now: at + 24 * H - 1000 }));
+  assert.match(nearly, /1 דקות/);
+  assert.doesNotMatch(nearly, /\b0\b/);
+  // states with no countdown produce no text at all
+  assert.equal(pinRecoveryLabel(planPinRecovery({ requestedAt: at, now: at + 25 * H })), '');
+  assert.equal(pinRecoveryLabel(planPinRecovery({ requestedAt: 0, now: at })), '');
+  assert.equal(pinRecoveryLabel(null), '');
+});

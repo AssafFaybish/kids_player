@@ -619,3 +619,31 @@ test('package.json is the single version source and is well-formed', () => {
   // versionCode = major*10000 + minor*100 + patch, so >99 in either would collide
   assert.ok(minor <= 99 && patch <= 99, 'minor/patch must stay <= 99 for the versionCode scheme');
 });
+
+test('the pending-reset banner is rendered by the HOME, not only behind the PIN', () => {
+  // v1.0.26. The 24-hour wait is not what protects the parent — the ANNOUNCEMENT is. A
+  // reset request that nobody sees just means the child waits a day and walks in, so the
+  // notice has to be on the screen that is on all day. If `renderHome` stops drawing it,
+  // the feature silently becomes a delay with no alarm attached, and every unit test for
+  // `planPinRecovery` still passes.
+  const app = MODULES.get('www/js/app.js');
+  const home = app.slice(app.indexOf('async function renderHome('));
+  const body = home.slice(0, home.indexOf('\n}\n'));
+  assert.match(body, /refreshRecoveryBanner\(/,
+    'renderHome no longer announces a pending parent-code reset');
+});
+
+test('a PIN-reset request is DEVICE-LOCAL: exactly one module knows the key', () => {
+  // v1.0.26. The request must not travel. The PIN hash itself is synced (that is why
+  // recovery has to exist at all), but a *pending reset* is not family state: syncing it
+  // would let one device start the clock on every other one, and a peer's stale copy
+  // could re-arm a request the parent already cancelled. Keeping the key in a single
+  // module is what makes that checkable — `drive.serializeDb` cannot carry what it cannot
+  // name, and nothing can read it behind the PIN and quietly decide otherwise.
+  const owners = [];
+  for (const [p, body] of MODULES) {
+    if (body.includes('pinRecoveryAt')) owners.push(p);
+  }
+  assert.deepEqual(owners, ['www/js/recovery.js'],
+    'the recovery timestamp leaked out of recovery.js — see the comment above');
+});

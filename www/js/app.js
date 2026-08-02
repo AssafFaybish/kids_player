@@ -14,7 +14,8 @@ import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
-  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS } from './config.js';
+  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS,
+  PIN_RECOVERY_DELAY_HOURS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -333,6 +334,31 @@ async function refreshGateDot() {
     dot.classList.toggle('hidden', !kind);
     dot.classList.toggle('attn-dot-info', kind === 'info');
   } catch {}
+}
+
+/**
+ * v1.0.26 — the pending-reset banner on the child's home.
+ *
+ * THIS BANNER IS THE SAFEGUARD, not decoration: the 24-hour wait only protects the parent
+ * if they learn that somebody asked. It therefore lives on the screen that is on all day,
+ * not behind the PIN — a notice only the requester can see would protect nobody.
+ *
+ * Shown for 'waiting' AND for 'ready': a request that has matured is exactly when the
+ * parent most needs to know, and hiding it then would turn the countdown into a trap that
+ * goes quiet just before it opens.
+ */
+async function refreshRecoveryBanner() {
+  const box = $('recovery-banner');
+  try {
+    const { recoveryState } = await import('./recovery.js');
+    const { pinRecoveryLabel } = await import('./plan.js');
+    const st = await recoveryState();
+    if (st.state === 'none') { box.classList.add('hidden'); return; }
+    $('recovery-banner-text').textContent = st.state === 'ready'
+      ? '🔓 התבקש איפוס של קוד ההורים, וניתן לבצע אותו עכשיו'
+      : '⏳ ' + pinRecoveryLabel(st);
+    box.classList.remove('hidden');
+  } catch { box.classList.add('hidden'); }
 }
 
 /* ---------------- Launch update prompt (v1.0.4) ---------------- */
@@ -907,6 +933,7 @@ async function renderHome() {
   const grid = $('grid');
 
   refreshGateDot(); // fire-and-forget — the red dot must never delay the grid
+  refreshRecoveryBanner(); // same: the grid must never wait on a Preferences read
 
   const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
@@ -1531,7 +1558,80 @@ function startPin(mode, { onSuccess = enterParent, replace = false, title = '', 
   $('pin-msg').textContent = '';
   $('pin-title').textContent = mode === 'setup' ? 'בחרו קוד הורים חדש' : (title || 'הזינו קוד הורים');
   updateDots();
+  // The recovery affordance belongs to 'verify' only — in SETUP there is no code yet to
+  // have forgotten, and offering a reset there would be a second way to choose the first
+  // PIN. Refreshed on every entry because a wait started yesterday may now be ready.
+  refreshPinRecovery().catch(() => {});
   if (replace) nav.replace('pin'); else nav.go('pin');
+}
+
+/**
+ * Draw the "שכחתי את הקוד" affordance for the CURRENT state of a recovery request.
+ *
+ * Three states, three different things to offer: nothing asked yet (a button that starts
+ * the wait), waiting (the countdown plus a way to call it off), and ready (a button that
+ * goes straight to choosing a new code). Failure here must never take the PIN screen down
+ * with it — the gate still has to work — so every caller swallows.
+ */
+async function refreshPinRecovery() {
+  const btn = $('pin-forgot');
+  const note = $('pin-recovery-note');
+  if (pinMode !== 'verify') {
+    btn.classList.add('hidden');
+    note.classList.add('hidden');
+    return;
+  }
+  const { recoveryState } = await import('./recovery.js');
+  const { pinRecoveryLabel } = await import('./plan.js');
+  const st = await recoveryState();
+  btn.classList.remove('hidden');
+  if (st.state === 'ready') {
+    btn.textContent = 'איפוס הקוד — מוכן ✅';
+    note.textContent = 'תמו 24 השעות. אפשר לקבוע קוד הורים חדש.';
+    note.classList.remove('hidden');
+  } else if (st.state === 'waiting') {
+    btn.textContent = 'ביטול בקשת האיפוס';
+    note.textContent = pinRecoveryLabel(st);
+    note.classList.remove('hidden');
+  } else {
+    btn.textContent = 'שכחתי את הקוד';
+    note.classList.add('hidden');
+  }
+}
+
+/**
+ * The one handler behind that button — what it does depends on the state it is showing.
+ *
+ * The RESET itself runs `startPin('setup', { replace: true })`: `replace` so hardware-back
+ * cannot land on the verify screen we just satisfied, and the request is cleared BEFORE
+ * the new code is chosen so an abandoned setup cannot leave a spent request armed.
+ */
+async function onPinForgot() {
+  const { recoveryState, requestRecovery, cancelRecovery } = await import('./recovery.js');
+  const st = await recoveryState();
+  if (st.state === 'ready') {
+    await cancelRecovery();
+    startPin('setup', { replace: true, onSuccess: enterParent });
+    return;
+  }
+  if (st.state === 'waiting') {
+    const stop = await confirmKid({
+      emoji: '🔓', title: 'לבטל את בקשת האיפוס?',
+      text: 'קוד ההורים הנוכחי יישאר בתוקף.', ok: 'ביטול הבקשה', cancel: 'להשאיר'
+    });
+    if (stop) { await cancelRecovery(); await refreshPinRecovery(); }
+    return;
+  }
+  const go = await confirmKid({
+    emoji: '⏳', title: 'לאפס את קוד ההורים?',
+    text: `מטעמי בטיחות האיפוס לא מיידי: בעוד ${PIN_RECOVERY_DELAY_HOURS} שעות אפשר יהיה לקבוע קוד חדש. ` +
+          'עד אז תופיע הודעה במסך הבית, וכל אחד יוכל לבטל את הבקשה.',
+    ok: 'בקשת איפוס', cancel: 'לא עכשיו'
+  });
+  if (!go) return;
+  await requestRecovery();
+  await refreshPinRecovery();
+  await refreshRecoveryBanner();
 }
 async function onPinComplete() {
   if (pinMode === 'setup') {
@@ -3567,6 +3667,17 @@ function wire() {
   // v1.0.7: cancel returns to WHERE THE PIN OPENED FROM (profiles/gallery/folder) —
   // the pin view can now open over the profiles screen too (update flow).
   $('pin-cancel').addEventListener('click', () => { if (!nav.back()) goGallery(); });
+  $('pin-forgot').addEventListener('click', () => { onPinForgot().catch(() => {}); });
+  $('recovery-banner-cancel').addEventListener('click', async () => {
+    // Free to cancel, by design (recovery.js): whoever did NOT ask for the reset cannot
+    // prove who they are, and that is precisely the situation this feature exists for.
+    // A child cancelling only restores the status quo.
+    try {
+      const { cancelRecovery } = await import('./recovery.js');
+      await cancelRecovery();
+    } catch {}
+    await refreshRecoveryBanner();
+  });
 
   for (const t of PARENT_TABS) $('tab-' + t).addEventListener('click', () => setParentTab(t));
   $('add-btn').addEventListener('click', parentAdd);

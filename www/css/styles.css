@@ -896,4 +896,19 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   max-width: 9em; text-align: center; line-height: 1.2;
   overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+/* v1.0.26: PIN recovery. The link sits BELOW the keypad — reachable, never in the way
+   of the four digits a parent taps every day. */
+.pin-forgot { display: block; margin: 14px auto 0; color: var(--muted); font-size: 15px; }
+.pin-recovery-note {
+  margin: 8px auto 0; max-width: 22em; text-align: center;
+  color: var(--muted); font-size: 14px; line-height: 1.4;
+}
+/* The pending-reset notice on the CHILD's home. Deliberately calm rather than alarming —
+   the child sees it all day and it is not addressed to them — but impossible to miss for
+   the parent, because this banner is the whole safeguard behind the 24-hour wait. */
+.recovery-banner {
+  display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;
+  margin: 0 auto 14px; max-width: 44em; padding: 10px 16px;
+  background: #fff4d6; border: 2px solid #f0c674; border-radius: 16px;
+  color: #6b4b00; font-weight: 700; font-size: 15px; text-align: center;
 }

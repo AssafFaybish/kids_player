@@ -289,6 +289,39 @@ pins that the consumers follow the config and that every address is well-formed.
     is INSURANCE for a longer name arriving from a peer, not the normal path. Everywhere
     else was already safe: `.chip-name` has been ellipsised at 90px all along (it truncated
     12-char names too), and the per-profile settings labels wrap — verified at 375px.
+- v1.0.26 — **A FORGOTTEN PARENT CODE HAD NO WAY BACK, AND v1.0.25 IS WHAT CLOSED IT.**
+  Until then the answer was "reinstall the app". Then the PIN hash moved into the synced
+  settings channel and rides the Drive document, so a family WITH backup reinstalls,
+  reconnects, and gets the forgotten code handed straight back on the first pull — the
+  families who did the right thing were the ones with no door. [recovery.js](www/js/recovery.js)
+  is the door: request → **24-hour wait** (`PIN_RECOVERY_DELAY_HOURS`) → choose a new code.
+  - **THE WAIT IS THE UNIVERSAL PATH, ON PURPOSE.** It needs no device lock (a child's
+    tablet often has none and Android TV never does), no permission, no network, and
+    nothing the parent must have kept. A device-credential fast path is the follow-up, not
+    the floor.
+  - **THE BANNER IS THE SAFEGUARD, NOT THE DELAY.** A wait nobody is told about just means
+    the child waits a day and walks in, so the notice lives on the CHILD'S HOME — the
+    screen that is on all day — and is shown for `ready` as well as `waiting` (going quiet
+    right before the door opens would make the countdown a trap). `invariants.test.mjs`
+    pins that `renderHome` still draws it; every `planPinRecovery` unit test passes without.
+  - **CANCELLING IS FREE, DELIBERATELY.** A parent who did not request the reset cannot
+    prove who they are — that is the exact situation the feature exists for — and a child
+    cancelling only restores the status quo. For the same reason `requestRecovery` NEVER
+    restamps a live request: re-tapping must not push the deadline away, or a child who
+    found the button could keep the parent locked out for good.
+  - **THE REQUEST IS DEVICE-LOCAL AND A TEST PINS IT.** The PIN hash syncs (that is why
+    this exists); a *pending reset* must not, or one device starts everyone's clock and a
+    peer's stale copy re-arms a cancelled request. `pinRecoveryAt` may appear in exactly
+    one module.
+  - **IT IS NOT A SECURITY BOUNDARY AND THE DOCS SAY SO**: moving the system clock forward
+    skips the wait. Unavoidable without a server, and a different threat from the
+    5-year-old this app has always defended against.
+  - The affordance shows only in `'verify'` mode (during SETUP there is no code to have
+    forgotten, and offering a reset there would be a second way to pick the first PIN), and
+    the reset uses `startPin('setup', { replace: true })` so hardware-back cannot land on
+    the verify screen it just satisfied. `planPinRecovery` follows the `planRejectedPurge`
+    rule — **a nonsense window falls back to the default, never to a short one** — which
+    here means a typo cannot hand the parent screen to the child the same afternoon.
 - v1.0.26 — **A SHARE FROM YOUTUBE COULD FAIL IN SEVEN WAYS AND SAY NOTHING.** Reported
   from the field as "sharing does not add the video, the parent screen does". The native
   side was never at fault (intent-filter, `onNewIntent` for cold+warm, matching field
