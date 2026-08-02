@@ -300,6 +300,16 @@ pins that the consumers follow the config and that every address is well-formed.
     every keyed resolve — which also HEALS devices already carrying a poisoned entry (the
     user's own tablet). Tests pin the order (API before the cache return) and the decoy
     case, both proven by planted regressions.
+- v1.0.29 — **TV AUDIT: the grouped library's sections were focusable-but-INVISIBLE.**
+  A full D-pad sweep of every surface added since v1.0.26 (verified in `tv=1` mode): all
+  new controls are real `button`/`summary`/focusable, and the grouped-library `<details>`
+  are fully reachable (each group summary opens on Enter). ONE real gap: `html.tv …:focus`
+  ring covered `button`/`input`/`[tabindex]` but NOT `summary` or `[href]` — a native
+  summary's `tabIndex` is a PROPERTY, not an attribute, so `[tabindex]` never matched it.
+  On TV the remote could focus a library section or the privacy link with NO visible ring.
+  Fixed in the ring rule; `invariants.test.mjs` now pins that both are covered. (The two
+  whole-row `<li>` click handlers are convenience duplicates of a focusable checkbox, so
+  they are reachable regardless.)
 - v1.0.28 — **THE SIMPLIFICATION PASS** (parent's request: a user who knows no technical
   terms). Five changes, one chain:
   - **The YouTube-API-key form is GONE from the UI.** The target user cannot mint a Google
