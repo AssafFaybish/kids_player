@@ -148,7 +148,15 @@ async function applyExitLock() {
  * in — but leaving the locked profile is now the protected act, like the exit itself.
  */
 async function onProfileChip() {
-  if (!(await exitLockOn())) { backToProfiles(); return; }
+  // v1.0.28 (parent's decision): switching profiles MID-SESSION always asks for the
+  // code — not only when the active profile is exit-locked. A child hopping to a
+  // sibling's profile changes whose library, whose gift progress and whose settings
+  // are in effect; that is a parental act. The BOOT picker stays free (same decision):
+  // it is how each child enters their own profile, and a code at every app start would
+  // mean the parent types it every morning.
+  // Still fails CLOSED: a throw leaves the child where they are (v1.0.25 rule — the
+  // pre-v1.0.28 unlocked branch called backToProfiles() directly, which was the escape
+  // the per-profile lock had to close; now there is no unlocked branch at all).
   startPin((await hasPin()) ? 'verify' : 'setup', {
     title: 'קוד הורים להחלפת פרופיל',
     onSuccess: backToProfiles

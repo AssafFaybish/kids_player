@@ -417,8 +417,17 @@ test('the exit lock is per-profile, and leaving a locked profile is gated', () =
   assert.ok(chipAt > 0, 'the profile-switch gate is gone');
   const fn = app.slice(chipAt);
   const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
-  assert.match(body, /exitLockOn\(\)/, 'the gate no longer checks the lock');
-  assert.match(body, /startPin\(/, 'a locked profile can be left without the parent code');
+  // v1.0.28 (deliberate change): the chip ALWAYS gates — the exitLockOn() conditional is
+  // gone because the unconditional rule is strictly stronger. What this guard now bans is
+  // any UN-GATED path: backToProfiles may appear only as startPin's onSuccess, never as a
+  // free-standing branch, or a child switches to a sibling's profile in one tap again.
+  assert.match(body, /startPin\(/, 'the profile switch no longer asks for the parent code');
+  // comments stripped first — the function's own doc block NAMES the old escape, and a
+  // pin a comment can trip pins prose, not code (the snapshot-guard lesson, again)
+  const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const freestanding = code.replace(/onSuccess:\s*backToProfiles/g, '');
+  assert.doesNotMatch(freestanding, /backToProfiles/,
+    'onProfileChip has an un-gated path to the profile picker');
   // and the gate must not fail OPEN — in the FUNCTION, not only in the wiring line: a
   // catch anywhere in onProfileChip that falls back to backToProfiles makes a locked
   // profile escapable by whatever made the check throw. (The first version looked only
