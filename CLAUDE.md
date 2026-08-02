@@ -239,6 +239,9 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 
 ## Verification workflow
 
+**Full guide: [docs/TESTING.md](docs/TESTING.md)** — including what a green suite does NOT
+prove, and the device checklist. The short version:
+
 1. `npm test` after any logic change.
 2. Browser (`npm run serve`): full UI flows; IndexedDB migration works in-browser; sync runs against
    the real sheet through `/__proxy`. Escape = hardware-back stand-in. Fullscreen is DENIED in
@@ -367,10 +370,13 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **v1.0.25 overview: [docs/V1025.md](docs/V1025.md)** — the five features of this release
-  in one place, including which three ALREADY EXISTED and were broken, and the two bugs
-  that browser verification caught while the suite was green. The per-feature invariants
-  stay below; that file is the map.
+- **Release records: [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what
+  changed in each and why, including which features ALREADY EXISTED and were broken. The
+  per-feature invariants stay below; those files are the map.
+- **[docs/TESTING.md](docs/TESTING.md) — read before trusting a green run.** What the suite
+  covers, what it structurally CANNOT see (no DOM, no IndexedDB, no network), the four bugs
+  that shipped past it, and the device checklist for everything a browser cannot prove
+  (share intents, the kiosk lock, cross-device convergence).
 - v1.0.25 — **CONTINUOUS PLAY: at the end of a video the next one starts, without leaving
   the player.** OFF by default, PER PROFILE, and synced (it rides the v1.0.25 settings
   channel) — "one more video" is a parenting decision, not a device preference, and one
