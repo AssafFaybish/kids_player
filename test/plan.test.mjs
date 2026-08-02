@@ -9,7 +9,7 @@ import {
   shouldAskShareProfile,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
-  resolveWatchContext, planSyncDispatch, channelAddOutcome
+  resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -207,6 +207,32 @@ test('channelAddOutcome: never a bare ✅ over a backlog the child cannot see (v
   assert.equal(channelAddOutcome(false, 0), 'הערוץ סונכרן ✅');
   assert.equal(channelAddOutcome(false, 0, null), 'הערוץ סונכרן ✅');
   assert.equal(channelAddOutcome(false, -5), 'הערוץ סונכרן ✅');
+});
+
+test('planEntryRefresh: the first entry of a launch is unconditional (v1.0.25)', () => {
+  // Opening the app is not "flipping between the home and a video". Both throttles exist
+  // for the second case, and applying them to the first is how the tablet showed content
+  // the parent had already changed on the phone.
+  assert.deepEqual(planEntryRefresh({ launchDone: false, sinceLastPullMs: 0 }),
+    { pull: true, forceSync: true }, 'the launch pass must bypass BOTH throttles');
+
+  // Later entries: the sync is never forced again, and the pull obeys its quiet period.
+  assert.deepEqual(planEntryRefresh({ launchDone: true, sinceLastPullMs: 0 }),
+    { pull: false, forceSync: false });
+  assert.deepEqual(planEntryRefresh({ launchDone: true, sinceLastPullMs: 59_999 }),
+    { pull: false, forceSync: false });
+  assert.deepEqual(planEntryRefresh({ launchDone: true, sinceLastPullMs: 60_000 }),
+    { pull: true, forceSync: false }, 'the boundary is inclusive — 60s means "due"');
+  assert.deepEqual(planEntryRefresh({ launchDone: true, sinceLastPullMs: 10 * 60_000 }),
+    { pull: true, forceSync: false });
+
+  // A caller-supplied throttle is honoured (the constant lives in app.js).
+  assert.equal(planEntryRefresh({ launchDone: true, sinceLastPullMs: 5000, pullThrottleMs: 1000 }).pull, true);
+
+  // Never throws, and with nothing known it behaves like a launch — the safe direction is
+  // to refresh, not to serve a stale library.
+  assert.deepEqual(planEntryRefresh(), { pull: true, forceSync: true });
+  assert.deepEqual(planEntryRefresh({}), { pull: true, forceSync: true });
 });
 
 test('attentionDot: CONTENT wins the dot, and the colour names the errand (v1.0.24)', () => {

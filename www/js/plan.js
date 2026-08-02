@@ -51,6 +51,28 @@ export function planSyncDispatch({ running = false, queued = false, force = fals
 }
 
 /**
+ * v1.0.25 — PURE: entering the home screen. Pull the family's shared state? Force the sync?
+ *
+ * The ORDER these two run in is the invariant (pull, THEN sync — they write the same video
+ * records), and that lives in app.js. What lives here is WHETHER each one runs, because
+ * both gates are easy to get wrong in opposite directions: a pull on every single gallery
+ * entry hammers Drive, and a pull that never runs on launch is how an approval made on the
+ * phone sat in Drive with no code path on the tablet that read it (v1.0.22).
+ *
+ * The FIRST entry of each launch is unconditional on both counts: the 3-minute sync
+ * throttle and the 60-second pull throttle exist for a child flipping between the home and
+ * a video, not for someone who just opened the app.
+ *
+ * @param launchDone      has the once-per-process launch refresh already run?
+ * @param sinceLastPullMs how long ago the last successful pull finished
+ * @param pullThrottleMs  the quiet period between pulls
+ */
+export function planEntryRefresh({ launchDone = false, sinceLastPullMs = Infinity, pullThrottleMs = 60000 } = {}) {
+  const first = !launchDone;
+  return { pull: first || sinceLastPullMs >= pullThrottleMs, forceSync: first };
+}
+
+/**
  * @param candidates  enriched candidate records for ONE scope:
  *   { scopeId,key,type,id,url,srcUrl,driveId, title,titleSource,thumbUrl,
  *     channelId,folderId,origin,publishedAt,rowIndex, autoApprove }

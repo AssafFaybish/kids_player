@@ -295,6 +295,35 @@ test('the channel-approval paths resolve the library scope, never the bare globa
   }
 });
 
+test('the home entry PULLS before it SYNCS, and nothing else pulls (v1.0.25)', () => {
+  // Both write the same video records, so interleaving them lets one clobber the other's
+  // merge — CLAUDE.md has said so since v1.0.22, and it was FALSE on launch:
+  // nav.reset('gallery') fires the gallery's onEnter synchronously, so the forced launch
+  // sync was already running by the time activateProfile reached its own pullThenSync on
+  // the very next line. Every launch, on every device with backup enabled.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /async function entryRefresh\(/, 'the single refresh pipeline is gone');
+  const fn = app.slice(app.indexOf('async function entryRefresh('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  const pullAt = body.indexOf('maybePullDrive(');
+  const syncAt = body.indexOf('syncLibrary(');
+  assert.ok(pullAt >= 0, 'entryRefresh no longer pulls');
+  assert.ok(syncAt >= 0, 'entryRefresh no longer syncs');
+  assert.ok(pullAt < syncAt, 'the sheet sync now runs BEFORE the Drive pull');
+  assert.match(body, /await maybePullDrive\(\)/, 'the pull is not awaited — that IS the race');
+
+  // ONE puller on the entry path. A second call site is how the race got in.
+  const callers = (app.match(/maybePullDrive\(/g) || []).length - 1; // minus the definition
+  assert.ok(callers <= 2, `maybePullDrive has ${callers} call sites — entry + resume only`);
+  // Call shapes only, like the search.list guard: the comment above entryRefresh NAMES the
+  // function it replaced, and a doc comment must never read as a violation.
+  assert.doesNotMatch(app, /function pullThenSync\b/, 'the old parallel pipeline is back');
+  assert.doesNotMatch(app, /[^`'"\w]pullThenSync\s*\(/, 'something calls the old parallel pipeline');
+
+  // …and the decision about WHETHER to pull/force is the tested pure one.
+  assert.match(app, /planEntryRefresh\(/, 'homeEntryRefresh re-implements the throttles inline');
+});
+
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
   // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.
