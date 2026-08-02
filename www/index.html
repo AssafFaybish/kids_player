@@ -279,6 +279,26 @@
       <nav id="watch-pager" class="pager" aria-label="דפדוף סרטונים"></nav>
     </section>
 
+    <!-- ===================== PREVIEW BUBBLE (v1.0.26) =====================
+         A parent-only floating player for CHECKING a video before deciding. It is an
+         OVERLAY, never a view: the screen behind keeps its scroll position, its open tab
+         and its ticked rows, so returning to triage costs nothing. Deliberately NOT the
+         kid player — see openPreview() for why it uses YouTube's own controls. -->
+    <div id="preview-bubble" class="preview-bubble hidden" role="dialog" aria-label="תצוגה מקדימה">
+      <div class="pv-head">
+        <div id="pv-title" class="pv-title"></div>
+        <button id="pv-close" class="pv-close" type="button" aria-label="סגירה">✕</button>
+      </div>
+      <div id="pv-host" class="pv-host"></div>
+      <div id="pv-note" class="pv-note"></div>
+      <div class="pv-actions">
+        <button id="pv-approve" class="btn btn-small pv-approve hidden" type="button">✅ אישור</button>
+        <button id="pv-reject" class="btn btn-small pv-reject hidden" type="button">🗑️ דחייה</button>
+        <button id="pv-delete" class="btn btn-small pv-delete hidden" type="button">🗑️ מחיקה</button>
+        <button id="pv-open" class="text-btn pv-open" type="button">פתח ביוטיוב ↗</button>
+      </div>
+    </div>
+
     <!-- ===================== PIN ===================== -->
     <section id="view-pin" class="view">
       <div class="pin-card">

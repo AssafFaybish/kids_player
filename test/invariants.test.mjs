@@ -467,6 +467,46 @@ test('deleting a profile actually deletes it, and it STAYS deleted (v1.0.25)', (
   assert.match(drive, /mergeDeletedProfiles\(/, 'the document merge drops the tombstones');
 });
 
+test('the preview bubble leaves the screen behind it untouched (v1.0.26)', () => {
+  // The bubble exists so a parent can CHECK a video without losing the queue they are
+  // triaging. Everything here is a way that promise gets broken silently.
+  const app = MODULES.get('www/js/app.js');
+
+  // 1. It must not be the kid player. setupHud binds window/document listeners and must
+  //    never run twice without a teardown; the kid HUD also hides the very scrub bar the
+  //    parent needs. The bubble builds its own iframe from the tested pure URL.
+  assert.match(app, /previewEmbedUrl\(/, 'the preview no longer uses the tested embed URL');
+  const fn = app.slice(app.indexOf('function renderPreview('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.doesNotMatch(body, /playItem\(/, 'the preview mounts the KID player — setupHud runs twice');
+
+  // 2. Closing must tear the player out, or a video keeps playing behind the parent screen.
+  const close = app.slice(app.indexOf('function closePreview('));
+  assert.match(close.slice(0, close.indexOf('\n}\n') + 1), /innerHTML = ''/,
+    'closing the bubble leaves the iframe alive and playing');
+  assert.match(app, /onLeave: \(\) => closePreview\(\)/,
+    'leaving the parent screen no longer stops the preview');
+
+  // 3. Hardware back must close the BUBBLE first, not throw the parent out of the screen.
+  const reg = app.slice(app.indexOf("nav.register('parent'"));
+  assert.match(reg.slice(0, 400), /isPreviewOpen\(\)/, 'back skips the bubble and leaves the screen');
+
+  // 4. THE promise itself: deciding one video must not untick the rows the parent lined up.
+  //    Doing this by parameter was wrong — refreshAfterAdd rebuilds the list a beat later
+  //    and cleared them right back — so preservation is unconditional and filtered against
+  //    the rebuilt list.
+  const rp = app.slice(app.indexOf('async function refreshPendingList('));
+  const rpBody = rp.slice(0, rp.indexOf('\n}\n') + 1);
+  assert.match(rpBody, /const carried = new Set\(pendingSel\)/, 'the selection is dropped on rebuild again');
+  assert.match(rpBody, /alive\.has\(id\)/, 'ticks are restored without checking the row still exists');
+  assert.doesNotMatch(app, /keepSelection/, 'preservation is conditional again — refreshAfterAdd will undo it');
+
+  // 5. A cancelled confirm must not count as a decision and skip the video.
+  const pd = app.slice(app.indexOf('async function previewDecide('));
+  assert.match(pd.slice(0, pd.indexOf('\n}\n') + 1), /!== false/,
+    'backing out of the delete confirm still advances past the video');
+});
+
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
   // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.

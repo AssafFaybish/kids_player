@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent,
-  planAutoplay, nextInOrder } from '../www/js/playerlogic.js';
+  planAutoplay, nextInOrder, previewEmbedUrl } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY,
   AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from '../www/js/config.js';
 
@@ -191,4 +191,34 @@ test('the continuous-play timings are sane relative to each other', () => {
   assert.ok(AUTOPLAY_RETRY_MS > 0);
   assert.ok(Number.isInteger(AUTOPLAY_MAX_FAILURES) && AUTOPLAY_MAX_FAILURES >= 2,
     'a ceiling below 2 would give up on the first hiccup');
+});
+
+/* ---------------- the parent's preview bubble (v1.0.26) ---------------- */
+
+test('the preview embed is MUTED, scrubbable, and never shows related videos', () => {
+  // All three are silent when wrong. controls=1 is the reason the bubble exists at all —
+  // the kid HUD hides the timeline and turns a centre tap into play/pause, which is
+  // exactly backwards for a parent jumping through a video to check it. mute=1 is the
+  // parent's decision (a child in the room, and browsers block unmuted autoplay anyway).
+  const url = previewEmbedUrl({ type: 'youtube', id: 'dQw4w9WgXcQ' });
+  assert.match(url, /^https:\/\/www\.youtube-nocookie\.com\/embed\/dQw4w9WgXcQ\?/);
+  assert.match(url, /(^|[?&])controls=1(&|$)/, 'no scrub bar — the parent cannot evaluate');
+  assert.match(url, /(^|[?&])mute=1(&|$)/, 'it would blare in the room the child is in');
+  assert.match(url, /(^|[?&])rel=0(&|$)/, "YouTube's related rail must never appear in-app");
+  assert.match(url, /(^|[?&])autoplay=1(&|$)/);
+  // the privacy host, like the kid player uses
+  assert.ok(!url.includes('//www.youtube.com/'), 'the preview left the nocookie host');
+});
+
+test('previewEmbedUrl refuses anything that is not a YouTube video', () => {
+  // The caller falls back to a <video> element for a direct file, and must be able to
+  // tell — a bogus embed URL is a permanently black box with no error.
+  assert.equal(previewEmbedUrl({ type: 'file', url: 'https://x/a.mp4' }), null);
+  assert.equal(previewEmbedUrl({ type: 'youtube', id: '' }), null);
+  assert.equal(previewEmbedUrl({ type: 'youtube', id: 'too-short' }), null);
+  assert.equal(previewEmbedUrl({ type: 'youtube', id: 'way-too-long-to-be-an-id' }), null);
+  // an id carrying a query/fragment must never be pasted straight into the URL
+  assert.equal(previewEmbedUrl({ type: 'youtube', id: 'abc&autoplay' }), null);
+  assert.equal(previewEmbedUrl(null), null);
+  assert.equal(previewEmbedUrl(), null);
 });
