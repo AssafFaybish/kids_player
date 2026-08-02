@@ -10,7 +10,7 @@ import {
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
-  playlistVideoFolder
+  playlistVideoFolder, planRejectedPurge
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -947,4 +947,63 @@ test('one video reached from BOTH a channel and a playlist collapses to ONE reco
   const existing = new Map(p1.puts.map((x) => [x.key, x]));
   const p2 = planMutations({ candidates: [fromChannel, fromPlaylist], existing, denySet: new Set(), now: 2 });
   assert.deepEqual(p2.puts, [], 'the two sources fight over the record on every sync');
+});
+
+/* ---------------- the rejected archive expires (v1.0.26) ---------------- */
+
+const DAY = 24 * 60 * 60 * 1000;
+
+test('a rejection is recoverable for exactly the window, then purged', () => {
+  const now = 1_700_000_000_000;
+  const recs = [
+    { key: 'old', rejectedAt: now - 31 * DAY },
+    { key: 'edge', rejectedAt: now - 30 * DAY },   // exactly at the deadline
+    { key: 'nearly', rejectedAt: now - 29 * DAY },
+    { key: 'fresh', rejectedAt: now - 1 * DAY }
+  ];
+  const { expired, daysLeft } = planRejectedPurge(recs, { now, days: 30 });
+  assert.deepEqual(expired.sort(), ['edge', 'old'], 'the deadline must be inclusive');
+  assert.equal(daysLeft.get('nearly'), 1, 'the last day must read as 1, never 0');
+  assert.equal(daysLeft.get('fresh'), 29);
+  // a purged row has no countdown — it is gone, not "0 days left"
+  assert.equal(daysLeft.has('old'), false);
+});
+
+test('a record with NO rejectedAt is NEVER auto-purged', () => {
+  // The safe direction, and it is reachable: rows written before this existed, and rows
+  // arriving from a peer still running an older app. Showing an old video in the archive
+  // costs nothing; deleting one the parent might still want back cannot be undone — for a
+  // video inside a channel there is no way back at all, since only a SHEET re-add revokes
+  // a tombstone and a channel video has no row of its own.
+  const now = 1_700_000_000_000;
+  const recs = [
+    { key: 'nodate' },
+    { key: 'null', rejectedAt: null },
+    { key: 'zero', rejectedAt: 0 },
+    { key: 'junk', rejectedAt: 'yesterday' },
+    { key: 'nan', rejectedAt: NaN }
+  ];
+  const { expired, daysLeft } = planRejectedPurge(recs, { now, days: 30 });
+  assert.deepEqual(expired, [], 'a record of unknown age was deleted permanently');
+  assert.equal(daysLeft.size, 0, 'and it must not claim a countdown either');
+});
+
+test('planRejectedPurge never throws, and a future timestamp is not "expired"', () => {
+  const now = 1_700_000_000_000;
+  assert.deepEqual(planRejectedPurge().expired, []);
+  assert.deepEqual(planRejectedPurge(null).expired, []);
+  assert.deepEqual(planRejectedPurge([null, {}, { rejectedAt: 5 }]).expired, []); // no key
+  // clock skew between two devices must not delete something early
+  const skewed = planRejectedPurge([{ key: 'future', rejectedAt: now + 5 * DAY }], { now, days: 30 });
+  assert.deepEqual(skewed.expired, []);
+  assert.ok(skewed.daysLeft.get('future') >= 30);
+  // the window is configurable
+  assert.deepEqual(planRejectedPurge([{ key: 'a', rejectedAt: now - 8 * DAY }], { now, days: 7 }).expired, ['a']);
+  // …and a NONSENSE window falls back to the default rather than meaning "delete
+  // everything now". A zero here would be a config typo, and the cost of obeying it is
+  // the whole archive, permanently.
+  const old8 = [{ key: 'a', rejectedAt: now - 8 * DAY }];
+  assert.deepEqual(planRejectedPurge(old8, { now, days: 0 }).expired, [], 'days:0 wiped the archive');
+  assert.deepEqual(planRejectedPurge(old8, { now, days: -5 }).expired, []);
+  assert.deepEqual(planRejectedPurge(old8, { now, days: 'x' }).expired, []);
 });

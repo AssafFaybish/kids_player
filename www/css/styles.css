@@ -853,3 +853,5 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 @media (max-width: 560px) {
   .preview-bubble { inset-inline: 8px; width: auto; }
 }
+/* v1.0.26: per-row countdown in the rejected archive — informational, not alarming */
+.li-ttl { color: var(--muted); font-size: 12px; font-weight: 700; margin-top: 2px; }

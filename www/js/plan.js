@@ -106,6 +106,44 @@ export function playlistVideoFolder({ ownerChannelId, playlistId, subscribedChan
 }
 
 /**
+ * v1.0.26 — PURE: which rejected records have run out of their recovery window?
+ *
+ * A rejection is PARKED, not deleted (v1.0.23), so the parent can pull it back. That makes
+ * the archive grow forever, and a channel re-offers its whole catalogue every 30 minutes,
+ * so the pile is not small. After the window the record is purged for real — the same
+ * delete + deny tombstone "מחק לצמיתות" writes, which is what keeps the video from
+ * returning on the next sync.
+ *
+ * ⚠️ THAT IS IRREVERSIBLE, and for a video inside a channel there is no way back at all:
+ * the only thing that revokes a tombstone is the SHEET re-adding the key, and a channel
+ * video has no row of its own. So the archive tells the parent, per row, how long is left.
+ *
+ * A record with NO `rejectedAt` is never purged. That is the safe direction for a row
+ * written before this existed (or by a peer running an older app): showing an old video in
+ * the archive costs nothing, deleting one the parent might still want back is permanent.
+ *
+ * @returns { expired: [keys], daysLeft: Map<key, number> }
+ */
+export function planRejectedPurge(records, { now = Date.now(), days = 30 } = {}) {
+  // A nonsense window falls back to the DEFAULT, never to a short one. `Math.max(1, …)`
+  // was wrong: a negative value clamped to a ONE-DAY window, so a config typo would have
+  // emptied the whole archive permanently on the next sync.
+  const n = Number(days);
+  const ttl = (Number.isFinite(n) && n > 0 ? n : 30) * 24 * 60 * 60 * 1000;
+  const expired = [];
+  const daysLeft = new Map();
+  for (const r of records || []) {
+    if (!r || !r.key) continue;
+    const at = Number(r.rejectedAt);
+    if (!Number.isFinite(at) || at <= 0) continue;   // unknown age ⇒ never auto-purge
+    const age = now - at;
+    if (age >= ttl) { expired.push(r.key); continue; }
+    daysLeft.set(r.key, Math.max(1, Math.ceil((ttl - age) / 86400000)));
+  }
+  return { expired, daysLeft };
+}
+
+/**
  * @param candidates  enriched candidate records for ONE scope:
  *   { scopeId,key,type,id,url,srcUrl,driveId, title,titleSource,thumbUrl,
  *     channelId,folderId,origin,publishedAt,rowIndex, autoApprove }

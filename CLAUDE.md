@@ -259,6 +259,28 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.26 — **THE REJECTED ARCHIVE EMPTIES ITSELF AFTER 30 DAYS** (`REJECTED_TTL_DAYS`).
+  v1.0.23 made a rejection PARKED rather than deleted so the parent can pull it back — but
+  that means the archive only grows, and a channel re-offers its whole catalogue every 30
+  minutes, so it grows fast. After the window the record is purged for real: delete + deny
+  tombstone, exactly what "מחק לצמיתות" does, which is also what stops the video returning
+  on the next sync.
+  - **IT IS IRREVERSIBLE, SO IT IS STATED.** For a video inside a channel there is no way
+    back at all — only a SHEET re-add revokes a tombstone, and a channel video has no row.
+    The archive therefore carries the rule up front AND a per-row countdown
+    (`parentRow`'s `note`); pure `plan.planRejectedPurge` returns both the expired keys and
+    the days left, so the sweep and the label can never disagree about the deadline.
+  - **A RECORD WITH NO `rejectedAt` IS NEVER AUTO-PURGED** — rows written before this
+    existed, or arriving from a peer on an older app. Showing an old video costs nothing;
+    deleting one the parent still wants cannot be undone.
+  - **A NONSENSE WINDOW FALLS BACK TO THE DEFAULT, never to a short one.** The first
+    version used `Math.max(1, Number(days) || 30)`, so a negative value clamped to a
+    ONE-DAY window and a config typo would have emptied the whole archive on the next
+    sync. Caught by its own test.
+  - The sweep lives in `doSync`, not in the parent screen: it has to happen whether or not
+    anyone opens that screen, and ONE place means the deadline cannot drift. It covers
+    BOTH scopes (a rejection can be parked in the shared library or the personal one) and
+    is wrapped in try/catch — housekeeping must never take the sync down with it.
 - v1.0.26 — **THE PARENT CAN WATCH A VIDEO WITHOUT LEAVING THE QUEUE** (preview bubble).
   Tapping a row's THUMBNAIL in ממתינים or in הוספה opens a floating player over the parent
   screen. It is an OVERLAY, never a view: the scroll position, the open tab and the ticked
