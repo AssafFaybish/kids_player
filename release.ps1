@@ -78,6 +78,15 @@ if ($Bump) {
     $V = node -p "require('./package.json').version"
 }
 $Tag = "v$V"
+
+# v1.0.26: REFUSE A VERSION NO DEVICE CAN RECEIVE — see the same guard in release.sh.
+# update.parseVersion reads exactly three components, so "1.0.26.1" is not a smaller
+# version than "1.0.26", it is an INVISIBLE one.
+node -e "import('./www/js/update.js').then(m => process.exit(m.versionIsDeliverable(process.argv[1]) ? 0 : 1))" $V
+if ($LASTEXITCODE -ne 0) {
+    Die "Version '$V' can never reach a device: update.parseVersion reads three components, so it is indistinguishable from the 3-part prefix. Use a real third-component bump (e.g. 1.0.27)."
+}
+
 $Apk = Join-Path $ApkDir "kids-player-$Tag.apk"
 # v1.0.19: a SECOND asset under a version-less name. GitHub resolves
 # /releases/latest/download/<name> only for an exactly-named asset, so this stable
