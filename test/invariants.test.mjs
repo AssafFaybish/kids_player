@@ -647,3 +647,42 @@ test('a PIN-reset request is DEVICE-LOCAL: exactly one module knows the key', ()
   assert.deepEqual(owners, ['www/js/recovery.js'],
     'the recovery timestamp leaked out of recovery.js — see the comment above');
 });
+
+test('the device-credential bridge fails CLOSED, and cannot lock a parent out', () => {
+  // v1.0.26. Two opposite failures, both reachable from one sloppy line in platform.js:
+  //   (a) treating a thrown/absent bridge as SUCCESS would open the parent screen to
+  //       anyone on any device where the plugin is missing — i.e. the browser, and every
+  //       APK built before this method existed;
+  //   (b) letting it THROW would blow up `onPinForgot` before it can offer the 24-hour
+  //       wait, turning a missing fingerprint sensor into a permanent lockout.
+  // So both wrappers must compare against an explicit `=== true` and swallow.
+  const plat = MODULES.get('www/js/platform.js');
+  for (const fn of ['canDeviceAuth', 'deviceAuth']) {
+    const i = plat.indexOf(`export async function ${fn}(`);
+    assert.ok(i > 0, `platform.js no longer exports ${fn}`);
+    const body = plat.slice(i, plat.indexOf('\n}', i));
+    assert.match(body, /catch\s*\{\s*return false;?\s*\}/,
+      `${fn} lets a bridge error escape — a locked-out parent never reaches the wait`);
+    assert.match(body, /===\s*true/, `${fn} accepts a truthy value as proof of an adult`);
+  }
+});
+
+test('a failed device prompt still offers the wait', () => {
+  // The fast path is an ADDITION, never a replacement. If `onPinForgot` returns on a
+  // failed prompt instead of falling through, then on a device WITH a lock screen the
+  // 24-hour route becomes unreachable — and that is the only route that always works.
+  const app = MODULES.get('www/js/app.js');
+  const fn = app.slice(app.indexOf('async function onPinForgot('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /planRecoveryRoute\(/, 'app.js re-implements the route decision inline');
+  // Scope to the DEVICE branch alone. Slicing to the end of the function made this guard
+  // vacuous: the wait-start branch below also calls requestRecovery(), so deleting the
+  // fallback entirely still passed. Caught by planting exactly that.
+  const from = body.indexOf("if (route === 'device')");
+  assert.ok(from > 0, 'onPinForgot no longer has a device branch');
+  const to = body.indexOf('const go = await confirmKid', from);
+  assert.ok(to > from, 'the wait-start branch moved — re-anchor this guard');
+  const dev = body.slice(from, to);
+  assert.match(dev, /requestRecovery\(/,
+    'the device branch never falls back to the wait when the prompt fails');
+});

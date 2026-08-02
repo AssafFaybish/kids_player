@@ -1,6 +1,6 @@
 package com.assaf.kidsplayer;
 
-// Kids Player — the single custom native surface, five features:
+// Kids Player — the single custom native surface, six features:
 //   1) keepAwake/allowSleep (F7): window-level FLAG_KEEP_SCREEN_ON. Needs NO permission
 //      (not even WAKE_LOCK), survives the fullscreen custom-view swap, and is auto-scoped
 //      to window visibility so background/resume need zero handling.
@@ -15,6 +15,10 @@ package com.assaf.kidsplayer;
 //      only finish()es, which reads as "minimize" on real devices.
 //   5) shareText (v1.0.5): the OS share sheet (ACTION_SEND chooser) — used by the
 //      parent screen's "share the app" button; no plugin dependency needed.
+//   6) Device credential (v1.0.26): BiometricPrompt with BIOMETRIC_WEAK |
+//      DEVICE_CREDENTIAL — the FAST path back in for a parent who forgot the app's
+//      code. Reports instead of throwing; the 24-hour wait in recovery.js is the
+//      floor under it, because a child's tablet often has no lock screen at all.
 //
 // Canonical copy: native-reference/KidsNativePlugin.java — keep both in sync.
 
@@ -259,4 +263,123 @@ public class KidsNativePlugin extends Plugin {
             call.reject("install-failed: " + e.getMessage());
         }
     }
+
+    /* ---------------- device credential (v1.0.26, parent-code recovery) ---------------- */
+    // The FAST path back in when a parent forgets the code: fingerprint, or the device's
+    // own lock PIN/pattern/password. It proves "an adult who administers this device" —
+    // which is the only identity claim this app can honestly check offline.
+    //
+    // The 24-hour wait in recovery.js is the FLOOR under this and must stay: a child's
+    // tablet frequently has no lock screen at all, Android TV never does, and the prompt
+    // can legitimately be unavailable. Every failure here therefore reports rather than
+    // throws, and the JS side falls back to the wait — a broken prompt must never become
+    // either an open door or a locked one.
+    //
+    // BIOMETRIC_WEAK (not STRONG) is deliberate: we are gating a UI screen, not unwrapping
+    // a crypto key, and STRONG needlessly excludes perfectly good face/fingerprint sensors.
+    // DEVICE_CREDENTIAL is what makes it work on a device with nothing enrolled. When
+    // DEVICE_CREDENTIAL is allowed, setNegativeButtonText MUST NOT be set (the library
+    // throws) — the credential fallback IS the negative button.
+
+    private static int authenticators() {
+        return androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
+                | androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+    }
+
+    /** Can this device prove an adult is present? -> { available, reason }. Never rejects. */
+    @PluginMethod
+    public void canDeviceAuth(PluginCall call) {
+        JSObject ret = new JSObject();
+        String reason = "unknown";
+        boolean ok = false;
+        try {
+            int status = androidx.biometric.BiometricManager.from(getContext())
+                    .canAuthenticate(authenticators());
+            switch (status) {
+                case androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS:
+                    ok = true; reason = "ok"; break;
+                case androidx.biometric.BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED:
+                    // No lock screen and no biometric — the common children's-tablet case,
+                    // and exactly why the wait exists.
+                    reason = "none-enrolled"; break;
+                case androidx.biometric.BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE:
+                    reason = "no-hardware"; break;
+                case androidx.biometric.BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE:
+                    reason = "hw-unavailable"; break;
+                default:
+                    reason = "unsupported-" + status; break;
+            }
+        } catch (Throwable t) {
+            // A missing class or an API-level quirk must read as "use the wait", never crash.
+            reason = "error";
+        }
+        ret.put("available", ok);
+        ret.put("reason", reason);
+        call.resolve(ret);
+    }
+
+    /**
+     * Show the prompt. Resolves { ok, reason } — it does NOT reject, because "the parent
+     * cancelled" is an ordinary outcome here, not an error.
+     */
+    @PluginMethod
+    public void deviceAuth(PluginCall call) {
+        final String title = call.getString("title", "אימות הורה");
+        final String subtitle = call.getString("subtitle", "");
+        Activity a = getActivity();
+        if (!(a instanceof androidx.fragment.app.FragmentActivity)) {
+            // BridgeActivity is an AppCompatActivity, so this cannot happen today — but a
+            // silent ClassCastException here would look exactly like "the fingerprint
+            // reader is broken" to a locked-out parent.
+            resolveAuth(call, false, "no-fragment-activity");
+            return;
+        }
+        final androidx.fragment.app.FragmentActivity fa = (androidx.fragment.app.FragmentActivity) a;
+        fa.runOnUiThread(() -> {
+            try {
+                androidx.biometric.BiometricPrompt prompt = new androidx.biometric.BiometricPrompt(
+                        fa,
+                        androidx.core.content.ContextCompat.getMainExecutor(fa),
+                        new androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+                            @Override
+                            public void onAuthenticationSucceeded(
+                                    androidx.biometric.BiometricPrompt.AuthenticationResult result) {
+                                resolveAuth(call, true, "ok");
+                            }
+                            @Override
+                            public void onAuthenticationError(int code, CharSequence msg) {
+                                // Includes the user cancelling and the "too many attempts"
+                                // lockout. Both mean: fall back to the wait.
+                                resolveAuth(call, false, "error-" + code);
+                            }
+                            // onAuthenticationFailed = one bad finger; the prompt stays up
+                            // and the user may retry, so it is deliberately not terminal.
+                        });
+
+                androidx.biometric.BiometricPrompt.PromptInfo.Builder b =
+                        new androidx.biometric.BiometricPrompt.PromptInfo.Builder()
+                                .setTitle(title)
+                                .setAllowedAuthenticators(authenticators());
+                if (subtitle != null && !subtitle.isEmpty()) b.setSubtitle(subtitle);
+                prompt.authenticate(b.build());
+            } catch (Throwable t) {
+                resolveAuth(call, false, "prompt-failed");
+            }
+        });
+    }
+
+    /** One resolve per call — a prompt can report twice, and Capacitor would throw. */
+    private void resolveAuth(PluginCall call, boolean ok, String reason) {
+        synchronized (authLock) {
+            if (authSettled.contains(call.getCallbackId())) return;
+            authSettled.add(call.getCallbackId());
+        }
+        JSObject ret = new JSObject();
+        ret.put("ok", ok);
+        ret.put("reason", reason);
+        call.resolve(ret);
+    }
+
+    private final Object authLock = new Object();
+    private final java.util.Set<String> authSettled = new java.util.HashSet<>();
 }

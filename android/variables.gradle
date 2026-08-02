@@ -9,6 +9,10 @@ ext {
     androidxFragmentVersion = '1.6.2'
     coreSplashScreenVersion = '1.0.1'
     androidxWebkitVersion = '1.9.0'
+    // v1.0.26: BiometricPrompt for the parent-code recovery fast path (fingerprint, or
+    // the device lock code). 1.1.0 is the last stable release and the one that handles
+    // the BIOMETRIC | DEVICE_CREDENTIAL combination across API 21+ by itself.
+    androidxBiometricVersion = '1.1.0'
     junitVersion = '4.13.2'
     androidxJunitVersion = '1.1.5'
     androidxEspressoCoreVersion = '3.5.1'

@@ -1582,18 +1582,23 @@ async function refreshPinRecovery() {
     return;
   }
   const { recoveryState } = await import('./recovery.js');
-  const { pinRecoveryLabel } = await import('./plan.js');
+  const { pinRecoveryLabel, planRecoveryRoute } = await import('./plan.js');
+  const { canDeviceAuth } = await import('./platform.js');
   const st = await recoveryState();
+  const route = planRecoveryRoute({ deviceAuth: await canDeviceAuth(), recovery: st });
   btn.classList.remove('hidden');
-  if (st.state === 'ready') {
+  if (route === 'wait-ready') {
     btn.textContent = 'איפוס הקוד — מוכן ✅';
-    note.textContent = 'תמו 24 השעות. אפשר לקבוע קוד הורים חדש.';
+    note.textContent = `תמו ${PIN_RECOVERY_DELAY_HOURS} השעות. אפשר לקבוע קוד הורים חדש.`;
     note.classList.remove('hidden');
-  } else if (st.state === 'waiting') {
+  } else if (route === 'wait-pending') {
     btn.textContent = 'ביטול בקשת האיפוס';
     note.textContent = pinRecoveryLabel(st);
     note.classList.remove('hidden');
   } else {
+    // 'device' and 'wait-start' share a label on purpose: the parent is answering "I forgot
+    // it", not choosing a mechanism. Which one they get is the device's business, and if
+    // the prompt fails they are offered the wait without ever having to understand why.
     btn.textContent = 'שכחתי את הקוד';
     note.classList.add('hidden');
   }
@@ -1608,13 +1613,17 @@ async function refreshPinRecovery() {
  */
 async function onPinForgot() {
   const { recoveryState, requestRecovery, cancelRecovery } = await import('./recovery.js');
+  const { planRecoveryRoute } = await import('./plan.js');
+  const { canDeviceAuth, deviceAuth } = await import('./platform.js');
   const st = await recoveryState();
-  if (st.state === 'ready') {
+  const route = planRecoveryRoute({ deviceAuth: await canDeviceAuth(), recovery: st });
+
+  if (route === 'wait-ready') {
     await cancelRecovery();
     startPin('setup', { replace: true, onSuccess: enterParent });
     return;
   }
-  if (st.state === 'waiting') {
+  if (route === 'wait-pending') {
     const stop = await confirmKid({
       emoji: '🔓', title: 'לבטל את בקשת האיפוס?',
       text: 'קוד ההורים הנוכחי יישאר בתוקף.', ok: 'ביטול הבקשה', cancel: 'להשאיר'
@@ -1622,6 +1631,26 @@ async function onPinForgot() {
     if (stop) { await cancelRecovery(); await refreshPinRecovery(); }
     return;
   }
+  if (route === 'device') {
+    // The one-second path. A SUCCESS goes straight to choosing a new code — the device
+    // just proved an adult is present, which is a stronger claim than any wait can make.
+    const ok = await deviceAuth('אימות הורה', 'אישור בעזרת נעילת המכשיר כדי לקבוע קוד הורים חדש');
+    if (ok) { startPin('setup', { replace: true, onSuccess: enterParent }); return; }
+    // A FAILURE is not a dead end. Cancelled, no finger enrolled after all, locked out,
+    // or a prompt that could not open under screen pinning — the parent still gets the
+    // wait, which is the whole reason it is the floor and not an alternative.
+    const useWait = await confirmKid({
+      emoji: '⏳', title: 'האימות לא הושלם',
+      text: `אפשר במקום זאת לבקש איפוס בהמתנה: בעוד ${PIN_RECOVERY_DELAY_HOURS} שעות אפשר יהיה לקבוע קוד חדש.`,
+      ok: 'בקשת איפוס בהמתנה', cancel: 'לא עכשיו'
+    });
+    if (!useWait) return;
+    await requestRecovery();
+    await refreshPinRecovery();
+    await refreshRecoveryBanner();
+    return;
+  }
+
   const go = await confirmKid({
     emoji: '⏳', title: 'לאפס את קוד ההורים?',
     text: `מטעמי בטיחות האיפוס לא מיידי: בעוד ${PIN_RECOVERY_DELAY_HOURS} שעות אפשר יהיה לקבוע קוד חדש. ` +
