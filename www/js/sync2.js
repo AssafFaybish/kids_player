@@ -22,8 +22,8 @@ import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
-  planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge
-} from './plan.js';
+  planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge,
+  planOrphanGC } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
@@ -663,6 +663,11 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         }
         if (page.error) break;
         for (const v of page.videos) {
+          // Same gate as the channel stage, minus the owner check (foreign videos are
+          // the POINT of a standalone playlist) and minus shortIds (no UUSH sibling
+          // exists here): a malformed id or a MISSING owner is a private/deleted entry,
+          // which used to reach the child as an untappable "Private video" tile.
+          if (!acceptPlaylistItem(v, {})) continue;
           const folderId = playlistVideoFolder({
             ownerChannelId: v.ownerChannelId, playlistId: lp.channelId, subscribedChannelIds
           });
@@ -838,11 +843,13 @@ export async function applySheetMirror(lib, { deleteVideoKeys = [], deleteChanne
   }
   for (const id of deleteChannelIds) await deleteLibraryChannel(lib, id);
 
-  // orphan GC — one pass covers both the just-deleted channels and doc-resurrected dregs
-  const subscribed = new Set((await listLibraryChannels(lib)).map((c) => c.channelId));
-  for (const rec of (await loadMergeIndex(lib)).values()) {
-    if (rec.channelId && !subscribed.has(rec.channelId)) await deleteVideoRaw(lib, rec.key);
-  }
+  // orphan GC — one pass covers both the just-deleted channels and doc-resurrected dregs.
+  // THE DECISION IS PURE (plan.planOrphanGC) because the inline one-liner it replaces
+  // deleted every standalone-playlist video on every pass: a playlist video keeps its
+  // OWNER in channelId, so membership must be judged by the FOLDER too. See the helper.
+  const orphans = planOrphanGC(
+    (await loadMergeIndex(lib)).values(), await listLibraryChannels(lib));
+  for (const key of orphans) await deleteVideoRaw(lib, key);
 }
 
 /** Baseline (newest 12) on a profile's first sync of this library; incremental after. */

@@ -368,6 +368,40 @@ pins that the consumers follow the config and that every address is well-formed.
     the verify screen it just satisfied. `planPinRecovery` follows the `planRejectedPurge`
     rule — **a nonsense window falls back to the default, never to a short one** — which
     here means a typo cannot hand the parent screen to the child the same afternoon.
+- v1.0.27 — **THE STANDALONE-PLAYLIST FEATURE SHIPPED WITH A DATA-DESTROYING LOOP, AND
+  THREE MORE HOLES.** All review-caught, all demonstrated against the running code; the
+  v1.0.26 entry below describes the design — this entry is what it missed.
+  - **THE MIRROR'S ORPHAN GC DELETED EVERY PLAYLIST VIDEO ON EVERY PASS.** The GC's
+    one-line predicate compared `rec.channelId` against subscriptions — but a playlist
+    subscription carries `PL…` while its videos deliberately keep their OWNER (`UC…`), so
+    every foreign-owner playlist video read as an orphan: imported, raw-deleted (NO
+    tombstone), re-imported pending, with every approval and every REJECTION undone in a
+    30-minute loop. The decision is now pure `plan.planOrphanGC`: membership is judged by
+    the FOLDER too (`pl:<id>` of a subscribed playlist; parked records by `homeFolderId`),
+    a record with no channelId is never touched, and deleting the playlist still orphans
+    its videos for real. `invariants.test.mjs` pins that `applySheetMirror` delegates and
+    that the inline predicate cannot come back.
+  - **A PLAYLIST COULD NOT BE DELETED.** Its sheet row classifies as `kind:'playlist'`,
+    which `matchRowsForDeletion` did not know — the delete matched nothing, `clearFlushed`
+    dropped the op anyway, and the still-present row re-subscribed it on the next sync,
+    while the confirm promised removal "מקובץ המקורות". AND the add/delete never
+    reconciled: the append travels as `pl:<id>` but `opIdentity` stamped `ch:<id>`
+    unconditionally, so the flush re-appended the row it had just deleted. `delchannel`
+    ops now carry `kind`, both identity and row-matching are kind-aware, and
+    `planSheetMirror` protects `pl:<id>` pending appends like `ch:<id>` ones (without
+    that, a playlist added on a READ-ONLY joined sheet was unsubscribed by the very next
+    mirror pass, permanently — the append can never land there).
+  - **SHARING A PLAYLIST COULD NEVER SUCCEED.** `handleShareInteractive` branched only on
+    `kind === 'channel'`, so a playlist fell into the video branch: PIN → "להוסיף את
+    הסרטון?" → הוספה → and `handleSourceShare`, which accepts only the source decision,
+    answered "ההוספה בוטלה". The parent CONFIRMED and was told it was cancelled. A
+    playlist now gets the source branch with its own feminine wording, and `onShareAdded`
+    finally reads the `isPlaylist` flag share.js has passed since v1.0.26.
+  - **THE STANDALONE STAGE PUSHED PAGE ITEMS UNFILTERED** — unlike the channel-playlists
+    stage, nothing rejected entries with a missing `videoOwnerChannelId`, which is what
+    private/deleted videos look like (untappable "Private video" tiles). It now runs
+    `acceptPlaylistItem(v, {})`: no owner check (foreign videos are the point) and no
+    shortIds (no UUSH sibling exists), but malformed ids and ownerless entries are out.
 - v1.0.26 — **A SHARE FROM YOUTUBE COULD FAIL IN SEVEN WAYS AND SAY NOTHING.** Reported
   from the field as "sharing does not add the video, the parent screen does". The native
   side was never at fault (intent-filter, `onNewIntent` for cold+warm, matching field
