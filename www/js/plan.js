@@ -106,6 +106,47 @@ export function playlistVideoFolder({ ownerChannelId, playlistId, subscribedChan
 }
 
 /**
+ * v1.0.27 — PURE: which records are ORPHANS the mirror's GC may raw-delete?
+ *
+ * FIELD-CLASS DATA LOSS (review-caught, shipped in v1.0.26). The GC's old predicate was
+ * one line: `rec.channelId && !subscribed.has(rec.channelId)`. A standalone PLAYLIST
+ * subscription keeps the playlist id in the `channelId` slot, but every video it imports
+ * keeps its OWNER channel in `channelId` — deliberately (the title-dedupe index and the
+ * unify rule key on it). So `subscribed` held `PL…` while the records held `UC…`, and the
+ * GC deleted EVERY foreign-owner playlist video on EVERY mirror pass: imported, wiped,
+ * re-imported as pending, with every approval AND every rejection undone in a 30-minute
+ * loop. `deleteVideoRaw` writes no tombstone, so rejections did not survive — breaching
+ * "A REJECTION MUST SURVIVE EVERY LATER SYNC".
+ *
+ * The rule: a record is an orphan only when NEITHER home claims it —
+ *   - its channelId is a subscribed CHANNEL, or
+ *   - its FOLDER is a subscribed PLAYLIST's folder (`pl:<id>`). Parked records are judged
+ *     by `homeFolderId` (the folder they will return to), because parking moves
+ *     `folderId` to `~pending`/`~rejected` and the GC must not treat a parked playlist
+ *     video as homeless.
+ * A record with NO channelId is kept, as it always was: the GC has never had an opinion
+ * about manual/direct-file records.
+ *
+ * @param records       iterable of video records
+ * @param subscriptions the library's `libraryChannels` rows ({ channelId, kind })
+ * @returns keys to raw-delete
+ */
+export function planOrphanGC(records, subscriptions) {
+  const subs = [...(subscriptions || [])].filter(Boolean);
+  const channelIds = new Set(subs.map((c) => c.channelId));
+  const playlistFolders = new Set(subs.filter((c) => c.kind === 'playlist').map((c) => 'pl:' + c.channelId));
+  const out = [];
+  for (const rec of records || []) {
+    if (!rec || !rec.key || !rec.channelId) continue;
+    const folder = (rec.folderId === '~pending' || rec.folderId === '~rejected')
+      ? rec.homeFolderId : rec.folderId;
+    if (playlistFolders.has(folder)) continue;
+    if (!channelIds.has(rec.channelId)) out.push(rec.key);
+  }
+  return out;
+}
+
+/**
  * v1.0.26 — PURE: which rejected records have run out of their recovery window?
  *
  * A rejection is PARKED, not deleted (v1.0.23), so the parent can pull it back. That makes
@@ -541,7 +582,12 @@ export function planSheetMirror({
   const denied = deniedKeys instanceof Set ? deniedKeys : new Set(deniedKeys || []);
 
   const deleteVideoKeys = sheetBackedKeys.filter((k) => !curV.has(k) && !pendingAdd.has(k));
-  const deleteChannelIds = localChannelIds.filter((id) => !curC.has(id) && !pendingAdd.has('ch:' + id));
+  // v1.0.27: a playlist's queued append travels as 'pl:<id>' (app.js enqueues it that
+  // way), so checking only 'ch:' meant a playlist whose row had not flushed yet was
+  // unsubscribed by the very next mirror pass — permanently, on a read-only joined
+  // sheet where the append can never land.
+  const deleteChannelIds = localChannelIds.filter((id) =>
+    !curC.has(id) && !pendingAdd.has('ch:' + id) && !pendingAdd.has('pl:' + id));
   const unDenyKeys = [...denied].filter((k) => curV.has(k) && !pendingDel.has(k));
 
   const localTotal = sheetBackedKeys.length + localChannelIds.length;

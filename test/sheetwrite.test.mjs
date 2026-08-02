@@ -500,3 +500,42 @@ test('planQueue: junk never throws — the queue is durable storage an older ver
     assert.equal(planQueue([legacy], null, cap).queue.length, 1, `cap ${cap} emptied the queue`);
   }
 });
+
+/* ---------------- playlist rows in the write-back queue (v1.0.27) ---------------- */
+
+test('matchRowsForDeletion: a PLAYLIST row is matched by its playlist id', async () => {
+  const { matchRowsForDeletion } = await import('../www/js/sheetwrite.js');
+  const colA = [
+    '# הוראות',
+    'https://www.youtube.com/watch?v=aaaaaaaaaaa',
+    'https://www.youtube.com/playlist?list=PLmix1234567890',
+    'https://www.youtube.com/channel/UCchan111111111111111111'
+  ];
+  // v1.0.26: this matched NOTHING for a playlist — the row stayed, clearFlushed dropped
+  // the op, and the next sync re-subscribed the playlist the parent had just deleted,
+  // while the confirm dialog promised removal "מקובץ המקורות".
+  const ops = [{ op: 'delchannel', channelId: 'PLmix1234567890', kind: 'playlist', at: 1 }];
+  assert.deepEqual(matchRowsForDeletion(colA, ops, {}), [2]);
+  // and it must not over-match: a channel delete still touches only the channel row
+  assert.deepEqual(
+    matchRowsForDeletion(colA, [{ op: 'delchannel', channelId: 'UCchan111111111111111111', at: 1 }], {}),
+    [3]);
+});
+
+test('reconcileOps: a playlist ADD and its DELETE share one identity', async () => {
+  const { reconcileOps } = await import('../www/js/sheetwrite.js');
+  // The add travels as key 'pl:<id>'; the delete used to reconcile under 'ch:<id>', so
+  // the two NEVER collapsed and the flush re-appended the row right after deleting it.
+  const add = { op: 'append', key: 'pl:PLmix1234567890', row: ['x'], at: 1 };
+  const del = { op: 'delchannel', channelId: 'PLmix1234567890', kind: 'playlist', at: 2 };
+  const out = reconcileOps([add, del]);
+  assert.equal(out.length, 1, 'add+delete of one playlist must collapse to the later intent');
+  assert.equal(out[0].op, 'delchannel');
+  // the other order too — later intent wins regardless
+  const out2 = reconcileOps([del, { ...add, at: 3 }]);
+  assert.equal(out2.length, 1);
+  assert.equal(out2[0].op, 'append');
+  // a CHANNEL delete keeps its own identity — no cross-kind collision
+  const ch = reconcileOps([add, { op: 'delchannel', channelId: 'PLmix1234567890', at: 2 }]);
+  assert.equal(ch.length, 2, "without kind:'playlist' the identities differ — the old bug, kept visible");
+});

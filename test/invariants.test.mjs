@@ -719,3 +719,35 @@ test('no step of the channel-add flow is left silent (v1.0.26)', () => {
   // A loading screen swallows back, so an unbounded wait is a trap, not a courtesy.
   assert.match(body, /waitWithValve\(/, 'the blocking wait lost its escape valve');
 });
+
+test('the orphan GC delegates to planOrphanGC, and the playlist stages are gated (v1.0.27)', () => {
+  // Three fixes from one review, all in the standalone-playlist family — each pinned to
+  // the LIVE code path so the pure tests cannot pass while production regrows the inline
+  // version they replaced (the v1.0.20 "it pinned the fixture" lesson).
+  const sync = MODULES.get('www/js/sync2.js');
+  const app = MODULES.get('www/js/app.js');
+
+  // (a) the GC: the inline predicate deleted every standalone-playlist video on every
+  //     mirror pass (their channelId is the OWNER, not the subscribed playlist id).
+  const gcAt = sync.indexOf('orphan GC');
+  assert.ok(gcAt > 0, 'the orphan GC comment anchor moved — re-anchor this guard');
+  const gc = sync.slice(gcAt, gcAt + 600);
+  assert.match(gc, /planOrphanGC\(/, 'the orphan GC no longer delegates to planOrphanGC');
+  assert.doesNotMatch(gc, /!subscribed\.has\(rec\.channelId\)/,
+    'the inline orphan predicate is back — it deletes playlist videos');
+
+  // (b) the standalone playlist stage must gate items like the channel stage does:
+  //     a MISSING owner is a private/deleted entry (an untappable "Private video" tile).
+  const stAt = sync.indexOf('מושכים סרטונים מרשימת ההשמעה');
+  assert.ok(stAt > 0, 'the standalone playlist stage moved — re-anchor this guard');
+  assert.match(sync.slice(stAt, stAt + 900), /acceptPlaylistItem\(/,
+    'the standalone playlist stage pushes page items unfiltered');
+
+  // (c) the share confirm: a playlist fell into the VIDEO branch, so handleSourceShare
+  //     (which accepts only the source decision) answered "ההוספה בוטלה" after the
+  //     parent tapped הוספה — the v1.0.26 feature could not succeed on any path.
+  const shAt = app.indexOf('function handleShareInteractive(');
+  assert.ok(shAt > 0, 'handleShareInteractive moved');
+  const sh = app.slice(shAt, app.indexOf('\n}\n', shAt));
+  assert.match(sh, /kind === 'playlist'/, 'handleShareInteractive treats a playlist as a video again');
+});

@@ -1500,20 +1500,32 @@ async function confirmDeleteWatch(item) {
  * the share falls back to the silent pending route.
  */
 function handleShareInteractive(c) {
-  if (nav.isActive('pin') || isModalOpen()) return Promise.resolve(c.kind === 'channel' ? null : 'pending');
+  // v1.0.27: a PLAYLIST is a source, here too. It fell into the video branch below, so
+  // the parent typed the PIN, was asked "להוסיף את הסרטון?", tapped הוספה — and
+  // handleSourceShare, which accepts only the 'channel' decision, answered "ההוספה
+  // בוטלה". The v1.0.26 share-a-playlist feature could not succeed on ANY path.
+  const isSource = c.kind === 'channel' || c.kind === 'playlist';
+  const isPl = c.kind === 'playlist';
+  if (nav.isActive('pin') || isModalOpen()) return Promise.resolve(isSource ? null : 'pending');
   return new Promise((resolve) => {
     (async () => {
       startPin((await hasPin()) ? 'verify' : 'setup', {
         replace: nav.isActive('watch'), // never leave a torn-down player behind
-        title: c.kind === 'channel' ? 'קוד הורים להוספת הערוץ' : 'קוד הורים להוספת הסרטון',
-        onDone: (success) => { if (!success) resolve(c.kind === 'channel' ? null : 'pending'); },
+        title: isPl ? 'קוד הורים להוספת רשימת ההשמעה'
+          : c.kind === 'channel' ? 'קוד הורים להוספת הערוץ' : 'קוד הורים להוספת הסרטון',
+        onDone: (success) => { if (!success) resolve(isSource ? null : 'pending'); },
         onSuccess: async () => {
-          if (c.kind === 'channel') {
-            const yes = await confirmKid({
-              emoji: '📺', title: 'להוסיף את הערוץ כולו?',
-              text: (c.title ? c.title + ' — ' : '') + 'סרטונים חדשים שלו ימתינו לאישור הורים.',
-              ok: 'הוספת הערוץ', cancel: 'לא עכשיו'
-            });
+          if (isSource) {
+            // ערוץ is masculine, רשימה feminine — the same rule channelAddOutcome follows.
+            const yes = await confirmKid(isPl
+              ? { emoji: '🎵', title: 'להוסיף את רשימת ההשמעה כולה?',
+                  text: (c.title ? c.title + ' — ' : '') + 'כל הסרטונים שבה ימתינו לאישור הורים.',
+                  ok: 'הוספת הרשימה', cancel: 'לא עכשיו' }
+              : { emoji: '📺', title: 'להוסיף את הערוץ כולו?',
+                  text: (c.title ? c.title + ' — ' : '') + 'סרטונים חדשים שלו ימתינו לאישור הורים.',
+                  ok: 'הוספת הערוץ', cancel: 'לא עכשיו' });
+            // 'channel' is the SOURCE-decision token handleSourceShare keys on — one
+            // token for both kinds, because the routing question is the same.
             resolve(yes ? 'channel' : null);
           } else {
             const yes = await confirmKid({
@@ -1525,7 +1537,7 @@ function handleShareInteractive(c) {
           goGallery();
         }
       });
-    })().catch(() => resolve(c.kind === 'channel' ? null : 'pending'));
+    })().catch(() => resolve(isSource ? null : 'pending'));
   });
 }
 
@@ -1536,9 +1548,9 @@ function enqueueSheetDeleteVideo(key) {
     .then(() => refreshSheetWriteStatus().catch(() => {}))
     .catch(() => {});
 }
-function enqueueSheetDeleteChannel(channelId) {
+function enqueueSheetDeleteChannel(channelId, kind = 'channel') {
   import('./sheetwrite.js')
-    .then((sw) => sw.enqueueSheetChannelDelete(activeProfileId, channelId))
+    .then((sw) => sw.enqueueSheetChannelDelete(activeProfileId, channelId, kind))
     .then(() => refreshSheetWriteStatus().catch(() => {}))
     .catch(() => {});
 }
@@ -2540,7 +2552,7 @@ async function refreshChannelsList() {
       // sheet row (so the channel doesn't resurrect on the next sync, anywhere)
       const { applySheetMirror } = await import('./sync2.js');
       await applySheetMirror(libScope, { deleteChannelIds: [lc.channelId] });
-      enqueueSheetDeleteChannel(lc.channelId);
+      enqueueSheetDeleteChannel(lc.channelId, lc.kind || 'channel');
       await loadGiftStates();
       await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
       renderHome();
@@ -4306,7 +4318,7 @@ async function init() {
       toast(text, kind);
     },
     profileChooser: chooseShareProfile, // v1.0.23 — asked only when it changes the outcome
-    onShareAdded: async ({ pending, channelAdded, channelFailed, title }) => {
+    onShareAdded: async ({ pending, channelAdded, channelFailed, title, isPlaylist }) => {
       if (channelFailed) {
         await alertKid({ emoji: '😕', title: 'לא הצלחנו לזהות את הערוץ', text: 'אפשר לנסות דרך מסך ההורים ← הוספה.', ok: 'בסדר' });
         return;
@@ -4317,9 +4329,14 @@ async function init() {
         // downloading — the parent was told the outcome before there was one, and the
         // backlog then sat in ממתינים unannounced.
         const { synced, approved, count, empty, picked } = await importChannelAndAsk(channelAdded);
+        // share.js has passed `isPlaylist` since v1.0.26 — this handler ignored it, so a
+        // shared playlist (once the confirm above let one through at all) announced
+        // itself as "הערוץ נוסף". `picked` rides to channelAddOutcome so a manual pick
+        // reports what was chosen, not a queue the parent just emptied (v1.0.27).
+        const addedWhat = isPlaylist ? 'רשימת ההשמעה נוספה' : 'הערוץ נוסף';
         await alertKid(synced
-          ? { emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — ${channelAddOutcome(approved, count, empty, picked)}`, ok: 'מעולה' }
-          : { emoji: '😕', title: 'הערוץ נוסף, אבל המשיכה נכשלה', text: 'אפשר לנסות שוב ממסך ההורים ← מקורות ← רענון נתונים.', ok: 'בסדר' });
+          ? { emoji: isPlaylist ? '🎵' : '📺', title: `${addedWhat}! ✅`, text: `${title || (isPlaylist ? 'הרשימה' : 'הערוץ')} — ${channelAddOutcome(approved, count, empty, picked)}`, ok: 'מעולה' }
+          : { emoji: '😕', title: `${addedWhat}, אבל המשיכה נכשלה`, text: 'אפשר לנסות שוב ממסך ההורים ← מקורות ← רענון נתונים.', ok: 'בסדר' });
         if (nav.isActive('gallery')) renderHome();
         return; // importChannelAndAsk already re-rendered and scheduled the push
       }

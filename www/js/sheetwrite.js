@@ -112,8 +112,13 @@ export function normalizeOps(queue) {
   return (queue || []).map((e) => (e && !e.op ? { ...e, op: 'append' } : e)).filter(Boolean);
 }
 
-/** One identity per sheet entity: a video key, or ch:<channelId>. */
-const opIdentity = (o) => (o.op === 'delchannel' ? 'ch:' + o.channelId : o.key);
+/** One identity per sheet entity: a video key, ch:<channelId>, or pl:<playlistId>.
+    The prefix must MATCH THE APPEND's key ('pl:' for a playlist row, app.js) — v1.0.26
+    shipped 'ch:' unconditionally, so a playlist's add and delete never reconciled: the
+    flush re-appended the row the parent had just deleted. */
+const opIdentity = (o) => (o.op === 'delchannel'
+  ? (o.kind === 'playlist' ? 'pl:' : 'ch:') + o.channelId
+  : o.key);
 
 /**
  * The LATEST intent per identity wins: an add followed by a delete (or the other
@@ -150,6 +155,13 @@ export function matchRowsForDeletion(colA, ops, handleMap = {}) {
       const ref = row.channelRef;
       const id = ref.by === 'id' ? ref.value : handleMap[ref.by + ':' + String(ref.value).toLowerCase()];
       if (id && wantChannel.has(id)) out.push(i);
+    } else if (row.kind === 'playlist') {
+      // v1.0.27: the branch that did not exist. A playlist row classifies as
+      // 'playlist', so the delete-op matched NOTHING, clearFlushed dropped the op
+      // anyway, and the still-present row re-subscribed the playlist on the next
+      // sync — while the confirm dialog promised removal "מקובץ המקורות".
+      // The PL id needs no handleMap: it is verbatim in the link.
+      if (wantChannel.has(row.playlistId)) out.push(i);
     }
   });
   return out.sort((a, b) => b - a);
@@ -245,9 +257,13 @@ export function enqueueSheetRemovalRow(profileId, { key, srcUrl, title = '' }) {
   return enqueueOp(profileId, { op: 'append', key: 'rm:' + key, row });
 }
 
-/** v1.0.10: queue the removal of a CHANNEL row (matched by resolved channel id). */
-export function enqueueSheetChannelDelete(profileId, channelId) {
-  return enqueueOp(profileId, { op: 'delchannel', channelId });
+/** v1.0.10: queue the removal of a CHANNEL row (matched by resolved channel id).
+    v1.0.27: `kind:'playlist'` rides along so opIdentity and matchRowsForDeletion can
+    tell the two subscription kinds apart — a playlist row cannot be matched by a
+    channel-shaped rule, which is how deleting one used to leave its row in the sheet
+    and the next sync re-subscribed it. */
+export function enqueueSheetChannelDelete(profileId, channelId, kind = 'channel') {
+  return enqueueOp(profileId, { op: 'delchannel', channelId, ...(kind === 'playlist' ? { kind } : {}) });
 }
 
 /**
@@ -274,7 +290,9 @@ export async function pendingDeleteKeys(libraryId) {
   if (!libraryId) return [];
   const q = reconcileOps((await getMeta(qKey(libraryId))) || []);
   return q.filter((o) => o.op === 'delvideo' || o.op === 'delchannel')
-    .map((o) => (o.op === 'delchannel' ? 'ch:' + o.channelId : o.key));
+    .map((o) => (o.op === 'delchannel'
+      ? (o.kind === 'playlist' ? 'pl:' : 'ch:') + o.channelId
+      : o.key));
 }
 
 /** Rows waiting + last error — the parent sources tab renders this. */

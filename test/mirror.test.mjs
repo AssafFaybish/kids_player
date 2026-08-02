@@ -178,3 +178,71 @@ test('an empty local library never trips the valve (nothing to lose)', () => {
   assert.equal(r.valve, false);
   assert.equal(r.localTotal, 0);
 });
+
+/* ---------------- orphan GC (v1.0.27 — the playlist data-loss loop) ---------------- */
+
+test('planOrphanGC: a standalone playlist\'s videos are NOT orphans', async () => {
+  const { planOrphanGC } = await import('../www/js/plan.js');
+  // THE BUG (shipped in v1.0.26, review-caught): the playlist subscription carries
+  // `PL…` in channelId while its videos carry their OWNER (`UC…`) — deliberately — so
+  // the old one-line predicate deleted every foreign-owner playlist video on every
+  // mirror pass: imported, wiped, re-imported pending, with every approval AND every
+  // rejection undone in a 30-minute loop, and no tombstone written.
+  const subs = [
+    { channelId: 'UCsub111111111111111111', kind: 'channel' },
+    { channelId: 'PLmix1234567890', kind: 'playlist' }
+  ];
+  const recs = [
+    // playlist video, FOREIGN owner — the exact record the old GC deleted
+    { key: 'yt:pl000000001', channelId: 'UCforeign000000000000000', folderId: 'pl:PLmix1234567890' },
+    // playlist video whose owner is also subscribed → unify rule put it in ch: — safe by channelId
+    { key: 'yt:pl000000002', channelId: 'UCsub111111111111111111', folderId: 'ch:UCsub111111111111111111' },
+    // ordinary subscribed-channel video
+    { key: 'yt:ch000000001', channelId: 'UCsub111111111111111111', folderId: 'ch:UCsub111111111111111111' },
+    // a REAL orphan: its channel is not subscribed and no playlist folder claims it
+    { key: 'yt:orphan00001', channelId: 'UCgone000000000000000000', folderId: 'ch:UCgone000000000000000000' },
+    // no channelId at all (manual/direct-file) — the GC has never had an opinion
+    { key: 'file:abc', channelId: null, folderId: 'sheet' }
+  ];
+  assert.deepEqual(planOrphanGC(recs, subs), ['yt:orphan00001']);
+});
+
+test('planOrphanGC: PARKED playlist videos are judged by the folder they return to', async () => {
+  const { planOrphanGC } = await import('../www/js/plan.js');
+  const subs = [{ channelId: 'PLmix1234567890', kind: 'playlist' }];
+  const recs = [
+    { key: 'yt:pending0001', channelId: 'UCforeign000000000000000', folderId: '~pending', homeFolderId: 'pl:PLmix1234567890' },
+    { key: 'yt:reject00001', channelId: 'UCforeign000000000000000', folderId: '~rejected', homeFolderId: 'pl:PLmix1234567890' },
+    // parked, but its home is a playlist nobody subscribes to any more → real orphan
+    { key: 'yt:stale000001', channelId: 'UCforeign000000000000000', folderId: '~pending', homeFolderId: 'pl:PLgone000000000' }
+  ];
+  assert.deepEqual(planOrphanGC(recs, subs), ['yt:stale000001']);
+});
+
+test('planOrphanGC: deleting the playlist subscription DOES orphan its videos', async () => {
+  const { planOrphanGC } = await import('../www/js/plan.js');
+  // The GC's legitimate job must survive the fix: remove the playlist and its foreign
+  // videos are homeless (owner not subscribed, folder no longer claimed) → deleted.
+  const recs = [
+    { key: 'yt:pl000000001', channelId: 'UCforeign000000000000000', folderId: 'pl:PLmix1234567890' }
+  ];
+  assert.deepEqual(planOrphanGC(recs, []), ['yt:pl000000001']);
+  // …but an owner that IS subscribed keeps the video (the unify rule will re-home it)
+  assert.deepEqual(planOrphanGC(recs, [{ channelId: 'UCforeign000000000000000', kind: 'channel' }]), []);
+  // junk never throws
+  assert.deepEqual(planOrphanGC(null, null), []);
+  assert.deepEqual(planOrphanGC([null, {}], [null]), []);
+});
+
+test('planSheetMirror: a playlist\'s queued-but-unflushed append protects it too', async () => {
+  const { planSheetMirror } = await import('../www/js/plan.js');
+  // The append op for a playlist travels as 'pl:<id>' (app.js enqueues it that way);
+  // the guard checked only 'ch:<id>', so a playlist whose row had not flushed yet was
+  // unsubscribed by the very next mirror pass — permanent on a read-only joined sheet.
+  const m = planSheetMirror({
+    sheetBackedKeys: [], currentVideoKeys: [], currentChannelIds: [],
+    localChannelIds: ['PLmix1234567890', 'UCchan111111111111111111'],
+    pendingAppendKeys: ['pl:PLmix1234567890', 'ch:UCchan111111111111111111']
+  });
+  assert.deepEqual(m.deleteChannelIds, [], 'a queued add is LAG, not absence — for both kinds');
+});
