@@ -867,3 +867,18 @@ test('snapshot deny import goes through the LWW merge — never a blind restampe
   assert.doesNotMatch(body, /loadDenySet/,
     'the export filters the deny-list through loadDenySet again — revocations do not travel');
 });
+
+test('the TV remote can reach folded sections (v1.0.28)', () => {
+  // <details>/<summary> became the parent screen's main structure (the grouped library
+  // list; the rejected archive had it since v1.0.23) — and `summary` was never in the
+  // D-pad's focusable selector, so on Android TV every folded section was silently
+  // unreachable: the remote skipped straight over it and the content inside might as
+  // well not exist. Enter on a focused summary toggles natively; FOCUS was the gap.
+  const dpad = MODULES.get('www/js/ui/dpad.js');
+  const at = dpad.indexOf('querySelectorAll');
+  assert.ok(at > 0, 'the focusables selector moved — re-anchor this guard');
+  // end-anchor searched FROM the selector: the word also appears in a comment above it,
+  // and slicing to the first occurrence made this guard fail on the correct code
+  const sel = dpad.slice(at, dpad.indexOf('offsetParent', at));
+  assert.match(sel, /\bsummary\b/, 'summary fell out of the D-pad focusable selector');
+});
