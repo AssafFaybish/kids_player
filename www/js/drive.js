@@ -20,9 +20,10 @@ import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
-  loadDenyRecords, denyActive, tx, profScope, putVideoStates
+  loadDenyRecords, denyActive, tx, profScope, putVideoStates, purgeProfile
 } from './db.js';
 import { getAllSettings, putAllSettings, mergeSettings } from './settings.js';
+import { getDeletedProfiles, putDeletedProfiles, mergeDeletedProfiles } from './store.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
@@ -139,7 +140,7 @@ export function mergeChannelForApply(prev, remote) {
   return { ...prev, ...shared, ...keep };
 }
 
-export function serializeDb({ profiles, libraries, profileState, profileSources, settings }) {
+export function serializeDb({ profiles, libraries, profileState, profileSources, settings, deletedProfiles }) {
   const clean = {};
   for (const [libId, lib] of Object.entries(libraries || {})) {
     clean[libId] = {
@@ -158,7 +159,10 @@ export function serializeDb({ profiles, libraries, profileState, profileSources,
     profiles: profiles || [], libraries: clean, profileState: profileState || {},
     profileSources: profileSources || {},
     // Additive, like profileSources was in v1.0.4 — an older app simply ignores the key.
-    settings: settings || { account: {}, profiles: {} }
+    settings: settings || { account: {}, profiles: {} },
+    // v1.0.25: deleted-profile tombstones. Without them every peer unions the profile
+    // straight back in and the parent's deletion undoes itself on the next pull.
+    deletedProfiles: deletedProfiles || {}
   });
 }
 
@@ -210,9 +214,12 @@ export function mergeDbFiles(a, b) {
   if (!b) return a;
   const out = { kind: 'kids-player-db', schema: 1, exportedAt: Math.max(a.exportedAt || 0, b.exportedAt || 0) };
 
+  // v1.0.25 — tombstones FIRST: a profile the parent deleted must not survive the union
+  // that put it back on every other device.
+  out.deletedProfiles = mergeDeletedProfiles(a.deletedProfiles, b.deletedProfiles);
   const profById = new Map();
   for (const p of [...(a.profiles || []), ...(b.profiles || [])]) {
-    if (!p || !p.id) continue;
+    if (!p || !p.id || p.id in out.deletedProfiles) continue;
     profById.set(p.id, profById.has(p.id) ? lww(profById.get(p.id), p) : p);
   }
   out.profiles = [...profById.values()];
@@ -392,7 +399,8 @@ async function buildLocalDoc(profiles) {
     });
     profileState[p.id] = states;
   }
-  return { profiles, libraries, profileState, profileSources, settings: await getAllSettings() };
+  return { profiles, libraries, profileState, profileSources,
+    settings: await getAllSettings(), deletedProfiles: await getDeletedProfiles() };
 }
 
 async function applyRemoteDoc(doc) {
@@ -475,6 +483,17 @@ async function applyRemoteDoc(doc) {
   // record would make it instantly newer than the peer's and the two would ping-pong
   // forever (the same reason mergeChannelForApply exists).
   if (doc.settings) await putAllSettings(mergeSettings(await getAllSettings(), doc.settings));
+
+  // v1.0.25 — a peer's deleted-profile tombstones become OURS. Without this only the
+  // device that pressed delete remembers, so every other device keeps pushing the profile
+  // back into the document and the deletion never converges. Applied BEFORE
+  // mergeRestoredProfiles runs (pullDrive), so the filter there sees them.
+  const tombs = mergeDeletedProfiles(await getDeletedProfiles(), doc.deletedProfiles);
+  await putDeletedProfiles(tombs);
+  for (const id of Object.keys(tombs)) {
+    // …and erase what a previous pull may already have restored here.
+    try { await purgeProfile(id, ['prof:' + id, 'lib:p:' + id]); } catch {}
+  }
 }
 
 /* =================== public: push / pull =================== */

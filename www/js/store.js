@@ -122,12 +122,16 @@ export async function createProfile(name, avatar, color) {
  * PURE (node-tested): union of local + restored profile lists by id — local always
  * wins, remote entries are sanitized to the local profile shape.
  */
-export function mergeProfileLists(local, remote) {
-  const list = (local || []).slice();
+export function mergeProfileLists(local, remote, deleted = null) {
+  const gone = deleted instanceof Set ? deleted : new Set(Object.keys(deleted || {}));
+  // A deleted profile must not walk back in from a peer's document. Nothing filtered the
+  // remote list before, so "delete נועם" on the tablet lasted exactly until the next pull
+  // — and the confirm dialog says the action cannot be undone.
+  const list = (local || []).filter((p) => p && !gone.has(p.id));
   const have = new Set(list.map((p) => p.id));
   let added = 0;
   for (const p of remote || []) {
-    if (!p || !p.id || have.has(p.id)) continue;
+    if (!p || !p.id || have.has(p.id) || gone.has(p.id)) continue;
     list.push({ id: p.id, name: p.name || 'ילד/ה', avatar: p.avatar || '🙂', color: p.color || '#4ea1ff' });
     have.add(p.id);
     added += 1;
@@ -135,18 +139,65 @@ export function mergeProfileLists(local, remote) {
   return { list, added };
 }
 
+/* ---------------- Deleted-profile tombstones ----------------
+ * A GROW-ONLY set of `{ profileId: deletedAt }`, the same shape of answer the video
+ * deny-list gives: a deletion is a fact that has to travel, or every other device
+ * re-creates what the parent removed. Grow-only is safe here where the deny-list needed
+ * revocation, because a profile id is minted randomly at creation and never reused — the
+ * "the sheet re-added it" case simply cannot arise.
+ */
+const K_DELETED = 'profilesDeleted';
+
+export async function getDeletedProfiles() {
+  try {
+    const raw = JSON.parse((await prefGet(K_DELETED)) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch { return {}; }
+}
+
+export async function markProfileDeleted(id, at = Date.now()) {
+  if (!id) return;
+  const all = await getDeletedProfiles();
+  if (!all[id]) all[id] = at;   // keep the FIRST deletion time; it is the one peers saw
+  await prefSet(K_DELETED, JSON.stringify(all));
+}
+
+/** Whole-map write, used by the Drive apply path (it carries real timestamps already). */
+export async function putDeletedProfiles(map) {
+  await prefSet(K_DELETED, JSON.stringify(map && typeof map === 'object' ? map : {}));
+}
+
+/** PURE: union of two tombstone maps. Earliest timestamp wins, so it is order-free. */
+export function mergeDeletedProfiles(a, b) {
+  const out = {};
+  for (const src of [a, b]) {
+    for (const [id, at] of Object.entries(src || {})) {
+      const t = Number(at) || 0;
+      out[id] = id in out ? Math.min(out[id], t) : t;
+    }
+  }
+  return out;
+}
+
 /**
  * Merge profiles restored from a Drive backup into the local list (v1.0.4 first-launch
  * connect). Returns how many were added.
  */
 export async function mergeRestoredProfiles(remote) {
-  const { list, added } = mergeProfileLists(await getProfiles(), remote);
-  if (added) await saveProfiles(list);
+  const before = await getProfiles();
+  const { list, added } = mergeProfileLists(before, remote, await getDeletedProfiles());
+  // `added` alone is no longer enough to decide whether to write: the tombstone filter can
+  // REMOVE a local entry (a peer deleted a profile and we just learned about it), and that
+  // has to be persisted too.
+  if (added || list.length !== before.length) await saveProfiles(list);
   return added;
 }
 
 export async function deleteProfile(id) {
   await saveProfiles((await getProfiles()).filter((p) => p.id !== id));
+  // The tombstone is what makes the deletion stick. Without it the next Drive pull unions
+  // the profile straight back in — the parent deletes a child, and it reappears.
+  await markProfileDeleted(id);
   await prefRemove(videosKey(id));
   await prefRemove(sourceKey(id));
   if (activeId === id) { activeId = null; await prefRemove(K_ACTIVE); }

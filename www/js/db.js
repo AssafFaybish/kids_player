@@ -699,15 +699,42 @@ export async function compactOpsThrough(seq) {
 
 /* ---------------- profile lifecycle ---------------- */
 
-/** Remove a profile's OWN data (its prof: scope + gift state + sources). Shared library content stays. */
-export async function purgeProfile(profileId) {
-  const scope = profScope(profileId);
-  await tx(['videos', 'denylist', 'profileVideoState', 'sources', 'opLog'], 'readwrite',
-    (videos, deny, pvs, sources, ops) => {
-      videos.delete(IDBKeyRange.bound([scope, ''], [scope, '￿']));
-      deny.delete(IDBKeyRange.bound([scope, ''], [scope, '￿']));
+/**
+ * Erase a deleted profile's data.
+ *
+ * `scopes` comes from pure `plan.planProfilePurge` and is the caller's decision: the
+ * personal `prof:<id>` scope always, PLUS the library scope when no sibling profile still
+ * reads it. Passing none keeps the old "personal data only" behaviour.
+ *
+ * This had ZERO callers until v1.0.25 while `deleteCurrentProfile` promised the deletion
+ * was permanent — measured: a throwaway profile with one channel kept all 500 videos, its
+ * subscription and its sources record. It also only ever cleared `prof:<id>`, which for a
+ * sheet-less profile (scope `lib:p:<id>`) is where almost nothing lives.
+ */
+export async function purgeProfile(profileId, scopes = null) {
+  const list = (Array.isArray(scopes) && scopes.length) ? scopes : [profScope(profileId)];
+  const range = (s) => IDBKeyRange.bound([s, ''], [s, '￿']);
+  // Per-library bookkeeping. DELETED, not written as null: `putMeta(k, null)` leaves the
+  // row in place, and these would otherwise keep a purged library "recently synced" and
+  // re-alert about a mirror divergence for content that no longer exists.
+  const metaKeys = [];
+  for (const s of list) {
+    if (!String(s).startsWith('lib:')) continue;
+    metaKeys.push('sync:' + s + ':lastFullSyncAt', 'sheetMirrorAlert:' + s,
+      'sheetMirrorIgnoredSig:' + s, 'dedupe:' + s);
+  }
+  await tx(['videos', 'denylist', 'libraryChannels', 'profileVideoState', 'sources', 'meta', 'opLog'], 'readwrite',
+    (videos, deny, libCh, pvs, sources, meta, ops) => {
+      for (const s of list) {
+        videos.delete(range(s));
+        deny.delete(range(s));
+        // libraryChannels is keyed [libraryId, channelId] — a purged library's
+        // subscriptions are orphans the moment its videos are gone.
+        libCh.delete(range(s));
+      }
+      for (const k of metaKeys) meta.delete(k);
       pvs.delete(IDBKeyRange.bound([profileId, ''], [profileId, '￿']));
       sources.delete(profileId);
-      ops.add({ scopeId: scope, op: 'purge-profile', at: Date.now() });
+      ops.add({ scopeId: profScope(profileId), op: 'purge-profile', at: Date.now() });
     });
 }

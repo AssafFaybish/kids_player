@@ -20,7 +20,8 @@ import { rankItems } from './search.js';
 import { planAutoplay, nextInOrder } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
-  pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh } from './plan.js';
+  pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
+  planProfilePurge } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -3215,7 +3216,22 @@ async function deleteCurrentProfile() {
     ok: 'מחיקה', cancel: 'ביטול', danger: true
   });
   if (!yes) return;
-  await deleteProfile(p.id);
+  // v1.0.25: actually erase it. The confirm has always said the deletion is permanent,
+  // but only the row in the profile list was removed — db.purgeProfile had zero callers.
+  // The library scope goes too, unless a sibling profile still reads the same sheet.
+  try {
+    const src = await db.getSources(p.id);
+    const others = [];
+    for (const other of profiles) {
+      if (!other || other.id === p.id) continue;
+      const os = await db.getSources(other.id).catch(() => null);
+      others.push({ profileId: other.id, libraryId: os && os.libraryId });
+    }
+    const { scopes } = planProfilePurge(p.id, src && src.libraryId, others);
+    await db.purgeProfile(p.id, scopes);
+  } catch { /* the profile still goes; leftover rows are invisible without it */ }
+  await deleteProfile(p.id);   // also writes the tombstone that stops a Drive pull reviving it
+  maybeSchedulePush();
   items = [];
   source = { mode: 'manual', url: '' };
   profiles = await getProfiles();
