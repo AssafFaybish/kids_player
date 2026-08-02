@@ -330,8 +330,13 @@ pins that the consumers follow the config and that every address is well-formed.
   - **IT IS NOT A SECURITY BOUNDARY AND THE DOCS SAY SO**: moving the system clock forward
     skips the wait. Unavoidable without a server, and a different threat from the
     5-year-old this app has always defended against.
-  - The affordance shows only in `'verify'` mode (during SETUP there is no code to have
-    forgotten, and offering a reset there would be a second way to pick the first PIN), and
+  - The affordance shows on EVERY `'verify'`-mode code screen — the parent-screen gate,
+    the exit-lock gate, the profile-switch gate (parent's decision 2026-08-02) — and it is
+    DELIBERATELY SMALL AND LOW-CONTRAST (12px, 0.55 opacity, tucked into the card's
+    bottom corner): a reading child will find any text eventually, which is exactly why
+    the SAFEGUARD is the 24-hour wait plus the home-screen banner, never this link's
+    obscurity. Never in SETUP mode (there is no code to have forgotten, and offering a
+    reset there would be a second way to pick the first PIN), and
     the reset uses `startPin('setup', { replace: true })` so hardware-back cannot land on
     the verify screen it just satisfied. `planPinRecovery` follows the `planRejectedPurge`
     rule — **a nonsense window falls back to the default, never to a short one** — which
