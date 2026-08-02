@@ -1124,6 +1124,31 @@ pins that the consumers follow the config and that every address is well-formed.
     were still in the sheet: the next mirror pass read that presence as a re-add and
     resurrected the deleted videos everywhere. An unreadable read ABORTS the flush with
     the queue intact. An error envelope may ride along only with ACTUAL ROWS.
+  - **THE WRITES ARE GATED THE SAME WAY (v1.0.26): A WRITE MUST BE PROVEN, NOT MERELY
+    NOT-REFUSED.** The batchUpdate and append calls in `doFlush` checked only
+    `res.status !== 200` — but `platform.httpRequest` does `r.json().catch(() => null)`,
+    so the sign-in interstitial the read gate exists for (a lost grant answering
+    200 + HTML) arrived as `{status: 200, data: null}` and COUNTED AS A SUCCESSFUL
+    WRITE; a proxied error envelope (200 + `{error:{…}}`) passed too. `clearFlushed`
+    then dropped the append whose row never landed, leaving a record that is live +
+    sheet-backed + rowless + absent from `pendingAppendKeys` — exactly what the next
+    presence-mirror pass tombstones, on every device; and one lost append of a
+    50-video library stays under the max(10, 5%) valve, so no parent was ever asked.
+    A dropped un-landed DELETE is the mirror image: its row stays in the sheet and the
+    next pass reads that presence as a re-add. `interpretWriteResponse(status, data,
+    kind)` is the write twin of the read gate — SUCCESS MAY COME FROM EXACTLY ONE
+    SHAPE: a 200 whose body is a real object, carries no `error` key, and carries the
+    operation's own marker (`updates` for values.append; `spreadsheetId`/`replies` for
+    batchUpdate — deleteDimension replies are empty objects, so only the array's
+    EXISTENCE is a marker). An error envelope is NEVER proof, even beside a marker —
+    unlike the read gate there are no "actual rows" to ride along with — and an
+    unknown kind fails CLOSED. Anything else aborts the flush with the queue INTACT
+    (the same `abortFlush` the column-A read uses; `clearFlushed` must never run for
+    ops whose write was not proven). Retrying is idempotent: a landed delete matches
+    no row, a landed append dedupes by sheet presence. Both call sites are pinned
+    behaviourally through the real `flushSheetQueue` (a 200+null append and a
+    200+envelope batchUpdate each leave their op queued), proven to fail on a
+    planted status-only revert of either site.
   - Queue overflow is DATA LOSS and must outlive the next flush: it lives in a durable
     `dropped` counter (not `error`, which every `doFlush` exit overwrites) and the sources
     tab renders it ABOVE the reassuring "pending" line.
