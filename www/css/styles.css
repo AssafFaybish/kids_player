@@ -926,3 +926,20 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   background: #fff4d6; border: 2px solid #f0c674; border-radius: 16px;
   color: #6b4b00; font-weight: 700; font-size: 15px; text-align: center;
 }
+
+/* v1.0.28: the parent's library list, folded (parent's request). The outer box holds
+   the whole existing library behind one line; inside, one <details> per folder the
+   child sees. All closed by default — the tab's job is the ADD form. */
+.library-box { margin-top: 18px; }
+.library-summary { cursor: pointer; list-style: none; }
+.library-summary::-webkit-details-marker { display: none; }
+.library-summary .list-count::before { content: '◂ '; color: var(--muted); }
+.library-box[open] .library-summary .list-count::before { content: '▾ '; }
+.library-group { margin: 8px 0; background: #fff; border-radius: 14px; padding: 4px 10px; }
+.library-group-head {
+  cursor: pointer; font-weight: 800; font-size: 15px; color: var(--ink);
+  padding: 10px 4px; list-style: none;
+}
+.library-group-head::-webkit-details-marker { display: none; }
+.library-group-head::before { content: '◂ '; color: var(--muted); }
+.library-group[open] > .library-group-head::before { content: '▾ '; }

@@ -106,6 +106,64 @@ export function playlistVideoFolder({ ownerChannelId, playlistId, subscribedChan
 }
 
 /**
+ * v1.0.28 — PURE: group the parent's library list by the folder the child sees.
+ *
+ * The הוספה tab used to render one flat list of every live video (capped at
+ * PARENT_LIST_CAP) — with a few channels that is hundreds of rows the parent must scroll
+ * past just to reach the add form. The parent's request: everything collapsed, grouped
+ * by the folder name the video actually lives in, all sections closed by default.
+ *
+ * Grouping is by the HOME folder (`homeFolderId || folderId`), the same identity the
+ * child's grid files by; titles resolve from the subscriptions list (a playlist's title
+ * lives in `titleOverride`/`title` on its row). Group order mirrors the home screen:
+ * channels/playlists by their `order`, then the loose lists. Videos inside keep the
+ * caller's order (newest first).
+ *
+ * @param records       live records, already display-sorted
+ * @param subscriptions the library's `libraryChannels` rows
+ * @returns [{ id, title, records }] — never empty groups
+ */
+export function groupLibraryByFolder(records, subscriptions = []) {
+  const subs = new Map();
+  for (const c of subscriptions || []) {
+    if (!c || !c.channelId) continue;
+    const prefix = c.kind === 'playlist' ? 'pl:' : 'ch:';
+    subs.set(prefix + c.channelId, {
+      title: c.titleOverride || c.title || (c.kind === 'playlist' ? 'רשימת השמעה' : 'ערוץ'),
+      order: c.order || 0
+    });
+  }
+  const groups = new Map();
+  for (const rec of records || []) {
+    if (!rec || !rec.key) continue;
+    const folder = rec.homeFolderId || rec.folderId || 'sheet';
+    let id = folder, title;
+    if (subs.has(folder)) title = subs.get(folder).title;
+    else if (folder.startsWith('ch:') || folder.startsWith('pl:')) {
+      // an unsubscribed leftover — group it, never lose it
+      title = rec.srcChannelTitle || (folder.startsWith('pl:') ? 'רשימת השמעה' : 'ערוץ');
+    } else if (folder === 'mine') { id = 'mine'; title = 'סרטונים אישיים'; }
+    else { id = 'sheet'; title = 'סרטונים נוספים'; }
+    if (!groups.has(id)) groups.set(id, { id, title, records: [] });
+    groups.get(id).records.push(rec);
+  }
+  // deterministic tail: subscriptions by their own order, then unsubscribed leftovers
+  // (alphabetical among themselves), then the shared list, then the personal one —
+  // the same prominence order the child's home gives them
+  const orderOf = (g) => {
+    if (subs.has(g.id)) return subs.get(g.id).order;
+    if (g.id === 'sheet') return Number.MAX_SAFE_INTEGER - 1;
+    if (g.id === 'mine') return Number.MAX_SAFE_INTEGER;
+    return Number.MAX_SAFE_INTEGER - 2;
+  };
+  return [...groups.values()].sort((a, b) => {
+    const oa = orderOf(a), ob = orderOf(b);
+    if (oa !== ob) return oa - ob;
+    return a.title.localeCompare(b.title, 'he');
+  });
+}
+
+/**
  * v1.0.27 — PURE: which records are ORPHANS the mirror's GC may raw-delete?
  *
  * FIELD-CLASS DATA LOSS (review-caught, shipped in v1.0.26). The GC's old predicate was
