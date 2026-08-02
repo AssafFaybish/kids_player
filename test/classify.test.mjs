@@ -183,3 +183,38 @@ test('parseSourceSheet: removal rows are collected AND win over a video row of t
   assert.deepEqual(p.videoRows.map((r) => r.key), ['yt:aaaaaaaaaaa']); // b filtered out
   assert.equal(p.channelRows.length, 1);
 });
+
+/* ---------------- playlists are a SUPPORTED source (v1.0.26) ----------------
+ * Reported repeatedly from the field as "the link is not supported". The classifier was
+ * never the problem — it has recognised playlists since v1.0.12 and the app then dropped
+ * them: parentAdd handled only 'video' and 'channel', and parseSourceRows pushed playlist
+ * rows into `invalid` as 'playlist-unsupported-yet'. A missing feature wearing the costume
+ * of a parse error. These pin the shapes a parent actually pastes.
+ */
+
+test('every shape of playlist link a parent can paste is recognised', async () => {
+  const { classifySourceRow } = await import('../www/js/classify.js');
+  const ID = 'PLEs_hxq8IYwlNwIf_RUNUnHp38YGR1W7P'; // the exact link from the field report
+  const shapes = [
+    'https://m.youtube.com/playlist?list=' + ID,        // the MOBILE domain — what a phone shares
+    'https://www.youtube.com/playlist?list=' + ID,
+    'https://youtube.com/playlist?list=' + ID,
+    'http://www.youtube.com/playlist?list=' + ID,
+    '  https://m.youtube.com/playlist?list=' + ID + '  ',
+    'https://m.youtube.com/playlist?list=' + ID + '&si=abc123'
+  ];
+  for (const raw of shapes) {
+    const row = classifySourceRow(raw);
+    assert.equal(row.kind, 'playlist', 'not recognised as a playlist: ' + raw);
+    assert.equal(row.playlistId, ID, 'wrong playlist id for: ' + raw);
+  }
+});
+
+test('a WATCH link that merely carries &list= is still a VIDEO, not a playlist', () => {
+  // The trap on the other side: YouTube appends &list= to a video opened from a playlist.
+  // Treating that as "subscribe to the playlist" would import hundreds of videos when the
+  // parent asked for one.
+  const row = classifySourceRow('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc123');
+  assert.equal(row.kind, 'video');
+  assert.equal(row.id, 'dQw4w9WgXcQ');
+});

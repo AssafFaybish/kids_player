@@ -73,6 +73,39 @@ export function planEntryRefresh({ launchDone = false, sinceLastPullMs = Infinit
 }
 
 /**
+ * v1.0.26 — PURE: which folder does a video pulled from a standalone PLAYLIST belong in?
+ *
+ * A playlist is a subscription like a channel (same `libraryChannels` row, `kind:'playlist'`)
+ * but its videos can come from anywhere. THE PARENT'S RULE: adding a channel and a playlist
+ * of that same channel must not produce two folders holding the same videos — they unify
+ * into the channel.
+ *
+ * Duplicate RECORDS were never the risk: `planMutations` keys on `yt:<videoId>`, so one
+ * video arriving from both sources collapses to one row. The FOLDER is the risk — if the
+ * two passes disagreed, `folderId` is in DIFF_FIELDS and the record would be rewritten on
+ * every single sync, flipping between folders and breaking the churn-free invariant. Both
+ * passes therefore have to answer this one question the same way.
+ *
+ * It also heals in the other order: add the playlist first, subscribe to the channel later,
+ * and the next sync moves those videos into the channel folder by itself.
+ *
+ * The same shape of decision v1.0.21 already made for a channel's OWN playlists tab, where
+ * the videos land in the channel's folder rather than a per-playlist one.
+ *
+ * @param ownerChannelId       videoOwnerChannelId from playlistItems (may be missing)
+ * @param playlistId           the playlist being walked
+ * @param subscribedChannelIds channels this library subscribes to
+ */
+export function playlistVideoFolder({ ownerChannelId, playlistId, subscribedChannelIds } = {}) {
+  const owner = String(ownerChannelId || '');
+  const subs = subscribedChannelIds instanceof Set
+    ? subscribedChannelIds
+    : new Set(subscribedChannelIds || []);
+  if (owner && subs.has(owner)) return 'ch:' + owner;
+  return playlistId ? 'pl:' + playlistId : null;
+}
+
+/**
  * @param candidates  enriched candidate records for ONE scope:
  *   { scopeId,key,type,id,url,srcUrl,driveId, title,titleSource,thumbUrl,
  *     channelId,folderId,origin,publishedAt,rowIndex, autoApprove }
@@ -775,12 +808,17 @@ export function pendingBulkAction(selected = 0, total = 0) {
  */
 export function channelAddOutcome(approved, count = 0, empty = {}) {
   const n = Math.max(0, count | 0);
-  if (approved && n) return `הערוץ נוסף ו-${n} סרטונים אושרו ✅`;
-  if (n) return `הערוץ נוסף. ${n} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`;
-  const { noLongForm = false, hasLive = true } = empty || {};
+  const { noLongForm = false, hasLive = true, isPlaylist = false } = empty || {};
+  // v1.0.26: a playlist is a source too, and calling it "הערוץ" is the kind of small lie
+  // that makes a parent wonder whether the app understood what they pasted.
+  // Hebrew gender agrees with the noun: ערוץ is masculine, רשימה feminine.
+  const what = isPlaylist ? 'רשימת ההשמעה נוספה' : 'הערוץ נוסף';
+  const inIt = isPlaylist ? 'בה' : 'בו';
+  if (approved && n) return `${what} ו-${n} סרטונים אושרו ✅`;
+  if (n) return `${what}. ${n} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`;
   if (noLongForm) return 'הערוץ נוסף, אבל הוא מפרסם רק Shorts — לא נמשכו ממנו סרטונים';
-  if (!hasLive) return 'הערוץ נוסף, אבל לא נמצאו בו סרטונים';
-  return 'הערוץ סונכרן ✅';
+  if (!hasLive) return `${what}, אבל לא נמצאו ${inIt} סרטונים`;
+  return isPlaylist ? 'רשימת ההשמעה סונכרנה ✅' : 'הערוץ סונכרן ✅';
 }
 
 /**

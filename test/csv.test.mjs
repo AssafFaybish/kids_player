@@ -92,3 +92,26 @@ test('v1.0.19: parseSourceRows never throws on junk', () => {
     assert.ok(Array.isArray(r.videoRows) && Array.isArray(r.channelRows));
   }
 });
+
+test('a playlist row in the SHEET becomes a subscription, not junk (v1.0.26)', async () => {
+  // parseSourceRows used to push playlist rows into `invalid` tagged
+  // 'playlist-unsupported-yet' — so a parent who put a playlist in their sheet got
+  // silence. Column B is its display name and C the auto/manual flag, exactly like a
+  // channel row.
+  const { parseSourceRows } = await import('../www/js/sync2.js');
+  const out = parseSourceRows([
+    ['https://m.youtube.com/playlist?list=PLEs_hxq8IYwlNwIf_RUNUnHp38YGR1W7P', 'שירי בוקר', 'auto'],
+    ['https://www.youtube.com/playlist?list=PLsecondPlaylist9'],  // no title/flag columns
+    ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'סרטון']
+  ]);
+  assert.equal(out.playlistRows.length, 2, 'playlist rows were dropped again');
+  assert.equal(out.playlistRows[0].playlistId, 'PLEs_hxq8IYwlNwIf_RUNUnHp38YGR1W7P');
+  assert.equal(out.playlistRows[0].title, 'שירי בוקר');
+  assert.equal(out.playlistRows[0].flag, 'auto');
+  // a ragged row (the Sheets API omits trailing empties) must not throw or lose the id
+  assert.equal(out.playlistRows[1].playlistId, 'PLsecondPlaylist9');
+  assert.equal(out.playlistRows[1].flag, '');
+  // and nothing was quietly binned
+  assert.equal(out.invalid.length, 0, 'a playlist row still lands in `invalid`: ' + JSON.stringify(out.invalid));
+  assert.equal(out.videoRows.length, 1, 'the video row must be unaffected');
+});

@@ -685,10 +685,12 @@ function folderTile(f) {
   // v1.0.4: channel folders carry an explicit chip — the child (and parent) must
   // never mistake a folder for a playable video tile. v1.0.12: grouped singles get
   // their OWN chip (🎞️ אוסף) so the two folder kinds never look alike.
-  if (String(f.id).startsWith('ch:') || String(f.id).startsWith('grp:')) {
+  const fid = String(f.id);
+  if (fid.startsWith('ch:') || fid.startsWith('grp:') || fid.startsWith('pl:')) {
     const chip = document.createElement('span');
     chip.className = 'folder-chip';
-    chip.textContent = String(f.id).startsWith('grp:') ? '🎞️ אוסף' : '📺 ערוץ';
+    chip.textContent = fid.startsWith('grp:') ? '🎞️ אוסף'
+      : fid.startsWith('pl:') ? '🎵 רשימה' : '📺 ערוץ';
     btn.appendChild(chip);
   }
   if (f.isNew) {
@@ -797,16 +799,24 @@ async function buildFolders() {
     for (const lc of libChannels) {
       if (lc.hidden) continue;
       const ch = (await db.getChannel(lc.channelId)) || {};
-      const count = await db.countFolder(lib, 'ch:' + lc.channelId);
+      // v1.0.26: a standalone playlist is a subscription in the same table, and gets its
+      // own folder — except for the videos whose channel is ALSO subscribed, which
+      // playlistVideoFolder files under the channel instead (the parent's unify rule).
+      // A playlist whose videos ALL went to channel folders has count 0 and no tile,
+      // which is exactly right: it would have been an empty duplicate.
+      const isPl = lc.kind === 'playlist';
+      const prefix = isPl ? 'pl:' : 'ch:';
+      const count = await db.countFolder(lib, prefix + lc.channelId);
       if (!count) continue;
       out.push({
-        id: 'ch:' + lc.channelId, scope: lib, title: lc.titleOverride || ch.title || 'ערוץ',
+        id: prefix + lc.channelId, scope: lib,
+        title: lc.titleOverride || ch.title || (isPl ? 'רשימת השמעה' : 'ערוץ'),
         // logo → persisted per-channel fallback thumbnail → 📺 emoji (v1.0.6):
         // every channel folder must stay visually distinct for a non-reading child.
         // v1.0.24: channelId rides along so a tile whose image FAILS TO LOAD can say so
         // (noteLogoFailure) — that failure is otherwise invisible and permanent.
         channelId: lc.channelId,
-        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: '📺', count
+        logoUrl: ch.logoUrl || ch.fallbackThumbUrl || '', emoji: isPl ? '🎵' : '📺', count
       });
     }
     // v1.0.12: loose single links from the SAME channel collapse into one 🎞️ folder
@@ -1049,7 +1059,9 @@ async function buildSearchIndex() {
     for (const f of folders) {
       const id = String(f.id || '');
       const isGroup = id.startsWith('grp:');
-      if (!isGroup && !id.startsWith('ch:')) continue;
+      // v1.0.26: playlist folders are searchable too — a parent looking for "שירי בוקר"
+      // must find the playlist by name exactly as they find a channel.
+      if (!isGroup && !id.startsWith('ch:') && !id.startsWith('pl:')) continue;
       const title = f.title || '';
       if (!title) continue;
       folderEntries.push({
@@ -2325,11 +2337,18 @@ async function adoptLibraryScope(profileId, oldLib, newLib) {
 /** The profile's sources record, created on first use (stable library even without a sheet). */
 /** The WAITING videos of one channel, in the shared library scope (channel content
     never lands anywhere else). One read — the caller decides what to do with them. */
-async function pendingKeysOfChannel(channelId) {
+async function pendingKeysOfChannel(sourceId) {
   const scope = await currentLibScope();
   if (!scope) return [];
   const { items } = await db.pagePending(scope, { limit: 5000 });
-  return items.filter((r) => r.channelId === channelId).map((r) => r.key);
+  // v1.0.26 — a source is a channel OR a standalone playlist. A playlist video keeps its
+  // OWNER in `channelId` (that is what the title-dedupe index and the unify rule need), so
+  // matching on channelId alone found ZERO for a playlist and the approval dialog never
+  // appeared — the exact shape of the v1.0.22 bug, on the new path. A parked record
+  // remembers where it will live in `homeFolderId`, and that is the honest test.
+  return items
+    .filter((r) => r.channelId === sourceId || r.homeFolderId === 'pl:' + sourceId)
+    .map((r) => r.key);
 }
 
 /** Approve a channel's whole backlog + refresh everything that shows it. */
@@ -2342,6 +2361,17 @@ async function approveChannelBacklog(keys) {
   // without this the newly-approved videos arrive with no 🎁 at all
   refreshAfterAdd({ parent: true });
   maybeSchedulePush();
+}
+
+/** A playlist's row in the sources sheet — same shape as a channel's (v1.0.26). */
+function enqueuePlaylistSheetRow(playlistId, flag) {
+  return import('./sheetwrite.js')
+    .then(({ enqueueSheetRow }) => enqueueSheetRow(activeProfileId, {
+      key: 'pl:' + playlistId,
+      srcUrl: 'https://www.youtube.com/playlist?list=' + playlistId,
+      flag
+    }))
+    .catch(() => {});
 }
 
 /** The channel's row in the sources sheet; `flag` mirrors the in-app approval choice. */
@@ -2457,10 +2487,15 @@ async function importChannelAndAsk(channelId) {
  * Only read when there is nothing to report — two IDB reads that the common path skips.
  */
 async function diagnoseEmptyChannel(channelId, count) {
-  if (count) return {};
+  const ch0 = count ? await db.getChannel(channelId).catch(() => null) : null;
+  // `isPlaylist` is needed for the WORDING whatever the count is — returning {} on the
+  // common path made a successful playlist import announce itself as "הערוץ נוסף".
+  if (count) return { isPlaylist: !!(ch0 && ch0.kind === 'playlist') };
   const ch = await db.getChannel(channelId).catch(() => null);
-  const live = await db.countFolder(await currentLibScope(), 'ch:' + channelId).catch(() => 0);
-  return { noLongForm: !!(ch && ch.noLongForm), hasLive: live > 0 };
+  const scope = await currentLibScope();
+  const prefix = ch && ch.kind === 'playlist' ? 'pl:' : 'ch:';
+  const live = await db.countFolder(scope, prefix + channelId).catch(() => 0);
+  return { noLongForm: !!(ch && ch.noLongForm), hasLive: live > 0, isPlaylist: prefix === 'pl:' };
 }
 
 
@@ -2660,7 +2695,34 @@ async function parentAdd() {
     return;
   }
 
-  msg.textContent = 'הלינק לא נתמך (סרטון YouTube, ערוץ, או קובץ mp4)';
+  if (row.kind === 'playlist') {
+    // v1.0.26 — a playlist is a SUBSCRIPTION, stored in the same table as a channel with
+    // `kind:'playlist'`. classifySourceRow has recognised these since v1.0.12 and the app
+    // then dropped them on the floor here, which is why pasting one has always answered
+    // "הלינק לא נתמך" — a missing feature wearing the costume of a parse error.
+    msg.textContent = 'מזהה את רשימת ההשמעה…';
+    await ensureSources();
+    const plId = row.playlistId;
+    const known = (await db.listLibraryChannels(libScope)).some((c) => c.channelId === plId);
+    await db.putLibraryChannel({
+      libraryId: libScope, channelId: plId, kind: 'playlist',
+      autoApprove: false, autoApproveSource: 'ui',
+      order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
+    });
+    // Same reason the channel path awaits this: the forced sync below runs the
+    // presence-mirror, and a subscription the sheet does not list is what it deletes.
+    if (!known) await enqueuePlaylistSheetRow(plId, 'manual');
+    msg.textContent = 'רשימת ההשמעה נוספה! מושכים סרטונים…'; msg.className = 'form-msg ok';
+    $('add-url').value = '';
+    await refreshChannelsList();
+    const { synced, approved, count, empty } = await importChannelAndAsk(plId);
+    if (!synced) { msg.textContent = 'שגיאה במשיכת רשימת ההשמעה'; msg.className = 'form-msg err'; return; }
+    msg.textContent = channelAddOutcome(approved, count, empty);
+    msg.className = 'form-msg ok';
+    return;
+  }
+
+  msg.textContent = 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ mp4)';
   msg.className = 'form-msg err';
 }
 

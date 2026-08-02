@@ -270,8 +270,12 @@ test('BOTH ways to add a channel import it and then ASK (v1.0.25)', () => {
   // "parent screen + share"; only one of them was true. Pin that they share one path.
   const app = MODULES.get('www/js/app.js');
   assert.match(app, /async function importChannelAndAsk\(/, 'the shared import-then-ask path is gone');
+  // v1.0.26 raised this from 2 to 3 DELIBERATELY: pasting a standalone playlist is a third
+  // way to subscribe, and it goes through the same import-then-ask path for the same
+  // reason. Raise it only when a new SUBSCRIPTION path is added, never to silence a break.
   const sites = (app.match(/importChannelAndAsk\(/g) || []).length - 1;
-  assert.equal(sites, 2, `expected exactly 2 callers (parent screen + share), found ${sites}`);
+  assert.equal(sites, 3,
+    `expected exactly 3 callers (parent screen: channel + playlist, and share), found ${sites}`);
 
   // The share layer must NOT run its own sync: it cannot show the loading screen or the
   // modal (it may not import ui/*), and a second sync would make the parent wait twice.

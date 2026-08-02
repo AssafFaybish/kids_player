@@ -123,6 +123,36 @@ export async function fetchChannelMeta(channelIds, key) {
 }
 
 /**
+ * v1.0.26 — a standalone PLAYLIST's own title and cover, so its folder tile looks like a
+ * channel's instead of an opaque `PL…` id. One `playlists.list` call, 1 quota unit, and
+ * only ever for playlists the app has no title for yet.
+ *
+ * `notFound` is information, exactly as it is for `fetchUploadsPage`: a playlist that was
+ * deleted or made private answers 404, and the parent should be told that rather than
+ * watching an empty folder forever.
+ */
+export async function fetchPlaylistMeta(playlistIds, key) {
+  const out = new Map();
+  const ids = (playlistIds || []).filter(Boolean);
+  if (!key || !ids.length) return out;
+  for (const batch of batchIds(ids, 50)) {
+    const r = await apiGet('playlists', { part: 'snippet', id: batch.join(','), maxResults: 50 }, key);
+    for (const item of r.data?.items || []) {
+      const th = item.snippet?.thumbnails || {};
+      out.set(item.id, {
+        title: item.snippet?.title || '',
+        logoUrl: (th.medium || th.high || th.default || {}).url || '',
+        ownerChannelId: item.snippet?.channelId || '',
+        notFound: false
+      });
+    }
+    // Anything the API did not return in a SUCCESSFUL response is gone (deleted/private).
+    if (!r.error) for (const id of batch) if (!out.has(id)) out.set(id, { title: '', logoUrl: '', ownerChannelId: '', notFound: true });
+  }
+  return out;
+}
+
+/**
  * Keyless channel-logo fallback (v1.0.4): the avatar URL is not derivable from the
  * channelId, but the public channel page carries it as og:image. Zero quota;
  * CapacitorHttp is CORS-free on device, /__proxy covers the browser preview.

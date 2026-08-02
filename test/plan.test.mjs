@@ -9,7 +9,8 @@ import {
   shouldAskShareProfile,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
-  resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh
+  resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
+  playlistVideoFolder
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -207,6 +208,14 @@ test('channelAddOutcome: never a bare ✅ over a backlog the child cannot see (v
   assert.equal(channelAddOutcome(false, 0), 'הערוץ סונכרן ✅');
   assert.equal(channelAddOutcome(false, 0, null), 'הערוץ סונכרן ✅');
   assert.equal(channelAddOutcome(false, -5), 'הערוץ סונכרן ✅');
+
+  // v1.0.26 — a PLAYLIST is a source too, and calling it "הערוץ" is the kind of small lie
+  // that makes a parent doubt the app understood what they pasted.
+  assert.match(channelAddOutcome(false, 30, { isPlaylist: true }), /רשימת ההשמעה/);
+  assert.match(channelAddOutcome(true, 30, { isPlaylist: true }), /רשימת ההשמעה/);
+  assert.doesNotMatch(channelAddOutcome(false, 30, { isPlaylist: true }), /הערוץ/);
+  assert.equal(channelAddOutcome(false, 0, { isPlaylist: true, hasLive: true }), 'רשימת ההשמעה סונכרנה ✅');
+  assert.match(channelAddOutcome(false, 0, { isPlaylist: true, hasLive: false }), /לא נמצאו בה סרטונים/);
 });
 
 test('planEntryRefresh: the first entry of a launch is unconditional (v1.0.25)', () => {
@@ -877,4 +886,65 @@ test('resolveWatchContext: 🎁 is a VIEW, so a gift browses where the video rea
   }).scope, 'prof:p1');
   assert.doesNotThrow(() => resolveWatchContext({}));
   assert.doesNotThrow(() => resolveWatchContext());
+});
+
+/* ---------------- standalone playlists as a source (v1.0.26) ---------------- */
+
+test('a playlist video whose channel is ALSO subscribed lands in the CHANNEL folder', () => {
+  // The parent's rule: adding a channel and a playlist of that same channel must not
+  // produce two folders holding the same videos. Duplicate RECORDS were never the risk
+  // (planMutations keys on yt:<videoId>); the FOLDER is, because folderId is in
+  // DIFF_FIELDS — two passes that disagreed would rewrite the record on every sync,
+  // flipping it between folders and breaking the churn-free invariant.
+  const subs = ['UCaaaaaaaaaaaaaaaaaaaaaa'];
+  assert.equal(playlistVideoFolder({
+    ownerChannelId: 'UCaaaaaaaaaaaaaaaaaaaaaa', playlistId: 'PL123', subscribedChannelIds: subs
+  }), 'ch:UCaaaaaaaaaaaaaaaaaaaaaa');
+
+  // a FOREIGN video in the same playlist keeps the playlist folder — a curated playlist
+  // mixes creators, and that is the whole point of adding one
+  assert.equal(playlistVideoFolder({
+    ownerChannelId: 'UCbbbbbbbbbbbbbbbbbbbbbb', playlistId: 'PL123', subscribedChannelIds: subs
+  }), 'pl:PL123');
+
+  // playlistItems omits videoOwnerChannelId for private/deleted entries — no owner means
+  // no unification claim, so it stays with the playlist
+  assert.equal(playlistVideoFolder({ ownerChannelId: '', playlistId: 'PL123', subscribedChannelIds: subs }), 'pl:PL123');
+
+  // a Set is accepted as well as an array (sync2 passes a Set)
+  assert.equal(playlistVideoFolder({
+    ownerChannelId: 'UCaaaaaaaaaaaaaaaaaaaaaa', playlistId: 'PL123', subscribedChannelIds: new Set(subs)
+  }), 'ch:UCaaaaaaaaaaaaaaaaaaaaaa');
+
+  // no subscriptions at all
+  assert.equal(playlistVideoFolder({ ownerChannelId: 'UCaaa', playlistId: 'PL1' }), 'pl:PL1');
+  // never throws, and never invents a folder id out of nothing
+  assert.equal(playlistVideoFolder(), null);
+  assert.equal(playlistVideoFolder({ ownerChannelId: 'UCaaa' }), null);
+});
+
+test('the unify rule is ORDER-FREE — playlist first or channel first, same answer', () => {
+  // The self-healing property. Add the playlist, then subscribe to the channel: the next
+  // sync re-plans those videos and folderId moves them into the channel folder by itself.
+  const before = playlistVideoFolder({ ownerChannelId: 'UCx', playlistId: 'PL1', subscribedChannelIds: [] });
+  const after = playlistVideoFolder({ ownerChannelId: 'UCx', playlistId: 'PL1', subscribedChannelIds: ['UCx'] });
+  assert.equal(before, 'pl:PL1');
+  assert.equal(after, 'ch:UCx');
+  // and it is STABLE once there: re-running with the same inputs never flips back
+  assert.equal(playlistVideoFolder({ ownerChannelId: 'UCx', playlistId: 'PL1', subscribedChannelIds: ['UCx'] }), after);
+});
+
+test('one video reached from BOTH a channel and a playlist collapses to ONE record', () => {
+  // The duplicate check the parent asked for. Both passes emit the same key, and the
+  // second candidate must not create a second row — nor churn the first one.
+  const CHAN = 'UCabcdefghijklmnopqrstuv';
+  const fromChannel = cand({ id: 'dup12345678', channelId: CHAN, folderId: 'ch:' + CHAN, origin: 'channel' });
+  const fromPlaylist = cand({ id: 'dup12345678', channelId: CHAN, folderId: 'ch:' + CHAN, origin: 'playlist' });
+  const p1 = planMutations({ candidates: [fromChannel, fromPlaylist], existing: new Map(), denySet: new Set(), now: 1 });
+  assert.equal(p1.puts.filter((x) => x.key === 'yt:dup12345678').length, 1, 'the same video was stored twice');
+
+  // …and a SECOND sync over both sources emits nothing at all (the churn invariant)
+  const existing = new Map(p1.puts.map((x) => [x.key, x]));
+  const p2 = planMutations({ candidates: [fromChannel, fromPlaylist], existing, denySet: new Set(), now: 2 });
+  assert.deepEqual(p2.puts, [], 'the two sources fight over the record on every sync');
 });

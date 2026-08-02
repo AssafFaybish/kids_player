@@ -22,7 +22,7 @@ import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
-  planChannelLogo, planSyncDispatch
+  planChannelLogo, planSyncDispatch, playlistVideoFolder
 } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
@@ -45,6 +45,7 @@ const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
 // enumeration, the UUSH probe and the item pages alike — counts against
 // PLAYLIST_PAGE_BUDGET, so that number IS the per-run ceiling in quota units.
 const PLAYLIST_PAGE_BUDGET = 20;
+const PLAYLIST_SOURCE_BUDGET = 20; // v1.0.26: pages per run for STANDALONE playlists
 const PLAYLIST_LIST_PAGES = 2;  // ≤100 playlists per channel is plenty
 const SHORTS_PAGE_CAP = 6;      // ≤300 known Shorts per channel, for filtering playlists
 
@@ -71,6 +72,7 @@ export function parseSourceSheet(text) {
 export function parseSourceRows(rows) {
   const videoRows = [];
   const channelRows = [];
+  const playlistRows = [];
   const removedKeys = []; // v1.0.12: '# הוסר: <link>' rows — deny these for everyone
   const invalid = [];
   let videoOrdinal = 0;
@@ -89,8 +91,9 @@ export function parseSourceRows(rows) {
     } else if (row.kind === 'channel') {
       channelRows.push({ ref: row.channelRef, title: parts[1] || '', flag: (parts[2] || '').toLowerCase() });
     } else if (row.kind === 'playlist') {
-      // playlists ride the same pipe as channels via their playlistId later; skipped for now
-      invalid.push({ raw: row.playlistId, kind: 'playlist-unsupported-yet' });
+      // v1.0.26: a playlist row is a SUBSCRIPTION, same as a channel row. It used to land
+      // in `invalid` as 'playlist-unsupported-yet' — recognised, then thrown away.
+      playlistRows.push({ playlistId: row.playlistId, title: parts[1] || '', flag: (parts[2] || '').toLowerCase() });
     } else {
       invalid.push(row);
     }
@@ -98,7 +101,7 @@ export function parseSourceRows(rows) {
   // a removal row always wins over a video row for the same key in the SAME sheet:
   // safety-first — to bring a video back the parent deletes the removal row.
   const removed = new Set(removedKeys);
-  return { videoRows: videoRows.filter((r) => !removed.has(r.key)), channelRows, removedKeys, invalid };
+  return { videoRows: videoRows.filter((r) => !removed.has(r.key)), channelRows, playlistRows, removedKeys, invalid };
 }
 
 const inFlight = new Map();   // profileId -> entry that is EXECUTING (has already read)
@@ -175,6 +178,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   /* ---------- stage: sheet ---------- */
   let videoRows = [];
   let channelRows = [];
+  let playlistRows = [];
   let removedKeys = [];
   let sheetChanged = false;
   let sheetParsed = false; // v1.0.10: mirroring may run ONLY on a successful fetch
@@ -194,6 +198,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       const parsed = parseSourceRows(rows);
       videoRows = parsed.videoRows;
       channelRows = parsed.channelRows;
+      playlistRows = parsed.playlistRows || [];
       removedKeys = parsed.removedKeys || [];
       sheetParsed = true;
       if (sheetChanged) await putSources({ ...src, sheetHash: hash, sheetFetchedAt: Date.now() });
@@ -232,6 +237,20 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         titleOverride: row.title || ''
       });
     } catch { /* one bad ref must not kill sync */ }
+  }
+  // v1.0.26 — playlist rows need no resolution: the id IS in the link.
+  for (const row of playlistRows) {
+    const plId = row.playlistId;
+    if (!plId || knownIds.has(plId) || pendingDel.has(plId)) { sheetChannelIds.add(plId); continue; }
+    sheetChannelIds.add(plId);
+    knownIds.add(plId);
+    await putLibraryChannel({
+      libraryId: lib, channelId: plId, kind: 'playlist',
+      autoApprove: row.flag === 'auto' ? true : row.flag === 'manual' ? false : !!src.defaultAutoApprove,
+      autoApproveSource: row.flag ? 'sheet' : 'default',
+      order: knownIds.size, addedAt: Date.now(), hidden: false, sourceRow: true,
+      titleOverride: row.title || ''
+    });
   }
 
   /* ---------- stage: mirror (v1.0.10 — the sheet is the truth BOTH ways) ---------- */
@@ -294,7 +313,16 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     } catch { /* mirroring must never kill the sync */ }
   }
 
-  const libChannels = await listLibraryChannels(lib);
+  // v1.0.26 — a standalone PLAYLIST is a subscription too, stored in the SAME table with
+  // `kind:'playlist'` (no schema change, so it inherits Drive sync, deletion, the parent's
+  // list and the auto-approve flag for free). Split them here so every channel stage below
+  // — channels.list, the logo scrape, RSS, the UULF backfill — keeps seeing only real
+  // channels. Those stages derive ids with `'UU' + id.slice(2)`, which is meaningless for
+  // a PL id; quota.js already guards with /^UC/ and answers null, so the split is belt and
+  // braces rather than the only line of defence.
+  const allSubs = await listLibraryChannels(lib);
+  const libChannels = allSubs.filter((c) => c.kind !== 'playlist');
+  const libPlaylists = allSubs.filter((c) => c.kind === 'playlist');
 
   // Channel metadata (title/logo/uploads) — one batched call for the missing ones.
   const needMeta = [];
@@ -581,6 +609,80 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     }
   }
   if (aborted()) return { ok: false, error: 'aborted' };
+
+  /* ---------- stage: standalone PLAYLISTS (v1.0.26) ----------
+   * The parent pasted a playlist link. `playlistItems.list` pages ANY playlist, so this
+   * reuses fetchUploadsPage — the same call the channel backfill makes, at the same 1 unit
+   * per page. Its own budget so it can never starve the channel passes.
+   *
+   * Unlike the channel's own playlists tab (v1.0.21), FOREIGN VIDEOS ARE THE POINT here:
+   * a curated playlist mixes creators, and dropping them would empty most playlists. And
+   * Shorts cannot be told apart — there is no UUSH sibling for an arbitrary playlist — so
+   * they are INCLUDED, per the standing rule that an unknown signal means include (a
+   * wrongly hidden video is a bug the parent cannot explain; a leaked Short is cosmetic).
+   */
+  if (libPlaylists.length && key) {
+    const subscribedChannelIds = new Set(libChannels.map((c) => c.channelId));
+    // Titles/covers for playlists we have never named — one batched call, 1 unit.
+    const needMeta = [];
+    for (const lp of libPlaylists) {
+      const rec = await getChannel(lp.channelId);
+      if (!rec || !rec.title) needMeta.push(lp.channelId);
+    }
+    if (needMeta.length) {
+      const metaMap = await yt.fetchPlaylistMeta(needMeta, key);
+      for (const [plId, m] of metaMap) {
+        const prev = (await getChannel(plId)) || { channelId: plId };
+        await putChannel({
+          ...prev, channelId: plId, kind: 'playlist',
+          title: m.title || prev.title || '',
+          logoUrl: m.logoUrl || prev.logoUrl || '',
+          ownerChannelId: m.ownerChannelId || prev.ownerChannelId || '',
+          playlistMissing: !!m.notFound,
+          logoFetchedAt: m.logoUrl ? Date.now() : prev.logoFetchedAt
+        });
+      }
+    }
+
+    let plPages = 0;
+    for (const lp of libPlaylists) {
+      if (aborted()) return { ok: false, error: 'aborted' };
+      let rec = (await getChannel(lp.channelId)) || { channelId: lp.channelId };
+      if (rec.playlistMissing) continue;             // deleted or private — stop asking
+      if (rec.backfillDone && Date.now() - (rec.lastRssCheckedAt || 0) < 30 * 60 * 1000 && !force) continue;
+      let token = rec.backfillCursor || null;
+      while (plPages < PLAYLIST_SOURCE_BUDGET && !aborted()) {
+        if (shouldThrottle(await yt.quotaSpentToday(), 1, QUOTA_DAILY_SOFT_CAP)) break;
+        const page = await yt.fetchUploadsPage(lp.channelId, token, key);
+        plPages += 1;
+        report('backfill', 60, `מושכים סרטונים מרשימת ההשמעה… ${candidates.length}`);
+        if (page.notFound) {
+          // Re-read: this loop makes network calls and other stages write the same record.
+          await putChannel({ ...((await getChannel(lp.channelId)) || rec), playlistMissing: true });
+          break;
+        }
+        if (page.error) break;
+        for (const v of page.videos) {
+          const folderId = playlistVideoFolder({
+            ownerChannelId: v.ownerChannelId, playlistId: lp.channelId, subscribedChannelIds
+          });
+          candidates.push({
+            scopeId: scope, key: 'yt:' + v.videoId, type: 'youtube', id: v.videoId,
+            url: null, srcUrl: 'https://www.youtube.com/watch?v=' + v.videoId, driveId: null,
+            title: v.title, titleSource: 'api', thumbUrl: v.thumbUrl || null,
+            // channelId stays the OWNER even when the video sits in a playlist folder:
+            // it is what the approval dialog and the title-dedupe index key on.
+            channelId: v.ownerChannelId || null, folderId, origin: 'playlist',
+            publishedAt: v.publishedAt, rowIndex: null, autoApprove: !!lp.autoApprove
+          });
+        }
+        token = page.nextPageToken;
+        rec = { ...((await getChannel(lp.channelId)) || rec), backfillCursor: token, backfillDone: !token, lastRssCheckedAt: Date.now() };
+        await putChannel(rec);
+        if (!token) break;
+      }
+    }
+  }
 
   /* ---------- stage: plan + persist ---------- */
   report('plan', 70, 'מסדרים את הסרטונים…');
