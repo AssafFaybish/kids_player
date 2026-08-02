@@ -271,6 +271,20 @@ pins that the consumers follow the config and that every address is well-formed.
   (v1.0.23, `alreadyRouted`), so auto-resuming would route a share nobody addressed.
   Combined with v1.0.28's chip gate, the model is now: the device belongs to its child;
   entering ANY other profile costs the parent code.
+- v1.0.29 — **A POISONED HANDLE CACHE COULD NOT HEAL WITHOUT THE SHARED KEY**, and a
+  DECOY `"channelId"` beat the real id (@BARDAK613, field — "הערוץ נוסף אבל אין בו
+  סרטונים" on a channel full of videos). Two layers on top of the v1.0.28 fix:
+  - v1.0.28 healed a poisoned `handleMap` entry only when the API succeeded, and the
+    built-in key's quota is SHARED by every family — one exhausted afternoon left
+    `channelId` null and the old order then returned the poisoned cache WITHOUT trying the
+    scrape. `resolveChannelRef` now scrapes BEFORE the cache on any KEYED resolve (the add
+    paths): API → live scrape → cache-as-last-resort. Healing is now independent of the
+    shared key's quota. Keyless enrichment (`resolveChannelRef(ref, '')`, per-video) still
+    hits the cache first — it must not scrape N times, and a stale id there only affects
+    grouping. Browser-proven: a poisoned entry heals with BOTH a working and a broken key.
+  - @BARDAK613's page carries a real `"channelId":"UC…"` — but it is a DECOY (the real id
+    is in `externalId`). `extractChannelIdFromHtml` already tries `externalId` first, so
+    the anchored order was already correct; a test now pins the decoy case explicitly.
 - v1.0.28 — **A HANDLE COULD RESOLVE TO A STRANGER'S CHANNEL, AND THE MISTAKE WAS
   PERMANENT** (@RabbiRosenblum, field). Current channel pages no longer carry
   `"channelId":"UC…"` at all, so the keyless scrape fell to its loose second pattern —
