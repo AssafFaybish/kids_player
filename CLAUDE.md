@@ -259,6 +259,41 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.26 — **A PLAYLIST IS A SOURCE.** Reported from the field, repeatedly, as "the link
+  is not supported". The classifier was never at fault: `classifySourceRow` has answered
+  `{kind:'playlist', playlistId}` since v1.0.12, for `m.youtube.com` and `www` alike. The
+  app then threw it away — `parentAdd` handled only 'video' and 'channel', and
+  `parseSourceRows` pushed playlist rows into `invalid` as `'playlist-unsupported-yet'`.
+  **A missing feature wearing the costume of a parse error**, which is why it kept
+  recurring: the message listed what IS supported instead of naming what was not.
+  - **STORED AS A SUBSCRIPTION IN THE SAME TABLE** — a `libraryChannels` row with
+    `kind:'playlist'` and the playlist id in the `channelId` slot. No schema change, no
+    `DB_VERSION` bump, and it inherits Drive sync, deletion, the parent's channel list and
+    the auto-approve flag for free. `doSync` splits `allSubs` so every CHANNEL stage
+    (channels.list, the logo scrape, RSS, the UULF backfill) keeps seeing only real
+    channels; `quota.js` already guards those id derivations with `/^UC/`, so the split is
+    belt and braces rather than the only defence.
+  - **THE UNIFY RULE** (parent's decision, 2026-08-02): pure `plan.playlistVideoFolder`.
+    A playlist video whose owner channel is ALSO subscribed lands in `ch:<owner>`, not
+    `pl:<id>`. Duplicate RECORDS were never the risk — `planMutations` keys on
+    `yt:<videoId>` — the FOLDER was: `folderId` is in `DIFF_FIELDS`, so two passes that
+    disagreed would rewrite the record every sync and break the churn-free invariant. It
+    is also order-free: add the playlist first and subscribe later, and the next sync
+    moves those videos by itself. A playlist whose videos ALL went to channel folders has
+    count 0 and shows no tile — exactly right, it would have been an empty duplicate.
+  - Unlike a channel's own playlists tab (v1.0.21), **FOREIGN VIDEOS ARE THE POINT** here,
+    so they are kept; and Shorts cannot be told apart (no UUSH sibling exists for an
+    arbitrary playlist), so they are INCLUDED per the standing "an unknown signal means
+    include" rule.
+  - **`pendingKeysOfChannel` MATCHES THE PARKED HOME FOLDER TOO.** A playlist video keeps
+    its OWNER in `channelId` (the title-dedupe index and the unify rule both need that),
+    so matching on `channelId` alone found ZERO for a playlist and the approval dialog
+    never appeared — the exact shape of the v1.0.22 bug, on the new path. Caught in the
+    browser: all 30 videos had imported correctly and the dialog still said nothing.
+  - The outcome sentence is gender-correct: ערוץ is masculine, רשימה feminine
+    (`channelAddOutcome`'s `isPlaylist`), and `diagnoseEmptyChannel` reports it on EVERY
+    path — returning `{}` on the common one made a successful playlist import announce
+    itself as "הערוץ נוסף".
 - v1.0.25 — **DELETING A PROFILE NOW DELETES IT, AND IT STAYS DELETED.** The confirm has
   always said "כל הסרטונים של הפרופיל יימחקו. פעולה זו אינה הפיכה" while
   `deleteCurrentProfile` removed only the row in the Preferences profile list —
