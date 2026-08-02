@@ -1,6 +1,6 @@
 # How this app is tested — and what the tests cannot see
 
-`npm test` is ~398 node tests and it is the fastest, cheapest signal in the project. It is
+`npm test` is ~402 node tests and it is the fastest, cheapest signal in the project. It is
 also **not sufficient**, and this file exists because that gap has bitten repeatedly: in the
 v1.0.25/v1.0.26 work, **four real bugs shipped past a fully green suite** and were caught by
 driving the app in a browser.
@@ -110,6 +110,13 @@ for anything destructive, and purge it afterwards.
 - [ ] **Per-profile lock** (v1.0.25): with a locked child active, tapping the profile chip
       asks for the PIN. Switch to an UNLOCKED sibling → the device unpins and the exit button
       returns. Switch back → it re-pins. *(Both directions; the second one is the escape.)*
+- [ ] **Parent-code recovery, device path** (v1.0.26) — NEVER RUN ON HARDWARE. On a device
+      WITH a lock screen: "שכחתי את הקוד" must raise the system prompt; success goes straight
+      to choosing a new code; cancelling must still offer the 24-hour wait.
+- [ ] The same on a device with **no lock screen** → no prompt at all, straight to the wait.
+- [ ] ⚠️ **With the exit lock ON (screen pinning)** — the open question. If the keyguard
+      cannot appear under lock-task, the wait is the only route there and the UI must still
+      reach it rather than dead-ending.
 - [ ] Real fullscreen on tap, and 🏠 only after leaving fullscreen.
 - [ ] Keep-awake during playback.
 

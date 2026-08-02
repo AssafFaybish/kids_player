@@ -182,6 +182,32 @@ export function planPinRecovery({ requestedAt, now = Date.now(), hours = 24 } = 
 }
 
 /**
+ * v1.0.26 — PURE: which way back in does the parent get offered right now?
+ * -> 'device' | 'wait-start' | 'wait-pending' | 'wait-ready'
+ *
+ * Two mechanisms, and the ORDER between them is the decision:
+ *
+ * **An existing request always wins over the fast path.** A wait that is already running
+ * is state the parent deliberately created, possibly on a day when the fingerprint reader
+ * was not cooperating; hiding it behind a prompt they may fail again would strand them,
+ * and silently discarding it would be worse. So `waiting` and `ready` are reported as
+ * themselves whatever the device can do.
+ *
+ * **The device credential is only ever an ADDITION.** When nothing has been requested yet
+ * and the device can prove an adult is present, that is the one-second route. Everywhere
+ * else — no lock screen (the common children's tablet), Android TV, a browser, an older
+ * APK without the plugin method, a prompt that throws — this answers `wait-start` and the
+ * 24-hour path carries the feature alone. The caller treats a FAILED prompt the same way,
+ * which is why a broken sensor cannot lock a parent out.
+ */
+export function planRecoveryRoute({ deviceAuth = false, recovery = null } = {}) {
+  const state = recovery && recovery.state;
+  if (state === 'ready') return 'wait-ready';
+  if (state === 'waiting') return 'wait-pending';
+  return deviceAuth === true ? 'device' : 'wait-start';
+}
+
+/**
  * v1.0.26 — PURE: what the countdown says. Hebrew, and it must never read "0 שעות".
  */
 export function pinRecoveryLabel(plan) {

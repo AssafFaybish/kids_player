@@ -1092,3 +1092,40 @@ test('pinRecoveryLabel: never says "0 שעות", switches to minutes near the en
   assert.equal(pinRecoveryLabel(planPinRecovery({ requestedAt: 0, now: at })), '');
   assert.equal(pinRecoveryLabel(null), '');
 });
+
+test('planRecoveryRoute: the device credential is only ever an ADDITION', async () => {
+  const { planRecoveryRoute, planPinRecovery } = await import('../www/js/plan.js');
+  const at = 1_000_000_000_000, H = 3600000;
+  const none    = planPinRecovery({ requestedAt: 0, now: at });
+  const waiting = planPinRecovery({ requestedAt: at, now: at + 2 * H });
+  const ready   = planPinRecovery({ requestedAt: at, now: at + 30 * H });
+
+  // nothing requested yet: the device decides which route the parent gets
+  assert.equal(planRecoveryRoute({ deviceAuth: true,  recovery: none }), 'device');
+  assert.equal(planRecoveryRoute({ deviceAuth: false, recovery: none }), 'wait-start');
+
+  // AN EXISTING REQUEST ALWAYS WINS. A wait already running is state the parent created —
+  // possibly on a day the sensor would not cooperate — so a capable device must not hide
+  // it behind a prompt they may fail again, and must never silently discard it.
+  for (const dev of [true, false]) {
+    assert.equal(planRecoveryRoute({ deviceAuth: dev, recovery: waiting }), 'wait-pending', `dev=${dev}`);
+    assert.equal(planRecoveryRoute({ deviceAuth: dev, recovery: ready }), 'wait-ready', `dev=${dev}`);
+  }
+});
+
+test('planRecoveryRoute: anything but an explicit TRUE falls back to the wait', async () => {
+  const { planRecoveryRoute } = await import('../www/js/plan.js');
+  // canDeviceAuth() is a native round trip. A browser, an APK built before the plugin
+  // method existed, or a bridge that threw must never be mistaken for a capable device —
+  // that would offer a route the parent cannot take and hide the one they can.
+  for (const junk of [undefined, null, 0, '', 'yes', 1, {}, NaN]) {
+    assert.equal(planRecoveryRoute({ deviceAuth: junk, recovery: null }), 'wait-start',
+      `deviceAuth=${JSON.stringify(junk)}`);
+  }
+  // and a missing/!junk recovery object is simply "nothing requested"
+  for (const junk of [undefined, null, {}, { state: 'none' }, 'nonsense']) {
+    assert.equal(planRecoveryRoute({ deviceAuth: false, recovery: junk }), 'wait-start');
+  }
+  assert.equal(planRecoveryRoute({}), 'wait-start');
+  assert.equal(planRecoveryRoute(), 'wait-start');
+});
