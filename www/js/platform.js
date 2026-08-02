@@ -269,6 +269,31 @@ export async function isTaskLocked() {
   return false;
 }
 
+/* ---------------- device credential (v1.0.26, parent-code recovery) ---------------- */
+// The FAST path for a parent who forgot the app's code: fingerprint, or the device's own
+// lock PIN. BOTH of these fail CLOSED and SILENT — in the browser preview, on an APK built
+// before the plugin method existed, or on a device with no lock screen, they simply report
+// "not available" and the 24-hour wait in recovery.js carries the whole feature. A thrown
+// error here must never read as a successful authentication, and must never remove the
+// only other way back in.
+
+/** Can this device prove an adult is present? -> boolean. Never throws. */
+export async function canDeviceAuth() {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.canDeviceAuth) return false;
+  try { return (await kids.canDeviceAuth()).available === true; } catch { return false; }
+}
+
+/**
+ * Show the prompt. -> boolean, and ONLY an explicit `ok === true` counts.
+ * A cancel, a lockout, a missing plugin and a thrown bridge error are all just `false`.
+ */
+export async function deviceAuth(title, subtitle = '') {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.deviceAuth) return false;
+  try { return (await kids.deviceAuth({ title, subtitle })).ok === true; } catch { return false; }
+}
+
 export function exitApp() {
   // Prefer the native KidsNative.exitApp: App.exitApp() only calls finish(), which on
   // real devices leaves the task in recents — "exit" looked like minimize (v1.0.4 fix).

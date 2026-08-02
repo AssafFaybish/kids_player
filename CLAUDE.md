@@ -297,8 +297,22 @@ pins that the consumers follow the config and that every address is well-formed.
   is the door: request → **24-hour wait** (`PIN_RECOVERY_DELAY_HOURS`) → choose a new code.
   - **THE WAIT IS THE UNIVERSAL PATH, ON PURPOSE.** It needs no device lock (a child's
     tablet often has none and Android TV never does), no permission, no network, and
-    nothing the parent must have kept. A device-credential fast path is the follow-up, not
-    the floor.
+    nothing the parent must have kept. It is the FLOOR, never an alternative.
+  - **THE DEVICE CREDENTIAL IS THE FAST PATH ON TOP OF IT** (`KidsNative.canDeviceAuth` /
+    `deviceAuth`, `androidx.biometric` — a fingerprint or the device's own lock code, which
+    is the only identity claim this app can honestly check offline). Pure
+    `plan.planRecoveryRoute` decides between them, and the ORDER is the rule:
+    **an existing request always outranks the fast path.** A wait already running is state
+    the parent deliberately created — possibly on a day the sensor would not cooperate —
+    so a capable device must not hide it behind a prompt they may fail again, nor discard
+    it silently.
+  - **BOTH DIRECTIONS OF NATIVE FAILURE ARE CLOSED, and a test pins each.** Treating an
+    absent/throwing bridge as SUCCESS would open the parent screen to anyone in the browser
+    and on every APK built before the method existed, so both wrappers compare `=== true`;
+    letting it THROW would blow up `onPinForgot` before it can offer the wait, turning a
+    missing sensor into a permanent lockout, so both swallow. A FAILED prompt (cancelled,
+    locked out, or unopenable) falls through to the wait — `BIOMETRIC_WEAK`, not STRONG,
+    for the same reason: this gates a UI screen, not a crypto key.
   - **THE BANNER IS THE SAFEGUARD, NOT THE DELAY.** A wait nobody is told about just means
     the child waits a day and walks in, so the notice lives on the CHILD'S HOME — the
     screen that is on all day — and is shown for `ready` as well as `waiting` (going quiet
