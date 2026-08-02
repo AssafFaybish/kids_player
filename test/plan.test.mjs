@@ -1129,3 +1129,56 @@ test('planRecoveryRoute: anything but an explicit TRUE falls back to the wait', 
   assert.equal(planRecoveryRoute({}), 'wait-start');
   assert.equal(planRecoveryRoute(), 'wait-start');
 });
+
+/* ---------------- the channel-add waiting screen (v1.0.26) ---------------- */
+
+test('channelAddWait: every stage has real text, and unknown stages say nothing', async () => {
+  const { channelAddWait, CHANNEL_ADD_STAGES } = await import('../www/js/plan.js');
+  assert.ok(CHANNEL_ADD_STAGES.length >= 5, 'the flow lost most of its steps');
+  for (const stage of CHANNEL_ADD_STAGES) {
+    const t = channelAddWait(stage);
+    assert.ok(t && t.title && t.step, `${stage} has no text`);
+    // A waiting screen with no explanation is the same ambiguity in a different colour —
+    // the whole point of the field report. The default title must never leak through.
+    assert.notEqual(t.title, 'בטעינה…', `${stage} falls back to the generic title`);
+    assert.ok(t.title.length > 3 && t.step.length > 3, `${stage} text is too thin`);
+  }
+  // An unknown stage answers null so the caller shows the generic screen rather than
+  // `undefined` — but the invariants test is what stops one being introduced silently.
+  for (const junk of ['nope', '', null, undefined, 0, {}]) {
+    assert.equal(channelAddWait(junk), null, JSON.stringify(junk));
+  }
+});
+
+test('channelAddWait: the COUNT is part of the sentence when we know it', async () => {
+  const { channelAddWait } = await import('../www/js/plan.js');
+  // "מאשרים 109 סרטונים" tells the parent what is happening AND why it is not instant.
+  assert.match(channelAddWait('approve', { count: 109 }).title, /109/);
+  assert.match(channelAddWait('building', { count: 42 }).step, /42/);
+  // …and a missing or nonsense count must never render "מאשרים 0 סרטונים" or "NaN"
+  for (const bad of [0, -3, NaN, null, undefined, 'x', {}]) {
+    const a = channelAddWait('approve', { count: bad });
+    const b = channelAddWait('building', { count: bad });
+    for (const t of [a.title, a.step, b.title, b.step]) {
+      assert.doesNotMatch(t, /NaN|undefined|null/, `count=${JSON.stringify(bad)} leaked into "${t}"`);
+      assert.doesNotMatch(t, /\b0\b/, `count=${JSON.stringify(bad)} rendered a zero: "${t}"`);
+    }
+  }
+  assert.deepEqual(channelAddWait('approve'), channelAddWait('approve', {}));
+});
+
+test('channelAddOutcome: after a MANUAL pick the message reports the pick, not a queue', async () => {
+  const { channelAddOutcome } = await import('../www/js/plan.js');
+  // THE BUG (browser-caught while verifying the waiting screens): the parent chose
+  // "אישור ידני", kept 2 and rejected 1 — and was told "3 סרטונים ממתינים לאישור",
+  // a queue they had just emptied by hand.
+  assert.match(channelAddOutcome(false, 3, {}, { kept: 2, rejected: 1 }), /2 סרטונים אושרו ו-1 נדחו/);
+  assert.match(channelAddOutcome(false, 3, {}, { kept: 3, rejected: 0 }), /3 סרטונים אושרו/);
+  assert.match(channelAddOutcome(false, 3, {}, { kept: 0, rejected: 3 }), /נדחו/);
+  assert.doesNotMatch(channelAddOutcome(false, 3, {}, { kept: 2, rejected: 1 }), /ממתינים/);
+  // the playlist wording carries through the pick branch too
+  assert.match(channelAddOutcome(false, 3, { isPlaylist: true }, { kept: 2, rejected: 1 }), /^רשימת ההשמעה/);
+  // no pick (אחר כך / dismiss) keeps the honest "waiting" sentence — that queue is real
+  assert.match(channelAddOutcome(false, 3, {}, null), /ממתינים לאישור/);
+  assert.match(channelAddOutcome(false, 3, {}, { kept: 0, rejected: 0 }), /ממתינים לאישור/);
+});

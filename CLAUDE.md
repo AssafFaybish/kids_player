@@ -262,6 +262,33 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.27 — **NO STEP OF ADDING A CHANNEL IS SILENT ANY MORE.** Field report: "the add
+  takes a while — fine — but between clicks I cannot tell whether it is still working or
+  waiting for me." Only the long import ever showed the loading screen; resolve, subscribe,
+  the bulk approve, building the manual-pick list, saving the pick, and above all the
+  SECOND full sync after the decision all ran behind the ordinary screen.
+  - The texts are pure `plan.channelAddWait(stage, {count})` — a waiting screen with no
+    explanation is the same ambiguity in a different colour, so the words ARE the feature
+    and are test-pinned (never the generic "בטעינה…", the count in the sentence when known,
+    and no NaN/0 leaking in). `invariants.test.mjs` pins that every stage `app.js` waits on
+    via `withChannelWait` has an entry — a stage added without text fails the suite.
+  - `withChannelWait` keeps `defer: 250`, so THE FAST PATH NEVER FLASHES — measured: an
+    already-synced channel reaches the dialog in 150ms with zero screens, while the same
+    flow with real work shows each step with its own words (and the finishing screen
+    streams the sync's real progress labels via `onProgress`).
+  - **`refreshAfterAdd` gained `wait: true` for exactly ONE caller** (`importChannelAndAsk`,
+    which owns the waiting screen); the default stays silent because the v1.0.18 rule
+    still holds everywhere else — covering the child's populated grid is the worse bug.
+    BOTH dialog answers route through the same awaited 'finishing' wait: the manual pick
+    used to fire its own silent sync, which was the exact gap on that branch.
+  - **A blocking wait must not become a TRAP**: the loading view swallows back, so the
+    post-decision sync is raced against `waitWithValve` (90s). The valve does not drop the
+    screen silently — that would restore the ambiguity — it reports `backgrounded` so the
+    caller can say the work continues.
+  - **Found while verifying: the manual pick reported a queue the parent had just emptied**
+    ("3 סרטונים ממתינים לאישור" after they kept 2 and rejected 1). `channelAddOutcome` now
+    takes the pick result and says what was chosen; a missing pick keeps the honest
+    "waiting" sentence because that queue is real.
 - v1.0.26 — **AN EMPTY QUEUE SAYS SO** (`#pending-empty`, `.list-empty`). ממתינים rendered a
   blank area when nothing was waiting, which is indistinguishable from a list that has not
   loaded or a screen that is broken — and since v1.0.24 the BLUE attention dot deliberately
@@ -330,8 +357,13 @@ pins that the consumers follow the config and that every address is well-formed.
   - **IT IS NOT A SECURITY BOUNDARY AND THE DOCS SAY SO**: moving the system clock forward
     skips the wait. Unavoidable without a server, and a different threat from the
     5-year-old this app has always defended against.
-  - The affordance shows only in `'verify'` mode (during SETUP there is no code to have
-    forgotten, and offering a reset there would be a second way to pick the first PIN), and
+  - The affordance shows on EVERY `'verify'`-mode code screen — the parent-screen gate,
+    the exit-lock gate, the profile-switch gate (parent's decision 2026-08-02) — and it is
+    DELIBERATELY SMALL AND LOW-CONTRAST (12px, 0.55 opacity, tucked into the card's
+    bottom corner): a reading child will find any text eventually, which is exactly why
+    the SAFEGUARD is the 24-hour wait plus the home-screen banner, never this link's
+    obscurity. Never in SETUP mode (there is no code to have forgotten, and offering a
+    reset there would be a second way to pick the first PIN), and
     the reset uses `startPin('setup', { replace: true })` so hardware-back cannot land on
     the verify screen it just satisfied. `planPinRecovery` follows the `planRejectedPurge`
     rule — **a nonsense window falls back to the default, never to a short one** — which

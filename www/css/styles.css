@@ -896,11 +896,25 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   max-width: 9em; text-align: center; line-height: 1.2;
   overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 /* v1.0.26: PIN recovery. The link sits BELOW the keypad — reachable, never in the way
-   of the four digits a parent taps every day. */
-.pin-forgot { display: block; margin: 14px auto 0; color: var(--muted); font-size: 15px; }
+   of the four digits a parent taps every day.
+   DELIBERATELY SMALL AND LOW-CONTRAST (parent's decision 2026-08-02): it appears on
+   EVERY code screen, so it must not catch a child's eye — a reading child will find any
+   text eventually, which is exactly why the SAFEGUARD is the 24-hour wait plus the
+   banner on the home screen, not this link's obscurity. Small font, washed out, tucked
+   to the inline-end edge rather than centered; padding keeps it a real tap target for
+   the adult who is looking for it. */
+.pin-forgot {
+  position: absolute; bottom: 4px; inset-inline-end: 12px;
+  padding: 6px 4px; white-space: nowrap;
+  color: var(--muted); opacity: 0.55; font-size: 12px;
+}
+/* the note only exists once a request is LIVE — at that point the home banner is
+   already announcing it, so quiet styling here hides nothing that matters */
 .pin-recovery-note {
-  margin: 8px auto 0; max-width: 22em; text-align: center;
+  /* bottom margin clears the corner-anchored .pin-forgot (measured 1px overlap without) */
+  margin: 8px auto 10px; max-width: 22em; text-align: center;
   color: var(--muted); font-size: 14px; line-height: 1.4;
 }
 /* The pending-reset notice on the CHILD's home. Deliberately calm rather than alarming —

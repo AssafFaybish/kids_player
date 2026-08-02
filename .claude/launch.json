@@ -4,8 +4,20 @@
     {
       "name": "kids-web",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["/Users/assaf.faybish/repository/kids_player/dev-server.mjs"],
+      "runtimeArgs": [
+        "/Users/assaf.faybish/repository/kids_player/dev-server.mjs"
+      ],
       "port": 5173
+    },
+    {
+      "name": "kids-web-5174",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "PORT=5174",
+        "node",
+        "/Users/assaf.faybish/repository/kids_player/dev-server.mjs"
+      ],
+      "port": 5174
     }
   ]
 }
