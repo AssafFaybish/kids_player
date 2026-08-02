@@ -609,7 +609,9 @@ pins that the consumers follow the config and that every address is well-formed.
   - **EXIT LOCK AND SHARE-APPROVAL ARE PER PROFILE** and both toggles name their child in
     the UI (`labelProfileSettings`). ⚠️ Existing values do NOT carry over — a family with
     the kiosk on finds it off after the update. Must appear in the release notes.
-  - **A PER-PROFILE LOCK OPENS A HOLE, closed in the same release.** The lock contains
+  - **A PER-PROFILE LOCK OPENS A HOLE, closed in the same release.** (v1.0.28 supersedes
+    the conditional: the chip now gates EVERY mid-session switch, locked or not — the
+    parent's decision — and the boot picker stays free. The fail-closed rule is unchanged.) The lock contains
     HOME/recents/back and hides the exit button, but the profile chip went straight to
     `backToProfiles` — so a child on a locked profile could tap their avatar, pick a
     sibling who is NOT locked, and walk out. Two taps. `onProfileChip` now PIN-gates
