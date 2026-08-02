@@ -17,7 +17,7 @@ import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/moda
 import { rankItems } from './search.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
-  pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome } from './plan.js';
+  pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -174,6 +174,7 @@ async function computeAttention() {
  * LAUNCH bypasses both throttles — see below.
  */
 let launchSyncDone = false; // the forced launch refresh happens once per process
+let entryRefreshInFlight = null; // activateProfile awaits this to own the loading screen
 function homeEntryRefresh() {
   if (!activeProfileId) return;
   // v1.0.21: the FIRST refresh of a launch is forced. The 3-min throttle exists so a
@@ -181,23 +182,44 @@ function homeEntryRefresh() {
   // also meant reopening the app minutes after the parent edited the sheet showed stale
   // content until something else happened to trip a sync. One forced pass per launch is
   // the fix; every later home entry keeps the throttle.
-  const force = !launchSyncDone;
+  const plan = planEntryRefresh({ launchDone: launchSyncDone, sinceLastPullMs: Date.now() - lastPullAt });
   launchSyncDone = true;
-  (async () => {
-    if (force || await shouldSync(activeProfileId)) {
-      syncLibrary(activeProfileId, force ? { force: true } : {}).then(async () => {
-        await loadGiftStates();
-        if (nav.isActive('gallery')) renderHome();
-      }).catch(() => {});
-    }
-  })().catch(() => {});
+  entryRefreshInFlight = entryRefresh(activeProfileId, plan).catch(() => {});
   // …and so is the version check: the 6h throttle could hide a release for a whole day
   // of launches. `silent` still honors update.skip, so a version the parent declined
   // does not nag again — only the red dot stays lit.
   import('./update.js')
-    .then((u) => u.checkForUpdate({ silent: true, force }))
+    .then((u) => u.checkForUpdate({ silent: true, force: plan.forceSync }))
     .then((r) => maybePromptUpdate(r))
     .catch(() => {});
+}
+
+/**
+ * v1.0.25 — THE one place that refreshes the home, and it runs PULL THEN SYNC, in series.
+ *
+ * Both write the same video records, so interleaving them lets one clobber the other's
+ * merge — CLAUDE.md has said so since v1.0.22. It was not true on launch: `nav.reset
+ * ('gallery')` fires the gallery's onEnter SYNCHRONOUSLY, so the forced launch sync was
+ * already running by the time `activateProfile` reached its own `pullThenSync` on the next
+ * line, and the two raced on every single launch of every device with backup enabled.
+ *
+ * There is now exactly one caller (the gallery's onEnter) and one promise; activation
+ * awaits that promise for its loading screen instead of starting a second pipeline.
+ */
+async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
+  if (pull && await maybePullDrive()) {
+    if (activeProfileId !== id) return; // switched profile under us — that render owns it
+    await loadGiftStates();
+    if (nav.isActive('gallery')) await renderHome();
+  }
+  if (activeProfileId !== id) return;
+  if (!forceSync && !(await shouldSync(id))) return;
+  await syncLibrary(id, { force: forceSync, onProgress: (p) => loading.progress(p) });
+  if (activeProfileId !== id) return;
+  await absorbMineIntoShared(id); // the first sync may have just created sources
+  await loadGiftStates();
+  if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
+  maybeSchedulePush();
 }
 
 /**
@@ -1634,30 +1656,20 @@ async function maybePullDrive({ force = false } = {}) {
 }
 
 /**
- * The background work after a profile is activated: pull the family's shared state, THEN
- * sync the sheet. SERIALIZED on purpose — both write the same video records, and letting
- * them interleave would have one clobber the other's merge. The loading screen (raised by
- * the caller only when there is nothing cached to show) must be hidden on EVERY path.
+ * After activation: wait for the home-entry refresh that `nav.reset('gallery')` just
+ * started, then put the loading screen away.
+ *
+ * This used to run its own pull-then-sync pipeline, which is the bug: the gallery's
+ * onEnter had ALREADY started one synchronously, so the pull here raced the sync there.
+ * All this owns now is the loading screen the caller raised — the work itself belongs to
+ * `entryRefresh`, and there is only ever one of those.
  */
-async function pullThenSync(id) {
-  if (await maybePullDrive()) {
-    if (activeProfileId !== id) return; // switched profile under us — that render owns it
-    await loadGiftStates();
-    if (nav.isActive('gallery')) await renderHome();
-  }
-  if (activeProfileId !== id) return;
-  if (!(await shouldSync(id))) { await loading.hide(); return; }
+async function awaitEntryRefresh() {
   try {
-    await syncLibrary(id, { onProgress: (p) => loading.progress(p) });
-    if (activeProfileId !== id) return;
-    await absorbMineIntoShared(id); // the first sync may have just created sources
-    await loadGiftStates();
-    if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
-    await loading.hide();
-    if (!nav.isActive('gallery') && nav.isActive('loading')) nav.reset('gallery');
-    maybeSchedulePush();
+    await entryRefreshInFlight;
   } finally {
     await loading.hide(); // idempotent; the ONLY guarantee the child depends on
+    if (!nav.isActive('gallery') && nav.isActive('loading')) nav.reset('gallery');
   }
 }
 
@@ -2954,15 +2966,20 @@ async function activateProfile(id) {
     // them — covering a populated grid every 3 minutes would be the worse bug.
     loading.show({ title: 'מכינים את הסרטונים', step: 'מביאים סרטונים חדשים…', pct: 0 });
   }
+  // Fires the gallery's onEnter SYNCHRONOUSLY, which is what starts the refresh below.
+  // Cleared first so a bail-out inside homeEntryRefresh cannot leave us awaiting the
+  // PREVIOUS profile's refresh.
+  entryRefreshInFlight = null;
   nav.reset('gallery');
 
   // v1.0.7: shares queued before a profile was active drain AFTER the gallery is up —
   // their interactive PIN flow must not fight the activation navigation.
   drainShareQueue().catch(() => {});
 
-  // Background: pull the family's shared state, then sync the sheet. Never blocks the
-  // grid; re-renders when either one lands something new (v1.0.22).
-  pullThenSync(id).catch(async () => { await loading.hide(); });
+  // Background: pull the family's shared state, then sync the sheet — one pipeline,
+  // started by the line above. Never blocks the grid; re-renders when either one lands
+  // something new (v1.0.22).
+  awaitEntryRefresh().catch(async () => { await loading.hide(); });
 }
 
 async function updateProfileChip() {

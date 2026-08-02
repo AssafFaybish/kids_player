@@ -259,6 +259,23 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.25 — **ENTERING THE HOME PULLS, THEN SYNCS — AND THAT IS FINALLY TRUE ON LAUNCH.**
+  v1.0.22 declared the two SERIALIZED because both write the same video records, and
+  `pullThenSync` did serialize them — but it was never the only pipeline.
+  `activateProfile` calls `nav.reset('gallery')`, which fires the gallery's `onEnter`
+  **synchronously**, so `homeEntryRefresh` had already started the forced launch sync by
+  the time the very next line reached `pullThenSync`. The pull then ran against a library
+  the sync was actively rewriting — on every launch, on every device with backup enabled.
+  There is now ONE pipeline (`entryRefresh`) with ONE caller (the gallery's `onEnter`) and
+  one promise; `activateProfile` awaits that promise purely to own its loading screen
+  (`awaitEntryRefresh`), and `pullThenSync` is gone. Because the pull now sits on the home
+  entry rather than on activation, it also runs on every LATER return to the home (still
+  throttled 60s) — which is what "sync against the database on every entry" actually means.
+  The gates are pure `plan.planEntryRefresh` → `{ pull, forceSync }`: the first entry of a
+  launch bypasses BOTH throttles, because opening the app is not the same act as a child
+  flipping between the home and a video. The invariants test pins the ORDER inside
+  `entryRefresh` (pull before sync, and `await`ed — an un-awaited pull IS the race) and
+  that `maybePullDrive` keeps at most two call sites, entry and resume.
 - v1.0.25 — **BOTH WAYS TO ADD A CHANNEL NOW IMPORT IT AND THEN ASK.** v1.0.22 gave the
   parent screen the "what should I do with this catalogue?" question and CLAUDE.md recorded
   that it covered "parent screen + share". **The share path never had it.**
