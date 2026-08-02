@@ -449,14 +449,17 @@
              there is no coordination point to block that, so it is surfaced HERE instead
              of being silently merged or renamed. Nothing is touched automatically. -->
         <div id="dup-profiles" class="form-msg err hidden"></div>
+        <!-- v1.0.25: both of these belong to the ACTIVE PROFILE, not the device, and they
+             sync. The owner suffix is filled by labelProfileSettings() — without a name a
+             parent reads them as device switches, which is what they used to be. -->
         <label class="switch-row">
           <input id="share-approval-toggle" type="checkbox" checked />
-          <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס</span>
+          <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס<b id="share-approval-owner" class="setting-owner"></b></span>
         </label>
         <!-- v1.0.11: OS screen-pinning kiosk — exiting requires the parent PIN -->
         <label class="switch-row">
           <input id="exit-lock-toggle" type="checkbox" />
-          <span>יציאה מהאפליקציה רק עם קוד הורים (נעילת מסך מלאה — גם כפתור הבית)</span>
+          <span>יציאה מהאפליקציה רק עם קוד הורים (נעילת מסך מלאה — גם כפתור הבית)<b id="exit-lock-owner" class="setting-owner"></b></span>
         </label>
         <div id="settings-msg" class="form-msg"></div>
 

@@ -324,6 +324,77 @@ test('the home entry PULLS before it SYNCS, and nothing else pulls (v1.0.25)', (
   assert.match(app, /planEntryRefresh\(/, 'homeEntryRefresh re-implements the throttles inline');
 });
 
+test('synced settings have ONE source of truth (v1.0.25)', () => {
+  // The PIN, the exit lock and the share-approval toggle moved to settings.js so they
+  // travel between a family's devices. A leftover direct Preferences read is not a
+  // cosmetic duplicate: it is a second source of truth, and the symptom is a parent
+  // changing the code on the phone while the tablet keeps opening with the old one.
+  for (const [p, body] of MODULES) {
+    if (p === 'www/js/settings.js') continue;
+    // pin.js legitimately reads the LEGACY key once, to lift an existing PIN out of
+    // Preferences — resetting everyone's parent gate for a launch is not an option.
+    if (p !== 'www/js/pin.js') {
+      assert.doesNotMatch(body, /pref(Get|Set)\(\s*['"]pin['"]/, `${p} reads/writes the PIN outside settings.js`);
+    }
+    assert.doesNotMatch(body, /pref(Get|Set)\(\s*['"]exitLock['"]/, `${p} still stores the exit lock per device`);
+  }
+  // and pin.js must never WRITE the legacy key back — that is the two-sources bug
+  assert.doesNotMatch(MODULES.get('www/js/pin.js'), /prefSet\(/,
+    'pin.js writes the legacy Preferences key again');
+});
+
+test('the exit lock is per-profile, and leaving a locked profile is gated', () => {
+  // A per-profile lock opens a hole a device-wide one did not have: the profile chip went
+  // straight to backToProfiles, so a child on a locked profile could tap their avatar,
+  // pick a sibling whose profile is NOT locked, and walk out. Two taps, and the kiosk is
+  // decoration.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /async function onProfileChip\(/, 'the profile-switch gate is gone');
+  const fn = app.slice(app.indexOf('async function onProfileChip('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.match(body, /exitLockOn\(\)/, 'the gate no longer checks the lock');
+  assert.match(body, /startPin\(/, 'a locked profile can be left without the parent code');
+  const wiring = app.split('\n').find((l) => l.includes("$('profile-chip').addEventListener")) || '';
+  assert.match(wiring, /onProfileChip/, 'the chip is wired straight to backToProfiles again');
+  // and the gate must not fail OPEN: a catch that falls back to backToProfiles would make
+  // a locked profile escapable by whatever made the check throw.
+  assert.doesNotMatch(wiring, /catch\([^)]*\)\s*=>\s*backToProfiles/, 'the switch gate fails open');
+
+  // …and the lock must arm at launch from the LAST active profile, or there is an
+  // unlocked window between launch and the profile tap.
+  assert.match(app, /exitLockOn\(await prefGet\('activeProfile'\)\)/,
+    'the launch arming no longer knows which profile to arm for');
+
+  // SWITCHING children changes the answer, so activation must re-apply it. Without this
+  // the escape is real: arriving at a LOCKED profile from an unlocked one left the device
+  // unpinned with the exit button on screen — the child the lock exists for walks out.
+  assert.match(app, /async function applyExitLock\(/, 'the per-profile arming helper is gone');
+  const act = app.slice(app.indexOf('async function activateProfile('));
+  const actBody = act.slice(0, act.indexOf('\n}\n') + 1);
+  assert.match(actBody, /applyExitLock\(\)/,
+    'activateProfile does not re-apply the exit lock — a locked child keeps a sibling\'s unlocked state');
+  // and it must actually touch the OS pinning, not just the button
+  const helper = app.slice(app.indexOf('async function applyExitLock('));
+  const helperBody = helper.slice(0, helper.indexOf('\n}\n') + 1);
+  assert.match(helperBody, /lockTask/, 'the helper no longer pins');
+  assert.match(helperBody, /unlockTask/, 'the helper never releases — a sibling stays pinned');
+});
+
+test('the settings channel travels, but the API key never does', () => {
+  // The repo is PUBLIC and the key ships in a gitignored file; drive.js has an explicit
+  // refusal list. A settings channel is exactly the kind of place a key would get swept
+  // into by accident.
+  const drive = MODULES.get('www/js/drive.js');
+  assert.match(drive, /mergeSettings\(/, 'the Drive doc no longer merges settings');
+  const ser = drive.slice(drive.indexOf('export function serializeDb('));
+  const body = ser.slice(0, ser.indexOf('\n}\n') + 1);
+  assert.match(body, /settings/, 'settings are no longer serialized into the Drive doc');
+  for (const [p, src2] of MODULES) {
+    if (p !== 'www/js/settings.js' && p !== 'www/js/drive.js') continue;
+    assert.doesNotMatch(src2, /yt:apiKey/, `${p} touches the YouTube API key`);
+  }
+});
+
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
   // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.

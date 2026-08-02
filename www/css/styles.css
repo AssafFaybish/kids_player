@@ -393,6 +393,8 @@ body {
   font-size: 16px; font-weight: 700; color: var(--ink); cursor: pointer;
 }
 .switch-row input { width: 24px; height: 24px; accent-color: var(--brand-2); }
+/* v1.0.25: names the child a per-profile setting belongs to, next to its label */
+.setting-owner { color: var(--brand-2); font-weight: 800; }
 .parent-list .li-ok {
   border: none; background: #e7f8ee; color: var(--green);
   border-radius: 12px; width: 46px; height: 46px; font-size: 20px; cursor: pointer; flex: 0 0 auto;

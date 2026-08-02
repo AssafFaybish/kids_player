@@ -12,6 +12,7 @@ import { normalizeTitle } from './normalize.js';
 import { sortKeyFor } from './order.js';
 import { prefGet, prefSet } from './platform.js';
 import * as db from './db.js';
+import { getSetting } from './settings.js';
 
 const K_QUEUE = 'pendingShares';
 
@@ -102,9 +103,12 @@ async function handleShare(o, { alreadyRouted = false } = {}) {
     try { decision = await interactive(c); } catch { decision = null; }
   }
   if (decision === 'discard') return;
+  // v1.0.25: the fallback toggle moved to the synced per-profile settings. Defaulting to
+  // TRUE is the whole point of this branch — it runs when the interactive PIN+confirm
+  // flow is unavailable or threw, and a share must never reach the child unasked.
   const requireApproval = decision
     ? decision !== 'live'
-    : !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
+    : (await getSetting(pid, 'shareApproval', true)) !== false;
 
   const now = Date.now();
   await db.putVideos([{
