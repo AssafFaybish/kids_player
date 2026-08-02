@@ -3,7 +3,8 @@
 // entries sanitized to the local shape.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeProfileLists } from '../www/js/store.js';
+import { mergeProfileLists, mergeDeletedProfiles } from '../www/js/store.js';
+import { planProfilePurge } from '../www/js/plan.js';
 
 const local = [{ id: 'p1', name: 'דני', avatar: '🦁', color: '#ffd166' }];
 
@@ -113,4 +114,67 @@ test('duplicateProfileNames: reports collisions the parent has to resolve', asyn
   // an unnamed or id-less row must never invent a collision
   assert.deepEqual(duplicateProfileNames([{ id: 'p1', name: '' }, { id: 'p2', name: '  ' }, { name: 'נועם' }]), []);
   for (const junk of [null, undefined, []]) assert.deepEqual(duplicateProfileNames(junk), [], String(junk));
+});
+
+/* ---------------- deleting a profile actually deletes it (v1.0.25) ---------------- */
+
+test('a DELETED profile is not resurrected by the next Drive pull', () => {
+  // THE bug. mergeProfileLists unions by id and nothing filtered the remote side, so
+  // "delete נועם" on the tablet lasted exactly until the next pull put it back — while
+  // the confirm dialog says the action cannot be undone.
+  const remote = [{ id: 'p1', name: 'דני' }, { id: 'p2', name: 'נועם' }];
+  const gone = { p2: 1000 };
+  const { list } = mergeProfileLists([{ id: 'p1', name: 'דני' }], remote, gone);
+  assert.deepEqual(list.map((p) => p.id), ['p1'], 'the deleted profile came back from Drive');
+
+  // it is also removed from the LOCAL list — that is how a peer's deletion reaches us
+  const fromPeer = mergeProfileLists([{ id: 'p1' }, { id: 'p2' }], [], gone);
+  assert.deepEqual(fromPeer.list.map((p) => p.id), ['p1']);
+  assert.equal(fromPeer.added, 0);
+
+  // no tombstones ⇒ exactly the old behaviour (this argument is optional everywhere)
+  assert.equal(mergeProfileLists([{ id: 'p1' }], remote).list.length, 2);
+  assert.equal(mergeProfileLists([{ id: 'p1' }], remote, {}).list.length, 2);
+  assert.equal(mergeProfileLists([{ id: 'p1' }], remote, null).list.length, 2);
+  // a Set is accepted too (the shape the merged doc hands back)
+  assert.deepEqual(mergeProfileLists([], remote, new Set(['p1'])).list.map((p) => p.id), ['p2']);
+});
+
+test('tombstones union, and the union does not depend on order', () => {
+  const a = { p1: 500 };
+  const b = { p1: 900, p2: 100 };
+  assert.deepEqual(mergeDeletedProfiles(a, b), mergeDeletedProfiles(b, a));
+  // earliest wins: it is the timestamp the other devices already saw
+  assert.equal(mergeDeletedProfiles(a, b).p1, 500);
+  assert.equal(mergeDeletedProfiles(a, b).p2, 100);
+  // grow-only, and junk-proof — a profile id is random and never reused, so there is no
+  // "revoke" case to model (unlike the video deny-list)
+  assert.deepEqual(mergeDeletedProfiles({}, {}), {});
+  assert.deepEqual(mergeDeletedProfiles(null, undefined), {});
+  assert.deepEqual(mergeDeletedProfiles({ p1: 'junk' }, null), { p1: 0 });
+});
+
+test('planProfilePurge never erases a library a SIBLING still reads', () => {
+  // A sheet-less profile owns lib:p:<id> outright — that is where its content lives, and
+  // leaving it behind is what made the old delete a no-op for most families.
+  assert.deepEqual(planProfilePurge('p1', 'lib:p:p1', []),
+    { scopes: ['prof:p1', 'lib:p:p1'], sharedWith: [] });
+
+  // A SHARED sheet scope must survive: erasing it would take the sibling's whole library.
+  const others = [{ profileId: 'p2', libraryId: 'lib:abc' }];
+  assert.deepEqual(planProfilePurge('p1', 'lib:abc', others),
+    { scopes: ['prof:p1'], sharedWith: ['p2'] });
+
+  // …but only while the sibling is really there
+  assert.deepEqual(planProfilePurge('p1', 'lib:abc', [{ profileId: 'p2', libraryId: 'lib:other' }]),
+    { scopes: ['prof:p1', 'lib:abc'], sharedWith: [] });
+  // the profile's own entry in `others` must not count as a sibling
+  assert.deepEqual(planProfilePurge('p1', 'lib:abc', [{ profileId: 'p1', libraryId: 'lib:abc' }]).scopes,
+    ['prof:p1', 'lib:abc']);
+
+  // no library yet (deleted before the first sync) → personal scope only
+  assert.deepEqual(planProfilePurge('p1', null, others), { scopes: ['prof:p1'], sharedWith: [] });
+  // junk never throws and never proposes erasing anything unnamed
+  assert.deepEqual(planProfilePurge(), { scopes: [], sharedWith: [] });
+  assert.deepEqual(planProfilePurge('p1', 'lib:abc', [null, {}]).scopes, ['prof:p1', 'lib:abc']);
 });

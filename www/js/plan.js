@@ -386,6 +386,38 @@ export function planScopeAdoption(profileId, oldLib, newLib, others = []) {
 }
 
 /**
+ * v1.0.25 — PURE: deleting a profile. Which scopes may actually be erased?
+ *
+ * `deleteCurrentProfile` promises "כל הסרטונים של הפרופיל יימחקו. פעולה זו אינה הפיכה"
+ * and, until now, deleted nothing but the row in the profile list: `db.purgeProfile`
+ * existed with ZERO callers. Measured on 2026-08-02 — a throwaway profile with one channel
+ * kept all 500 videos, its subscription and its sources record after the delete.
+ *
+ * The personal scope `prof:<id>` is always the profile's alone. The LIBRARY scope is the
+ * careful half: `lib:<fnv1a(sheet)>` is SHARED by every profile reading that sheet, and
+ * erasing it would take a sibling's whole library with it. A sheet-less profile gets
+ * `lib:p:<id>`, which is exclusive by construction — that is where the content actually
+ * lives for most families. Same question `planScopeAdoption` asks before a move.
+ *
+ * @param profileId the profile being deleted
+ * @param libraryId its library scope, if it has one
+ * @param others    [{ profileId, libraryId }] for every OTHER profile
+ * @returns { scopes: string[], sharedWith: string[] } — scopes is what may be erased
+ */
+export function planProfilePurge(profileId, libraryId, others = []) {
+  if (!profileId) return { scopes: [], sharedWith: [] };
+  const scopes = ['prof:' + profileId];
+  if (!libraryId) return { scopes, sharedWith: [] };
+  const sharedWith = [];
+  for (const o of others || []) {
+    if (!o || !o.profileId || o.profileId === profileId) continue;
+    if (o.libraryId && o.libraryId === libraryId) sharedWith.push(o.profileId);
+  }
+  if (!sharedWith.length) scopes.push(libraryId);
+  return { scopes, sharedWith };
+}
+
+/**
  * v1.0.20 — PURE: may this sync spend the "gifts baselined" flag?
  *
  * The baseline records what already existed before a child started, so the newest 12

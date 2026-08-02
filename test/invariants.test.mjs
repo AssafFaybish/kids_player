@@ -437,6 +437,32 @@ test('continuous play routes through planAutoplay, and onExit says WHY (v1.0.25)
   assert.match(ow.slice(0, 600), /cancelAutoplay\(\)/, 'opening a video does not cancel the countdown');
 });
 
+test('deleting a profile actually deletes it, and it STAYS deleted (v1.0.25)', () => {
+  // `db.purgeProfile` existed with ZERO CALLERS while the confirm dialog promised
+  // "כל הסרטונים של הפרופיל יימחקו. פעולה זו אינה הפיכה". Measured 2026-08-02: a throwaway
+  // profile with one channel kept all 500 videos, its subscription and its sources record.
+  // A function nobody calls is the failure mode here, so the call site is the invariant.
+  const app = MODULES.get('www/js/app.js');
+  const fn = app.slice(app.indexOf('async function deleteCurrentProfile('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.match(body, /db\.purgeProfile\(/, 'deleting a profile leaves all of its data behind again');
+  assert.match(body, /planProfilePurge\(/,
+    'the purge no longer asks which scopes it may erase — a SHARED sheet library would go too');
+
+  // The deletion has to survive the next pull, or it undoes itself on every other device.
+  const store = MODULES.get('www/js/store.js');
+  const del = store.slice(store.indexOf('export async function deleteProfile('));
+  assert.match(del.slice(0, del.indexOf('\n}\n') + 1), /markProfileDeleted\(/,
+    'no tombstone is written — a Drive pull will resurrect the profile');
+  assert.match(store, /export function mergeProfileLists\(local, remote, deleted/,
+    'mergeProfileLists no longer filters deleted profiles');
+
+  // …and the tombstones have to travel, in both directions.
+  const drive = MODULES.get('www/js/drive.js');
+  assert.match(drive, /deletedProfiles/, 'the Drive document no longer carries the tombstones');
+  assert.match(drive, /mergeDeletedProfiles\(/, 'the document merge drops the tombstones');
+});
+
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
   // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.

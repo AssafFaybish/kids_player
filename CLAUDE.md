@@ -259,6 +259,26 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.25 — **DELETING A PROFILE NOW DELETES IT, AND IT STAYS DELETED.** The confirm has
+  always said "כל הסרטונים של הפרופיל יימחקו. פעולה זו אינה הפיכה" while
+  `deleteCurrentProfile` removed only the row in the Preferences profile list —
+  **`db.purgeProfile` had ZERO CALLERS.** Measured 2026-08-02: a throwaway profile with one
+  channel kept all 500 videos, its subscription and its sources record. Two halves:
+  - **WHAT MAY BE ERASED IS A DECISION** (pure `plan.planProfilePurge`). `prof:<id>` is
+    always the profile's own; the LIBRARY scope only when no sibling still reads it —
+    `lib:<fnv1a(sheet)>` is SHARED and erasing it would take a sibling's whole library,
+    the same question `planScopeAdoption` asks before a move. A sheet-less profile owns
+    `lib:p:<id>` outright, and THAT is where nearly all its content lives, which is why
+    the old "personal scope only" purge was effectively a no-op. `purgeProfile` also drops
+    the library's `libraryChannels` rows and its per-library `meta` keys — **deleted, not
+    `putMeta(k, null)`**, which leaves the row in place.
+  - **A DELETION MUST SURVIVE THE NEXT PULL.** Both merge paths union profiles by id and
+    nothing filtered them, so a delete lasted exactly until another device's document
+    arrived. `store` now keeps a GROW-ONLY tombstone map (`profilesDeleted`), travels it in
+    the Drive doc (`deletedProfiles`, additive), filters it in `mergeProfileLists`, and
+    `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
+    restored. Grow-only is safe here where the video deny-list needed revocation: a profile
+    id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
 - **v1.0.25 overview: [docs/V1025.md](docs/V1025.md)** — the five features of this release
   in one place, including which three ALREADY EXISTED and were broken, and the two bugs
   that browser verification caught while the suite was green. The per-feature invariants
