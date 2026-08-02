@@ -540,7 +540,11 @@ html.tv #app { padding: 2.5vh 3vw; } /* overscan safe area — TVs crop the edge
   html.tv .brand-title { font-size: 32px; }
 }
 /* the focus ring IS the cursor on TV — big, high-contrast, and everywhere */
-html.tv button:focus, html.tv input:focus, html.tv [tabindex]:focus {
+/* v1.0.29: `summary` and `[href]` are focusable but are neither button/input nor carry a
+   [tabindex], so they used to get NO focus ring on TV — the grouped-library sections
+   (v1.0.28) and the privacy link were focusable-but-invisible from the remote. */
+html.tv button:focus, html.tv input:focus, html.tv [tabindex]:focus,
+html.tv summary:focus, html.tv [href]:focus {
   outline: 5px solid var(--brand-2);
   outline-offset: 3px;
   border-radius: 12px;

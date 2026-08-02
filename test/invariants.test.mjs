@@ -902,3 +902,19 @@ test('the preview bubble is reachable from a TV remote (v1.0.29)', () => {
   assert.match(fn, /img\.tabIndex = 0/, 'the preview thumbnail fell out of the focus scan');
   assert.match(fn, /'Enter'/, 'Enter no longer opens the preview from the remote');
 });
+
+test('every D-pad-focusable type that has no native ring gets the TV focus ring (v1.0.29)', () => {
+  // On Android TV the ONLY cue to what the remote is on is the focus ring. The D-pad
+  // focusable selector (dpad.js) and the `html.tv …:focus` ring rule (styles.css) are two
+  // lists that must stay in step: `summary` and `[href]` are focusable but are neither
+  // button/input nor carry a [tabindex] ATTRIBUTE (a native summary's tabIndex is a
+  // PROPERTY, not an attribute — `[tabindex]` never matches it), so without their own
+  // entry they were focusable-but-INVISIBLE from the remote — the grouped-library sections
+  // (v1.0.28) and the privacy link. This pins that both are in the ring rule.
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  const ring = css.slice(css.indexOf('html.tv button:focus'), css.indexOf('{', css.indexOf('html.tv button:focus')));
+  assert.ok(ring, 'the html.tv focus-ring rule moved — re-anchor this guard');
+  for (const sel of ['summary:focus', '[href]:focus']) {
+    assert.ok(ring.includes(sel), `the TV focus ring does not cover ${sel} — it is focusable but invisible on TV`);
+  }
+});
