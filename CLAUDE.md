@@ -262,6 +262,33 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.26 — **AN EMPTY QUEUE SAYS SO** (`#pending-empty`, `.list-empty`). ממתינים rendered a
+  blank area when nothing was waiting, which is indistinguishable from a list that has not
+  loaded or a screen that is broken — and since v1.0.24 the BLUE attention dot deliberately
+  sends the parent to exactly this tab, so "I followed the dot and found nothing" was the
+  common case, not the rare one. The line is driven by `grandTotal`, the count that already
+  spans BOTH scopes, so it can never disagree with the list beside it.
+- v1.0.26 — **A PROFILE NAME MAY BE 20 CHARACTERS, AND THE LIMIT IS NOW REAL.** It was 12,
+  and it lived ONLY as `maxlength` on `#create-name` — an attribute no test can see, which
+  binds exactly one caller and which **does not bind that one either**: assigning `.value`
+  from script sails straight past it (measured). So the cap now lives next to the write, in
+  pure `store.normalizeProfileName` (trim, collapse whitespace, cap, fall back to 'ילד/ה'),
+  and `invariants.test.mjs` pins the attribute to `store.PROFILE_NAME_MAX` so the two cannot
+  drift — raise one alone and either long names reach storage unbounded or the parent cannot
+  type what the tile is sized for.
+  - **THE CAP SLICES BY CODE POINT.** "נועם 🦁" is a plausible name and a `.slice(0, 20)`
+    cuts the surrogate pair in half, storing a replacement character forever. The test that
+    pins this is also a lesson in writing the assertion right: the first version checked
+    `/[\uD800-\uDFFF]$/`, which fires on the CORRECT result too — a kept 🦁 legitimately ends
+    in its low half. It must look for an UNPAIRED surrogate.
+  - **THE TILE IS THE ONLY PLACE A NAME IS DRAWN AT FULL LENGTH**, and it had no width bound
+    at all, so a long name just widened its flex item and the picker went ragged. `9em`
+    (=180px here) holds the widest possible 20 characters in exactly two lines — measured in
+    the browser against an all-'מ' worst case, not guessed. `overflow-wrap: anywhere` is
+    load-bearing (a 20-char name with no spaces is one unbreakable word); the 2-line clamp
+    is INSURANCE for a longer name arriving from a peer, not the normal path. Everywhere
+    else was already safe: `.chip-name` has been ellipsised at 90px all along (it truncated
+    12-char names too), and the per-profile settings labels wrap — verified at 375px.
 - v1.0.26 — **A SHARE FROM YOUTUBE COULD FAIL IN SEVEN WAYS AND SAY NOTHING.** Reported
   from the field as "sharing does not add the video, the parent screen does". The native
   side was never at fault (intent-filter, `onNewIntent` for cold+warm, matching field

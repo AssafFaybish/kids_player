@@ -110,10 +110,33 @@ export function duplicateProfileNames(list) {
   return [...byName.entries()].filter(([, ids]) => ids.length > 1).map(([name, ids]) => ({ name, ids }));
 }
 
+/**
+ * v1.0.26 — PURE: the stored form of a profile name. Raised from 12 to 20 characters.
+ *
+ * **THE LIMIT USED TO EXIST ONLY AS `maxlength` ON THE INPUT** — a DOM attribute that no
+ * test can see and that binds exactly one caller. Every other way a profile is born
+ * (a future caller, a restored list, a peer's document) was unbounded, and the profile
+ * TILE is the one place a name is rendered at full length, so an absurd name is the one
+ * that reshapes the picker. The cap belongs next to the write, where it is testable;
+ * `invariants.test.mjs` pins the input's attribute to `PROFILE_NAME_MAX` so the two
+ * cannot drift.
+ *
+ * Sliced by CODE POINT, not by `.length`: "נועם 🦁" is a plausible name and a UTF-16 cut
+ * lands in the middle of the surrogate pair, storing a replacement character forever.
+ * Trimmed again afterwards, because the cut itself can leave a trailing space.
+ */
+export const PROFILE_NAME_MAX = 20;
+
+export function normalizeProfileName(name) {
+  const collapsed = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
+  const capped = [...collapsed].slice(0, PROFILE_NAME_MAX).join('').trim();
+  return capped || 'ילד/ה';
+}
+
 export async function createProfile(name, avatar, color) {
   const list = await getProfiles();
   const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const profile = { id, name: (name || '').trim() || 'ילד/ה', avatar: avatar || '🙂', color: color || '#4ea1ff' };
+  const profile = { id, name: normalizeProfileName(name), avatar: avatar || '🙂', color: color || '#4ea1ff' };
   list.push(profile);
   await saveProfiles(list);
   return profile;

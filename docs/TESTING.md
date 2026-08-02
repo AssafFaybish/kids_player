@@ -1,6 +1,6 @@
 # How this app is tested — and what the tests cannot see
 
-`npm test` is ~382 node tests and it is the fastest, cheapest signal in the project. It is
+`npm test` is ~391 node tests and it is the fastest, cheapest signal in the project. It is
 also **not sufficient**, and this file exists because that gap has bitten repeatedly: in the
 v1.0.25/v1.0.26 work, **four real bugs shipped past a fully green suite** and were caught by
 driving the app in a browser.
@@ -152,6 +152,8 @@ for anything destructive, and purge it afterwards.
 | Preview bubble | Tick two rows, preview a third, decide → **the ticks must survive**. |
 | 30-day purge | Age one rejected record past the window in IndexedDB, run a sync, confirm it is gone, a tombstone exists with `reason: 'rejected-expired'`, and fresher rows survive. |
 | Share feedback | `plan.shareOutcome` covers every reason `routeShare` can return (pinned). On a device, the toast is the diagnostic — read it before assuming the share was lost. |
+| Empty queue | Approve or reject the last waiting video **without leaving the tab** — the line must appear and the badge must clear on the same rebuild. |
+| 20-char names | Create a profile with a 20-character name: the tile wraps to two lines and the picker stays aligned. Note `maxlength` does **not** bind a scripted `.value` — test the stored name, not the input. |
 
 ---
 
