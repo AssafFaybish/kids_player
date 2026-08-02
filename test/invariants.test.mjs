@@ -751,3 +751,28 @@ test('the orphan GC delegates to planOrphanGC, and the playlist stages are gated
   const sh = app.slice(shAt, app.indexOf('\n}\n', shAt));
   assert.match(sh, /kind === 'playlist'/, 'handleShareInteractive treats a playlist as a video again');
 });
+
+test('snapshot deny import goes through the LWW merge — never a blind restamped put', () => {
+  // v1.0.26: importProfileSnapshot used to `deny.put({ …, at: d.at || Date.now(), … })` —
+  // the v1.0.22 copyDenies bug replayed. A revoked tombstone lost its `removedAt`, took a
+  // fresh `at`, imported as ACTIVE-and-newest, clobbered any local revocation, and the
+  // restamped row then won every Drive merge and re-deleted the video on every device.
+  // The decision now lives in pure planDenyImport (behaviourally tested in
+  // snapshot.test.mjs); this pin only holds the IDB loop — which no node test can
+  // execute — onto that helper, and bans the exact restamping shape. Comments are
+  // STRIPPED first: snapshot.js quotes the old shape in its own doc blocks, and a pin
+  // that a comment can satisfy (or trip) pins prose, not code — the routeShare-guard
+  // lesson.
+  const body = MODULES.get('www/js/snapshot.js')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert.match(body, /planDenyImport\(existingDenies/,
+    'importProfileSnapshot no longer routes deny rows through planDenyImport');
+  assert.doesNotMatch(body, /d\.at\s*\|\|\s*Date\.now\(\)/,
+    'the blind restamping deny put is back');
+  // and the EXPORT carries FULL rows: loadDenySet hides revoked entries, so exporting
+  // through it silently dropped every revocation from the backup (presence must be judged
+  // by the record existing — the db.copyDenies rule).
+  assert.doesNotMatch(body, /loadDenySet/,
+    'the export filters the deny-list through loadDenySet again — revocations do not travel');
+});

@@ -1,11 +1,15 @@
 // Snapshot IMPORT sanitising — the backup file is UNTRUSTED input (a parent can hand-edit
-// it, or import a snapshot exported by another family). These tests pin the four rules that
+// it, or import a snapshot exported by another family). These tests pin the rules that
 // make that safe: the classifier rebuilds every link, a foreign scopeId can never write into
-// a shared library, a pending row stays parked with a home to come back to, and no filesystem
-// path from the file is trusted. Junk must never throw — the import loop has no per-row catch.
+// a shared library, a PARKED row (pending OR rejected) stays parked with a home to come back
+// to, no filesystem path from the file is trusted, and deny rows MERGE by the LWW rule
+// instead of clobbering local state. Junk must never throw — the import loop has no
+// per-row catch.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeSnapshotVideo } from '../www/js/snapshot.js';
+import { sanitizeSnapshotVideo, planDenyImport } from '../www/js/snapshot.js';
+import { mergeDenyRecord } from '../www/js/drive.js';
+import { denyActive } from '../www/js/db.js';
 
 const PROFILE = 'p1';
 const PROF_SCOPE = 'prof:p1';
@@ -137,6 +141,142 @@ test('a LIVE row is filed normally and is never parked', () => {
   const junkState = sanitizeSnapshotVideo({ srcUrl: YT, state: 'weird', folderId: 'sheet' }, ctx());
   assert.equal(junkState.state, 'live');
   assert.equal(junkState.folderId, 'sheet');
+});
+
+// ── rejected parking (v1.0.26) ──────────────────────────────────────────────────────────
+
+test('a REJECTED row round-trips rejected + parked — NEVER live (the child-safety rule)', () => {
+  // 'rejected' used to fall into the live branch (`pending ? 'pending' : 'live'`), so a
+  // restore put every video the parent threw out back on the child's home — and giftable.
+  const rec = sanitizeSnapshotVideo({
+    srcUrl: YT, state: 'rejected', folderId: '~rejected',
+    homeFolderId: 'ch:UCaaaaaaaaaaaaaaaaaaaaaa', rejectedAt: 1700000000000, approvedAt: 123
+  }, ctx());
+  assert.equal(rec.state, 'rejected');
+  assert.equal(rec.folderId, '~rejected');  // the kid-facing folder index must never see it
+  assert.equal(rec.homeFolderId, 'ch:UCaaaaaaaaaaaaaaaaaaaaaa'); // restore knows where to go
+  // the ORIGINAL stamp: planRejectedPurge's 30-day clock reads this field, and a fresh
+  // import stamp would restart the countdown on every restore
+  assert.equal(rec.rejectedAt, 1700000000000);
+  assert.equal(rec.approvedAt, null); // a rejected record never carries an approval
+});
+
+test('a rejected row with no rejectedAt imports with NONE — never a fresh stamp', () => {
+  // rows written before v1.0.26 existed, or exported by an older app: planRejectedPurge
+  // never auto-purges a record without rejectedAt, and inventing one here would put the
+  // whole restored archive on a synchronized 30-day fuse.
+  const rec = sanitizeSnapshotVideo(
+    { srcUrl: YT, state: 'rejected', folderId: '~rejected', homeFolderId: 'mine' }, ctx({ now: 777 })
+  );
+  assert.equal(rec.rejectedAt, null);
+  // junk is none too — num() sanitizes it like every other ordering input
+  const junk = sanitizeSnapshotVideo({ srcUrl: YT, state: 'rejected', rejectedAt: 'yesterday' }, ctx({ now: 777 }));
+  assert.equal(junk.rejectedAt, null);
+});
+
+test('a rejected row falls back to a real home exactly like pending does', () => {
+  const rec = sanitizeSnapshotVideo({ srcUrl: YT, state: 'rejected', folderId: 'sheet' }, ctx());
+  assert.equal(rec.folderId, '~rejected');
+  assert.equal(rec.homeFolderId, 'sheet');
+  // '~rejected' is a parking slot, never a home: a row carrying it in BOTH fields must
+  // still come back somewhere real on restore
+  const parkedTwice = sanitizeSnapshotVideo(
+    { srcUrl: YT, state: 'rejected', folderId: '~rejected', homeFolderId: '~rejected' }, ctx()
+  );
+  assert.equal(parkedTwice.folderId, '~rejected');
+  assert.equal(parkedTwice.homeFolderId, 'mine');
+});
+
+test('a rejected row whose library scope was rejected gets the same sheet→mine downgrade as pending', () => {
+  const rec = sanitizeSnapshotVideo(
+    { srcUrl: YT, state: 'rejected', folderId: '~rejected', homeFolderId: 'sheet', scopeId: 'lib:foreign' },
+    ctx()
+  );
+  assert.equal(rec.scopeId, PROF_SCOPE);
+  assert.equal(rec.folderId, '~rejected');
+  assert.equal(rec.homeFolderId, 'mine', 'restore would file it into a folder that does not exist');
+});
+
+test("live and pending rows never carry rejectedAt, and '~rejected' is unreachable outside the rejected branch", () => {
+  const live = sanitizeSnapshotVideo({ srcUrl: YT, state: 'live', folderId: '~rejected', rejectedAt: 123 }, ctx());
+  assert.equal(live.state, 'live');
+  assert.equal(live.folderId, 'mine'); // parking can only be reached through its state
+  assert.equal(live.rejectedAt, null);
+  const pending = sanitizeSnapshotVideo(
+    { srcUrl: YT, state: 'pending', folderId: '~pending', homeFolderId: '~rejected', rejectedAt: 123 }, ctx()
+  );
+  assert.equal(pending.homeFolderId, 'mine');
+  assert.equal(pending.rejectedAt, null);
+});
+
+// ── deny-list import (v1.0.26) ──────────────────────────────────────────────────────────
+
+test('a REVOKED deny row (removedAt >= at) stays INERT after import — at AND removedAt travel', () => {
+  // the old code stamped `at: d.at || Date.now()` and dropped removedAt, so the sheet's
+  // one deliberate undeny path imported as an ACTIVE-and-newest tombstone: the video was
+  // deleted again on this device and the restamped row then won every Drive merge.
+  const puts = planDenyImport(
+    [], [{ scopeId: LIB_SCOPE, key: 'yt:x', at: 50, removedAt: 90, reason: 'sheet-mirror' }], ctx()
+  );
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].scopeId, LIB_SCOPE);
+  assert.equal(puts[0].at, 50);
+  assert.equal(puts[0].removedAt, 90);
+  assert.equal(denyActive(puts[0]), false, 'a revoked tombstone imported ACTIVE — the video is deleted again');
+});
+
+test('an import never clobbers a local REVOKED row with an active one', () => {
+  const local = { scopeId: LIB_SCOPE, key: 'yt:x', at: 50, removedAt: 90, reason: 'manual' };
+  // an old-format snapshot row ({scopeId,key} only, exported while the deny was active on
+  // the source device) is exactly the shape that used to be restamped with Date.now()
+  const puts = planDenyImport([local], [{ scopeId: LIB_SCOPE, key: 'yt:x' }], ctx());
+  assert.equal(puts.length, 1);
+  assert.equal(denyActive(puts[0]), false, 'the local revocation was clobbered back to active');
+  assert.equal(puts[0].removedAt, 90);
+  // a genuinely NEWER deny in the snapshot still wins — later event, later decision
+  const newer = planDenyImport([local], [{ scopeId: LIB_SCOPE, key: 'yt:x', at: 120 }], ctx());
+  assert.equal(denyActive(newer[0]), true);
+  assert.equal(newer[0].at, 120);
+});
+
+test('the deny merge is COMMUTATIVE — merge(A,B) === merge(B,A), tie → revoked', () => {
+  const A = { scopeId: LIB_SCOPE, key: 'yt:x', at: 50, removedAt: 90 };
+  const B = { scopeId: LIB_SCOPE, key: 'yt:x', at: 120 };
+  assert.deepEqual(mergeDenyRecord(A, B), mergeDenyRecord(B, A));
+  assert.equal(denyActive(mergeDenyRecord(A, B)), true); // 120 > 90: the later deny wins
+  // an exact tie between a deny and a revocation resolves to REVOKED — converges with
+  // "the sheet wins" semantics, same direction in both argument orders
+  const tieA = { scopeId: LIB_SCOPE, key: 'yt:x', at: 100 };
+  const tieB = { scopeId: LIB_SCOPE, key: 'yt:x', at: 60, removedAt: 100 };
+  assert.deepEqual(mergeDenyRecord(tieA, tieB), mergeDenyRecord(tieB, tieA));
+  assert.equal(denyActive(mergeDenyRecord(tieA, tieB)), false);
+});
+
+test('deny scoping and junk: foreign scope falls back, junk is skipped, a missing at is 0 — never now', () => {
+  const before = Date.now();
+  const puts = planDenyImport([], [
+    { scopeId: 'lib:foreign', key: 'yt:x', at: 5 },   // a foreign library must not be written into
+    { key: 'yt:y' },                                   // old export format: no scope, no times
+    null, {}, 'x', { scopeId: LIB_SCOPE, key: 7 }, { scopeId: LIB_SCOPE, key: 'yt:z', at: 'soon' }
+  ], ctx());
+  const by = new Map(puts.map((p) => [p.key, p]));
+  assert.equal(by.get('yt:x').scopeId, PROF_SCOPE);
+  assert.equal(by.get('yt:y').scopeId, PROF_SCOPE);
+  // a timeless row must never be stamped with the import time — that is what made the
+  // resurrected tombstone win on every device (db.copyDenies learned this in v1.0.22)
+  assert.equal(by.get('yt:y').at, 0);
+  assert.ok(by.get('yt:y').at < before);
+  assert.equal(by.get('yt:z').at, 0);
+  assert.equal(puts.length, 3, 'junk rows leaked through');
+  // duplicates inside ONE snapshot merge against each other, not last-write-wins
+  const dup = planDenyImport([], [
+    { scopeId: LIB_SCOPE, key: 'yt:x', at: 50, removedAt: 90 },
+    { scopeId: LIB_SCOPE, key: 'yt:x', at: 50 }
+  ], ctx());
+  assert.equal(dup.length, 1);
+  assert.equal(denyActive(dup[0]), false);
+  // and with no options at all (defaults must not blow up)
+  assert.doesNotThrow(() => planDenyImport(null, [{ key: 'yt:q' }]));
 });
 
 // ── untrusted paths and urls ────────────────────────────────────────────────────────────

@@ -1117,6 +1117,21 @@ pins that the consumers follow the config and that every address is well-formed.
     collection dissolves into the flat list) and REFUSES a non-finite `sortKey`
     (`by_folder_sort` takes no NaN key and a string sorts outside `folderRange`, so the
     row counted as imported and was invisible forever).
+    Since v1.0.26 **ALL THREE curation states survive the round trip**: 'rejected' used
+    to fall into the live branch (`pending ? 'pending' : 'live'`), so a restore put
+    every video the parent threw out BACK ON THE CHILD'S HOME — live, in a real folder,
+    giftable. A rejected record imports parked in `'~rejected'` with its ORIGINAL
+    `rejectedAt`: restamping would restart `planRejectedPurge`'s 30-day clock on every
+    restore, and a row exported without one imports without one (no `rejectedAt` =
+    never auto-purged — the safe direction). The sheet→mine downgrade applies to it
+    exactly as to pending. DENY rows travel as FULL records in both directions
+    (`loadDenyRecords`, never `loadDenySet` — the `copyDenies` presence rule) and the
+    import MERGES via `drive.mergeDenyRecord` in pure `planDenyImport` instead of
+    blind-putting: the old `at: d.at || Date.now()` dropped `removedAt` and restamped
+    the event, so a revoked tombstone imported as ACTIVE-and-newest, clobbered a local
+    revocation, and the resurrected deny then won every Drive merge — the v1.0.22
+    `copyDenies` bug replayed on the snapshot path. A row with no `at` gets 0, never
+    "now": a timeless entry must lose to any real event.
   - `sheetwrite.interpretSheetResponse` is the ONE gate for EVERY `values.get` read,
     including the one inside `doFlush` — hand-rolling that one read let an error envelope
     or a sign-in page pass as an empty sheet, so no row matched for deletion, every append

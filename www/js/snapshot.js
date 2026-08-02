@@ -6,16 +6,22 @@
 // re-classified from its srcUrl through classifyLink — the one legacy path that
 // bypassed the safety boundary (old importJson) is closed. localPath is validated
 // against the cache-file shape. Import MERGES, never overwrites. Those per-row rules live
-// in the PURE sanitizeSnapshotVideo below precisely so they can be pinned by tests — this
-// module talks to IndexedDB, and an untested safety boundary is not a boundary.
+// in the PURE sanitizeSnapshotVideo / planDenyImport below precisely so they can be pinned
+// by tests — this module talks to IndexedDB, and an untested safety boundary is not a
+// boundary.
 
 import { classifyLink } from './classify.js';
-import { normalizeTitle } from './normalize.js';
+import { normalizeTitle, PARKED, isParkedFolder } from './normalize.js';
 import { sortKeyFor } from './order.js';
+// Layer note: snapshot.js is consumed only by app.js (dynamically), so it sits ABOVE the
+// plan/sync2/drive tier — importing the deny LWW merge from drive.js creates no cycle
+// (drive.js never imports this module; the invariants cycle test pins the graph).
+// Replicating the rule here instead would be the drift CLAUDE.md bans.
+import { mergeDenyRecord } from './drive.js';
 import {
   openDb, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
-  loadDenySet, tx, profScope, putVideoStates
+  loadDenyRecords, tx, profScope, putVideoStates
 } from './db.js';
 
 const LOCALPATH_RE = /^videos\/[A-Za-z0-9_-]{1,90}\.mp4$/;
@@ -29,7 +35,11 @@ export async function exportProfileSnapshot(profileId, profileMeta = null) {
   for (const s of scopes) videos.push(...(await loadMergeIndex(s)).values());
 
   const denylist = [];
-  for (const s of scopes) for (const key of await loadDenySet(s)) denylist.push({ scopeId: s, key });
+  // FULL rows, active AND revoked (loadDenyRecords, never loadDenySet): a revocation is
+  // an EVENT that must travel — exporting only the active keys meant a restore left a
+  // peer's stale ACTIVE tombstone standing and the video stayed deleted on that device
+  // forever. Same presence-not-activity rule as db.copyDenies (the v1.0.22 lesson).
+  for (const s of scopes) denylist.push(...(await loadDenyRecords(s)));
 
   const channels = [];
   const libraryChannels = lib ? await listLibraryChannels(lib) : [];
@@ -82,6 +92,12 @@ const inScope = (validScopes, id) => Array.isArray(validScopes)
  *    component, so an unparked pending record would be visible to the child) and keeps
  *    the homeFolderId it was exported with — that is the folder approval returns it to,
  *    and `homeFolderId === 'sheet'` is also what marks a record sheet-backed later on.
+ *  - a REJECTED row stays PARKED in '~rejected', by the identical mechanism. It used to
+ *    fall into the live branch (`pending ? 'pending' : 'live'`), so a restore put every
+ *    video the parent threw out BACK ON THE CHILD'S HOME. Its `rejectedAt` is the
+ *    ORIGINAL stamp, never a fresh one: `planRejectedPurge`'s 30-day clock reads that
+ *    field, so restamping would restart the countdown on every restore — and a row
+ *    exported without one imports without one (no rejectedAt = never auto-purged).
  *  - localPath must match the cache-file shape we write ourselves: a path from the file
  *    is untrusted input and must never point the player outside the cache directory.
  *  - thumbId is dropped (blobs don't travel) and thumbUrl must be https — an http
@@ -102,11 +118,14 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
   // unscoped and keeps whatever folder it declared (pinned by the round-trip tests).
   const scopeRejected = v && v.scopeId != null && !scopeOk;
   const reFolder = (f) => (scopeRejected && f === 'sheet' ? 'mine' : f);
-  // '~pending' is a parking slot, never a folder to return to
-  const folderId = typeof v.folderId === 'string' && v.folderId !== '~pending' ? v.folderId : 'mine';
-  const homeFolderId = typeof v.homeFolderId === 'string' && v.homeFolderId !== '~pending'
+  // '~pending'/'~rejected' are parking slots, never folders to return to
+  const folderId = typeof v.folderId === 'string' && !isParkedFolder(v.folderId) ? v.folderId : 'mine';
+  const homeFolderId = typeof v.homeFolderId === 'string' && !isParkedFolder(v.homeFolderId)
     ? v.homeFolderId : null;
-  const pending = v.state === 'pending';
+  // ALL THREE curation states survive the round trip ("'rejected' IS NOT A DELETION",
+  // v1.0.23). Anything unrecognised is 'live' (the legacy states), never a fourth state.
+  const state = v.state === 'pending' ? 'pending' : v.state === 'rejected' ? 'rejected' : 'live';
+  const parked = state !== 'live';
   const title = typeof v.title === 'string' ? v.title.slice(0, 300) : '';
 
   // Ordering inputs are sanitized BEFORE they reach sortKeyFor, and its result is checked:
@@ -131,10 +150,10 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
     title,
     titleSource: v.titleSource || null,
     normTitle: normalizeTitle(title), // from the SANITIZED title — `{}` used to normalize
-    folderId: pending ? '~pending' : reFolder(folderId),
-    // an exported pending row already carries its real home; only a row that was never
+    folderId: parked ? PARKED[state] : reFolder(folderId),
+    // an exported parked row already carries its real home; only a row that was never
     // parked (or lost its home) falls back to the folder it was filed under
-    homeFolderId: reFolder(pending ? (homeFolderId || folderId) : homeFolderId),
+    homeFolderId: reFolder(parked ? (homeFolderId || folderId) : homeFolderId),
     channelId: typeof v.channelId === 'string' ? v.channelId : null,
     // v1.0.12 grouping fields: without them every 🎞️ collection dissolves into the flat
     // list on import, and the weekly re-enrichment throttle restarts from scratch.
@@ -144,8 +163,10 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
     sortKey,
     publishedAt, rowIndex,
     origin,
-    state: pending ? 'pending' : 'live',
-    addedAt, approvedAt: v.approvedAt ?? null,
+    state,
+    addedAt, approvedAt: state === 'rejected' ? null : (v.approvedAt ?? null),
+    // the ORIGINAL rejection time (or none) — see the rules block above
+    rejectedAt: state === 'rejected' ? num(v.rejectedAt) : null,
     thumbId: null, // blobs don't travel in the snapshot
     thumbUrl: typeof v.thumbUrl === 'string' && /^https:/.test(v.thumbUrl) ? v.thumbUrl : null,
     // typeof FIRST: RegExp.test stringifies, so `["videos/x.mp4"]` used to pass the shape
@@ -153,6 +174,44 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
     localPath: typeof v.localPath === 'string' && LOCALPATH_RE.test(v.localPath) ? v.localPath : null,
     updatedAt: now
   };
+}
+
+/**
+ * PURE: the deny rows one import may write. The deny-list is an LWW-element set
+ * (v1.0.10): an entry with `removedAt >= at` is REVOKED — the sheet re-adding the key,
+ * the one deliberate undeny path. Two rules, both the v1.0.22 `copyDenies` bug replayed
+ * here verbatim until v1.0.26:
+ *  - a row carries ITS OWN event times. The old code stamped `at: d.at || Date.now()`
+ *    and dropped `removedAt`, so a revoked tombstone imported as ACTIVE **and newest**,
+ *    won every later Drive merge, and re-deleted the video on this device and then on
+ *    every other one.
+ *  - never a blind put: an existing local row is merged via `mergeDenyRecord` (later
+ *    event wins, tie → revoked), so a stale snapshot cannot clobber a local revocation.
+ * A row with no usable `at` gets 0, never "now": a timeless entry must lose to any real
+ * event on the other side.
+ */
+export function planDenyImport(existingRows, snapRows, { validScopes, profileId } = {}) {
+  const have = new Map();
+  for (const r of existingRows || []) {
+    if (r && typeof r.key === 'string') have.set(r.scopeId + '\0' + r.key, r);
+  }
+  const puts = new Map();
+  for (const d of Array.isArray(snapRows) ? snapRows : []) {
+    if (!d || typeof d.key !== 'string') continue;
+    const scopeId = inScope(validScopes, d.scopeId) ? d.scopeId : profScope(profileId);
+    const at = Number(d.at) || 0;
+    const removedAt = Number(d.removedAt) || 0;
+    const row = {
+      scopeId, key: d.key, at,
+      ...(removedAt ? { removedAt } : {}),
+      reason: (typeof d.reason === 'string' && d.reason) || 'import'
+    };
+    const k = scopeId + '\0' + d.key;
+    const merged = mergeDenyRecord(have.get(k), row);
+    have.set(k, merged); // duplicates inside one snapshot must merge against the winner
+    puts.set(k, merged);
+  }
+  return [...puts.values()];
 }
 
 /** Merge an exported snapshot into (possibly fresh) local state. Never throws on bad rows. */
@@ -181,15 +240,15 @@ export async function importProfileSnapshot(profileId, text) {
   }
   await putVideos(puts);
 
-  // deny-list: union, never shrink (deletion durability crosses devices)
-  const denies = Array.isArray(snap.denylist) ? snap.denylist : [];
-  await tx(['denylist'], 'readwrite', (deny) => {
-    for (const d of denies) {
-      if (!d || typeof d.key !== 'string') continue;
-      const scopeId = validScopes.has(d.scopeId) ? d.scopeId : profScope(profileId);
-      deny.put({ scopeId, key: d.key, at: d.at || Date.now(), reason: 'import' });
-    }
-  });
+  // deny-list: union, never shrink (deletion durability crosses devices) — but MERGED,
+  // never blind-put: since v1.0.10 an entry can be REVOKED, and both the snapshot
+  // revocation's survival and the local row's are decided in pure planDenyImport above.
+  const existingDenies = [];
+  for (const s of validScopes) existingDenies.push(...(await loadDenyRecords(s)));
+  const denyPuts = planDenyImport(existingDenies, snap.denylist, { validScopes, profileId });
+  if (denyPuts.length) {
+    await tx(['denylist'], 'readwrite', (deny) => { for (const r of denyPuts) deny.put(r); });
+  }
 
   if (lib && Array.isArray(snap.libraryChannels)) {
     for (const lc of snap.libraryChannels) {
