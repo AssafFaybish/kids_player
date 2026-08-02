@@ -146,10 +146,21 @@ test('the dead sheet-parsing path has no production caller', () => {
   // parseSourceSheet + sync.js are kept only for the tokenizer tests. Wiring either
   // back to a fetch would reintroduce the unauthenticated CSV read that v1.0.19 removed
   // (and with it the "unshared sheet returns HTML 200" library-wipe).
+  //
+  // ONE pattern for every import shape: `import x from`, `import { a as b } from`,
+  // the bare side-effect `import './sync.js';`, dynamic `import('./sync.js')`, and any
+  // relative prefix (`./`, `../`). The first version required `from './sync.js'`
+  // VERBATIM, so a side-effect import and a `../sync.js` alias both dodged it.
+  const deadImport = /(?:\bfrom|\bimport)\s*\(?\s*['"](?:[^'"]*\/)?sync\.js['"]/;
+  // prove the pattern can fire on the exact shapes it exists to catch (TESTING.md rule 2)
+  for (const bad of ["import './sync.js';", "import { x as y } from '../sync.js';",
+    "await import('./sync.js')", "export { z } from './sync.js';"]) {
+    assert.match(bad, deadImport, 'the dead-import pattern went vacuous');
+  }
   for (const [p, body] of MODULES) {
     if (p === 'www/js/sync.js') continue;
-    // both forms: `await import('./sync.js')` evaded the `from`-anchored check entirely
-    assert.doesNotMatch(body, /from\s+['"]\.\/sync\.js['"]/, `${p} imports the dead sync.js`);
+    assert.doesNotMatch(body, deadImport, `${p} imports the dead sync.js`);
+    // belt and braces: the resolver-based sweep also covers odd whitespace shapes
     assert.ok(!dynamicImportsOf(p).some((d) => d === 'www/js/sync.js'),
       `${p} dynamically imports the dead sync.js`);
     if (p === 'www/js/sync2.js') {
@@ -232,9 +243,19 @@ test('every path that makes a record LIVE forces a refresh', () => {
   // new approve/add site must be added here deliberately.
   const app = MODULES.get('www/js/app.js');
   assert.match(app, /function refreshAfterAdd\(/, 'the post-add refresh helper is gone');
-  // total occurrences minus the one declaration = real call sites
+  // total occurrences minus the one declaration = real call sites.
+  // EXACT, deliberately: the old `>= 5` floor stayed green while three call sites were
+  // deleted. The 7 are: refreshPendingList's row-approve, approveChannelBacklog,
+  // importChannelAndAsk (the awaited wait:true one), parentAdd, the pending
+  // single-approve and approve-all handlers, and the share handler in init.
+  // v1.0.27 DELIBERATE change 8→7: pickChannelVideos no longer fires its own silent
+  // sync — importChannelAndAsk runs the one blocking 'finishing' wait for BOTH dialog
+  // answers, which is the waiting-screens feature's whole point on that branch (the
+  // "no step is silent" test pins that path). A new add/approve path adds one HERE,
+  // and a removal must explain where its refresh went.
   const sites = (app.match(/refreshAfterAdd\(/g) || []).length - 1;
-  assert.ok(sites >= 5, `only ${sites} refreshAfterAdd call sites — an add path stopped refreshing`);
+  assert.equal(sites, 7,
+    `expected exactly 7 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
   // it must FORCE: the 3-min shouldSync throttle is what made the bug invisible
   const fn = app.slice(app.indexOf('function refreshAfterAdd('));
   // `[^}]*` rather than an immediate `}`: v1.0.26 added an `onProgress` option for the one
@@ -254,15 +275,32 @@ test('syncLibrary DELEGATES the join-or-queue decision to planSyncDispatch', () 
   // then shipped a condition that joined whenever the running sync was also forced. A
   // comment cannot fail a test. Pin that the tested decision core is the LIVE one.
   const src = MODULES.get('www/js/sync2.js');
-  const fn = src.slice(src.indexOf('export function syncLibrary'));
+  const at = src.indexOf('export function syncLibrary');
+  assert.ok(at > 0, 'syncLibrary is gone — re-anchor this guard');
+  const fn = src.slice(at);
   const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
   assert.match(body, /planSyncDispatch\(/, 'syncLibrary re-implements the decision inline again');
-  for (const action of ['join-running', 'join-queued', 'queue']) {
+  // Anchor to the CURRENT entry names, LOUDLY: the first version of this guard banned
+  // `cur.force` long after any `cur` stopped existing, so the v1.0.21 bug rewritten in
+  // today's names passed it. A rename must fail HERE, not silently defuse the ban below.
+  assert.match(body, /const running = inFlight\.get\(/,
+    'the in-flight entry variable was renamed — re-anchor this guard or its .force ban matches nothing');
+  assert.match(body, /const queued = queuedRuns\.get\(/,
+    'the queued entry variable was renamed — re-anchor this guard or its .force ban matches nothing');
+  for (const action of ['start', 'join-running', 'join-queued', 'queue']) {
     assert.ok(body.includes(`'${action}'`), `syncLibrary ignores the '${action}' decision`);
   }
-  // The bug was a condition that let a forced caller take the join path. There must be no
-  // reachable `return` of an existing run's promise that is not gated by that decision.
-  assert.doesNotMatch(body, /cur\.force/, 'the v1.0.21 join-a-forced-run condition is back');
+  // The bug was a condition that read an ENTRY's own force flag and joined. The only
+  // `.force` the dispatcher may read is the CALLER's (opts.force, fed to the pure
+  // helper); any other `.force` inside syncLibrary is the v1.0.21 condition in new names.
+  assert.doesNotMatch(body, /(?<!opts)\.force\b/,
+    'syncLibrary consults an entry\'s .force directly — the v1.0.21 join-a-forced-run condition is back');
+  // …and every join must be gated by the pure decision, never by an ad-hoc condition.
+  for (const line of body.split('\n')) {
+    if (!line.includes('attach(')) continue;
+    assert.match(line, /action === '/,
+      `syncLibrary joins a run without asking planSyncDispatch: ${line.trim()}`);
+  }
 });
 
 test('BOTH ways to add a channel import it and then ASK (v1.0.25)', () => {
@@ -375,16 +413,22 @@ test('the exit lock is per-profile, and leaving a locked profile is gated', () =
   // pick a sibling whose profile is NOT locked, and walk out. Two taps, and the kiosk is
   // decoration.
   const app = MODULES.get('www/js/app.js');
-  assert.match(app, /async function onProfileChip\(/, 'the profile-switch gate is gone');
-  const fn = app.slice(app.indexOf('async function onProfileChip('));
+  const chipAt = app.indexOf('async function onProfileChip(');
+  assert.ok(chipAt > 0, 'the profile-switch gate is gone');
+  const fn = app.slice(chipAt);
   const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
   assert.match(body, /exitLockOn\(\)/, 'the gate no longer checks the lock');
   assert.match(body, /startPin\(/, 'a locked profile can be left without the parent code');
+  // and the gate must not fail OPEN — in the FUNCTION, not only in the wiring line: a
+  // catch anywhere in onProfileChip that falls back to backToProfiles makes a locked
+  // profile escapable by whatever made the check throw. (The first version looked only
+  // at the addEventListener line, so a `.catch(() => backToProfiles())` inside the
+  // function body — the documented real escape — passed it.)
+  assert.doesNotMatch(body, /catch[\s\S]{0,120}backToProfiles/,
+    'onProfileChip falls back to backToProfiles on a throw — the switch gate fails open');
   const wiring = app.split('\n').find((l) => l.includes("$('profile-chip').addEventListener")) || '';
   assert.match(wiring, /onProfileChip/, 'the chip is wired straight to backToProfiles again');
-  // and the gate must not fail OPEN: a catch that falls back to backToProfiles would make
-  // a locked profile escapable by whatever made the check throw.
-  assert.doesNotMatch(wiring, /catch\([^)]*\)\s*=>\s*backToProfiles/, 'the switch gate fails open');
+  assert.doesNotMatch(wiring, /catch[\s\S]{0,120}backToProfiles/, 'the switch gate fails open at the wiring');
 
   // …and the lock must arm at launch from the LAST active profile, or there is an
   // unlocked window between launch and the profile tap.
@@ -399,11 +443,15 @@ test('the exit lock is per-profile, and leaving a locked profile is gated', () =
   const actBody = act.slice(0, act.indexOf('\n}\n') + 1);
   assert.match(actBody, /applyExitLock\(\)/,
     'activateProfile does not re-apply the exit lock — a locked child keeps a sibling\'s unlocked state');
-  // and it must actually touch the OS pinning, not just the button
-  const helper = app.slice(app.indexOf('async function applyExitLock('));
+  // and it must actually CALL the OS pinning, not just the button. The first version
+  // matched the bare names, which the destructuring import line satisfies on its own —
+  // deleting both OS calls left the kiosk as a hidden button and a green suite.
+  const helperAt = app.indexOf('async function applyExitLock(');
+  assert.ok(helperAt > 0, 'the per-profile arming helper is gone — re-anchor this guard');
+  const helper = app.slice(helperAt);
   const helperBody = helper.slice(0, helper.indexOf('\n}\n') + 1);
-  assert.match(helperBody, /lockTask/, 'the helper no longer pins');
-  assert.match(helperBody, /unlockTask/, 'the helper never releases — a sibling stays pinned');
+  assert.match(helperBody, /await lockTask\(\)/, 'the helper no longer pins — the import alone is not a call');
+  assert.match(helperBody, /await unlockTask\(\)/, 'the helper never releases — a sibling stays pinned');
 });
 
 test('the settings channel travels, but the API key never does', () => {
@@ -477,38 +525,47 @@ test('the preview bubble leaves the screen behind it untouched (v1.0.26)', () =>
   // The bubble exists so a parent can CHECK a video without losing the queue they are
   // triaging. Everything here is a way that promise gets broken silently.
   const app = MODULES.get('www/js/app.js');
+  // Every slice must PROVE its anchor first (the handleSourceShare pattern above): an
+  // indexOf that answers -1 makes slice(-1) a one-character body, the inner indexOf
+  // answers -1 too, and every doesNotMatch below passes vacuously on an EMPTY string —
+  // a renamed function turned this whole test into decoration once already.
+  const sliceAt = (needle) => {
+    const at = app.indexOf(needle);
+    assert.ok(at > 0, `app.js lost the anchor "${needle}" — this guard cannot run on an empty slice`);
+    return app.slice(at);
+  };
 
   // 1. It must not be the kid player. setupHud binds window/document listeners and must
   //    never run twice without a teardown; the kid HUD also hides the very scrub bar the
   //    parent needs. The bubble builds its own iframe from the tested pure URL.
   assert.match(app, /previewEmbedUrl\(/, 'the preview no longer uses the tested embed URL');
-  const fn = app.slice(app.indexOf('function renderPreview('));
+  const fn = sliceAt('function renderPreview(');
   const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
   assert.doesNotMatch(body, /playItem\(/, 'the preview mounts the KID player — setupHud runs twice');
 
   // 2. Closing must tear the player out, or a video keeps playing behind the parent screen.
-  const close = app.slice(app.indexOf('function closePreview('));
+  const close = sliceAt('function closePreview(');
   assert.match(close.slice(0, close.indexOf('\n}\n') + 1), /innerHTML = ''/,
     'closing the bubble leaves the iframe alive and playing');
   assert.match(app, /onLeave: \(\) => closePreview\(\)/,
     'leaving the parent screen no longer stops the preview');
 
   // 3. Hardware back must close the BUBBLE first, not throw the parent out of the screen.
-  const reg = app.slice(app.indexOf("nav.register('parent'"));
+  const reg = sliceAt("nav.register('parent'");
   assert.match(reg.slice(0, 400), /isPreviewOpen\(\)/, 'back skips the bubble and leaves the screen');
 
   // 4. THE promise itself: deciding one video must not untick the rows the parent lined up.
   //    Doing this by parameter was wrong — refreshAfterAdd rebuilds the list a beat later
   //    and cleared them right back — so preservation is unconditional and filtered against
   //    the rebuilt list.
-  const rp = app.slice(app.indexOf('async function refreshPendingList('));
+  const rp = sliceAt('async function refreshPendingList(');
   const rpBody = rp.slice(0, rp.indexOf('\n}\n') + 1);
   assert.match(rpBody, /const carried = new Set\(pendingSel\)/, 'the selection is dropped on rebuild again');
   assert.match(rpBody, /alive\.has\(id\)/, 'ticks are restored without checking the row still exists');
   assert.doesNotMatch(app, /keepSelection/, 'preservation is conditional again — refreshAfterAdd will undo it');
 
   // 5. A cancelled confirm must not count as a decision and skip the video.
-  const pd = app.slice(app.indexOf('async function previewDecide('));
+  const pd = sliceAt('async function previewDecide(');
   assert.match(pd.slice(0, pd.indexOf('\n}\n') + 1), /!== false/,
     'backing out of the delete confirm still advances past the video');
 });
@@ -518,26 +575,42 @@ test('NO share route can be silent (v1.0.26)', () => {
   // could not answer which of seven silent `return`s it had taken — nor did success say
   // anything either. Every route now ends in a reason, and app.js shows it.
   const share = MODULES.get('www/js/share.js');
-  const route = share.slice(share.indexOf('async function routeShare('));
-  const body = route.slice(0, route.indexOf('\n}\n') + 1);
+  const fnBody = (name) => {
+    const at = share.indexOf(`async function ${name}(`);
+    assert.ok(at > 0, `share.js lost ${name} — re-anchor this guard`);
+    const fn = share.slice(at);
+    return fn.slice(0, fn.indexOf('\n}\n') + 1);
+  };
 
-  // A bare `return;` anywhere inside routeShare is, by construction, a silent drop.
-  // The pattern must be shape-based, not line-based: the real ones look like
-  // `if (!c) return;` — an earlier version of this guard anchored to the start of a line
-  // and therefore could not fail on the exact code it was written to catch.
-  assert.doesNotMatch(body, /\breturn\s*;/,
-    'routeShare has a bare `return` again — that is a share the parent never hears about');
+  // EVERY function on the share path, not just routeShare: three of the seven real
+  // v1.0.26 drops lived in handleSourceShare, which the first version never scanned.
+  // (drainShareQueue/initShareTarget stay out: their early returns mean "no share
+  // arrived", not a share swallowed.)
+  const FLOWS = ['handleShare', 'routeShare', 'handleSourceShare'];
+  const reasons = new Set();
+  for (const name of FLOWS) {
+    const body = fnBody(name);
+    // A silent drop is `return;` — and `return null;` / `return undefined;` are the SAME
+    // nothing wearing a value. The first version matched only the bare form. Shape-based,
+    // not line-based: the real ones look like `if (!c) return;` mid-line.
+    assert.doesNotMatch(body, /\breturn\s*(?:null|undefined)?\s*;/,
+      `${name} has a silent return — that is a share the parent never hears about`);
+    // harvest EVERY reason a return can answer, INCLUDING ternary arms
+    // (`return a ? 'pending' : 'added';` — the old `return '…'` shape missed both)
+    for (const st of body.matchAll(/\breturn\b([^;]*);/g)) {
+      for (const lit of st[1].matchAll(/'([a-z][a-z-]*)'/g)) reasons.add(lit[1]);
+    }
+  }
 
   // and handleShare must actually report what routeShare answered
-  const handle = share.slice(share.indexOf('async function handleShare('));
-  assert.match(handle.slice(0, handle.indexOf('\n}\n') + 1), /onResult\(reason\)/,
+  assert.match(fnBody('handleShare'), /onResult\(reason\)/,
     'the reason is computed and then thrown away');
 
   // every reason share.js can return must exist in the pure message table
-  const reasons = [...body.matchAll(/return '([a-z-]+)'/g)].map((m) => m[1]);
-  assert.ok(reasons.length >= 5, 'routeShare stopped returning reasons');
+  assert.ok(reasons.size >= 10,
+    `only ${reasons.size} reasons harvested — the share sweep went blind`);
   const table = MODULES.get('www/js/plan.js');
-  for (const r of new Set(reasons)) {
+  for (const r of reasons) {
     assert.ok(table.includes(`  ${r}: {`) || table.includes(`  '${r}': {`),
       `share.js can answer '${r}' but plan.js has no message for it`);
   }
@@ -557,10 +630,19 @@ test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // nursery rhymes, the app's core content. Membership of the UULF/UUSH playlists is the
   // only correct filter; see quota.planBackfillPlaylist.
   //
-  // `PT(?:` is the shape every such parser has, and nothing here needs one (the player
-  // reads seconds off the media element, not the API).
+  // Nothing here needs a duration (the player reads seconds off the media element, not
+  // the API). The banned shape is any realistic parser over `PT…H/M/S`: `PT` followed by
+  // a group, a `\d` or a `[0-9]`, with an H/M/S unit nearby. The first version banned the
+  // literal `PT(?:` — only NON-CAPTURING-group parsers — and `/PT(\d+H)?/`, the shape a
+  // parser that actually wants the numbers uses, sailed straight past it.
+  const durationParser = /PT(?:\(|\\d|\[0-9\])[^\n]{0,40}[HMS]/;
+  // prove the pattern can fire on the shapes it exists to catch (TESTING.md rule 2)
+  for (const bad of ['/^PT(\\d+H)?(\\d+M)?(\\d+S)?$/', '/PT(?:(\\d+)H)?/',
+    'PT([0-9]+M)', '/PT\\d+S/']) {
+    assert.match(bad, durationParser, 'the duration-parser pattern went vacuous');
+  }
   for (const [p, body] of MODULES) {
-    assert.doesNotMatch(body, /PT\(\?:/,
+    assert.doesNotMatch(body, durationParser,
       `${p} parses an ISO-8601 duration — length misclassifies short nursery rhymes as Shorts`);
   }
 });
