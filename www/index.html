@@ -426,14 +426,21 @@
         <button id="add-btn" class="btn btn-primary" type="button">➕ הוספה</button>
         <div id="add-msg" class="form-msg"></div>
 
-        <div class="list-head">
-          <span id="list-count" class="list-count">0 סרטונים</span>
-          <div class="list-actions">
-            <button id="export-btn" class="btn btn-small" type="button">ייצוא</button>
-            <button id="import-btn" class="btn btn-small" type="button">ייבוא</button>
-          </div>
-        </div>
-        <ul id="parent-list" class="parent-list"></ul>
+        <!-- v1.0.28: the whole existing library folds away (parent's request) — the add
+             form is the tab's job; hundreds of already-approved rows were noise the
+             parent scrolled past every visit. Everything CLOSED by default, and inside,
+             one sub-section per folder the child actually sees. -->
+        <details id="library-box" class="library-box">
+          <summary class="list-head library-summary">
+            <span id="list-count" class="list-count">0 סרטונים</span>
+            <div class="list-actions">
+              <button id="export-btn" class="btn btn-small" type="button">ייצוא</button>
+              <button id="import-btn" class="btn btn-small" type="button">ייבוא</button>
+            </div>
+          </summary>
+          <div id="parent-groups"></div>
+          <ul id="parent-list" class="parent-list hidden"></ul>
+        </details>
       </div>
 
       <!-- Sources: the input sheet + subscribed channels + API key -->

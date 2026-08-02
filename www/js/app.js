@@ -23,7 +23,7 @@ import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge, shareOutcome } from './plan.js';
+  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -2251,30 +2251,59 @@ async function refreshParentList() {
     }
   }
   all.sort((a, b) => (b.sortKey || 0) - (a.sortKey || 0));
-  $('list-count').textContent = all.length > PARENT_LIST_CAP
-    ? `מוצגים ${PARENT_LIST_CAP} מתוך ${all.length} סרטונים`
-    : `${all.length} סרטונים`;
-  const ul = $('parent-list');
-  ul.innerHTML = '';
-  const shownLive = all.slice(0, PARENT_LIST_CAP);
-  for (const rec of shownLive) {
-    ul.appendChild(parentRow({
-      rec,
-      // v1.0.26: same quick-look here. These videos are already approved, so the bubble
-      // offers DELETE — the one action this list has — after the parent has actually seen
-      // what they are about to remove.
-      onPreview: () => openPreview(shownLive, shownLive.indexOf(rec), 'library'),
-      onDelete: async () => {
-        await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
-        // the sheet carries it to everyone: singles lose their row, channel videos
-        // get a '# הוסר' removal row (v1.0.10/12)
-        if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
-        else if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
-        await refreshParentList();
-        renderHome();
-        maybeSchedulePush();
-      }
-    }));
+  $('list-count').textContent = `📚 הסרטונים הקיימים (${all.length})`;
+
+  // v1.0.28 — grouped and folded (parent's request): one sub-section per folder the
+  // child actually sees, all CLOSED by default so the tab opens onto the add form, not
+  // onto hundreds of already-approved rows. Grouping is pure plan.groupLibraryByFolder;
+  // the per-folder cap keeps the old PARENT_LIST_CAP promise per section instead of
+  // globally, so a huge channel can no longer hide the small folders behind the cap.
+  const shownLive = all.slice(0, PARENT_LIST_CAP * 4); // preview/delete work over this order
+  const subsList = libScope ? await db.listLibraryChannels(libScope) : [];
+  const groups = groupLibraryByFolder(shownLive, subsList);
+  const host = $('parent-groups');
+  const openIds = new Set([...host.querySelectorAll('details[open]')].map((d) => d.dataset.gid));
+  host.innerHTML = '';
+  const rowFor = (rec) => parentRow({
+    rec,
+    // v1.0.26: same quick-look here. These videos are already approved, so the bubble
+    // offers DELETE — the one action this list has — after the parent has actually seen
+    // what they are about to remove.
+    onPreview: () => openPreview(shownLive, shownLive.indexOf(rec), 'library'),
+    onDelete: async () => {
+      await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
+      // the sheet carries it to everyone: singles lose their row, channel videos
+      // get a '# הוסר' removal row (v1.0.10/12)
+      if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
+      else if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
+      await refreshParentList();
+      renderHome();
+      maybeSchedulePush();
+    }
+  });
+  for (const g of groups) {
+    const box = document.createElement('details');
+    box.className = 'library-group';
+    box.dataset.gid = g.id;
+    // a rebuild after a delete keeps whatever the parent had open — the same
+    // "the screen behind stays as it was" rule the pending list follows for ticks
+    if (openIds.has(g.id)) box.open = true;
+    const sum = document.createElement('summary');
+    sum.className = 'library-group-head';
+    const cap = Math.min(g.records.length, PARENT_LIST_CAP);
+    sum.textContent = `${g.title} (${g.records.length})`;
+    box.appendChild(sum);
+    const ul = document.createElement('ul');
+    ul.className = 'parent-list';
+    for (const rec of g.records.slice(0, PARENT_LIST_CAP)) ul.appendChild(rowFor(rec));
+    if (g.records.length > cap) {
+      const more = document.createElement('li');
+      more.className = 'li-note';
+      more.textContent = `מוצגים ${cap} מתוך ${g.records.length}`;
+      ul.appendChild(more);
+    }
+    box.appendChild(ul);
+    host.appendChild(box);
   }
 }
 

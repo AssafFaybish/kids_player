@@ -1182,3 +1182,42 @@ test('channelAddOutcome: after a MANUAL pick the message reports the pick, not a
   assert.match(channelAddOutcome(false, 3, {}, null), /ממתינים לאישור/);
   assert.match(channelAddOutcome(false, 3, {}, { kept: 0, rejected: 0 }), /ממתינים לאישור/);
 });
+
+/* ---------------- the folded parent library (v1.0.28) ---------------- */
+
+test('groupLibraryByFolder: groups by the folder the CHILD sees, titles from the subs', async () => {
+  const { groupLibraryByFolder } = await import('../www/js/plan.js');
+  const subs = [
+    { channelId: 'UCaaa', kind: 'channel', title: 'ערוץ הדינוזאורים', order: 2 },
+    { channelId: 'PLbbb', kind: 'playlist', titleOverride: 'שירי שינה', order: 1 }
+  ];
+  const recs = [
+    { key: 'yt:1', folderId: 'ch:UCaaa' },
+    { key: 'yt:2', folderId: 'pl:PLbbb' },
+    { key: 'yt:3', folderId: 'sheet' },
+    { key: 'yt:4', folderId: 'mine' },
+    // parked-shape leftovers group by their HOME, like everywhere else in the app
+    { key: 'yt:5', folderId: '~pending', homeFolderId: 'ch:UCaaa' }
+  ];
+  const g = groupLibraryByFolder(recs, subs);
+  assert.deepEqual(g.map((x) => x.id), ['pl:PLbbb', 'ch:UCaaa', 'sheet', 'mine']);
+  assert.deepEqual(g.map((x) => x.title), ['שירי שינה', 'ערוץ הדינוזאורים', 'סרטונים נוספים', 'סרטונים אישיים']);
+  assert.deepEqual(g.find((x) => x.id === 'ch:UCaaa').records.map((r) => r.key), ['yt:1', 'yt:5']);
+  // order inside a group is the CALLER's order — this helper must never re-sort
+  const flipped = groupLibraryByFolder([recs[4], recs[0]], subs);
+  assert.deepEqual(flipped[0].records.map((r) => r.key), ['yt:5', 'yt:1']);
+});
+
+test('groupLibraryByFolder: an unsubscribed leftover is grouped, never lost', async () => {
+  const { groupLibraryByFolder } = await import('../www/js/plan.js');
+  // a video whose channel was deleted moments ago, mid-refresh: it must still render
+  // somewhere the parent can find and delete it
+  const g = groupLibraryByFolder(
+    [{ key: 'yt:1', folderId: 'ch:UCgone', srcChannelTitle: 'ערוץ ישן' }], []);
+  assert.equal(g.length, 1);
+  assert.equal(g[0].title, 'ערוץ ישן');
+  assert.deepEqual(groupLibraryByFolder([], []), []);
+  assert.deepEqual(groupLibraryByFolder(null, null), []);
+  // junk records are skipped, not thrown on
+  assert.deepEqual(groupLibraryByFolder([null, {}], []), []);
+});
