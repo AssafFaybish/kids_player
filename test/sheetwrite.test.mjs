@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME,
-  starterRows, matchRowsForDeletion, sheetErrorMessage, interpretSheetResponse, planQueue } from '../www/js/sheetwrite.js';
+  starterRows, matchRowsForDeletion, sheetErrorMessage, interpretSheetResponse, interpretWriteResponse,
+  planQueue, flushSheetQueue, sheetWriteState } from '../www/js/sheetwrite.js';
 import { classifySourceRow, parseRemovalRow } from '../www/js/classify.js';
 import { parseSourceRows } from '../www/js/sync2.js';
 
@@ -538,4 +539,230 @@ test('reconcileOps: a playlist ADD and its DELETE share one identity', async () 
   // a CHANNEL delete keeps its own identity — no cross-kind collision
   const ch = reconcileOps([add, { op: 'delchannel', channelId: 'PLmix1234567890', at: 2 }]);
   assert.equal(ch.length, 2, "without kind:'playlist' the identities differ — the old bug, kept visible");
+});
+
+/* ---- the WRITE gate (v1.0.26): a write must be PROVEN, not merely not-refused ----
+ *
+ * THE BUG THIS CLOSES: both write calls in doFlush gated on `res.status !== 200`
+ * alone. platform.httpRequest does `r.json().catch(() => null)`, so the sign-in
+ * interstitial (a lost grant answering 200 + HTML — the exact case
+ * interpretSheetResponse exists for) arrived as {status: 200, data: null} and was
+ * counted a SUCCESSFUL write. clearFlushed then dropped the append whose row never
+ * landed → the record was live + sheet-backed + rowless + absent from
+ * pendingAppendKeys → the next presence-mirror pass tombstone-deleted the video on
+ * every device. One lost append of a 50-video library stays under the max(10, 5%)
+ * valve, so no parent was ever asked. */
+
+test('interpretWriteResponse: EVERY non-200 throws, for both kinds', () => {
+  for (const status of [401, 403, 404, 429, 500, 0]) {
+    for (const kind of ['append', 'batchUpdate']) {
+      const e = thrown(() => interpretWriteResponse(status, { updates: {}, spreadsheetId: ID, replies: [{}] }, kind));
+      assert.ok(e, `status ${status} passed as a landed ${kind}`);
+      assert.match(e.message, new RegExp(`^sheet-http-${status}$`), 'the status must ride in the message');
+    }
+  }
+});
+
+test('interpretWriteResponse: a 200 the client could not parse is NOT a landed write', () => {
+  // {status:200, data:null} is exactly how the browser path delivers the HTML
+  // interstitial; the string forms are the native (CapacitorHttp) view of the same.
+  for (const body of [null, undefined, '', '<!DOCTYPE html><html><body>Sign in</body></html>',
+    '\n <!doctype HTML>', 'not json at all', '{"updates":', 42, true, [], [['a']]]) {
+    for (const kind of ['append', 'batchUpdate']) {
+      const e = thrown(() => interpretWriteResponse(200, body, kind));
+      assert.ok(e, `200 + ${JSON.stringify(body)} passed as a landed ${kind}`);
+      assert.match(e.message, /^sheet-(html|not-json)$/);
+    }
+  }
+});
+
+test('interpretWriteResponse: an error envelope on a 200 is NEVER proof — even beside a marker', () => {
+  // Unlike the read gate there are no "actual rows" that could ride along: a write
+  // Google reports an error for is a write we cannot count on, and retrying is
+  // idempotent (a landed delete matches no row, a landed append dedupes by presence).
+  assert.match(thrown(() => interpretWriteResponse(200,
+    { error: { code: 403, status: 'PERMISSION_DENIED' } }, 'batchUpdate')).message, /^sheet-api-403$/);
+  assert.match(thrown(() => interpretWriteResponse(200,
+    { error: 'invalid_grant', updates: { updatedRows: 1 } }, 'append')).message, /^sheet-api-invalid_grant$/);
+  assert.match(thrown(() => interpretWriteResponse(200,
+    { error: { code: 500 }, spreadsheetId: ID, replies: [{}] }, 'batchUpdate')).message, /^sheet-api-500$/);
+});
+
+test('interpretWriteResponse: success has exactly ONE shape per operation', () => {
+  // values.append answers {spreadsheetId, tableRange, updates:{…}} — the
+  // AppendValuesResponse wrapper is the marker (createSourceSheet already relies on
+  // this API family answering typed objects, e.g. spreadsheetId on create).
+  const appendOk = { spreadsheetId: ID, tableRange: "'גיליון1'!A1:C4",
+    updates: { spreadsheetId: ID, updatedRange: "'גיליון1'!A5:C5", updatedRows: 1, updatedColumns: 3, updatedCells: 3 } };
+  assert.equal(interpretWriteResponse(200, appendOk, 'append'), appendOk);
+  // the native path hands back a STRING when responseType:'json' fails to parse for it
+  assert.ok(interpretWriteResponse(200, '{"updates":{"updatedRows":1}}', 'append'));
+  // spreadsheets.batchUpdate answers {spreadsheetId, replies:[…]} — deleteDimension
+  // replies are EMPTY objects, so only the array's existence (or the id) is a marker.
+  assert.ok(interpretWriteResponse(200, { spreadsheetId: ID, replies: [{}] }, 'batchUpdate'));
+  assert.ok(interpretWriteResponse(200, { spreadsheetId: ID }, 'batchUpdate'));
+  assert.ok(interpretWriteResponse(200, { replies: [] }, 'batchUpdate'));
+  // a marker-less 200 ({} = "OK" from a well-meaning proxy) proves nothing
+  assert.match(thrown(() => interpretWriteResponse(200, {}, 'append')).message, /^sheet-write-unproven-append$/);
+  assert.match(thrown(() => interpretWriteResponse(200, {}, 'batchUpdate')).message, /^sheet-write-unproven-batchUpdate$/);
+  // the kind is LOAD-BEARING: each operation's marker proves only its own write
+  assert.ok(thrown(() => interpretWriteResponse(200, { spreadsheetId: ID, replies: [{}] }, 'append')),
+    'a batchUpdate shape must not prove an append');
+  assert.ok(thrown(() => interpretWriteResponse(200, { updates: { updatedRows: 1 } }, 'batchUpdate')),
+    'an append shape must not prove a batchUpdate');
+  assert.ok(thrown(() => interpretWriteResponse(200, { ...appendOk, replies: [{}] }, 'delete')),
+    'an unknown kind fails CLOSED, whatever the payload carries');
+});
+
+/* ---- BEHAVIORAL: the real flushSheetQueue against a scripted network ----
+ *
+ * flushSheetQueue is db + token + network, so the three LEAF seams are stubbed at
+ * the global boundary (node --test runs each file in its own process, nothing leaks):
+ *  - indexedDB: a minimal in-memory shim covering exactly what getMeta/putMeta/
+ *    getSources/tx touch — hand-rolled here, NOT fake-indexeddb, so the suite stays
+ *    dependency-free (docs/TESTING.md).
+ *  - window.Capacitor.Plugins.KidsGoogleAuth: authorize() hands back a token.
+ *  - fetch: platform.httpRequest falls back to fetch off-device; jsonResponse
+ *    reproduces its exact behaviour — an unparseable body → data:null. */
+
+function installIdbShim() {
+  const stores = new Map(); // name -> { keyPath, data: Map }
+  const keyOf = (keyPath, rec) =>
+    JSON.stringify(Array.isArray(keyPath) ? keyPath.map((k) => rec[k]) : rec[keyPath]);
+  const request = (fn) => {
+    const r = {};
+    queueMicrotask(() => {
+      try { r.result = fn(); if (r.onsuccess) r.onsuccess(); }
+      catch (e) { r.error = e; if (r.onerror) r.onerror(); }
+    });
+    return r;
+  };
+  const db = {
+    close() {},
+    createObjectStore(name, { keyPath } = {}) {
+      const s = { keyPath, data: new Map(), createIndex() { return {}; } };
+      stores.set(name, s);
+      return s;
+    },
+    transaction(names, _mode) {
+      const t = {
+        abort() {},
+        objectStore(n) {
+          const s = stores.get(n);
+          return {
+            get: (key) => request(() => s.data.get(JSON.stringify(key))),
+            put: (rec) => request(() => { s.data.set(keyOf(s.keyPath, rec), rec); })
+          };
+        }
+      };
+      setTimeout(() => { if (t.oncomplete) t.oncomplete(); }, 0);
+      return t;
+    }
+  };
+  globalThis.indexedDB = {
+    open() {
+      const req = { result: db };
+      queueMicrotask(() => {
+        if (req.onupgradeneeded) req.onupgradeneeded();
+        queueMicrotask(() => { if (req.onsuccess) req.onsuccess(); });
+      });
+      return req;
+    }
+  };
+}
+installIdbShim();
+globalThis.window = {
+  Capacitor: { Plugins: { KidsGoogleAuth: { authorize: async () => ({ granted: true, accessToken: 'test-token' }) } } }
+};
+
+/** Response-shaped like what platform.httpRequest's fetch path consumes.
+    body === undefined ⇒ r.json() rejects ⇒ httpRequest delivers data:null —
+    exactly how a 200 + HTML interstitial reaches doFlush in the browser. */
+const jsonResponse = (status, body) => ({
+  status,
+  headers: new Map(),
+  text: async () => '',
+  json: async () => { if (body === undefined) throw new Error('unparseable'); return body; }
+});
+
+const TAB = { status: 200, body: { sheets: [{ properties: { sheetId: 0, title: 'גיליון1' } }] } };
+let netScript = {};
+globalThis.fetch = async (url) => {
+  const u = String(url);
+  const pick =
+    u.includes(':batchUpdate') ? netScript.batchUpdate :
+    u.includes(':append') ? netScript.append :
+    u.includes('/values/') ? netScript.read : netScript.tab;
+  if (!pick) throw new Error('unexpected request: ' + u);
+  return jsonResponse(pick.status, pick.body);
+};
+
+async function seedSheet(profileId, lib, queue) {
+  const { putSources, putMeta } = await import('../www/js/db.js');
+  await putSources({ profileId, sheetUrl: `https://docs.google.com/spreadsheets/d/${ID}/edit#gid=0`, libraryId: lib });
+  await putMeta('sheetq:' + lib, queue);
+}
+
+test('flushSheetQueue: a 200+null append leaves the op in the queue and does NOT report written', async () => {
+  // The exact field shape: mid-flush the grant dies, Google answers the append with
+  // a sign-in page, fetch json() yields null. The old status-only check called this
+  // a success, cleared the op, and the mirror later tombstoned the rowless video.
+  const { getMeta } = await import('../www/js/db.js');
+  const op = { op: 'append', key: 'yt:aaaaaaaaaa1', row: ['https://youtu.be/aaaaaaaaaa1', 'שיר', ''], at: 100 };
+  await seedSheet('p-nullbody', 'lib:wnull', [op]);
+  netScript = { tab: TAB, read: { status: 200, body: { values: [['# הערה']] } }, append: { status: 200, body: undefined } };
+  const res = await flushSheetQueue('p-nullbody');
+  assert.equal(res.ok, false, 'an unproven write must not report success');
+  assert.equal(res.written, undefined, 'must not report written');
+  assert.equal(res.error, 'sheet-not-json');
+  const left = await getMeta('sheetq:lib:wnull');
+  assert.equal(left.length, 1, 'the op must survive to retry');
+  assert.equal(left[0].key, 'yt:aaaaaaaaaa1');
+  const st = await sheetWriteState('lib:wnull');
+  assert.equal(st.pending, 1, 'the sources tab must keep saying a row is waiting');
+  assert.equal(st.error, 'sheet-not-json');
+});
+
+test('flushSheetQueue: a 200+error-envelope batchUpdate aborts with the delete still queued', async () => {
+  // The delete half: dropping an un-landed delvideo is how deleted videos resurrect
+  // (its row stays in the sheet; the next mirror pass reads presence as a re-add).
+  const { getMeta } = await import('../www/js/db.js');
+  const op = { op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 100 };
+  await seedSheet('p-envelope', 'lib:wenv', [op]);
+  netScript = {
+    tab: TAB,
+    read: { status: 200, body: { values: [['# הערה'], ['https://youtu.be/aaaaaaaaaa1']] } },
+    batchUpdate: { status: 200, body: { error: { code: 403, status: 'PERMISSION_DENIED' } } }
+  };
+  const res = await flushSheetQueue('p-envelope');
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'sheet-api-403');
+  const left = await getMeta('sheetq:lib:wenv');
+  assert.equal(left.length, 1, 'the delete op must survive to retry');
+  const st = await sheetWriteState('lib:wenv');
+  assert.equal(st.error, 'no-edit-permission', 'a 403 envelope routes like a 403 status: permanent');
+});
+
+test('flushSheetQueue: REAL Google success shapes still flush and clear the queue', async () => {
+  // The gate must not be so strict that a genuine write stops counting — that would
+  // re-append the same rows forever.
+  const { getMeta } = await import('../www/js/db.js');
+  await seedSheet('p-success', 'lib:wok', [
+    { op: 'delvideo', key: 'yt:aaaaaaaaaa1', at: 100 },
+    { op: 'append', key: 'yt:bbbbbbbbbb2', row: ['https://youtu.be/bbbbbbbbbb2', 'שני', ''], at: 200 }
+  ]);
+  netScript = {
+    tab: TAB,
+    read: { status: 200, body: { values: [['# הערה'], ['https://youtu.be/aaaaaaaaaa1']] } },
+    batchUpdate: { status: 200, body: { spreadsheetId: ID, replies: [{}] } },
+    append: { status: 200, body: { spreadsheetId: ID, updates: { updatedRange: "'גיליון1'!A3:C3", updatedRows: 1 } } }
+  };
+  const res = await flushSheetQueue('p-success');
+  assert.equal(res.ok, true);
+  assert.equal(res.written, 2);
+  assert.equal(res.deletedRows, 1);
+  assert.deepEqual(await getMeta('sheetq:lib:wok'), [], 'a proven flush clears its ops');
+  const st = await sheetWriteState('lib:wok');
+  assert.equal(st.error, null);
+  assert.equal(st.pending, 0);
 });

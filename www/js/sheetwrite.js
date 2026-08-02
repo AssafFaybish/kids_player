@@ -491,6 +491,62 @@ export function interpretSheetResponse(status, data) {
 }
 
 /**
+ * PURE (v1.0.26) — the write twin of interpretSheetResponse: is this response PROOF
+ * that the sheet write landed? Returns the payload, or THROWS.
+ *
+ * THE HOLE THIS CLOSES: both write calls in doFlush gated on `res.status !== 200`
+ * alone — but platform.httpRequest does `r.json().catch(() => null)`, so the same
+ * sign-in interstitial the read gate exists for (a lost grant answering 200 + HTML)
+ * arrives here as `{status: 200, data: null}` and counted as a SUCCESSFUL write. A
+ * proxied error envelope (200 + `{error:{…}}`) passed too. clearFlushed then dropped
+ * the append whose row never landed — leaving a record that is live + sheet-backed +
+ * rowless + absent from pendingAppendKeys, which is EXACTLY what the presence-mirror
+ * tombstones on every device. One lost append of a 50-video library stays under the
+ * max(10, 5%) valve, so no parent was ever asked.
+ *
+ * SUCCESS MAY COME FROM EXACTLY ONE SHAPE, mirroring the read gate's "emptiness may
+ * come from exactly one input": a 200 whose body is a real object, carries NO `error`
+ * key, and carries the operation's own marker —
+ *  - 'append'      → `updates` (values.append answers `{spreadsheetId, updates:{…}}`;
+ *                    the AppendValuesResponse wrapper is always present on success);
+ *  - 'batchUpdate' → `spreadsheetId`, or `replies` (spreadsheets.batchUpdate answers
+ *                    `{spreadsheetId, replies:[…]}` — deleteDimension replies are
+ *                    empty objects, so only the array's EXISTENCE is the marker).
+ * An unknown kind proves nothing (fail closed). An error envelope is NEVER proof,
+ * even beside a marker — unlike the read gate there are no "actual rows" that could
+ * ride along; a write Google reports an error for is a write we cannot count on.
+ *
+ * Everything else throws, and the caller aborts the flush WITH THE QUEUE INTACT —
+ * the same mechanism as an unreadable column-A read. Retrying is idempotent: a
+ * delete that already landed matches no row, a landed append dedupes by presence.
+ */
+export function interpretWriteResponse(status, data, kind) {
+  if (status !== 200) throw new Error('sheet-http-' + (status || 0));
+  // A bodyless 200 — on the browser path this IS the HTML interstitial (see above).
+  if (!data) throw new Error('sheet-not-json');
+  let payload = data;
+  if (typeof payload === 'string') {
+    // CapacitorHttp hands back the raw string when responseType:'json' cannot parse.
+    if (looksLikeHtml(payload)) throw new Error('sheet-html');
+    try { payload = JSON.parse(payload); } catch { throw new Error('sheet-not-json'); }
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('sheet-not-json');
+  if (payload.error) {
+    const err = payload.error;
+    const code = err && typeof err === 'object' ? (err.code || err.status || 'error') : String(err || 'error');
+    throw new Error('sheet-api-' + code);
+  }
+  let proven = false;
+  if (kind === 'append') {
+    proven = !!payload.updates && typeof payload.updates === 'object' && !Array.isArray(payload.updates);
+  } else if (kind === 'batchUpdate') {
+    proven = (typeof payload.spreadsheetId === 'string' && !!payload.spreadsheetId) || Array.isArray(payload.replies);
+  }
+  if (!proven) throw new Error('sheet-write-unproven-' + kind);
+  return payload;
+}
+
+/**
  * PURE (v1.0.19) — turn a readSourceSheet failure into something a parent can ACT on.
  *
  * This exists because the failure used to be invisible: sync swallowed the throw,
@@ -626,15 +682,22 @@ async function doFlush(profileId, src, lib) {
   // every row as a duplicate, and then let clearFlushed() drop the unsent delvideo ops —
   // their rows stayed in the sheet, and the next mirror pass read that presence as a
   // deliberate re-add and resurrected the deleted videos on every device.
+  // ONE abort mechanism for the read gate and both write gates below: record the
+  // failure, leave the queue INTACT (clearFlushed at the bottom is what consumes it,
+  // and it must never run for ops whose write was not proven), and report not-ok.
+  const abortFlush = async (e) => {
+    const code = String(e && e.message || e);
+    const permanent = /40[34]/.test(code);
+    await patchState(lib, { error: permanent ? 'no-edit-permission' : code, pending: q.length });
+    return { ok: false, error: code };
+  };
+
   const read = await httpRequest({ url: `${SHEETS}/${spreadsheetId}/values/${tabRef}`, headers: auth, responseType: 'json' });
   let colA;
   try {
     colA = interpretSheetResponse(read.status, read.data).map((r) => (r && r[0]) || '');
   } catch (e) {
-    const code = String(e && e.message || e);
-    const permanent = /40[34]/.test(code);
-    await patchState(lib, { error: permanent ? 'no-edit-permission' : code, pending: q.length });
-    return { ok: false, error: code };
+    return abortFlush(e);
   }
   const handleMap = (await getMeta('handleMap')) || {};
 
@@ -650,9 +713,13 @@ async function doFlush(profileId, src, lib) {
       }),
       responseType: 'json'
     });
-    if (del.status !== 200) {
-      await patchState(lib, { error: del.status === 403 ? 'no-edit-permission' : 'http-' + del.status, pending: q.length });
-      return { ok: false, error: 'http-' + del.status };
+    // v1.0.26 — a WRITE must be PROVEN, not merely not-refused. `status !== 200` alone
+    // let a 200 + sign-in page (arriving as data:null) and a 200 + error envelope count
+    // as a successful delete; see interpretWriteResponse.
+    try {
+      interpretWriteResponse(del.status, del.data, 'batchUpdate');
+    } catch (e) {
+      return abortFlush(e);
     }
   }
 
@@ -680,9 +747,14 @@ async function doFlush(profileId, src, lib) {
       body: JSON.stringify({ values: appends.map((e) => e.row) }),
       responseType: 'json'
     });
-    if (res.status !== 200) {
-      await patchState(lib, { error: res.status === 403 ? 'no-edit-permission' : 'http-' + res.status, pending: q.length });
-      return { ok: false, error: 'http-' + res.status };
+    // v1.0.26 — the append is the DANGEROUS half: clearFlushed below drops the op, so
+    // an unproven "success" here leaves the record live + sheet-backed + rowless, and
+    // the next presence-mirror pass tombstones it on every device. The op must survive
+    // to retry unless the response carries values.append's own success shape.
+    try {
+      interpretWriteResponse(res.status, res.data, 'append');
+    } catch (e) {
+      return abortFlush(e);
     }
   }
 
