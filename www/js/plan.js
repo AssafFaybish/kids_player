@@ -144,6 +144,54 @@ export function planRejectedPurge(records, { now = Date.now(), days = 30 } = {})
 }
 
 /**
+ * v1.0.26 — PURE: where a "I forgot the parent code" request stands.
+ * -> { state: 'none' | 'waiting' | 'ready', msLeft, hoursLeft }
+ *
+ * **WITHOUT THIS THERE IS NO WAY BACK IN.** Since v1.0.25 the PIN hash rides the synced
+ * settings channel into the Drive document, so the old answer — reinstall the app — gives
+ * a backed-up family the forgotten code straight back on the next pull. The families who
+ * did the right thing and enabled backup were the ones with no door.
+ *
+ * A WAIT is the mechanism because it is the only one that always works: no device lock (a
+ * child's tablet often has none, and Android TV never does), no permission, no network,
+ * nothing to lose. It stops the person it needs to stop — a 5-year-old will not sit out a
+ * day — while the countdown on the child's home is the parent's warning that someone asked.
+ *
+ * NOT a security boundary, and the docs say so: whoever can move the system clock forward
+ * skips the wait. That is unavoidable without a server, and it is a different threat than
+ * the one this app has ever defended against. The device-credential path is the strong one.
+ *
+ * A request timestamp in the FUTURE (the clock moved backwards, or a restored backup) only
+ * ever makes the remaining wait LONGER, never shorter — the safe direction, so it needs no
+ * special case at all: the subtraction simply yields more time, and the one branch below
+ * covers every way the deadline can already have passed. (A `Math.max(0, …)` floor was
+ * here first and no planted regression could make it fail — the `<= 0` branch had already
+ * absorbed the only case it could have caught.)
+ */
+export function planPinRecovery({ requestedAt, now = Date.now(), hours = 24 } = {}) {
+  // A nonsense window falls back to the DEFAULT, never to a short one — the same rule as
+  // `planRejectedPurge`, and for a sharper reason: a typo that resolved to a one-second
+  // wait would hand the parent screen to the child on the spot.
+  const h = Number(hours);
+  const delay = (Number.isFinite(h) && h > 0 ? h : 24) * 60 * 60 * 1000;
+  const at = Number(requestedAt);
+  if (!Number.isFinite(at) || at <= 0) return { state: 'none', msLeft: 0, hoursLeft: 0 };
+  const msLeft = at + delay - now;
+  if (msLeft <= 0) return { state: 'ready', msLeft: 0, hoursLeft: 0 };
+  return { state: 'waiting', msLeft, hoursLeft: Math.ceil(msLeft / 3600000) };
+}
+
+/**
+ * v1.0.26 — PURE: what the countdown says. Hebrew, and it must never read "0 שעות".
+ */
+export function pinRecoveryLabel(plan) {
+  if (!plan || plan.state !== 'waiting') return '';
+  const mins = Math.ceil(plan.msLeft / 60000);
+  if (mins <= 60) return `אפשר יהיה לאפס את קוד ההורים בעוד ${mins} דקות`;
+  return `אפשר יהיה לאפס את קוד ההורים בעוד ${plan.hoursLeft} שעות`;
+}
+
+/**
  * v1.0.26 — PURE: what the parent is told after sharing a link from YouTube.
  *
  * FIELD BUG. `handleShare` had SEVEN silent `return`s and no success message either, so

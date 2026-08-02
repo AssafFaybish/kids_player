@@ -166,6 +166,16 @@
         </button>
       </header>
 
+      <!-- v1.0.26: a pending parent-code reset is announced HERE, on the screen that is
+           on all day, because this banner IS the safeguard — the wait only protects the
+           parent if they find out somebody asked. Anyone may cancel it (see recovery.js):
+           whoever did not request the reset cannot prove who they are, which is the exact
+           situation the feature exists for. -->
+      <div id="recovery-banner" class="recovery-banner hidden">
+        <span id="recovery-banner-text"></span>
+        <button id="recovery-banner-cancel" class="btn btn-small" type="button">ביטול הבקשה</button>
+      </div>
+
       <!-- v1.0.7: kid-friendly search — opens the search view with the keyboard up -->
       <button id="search-open" class="search-launcher" type="button">🔍 חיפוש סרטון…</button>
 
@@ -323,6 +333,12 @@
           <button class="key" type="button" data-k="0">0</button>
           <button class="key key-del" type="button" data-k="del">⌫</button>
         </div>
+        <!-- v1.0.26: the way back in. Since v1.0.25 the PIN hash travels in the Drive
+             document, so reinstalling hands a backed-up family the forgotten code
+             straight back — without this there is no door at all. Shown only in
+             'verify' mode: during SETUP there is nothing to recover. -->
+        <button id="pin-forgot" class="text-btn pin-forgot hidden" type="button">שכחתי את הקוד</button>
+        <p id="pin-recovery-note" class="pin-recovery-note hidden"></p>
       </div>
     </section>
 
