@@ -12,6 +12,16 @@ export const SEEK_STEP = 10;         // double-tap seek, seconds (YouTube muscle
 export const TAP_DOUBLE_MS = 260;
 export const TAP_SINGLE_DELAY = 280;
 
+/* Continuous play (v1.0.25) — OFF by default, per profile, synced.
+   The countdown is the child's only visible way out of a chain: it must be long enough
+   for a 5-year-old to notice the screen changed and reach the stop button, and short
+   enough not to feel like the video froze. */
+export const AUTOPLAY_COUNTDOWN_MS = 5000;
+export const AUTOPLAY_RETRY_MS = 4000;   // one retry of the SAME video before moving on
+// INVARIANT: a chain must be able to END. Without a ceiling, a library with a run of
+// unplayable videos would flip through black screens indefinitely.
+export const AUTOPLAY_MAX_FAILURES = 5;
+
 /* Sync */
 export const MAX_ITEMS_PER_CHANNEL = 500;
 export const MAX_ITEMS_TOTAL = 5000;

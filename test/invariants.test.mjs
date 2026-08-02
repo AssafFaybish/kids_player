@@ -184,24 +184,40 @@ test('every grid pages through pageAnyFolder — including the 🎁 folder', () 
   const lines = app.split('\n');
   const idx = (needle) => lines.findIndex((l) => l.includes(needle));
 
-  // the two low-level pagers may be called only from pageAnyFolder / its 🎁 helper
+  // the two low-level pagers may be called only from pageAnyFolder, its 🎁 helper, or
+  // nextAfter — the three members of the pagination family, kept adjacent on purpose
   const giftHelper = idx('async function pageGiftFolder');
   const entry = idx('async function pageAnyFolder');
   const afterEntry = lines.findIndex((l, i) => i > entry && l === '}');
+  const nextFn = idx('async function nextAfter');
+  const afterNext = lines.findIndex((l, i) => i > nextFn && l === '}');
   assert.ok(giftHelper > 0 && entry > giftHelper, 'pageGiftFolder must sit above pageAnyFolder');
+  assert.ok(nextFn > entry, 'nextAfter must sit with the other pagers, not off on its own');
 
   for (const [n, line] of lines.entries()) {
     for (const raw of ['db.pageGifts(', 'db.pageFolder(']) {
       if (!line.includes(raw)) continue;
       const inHelper = n > giftHelper && n < entry;
       const inEntry = n > entry && n <= afterEntry;
-      assert.ok(inHelper || inEntry,
-        `app.js:${n + 1} calls ${raw} outside pageAnyFolder — every grid must page through it`);
+      const inNext = n > nextFn && n <= afterNext;
+      assert.ok(inHelper || inEntry || inNext,
+        `app.js:${n + 1} calls ${raw} outside the pagination family — every grid must page through it`);
     }
   }
   // and pageAnyFolder must actually HANDLE the gift folder, or it silently returns []
   const body = lines.slice(entry, afterEntry + 1).join('\n');
   assert.match(body, /fid === 'new'/, "pageAnyFolder lost its 🎁 ('new') branch");
+
+  // v1.0.25 — nextAfter (continuous play) must recognise EVERY folder kind pageAnyFolder
+  // does. This is the real hazard of a third pager: a folder kind added to one and not the
+  // other means the chain silently disagrees with the grid the child is looking at —
+  // stopping early, or worse, playing something that is not the next tile.
+  const nextBody = lines.slice(nextFn, afterNext + 1).join('\n');
+  for (const kind of ["'new'", "'grp:'", "'sheet'", "'ch:'"]) {
+    assert.ok(body.includes(kind), `pageAnyFolder no longer handles ${kind}`);
+    assert.ok(nextBody.includes(kind),
+      `nextAfter does not handle ${kind} — continuous play would disagree with the grid`);
+  }
 });
 
 test('every path that makes a record LIVE forces a refresh', () => {
@@ -393,6 +409,32 @@ test('the settings channel travels, but the API key never does', () => {
     if (p !== 'www/js/settings.js' && p !== 'www/js/drive.js') continue;
     assert.doesNotMatch(src2, /yt:apiKey/, `${p} touches the YouTube API key`);
   }
+});
+
+test('continuous play routes through planAutoplay, and onExit says WHY (v1.0.25)', () => {
+  // finish() fires for a clean end AND for an embedding-disabled video. Without a reason
+  // on the wire an autoplay chain cannot tell them apart, so it skips through every broken
+  // video in the library in silence — and the failure ceiling can never trigger.
+  const player = MODULES.get('www/js/player.js');
+  assert.match(player, /const finish = \(reason = 'ended'\)/g, 'finish() lost its reason');
+  assert.match(player, /finish\('error'\)/, 'the embed-error path no longer reports a failure');
+  assert.match(player, /onExit\(reason\)/, 'onExit is called without the reason again');
+  // the DOM hands a listener an Event, which would arrive AS the reason
+  assert.doesNotMatch(player, /addEventListener\('ended',\s*finish\s*\)/,
+    "the 'ended' listener passes a DOM Event as the exit reason");
+
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /planAutoplay\(/, 'app.js re-implements the chain decision inline');
+  const fn = app.slice(app.indexOf('async function onVideoFinished('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  for (const action of ['stop', 'retry']) {
+    assert.ok(body.includes(`'${action}'`), `onVideoFinished ignores the '${action}' decision`);
+  }
+  // A chain must not survive the child leaving, and a tap must beat the queued video.
+  assert.match(app, /resetAutoplayChain\(\); \/\/ a queued next video must never follow/,
+    'leaving the watch view no longer cancels a pending countdown');
+  const ow = app.slice(app.indexOf('async function openWatch('));
+  assert.match(ow.slice(0, 600), /cancelAutoplay\(\)/, 'opening a video does not cancel the countdown');
 });
 
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {

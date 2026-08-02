@@ -3,8 +3,10 @@
 // bug these cover was found by reading it, not by the suite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent } from '../www/js/playerlogic.js';
-import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY } from '../www/js/config.js';
+import { clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent,
+  planAutoplay, nextInOrder } from '../www/js/playerlogic.js';
+import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY,
+  AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from '../www/js/config.js';
 
 test('clampSeek never runs past the end — a forward seek must not EJECT the child', () => {
   // Every forward seek was `getTime() + SEEK_STEP` unbounded. Past the end YouTube fires
@@ -94,4 +96,99 @@ test('the tap constants still make a slow double-tap unambiguous', () => {
   // double-tap would BOTH pause and seek.
   assert.ok(TAP_SINGLE_DELAY >= TAP_DOUBLE_MS, `${TAP_SINGLE_DELAY} < ${TAP_DOUBLE_MS}`);
   assert.ok(SEEK_STEP > 0);
+});
+
+/* ---------------- continuous play (v1.0.25) ---------------- */
+
+const chain = (over = {}) => planAutoplay({ enabled: true, folderId: 'ch:UC1', ...over });
+
+test('continuous play is OFF unless the parent turned it on', () => {
+  // Default off is the whole safety position: a family that never opens the settings
+  // screen keeps today's behaviour, where a video ending returns the child to the folder.
+  assert.deepEqual(planAutoplay(), { action: 'stop', reason: 'disabled' });
+  assert.deepEqual(planAutoplay({}), { action: 'stop', reason: 'disabled' });
+  assert.equal(planAutoplay({ enabled: false, folderId: 'ch:UC1' }).action, 'stop');
+  // …and being off outranks everything else, including a perfectly good next video
+  assert.equal(planAutoplay({ enabled: false, hasNext: true, reason: 'ended' }).action, 'stop');
+});
+
+test('the 🎁 folder is NEVER chained, whatever the setting says', () => {
+  // Unwrapping is one-way and permanent (unwrappedAt is min-merged forever, on every
+  // device), so an unattended chain would open the child's whole queue of new videos in
+  // one sitting with no way to put them back. Parent's decision, 2026-08-02.
+  assert.deepEqual(chain({ folderId: 'new' }), { action: 'stop', reason: 'gift' });
+  assert.equal(chain({ folderId: 'new', hasNext: true }).action, 'stop');
+  assert.equal(chain({ folderId: 'new', reason: 'error' }).action, 'stop',
+    'even a failure in the gift folder must not start a chain');
+});
+
+test('a chain STOPS at a wrapped gift, in any folder', () => {
+  // Gift state lives per child on the video, so wrapped tiles appear inside channel
+  // folders too — not only in 🎁. The first TAP on one unwraps it and deliberately does
+  // NOT play. A chain that opened it would skip that ritual AND leave the tile wrapped
+  // forever while its video had already been watched.
+  assert.deepEqual(chain({ nextIsGift: true }), { action: 'stop', reason: 'next-is-gift' });
+  // it outranks a failure too — a broken video must not "skip" INTO a gift
+  assert.equal(chain({ nextIsGift: true, reason: 'error' }).action, 'stop');
+  assert.equal(chain({ nextIsGift: true, reason: 'error', retriedCurrent: true }).action, 'stop');
+  // and it is only consulted when there IS a next video
+  assert.deepEqual(chain({ nextIsGift: true, hasNext: false }),
+    { action: 'stop', reason: 'end-of-folder' });
+  // an already-unwrapped video is a normal video
+  assert.deepEqual(chain({ nextIsGift: false }), { action: 'next', reason: 'ended' });
+});
+
+test('a normal end plays the next video, and the last one stops', () => {
+  assert.deepEqual(chain(), { action: 'next', reason: 'ended' });
+  assert.deepEqual(chain({ hasNext: false }), { action: 'stop', reason: 'end-of-folder' });
+});
+
+test('a broken video is retried ONCE, then skipped', () => {
+  // finish() fires for an embedding-disabled video too, so without this a chain skips
+  // through dead content invisibly — the parent never learns the library has holes.
+  assert.deepEqual(chain({ reason: 'error' }), { action: 'retry', reason: 'first-failure' });
+  assert.deepEqual(chain({ reason: 'error', retriedCurrent: true }),
+    { action: 'next', reason: 'skip-broken' });
+  // a retried failure on the LAST video has nowhere to go
+  assert.deepEqual(chain({ reason: 'error', retriedCurrent: true, hasNext: false }),
+    { action: 'stop', reason: 'end-of-folder' });
+});
+
+test('a RUN of failures ends the chain — a black-screen loop is unrepresentable', () => {
+  // THE ceiling. Without it a stretch of unplayable videos flips the screen forever.
+  for (let f = 0; f < AUTOPLAY_MAX_FAILURES - 1; f++) {
+    assert.notEqual(chain({ reason: 'error', failures: f, retriedCurrent: true }).action, 'stop',
+      `gave up after only ${f} failures`);
+  }
+  assert.deepEqual(chain({ reason: 'error', failures: AUTOPLAY_MAX_FAILURES - 1, retriedCurrent: true }),
+    { action: 'stop', reason: 'too-many-failures' });
+  assert.equal(chain({ reason: 'error', failures: 99 }).action, 'stop');
+  // the ceiling outranks the retry: at the limit we stop rather than retry forever
+  assert.equal(chain({ reason: 'error', failures: AUTOPLAY_MAX_FAILURES - 1, retriedCurrent: false }).action,
+    'stop', 'the retry branch let the chain past its own ceiling');
+});
+
+test('nextInOrder follows the ORDER THE CHILD SEES, and never wraps', () => {
+  const list = [{ key: 'a' }, { key: 'b' }, { key: 'c' }];
+  assert.equal(nextInOrder(list, 'a').key, 'b');
+  assert.equal(nextInOrder(list, 'b').key, 'c');
+  // the last video has no next — a chain must END, not loop back to the start
+  assert.equal(nextInOrder(list, 'c'), null);
+  // a video that is not in the list (deleted mid-play, or a different folder)
+  assert.equal(nextInOrder(list, 'zzz'), null);
+  assert.equal(nextInOrder([], 'a'), null);
+  assert.equal(nextInOrder(null, 'a'), null, 'must never throw on a missing list');
+  assert.equal(nextInOrder(undefined, undefined), null);
+  // junk entries are skipped rather than counted as videos
+  assert.equal(nextInOrder([{ key: 'a' }, null, { key: 'b' }], 'a').key, 'b');
+});
+
+test('the continuous-play timings are sane relative to each other', () => {
+  // The countdown is the child's ONLY visible way out of a chain (the 🏠 button lives
+  // outside the player and is invisible in fullscreen), so it must not be a blink.
+  assert.ok(AUTOPLAY_COUNTDOWN_MS >= 3000, 'too short for a 5-year-old to notice and react');
+  assert.ok(AUTOPLAY_COUNTDOWN_MS <= 10000, 'long enough to read as the video having frozen');
+  assert.ok(AUTOPLAY_RETRY_MS > 0);
+  assert.ok(Number.isInteger(AUTOPLAY_MAX_FAILURES) && AUTOPLAY_MAX_FAILURES >= 2,
+    'a ceiling below 2 would give up on the first hiccup');
 });

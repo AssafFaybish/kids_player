@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel } from '../www/js/drive.js';
+import { mergeSettings } from '../www/js/settings.js';
 import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
 const vid = (key, over = {}) => ({
@@ -404,4 +405,69 @@ test('denyRowToWrite: a REVOKED tombstone in the target is never overwritten', a
   assert.equal(revokedSource.removedAt, 200);
   assert.equal(denyActive(revokedSource), false, 'a revoked entry arrived ACTIVE in the target');
   for (const junk of [null, undefined, {}, { at: 1 }]) assert.equal(denyRowToWrite(undefined, junk, 'lib:x'), null, String(junk));
+});
+
+/* ---------------- synced settings ON THE WIRE (v1.0.25) ----------------
+ * settings.test.mjs proves mergeSettings converges. These prove the settings actually
+ * TRAVEL: deleting one line from serializeDb would leave that whole file green while the
+ * PIN silently stopped syncing — the "pinned the fixture, not the production path"
+ * failure this repo has already been bitten by twice.
+ */
+
+const doc = (settings) => parseDb(serializeDb({
+  profiles: [{ id: 'p1', name: 'נועם' }], libraries: {}, profileState: {}, profileSources: {}, settings
+}));
+
+test('settings survive serialize → parse (they are really on the wire)', () => {
+  const s = { account: { pin: { v: 'hash', at: 7 } }, profiles: { p1: { exitLock: { v: true, at: 9 } } } };
+  const d = doc(s);
+  assert.ok(d, 'the document did not even parse');
+  assert.deepEqual(d.settings, s, 'settings never reached the Drive document');
+});
+
+test('serializeDb emits an EMPTY settings object rather than nothing', () => {
+  // A missing key and an empty one behave differently on the merge side, and every push
+  // from a device that has changed no setting takes this path.
+  const d = doc(undefined);
+  assert.deepEqual(d.settings, { account: {}, profiles: {} });
+});
+
+test('mergeDbFiles merges settings — not first-wins, not dropped', () => {
+  const A = serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: { pin: { v: 'old', at: 100 } }, profiles: { p1: { exitLock: { v: false, at: 100 } } } } });
+  const B = serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: { pin: { v: 'new', at: 200 } }, profiles: { p1: { autoplay: { v: true, at: 50 } } } } });
+  const ab = mergeDbFiles(parseDb(A), parseDb(B));
+  const ba = mergeDbFiles(parseDb(B), parseDb(A));
+
+  assert.equal(ab.settings.account.pin.v, 'new', 'the later PIN lost — settings are not merged');
+  assert.equal(ab.settings.profiles.p1.exitLock.v, false, 'a key only A had was dropped');
+  assert.equal(ab.settings.profiles.p1.autoplay.v, true, 'a key only B had was dropped');
+  // the whole reason this repo writes merge tests at all
+  assert.deepEqual(ab.settings, ba.settings, 'order-dependent — two devices never converge');
+  // idempotent: a push/pull loop has to settle
+  assert.deepEqual(mergeDbFiles(ab, parseDb(A)).settings, ab.settings);
+  assert.deepEqual(mergeDbFiles(ab, ab).settings, ab.settings);
+});
+
+test('a doc from an OLDER app (no settings key) does not wipe ours', () => {
+  // The rollout case: a device still on v1.0.24 pushes a document with no `settings` at
+  // all. Reading that as "the family cleared everything" would unlock a locked tablet and
+  // erase the parent PIN for the whole account.
+  const mine = parseDb(serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: { pin: { v: 'keep', at: 5 } }, profiles: {} } }));
+  const legacy = parseDb(JSON.stringify({ kind: 'kids-player-db', schema: 1, libraries: {}, profiles: [] }));
+  assert.equal(legacy.settings, undefined, 'the fixture is not actually a legacy doc');
+  assert.equal(mergeDbFiles(mine, legacy).settings.account.pin.v, 'keep');
+  assert.equal(mergeDbFiles(legacy, mine).settings.account.pin.v, 'keep');
+});
+
+test('the settings channel carries NO secret the refusal list bans', () => {
+  // drive.js has an explicit never-serialize list (localPath, thumbs, cursors, the API
+  // key). A new top-level key is exactly where one would get swept back in.
+  const d = doc({ account: { pin: { v: 'h', at: 1 } }, profiles: { p1: { exitLock: { v: true, at: 1 } } } });
+  const wire = JSON.stringify(d);
+  for (const banned of ['yt:apiKey', 'localPath', 'thumbId', 'backfillCursor', 'dbFileId']) {
+    assert.ok(!wire.includes(banned), `the document carries ${banned}`);
+  }
 });
