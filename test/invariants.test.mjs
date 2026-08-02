@@ -229,6 +229,23 @@ test('every path that makes a record LIVE forces a refresh', () => {
     'refreshAfterAdd lost its playback guard');
 });
 
+test('syncLibrary DELEGATES the join-or-queue decision to planSyncDispatch', () => {
+  // The same trap nav.test.mjs describes, and this one already sprang once: v1.0.21 wrote
+  // the rule ("a FORCED sync CHAINS, NEVER JOINS") into the comment above syncLibrary and
+  // then shipped a condition that joined whenever the running sync was also forced. A
+  // comment cannot fail a test. Pin that the tested decision core is the LIVE one.
+  const src = MODULES.get('www/js/sync2.js');
+  const fn = src.slice(src.indexOf('export function syncLibrary'));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.match(body, /planSyncDispatch\(/, 'syncLibrary re-implements the decision inline again');
+  for (const action of ['join-running', 'join-queued', 'queue']) {
+    assert.ok(body.includes(`'${action}'`), `syncLibrary ignores the '${action}' decision`);
+  }
+  // The bug was a condition that let a forced caller take the join path. There must be no
+  // reachable `return` of an existing run's promise that is not gated by that decision.
+  assert.doesNotMatch(body, /cur\.force/, 'the v1.0.21 join-a-forced-run condition is back');
+});
+
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
   // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.

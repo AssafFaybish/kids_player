@@ -22,7 +22,7 @@ import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
-  planChannelLogo
+  planChannelLogo, planSyncDispatch
 } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
@@ -101,25 +101,56 @@ export function parseSourceRows(rows) {
   return { videoRows: videoRows.filter((r) => !removed.has(r.key)), channelRows, removedKeys, invalid };
 }
 
-const inFlight = new Map(); // profileId -> { promise, force }
+const inFlight = new Map();   // profileId -> entry that is EXECUTING (has already read)
+const queuedRuns = new Map(); // profileId -> entry waiting to start (has read NOTHING yet)
+
+/** entry = { force, listeners:Set<onProgress>, promise } */
+function newEntry(opts) {
+  const entry = { force: !!opts.force, listeners: new Set(), promise: null };
+  if (typeof opts.onProgress === 'function') entry.listeners.add(opts.onProgress);
+  return entry;
+}
+
+/** Ride an existing run, and hear its progress while doing so. */
+function attach(entry, opts) {
+  if (typeof opts.onProgress === 'function') entry.listeners.add(opts.onProgress);
+  return entry.promise;
+}
+
+function beginRun(profileId, entry, opts) {
+  if (queuedRuns.get(profileId) === entry) queuedRuns.delete(profileId);
+  inFlight.set(profileId, entry);
+  // Progress fans out to EVERY caller this run serves. A joined caller used to lose its
+  // onProgress entirely, so the add-a-channel loading screen sat frozen on its first step
+  // for the whole run while the bar underneath it never moved.
+  const fanOut = (p) => { for (const fn of entry.listeners) { try { fn(p); } catch {} } };
+  return doSync(profileId, { ...opts, onProgress: fanOut })
+    .finally(() => { if (inFlight.get(profileId) === entry) inFlight.delete(profileId); });
+}
 
 /**
- * One run per profile. v1.0.21: a FORCED request may not silently ride a run that is
- * already past the stages it needs — the launch-forced sync made that collision routine,
- * and a share or manual add landing inside its ~10s window would get no `srcChannelId`
- * and no `giftRank` (exactly the bug `refreshAfterAdd` exists to prevent). A forced
- * caller therefore CHAINS a fresh run behind the current one instead of joining it.
+ * One run per profile at a time. The join-or-queue decision is pure `planSyncDispatch`
+ * (plan.js) — read its comment for the field bug: a forced caller must never ride a run
+ * that has already read the library, and the launch sync is forced and slow, so that
+ * collision was routine rather than rare.
  */
 export function syncLibrary(profileId, opts = {}) {
-  const cur = inFlight.get(profileId);
-  if (cur) {
-    if (!opts.force || cur.force) return cur.promise;
-    return cur.promise.catch(() => {}).then(() => syncLibrary(profileId, opts));
+  const running = inFlight.get(profileId) || null;
+  const queued = queuedRuns.get(profileId) || null;
+  const action = planSyncDispatch({ running: !!running, queued: !!queued, force: !!opts.force });
+
+  if (action === 'join-running') return attach(running, opts);
+  if (action === 'join-queued') return attach(queued, opts);
+
+  const entry = newEntry(opts);
+  if (action === 'queue') {
+    // Registered as queued BEFORE the chain is built, so a second forced caller arriving
+    // in the meantime joins this one instead of queueing a third full sweep.
+    queuedRuns.set(profileId, entry);
+    entry.promise = running.promise.catch(() => {}).then(() => beginRun(profileId, entry, opts));
+    return entry.promise;
   }
-  const entry = { force: !!opts.force };
-  entry.promise = doSync(profileId, opts)
-    .finally(() => { if (inFlight.get(profileId) === entry) inFlight.delete(profileId); });
-  inFlight.set(profileId, entry);
+  entry.promise = beginRun(profileId, entry, opts); // 'start'
   return entry.promise;
 }
 

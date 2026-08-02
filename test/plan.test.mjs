@@ -9,7 +9,7 @@ import {
   shouldAskShareProfile,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
-  resolveWatchContext
+  resolveWatchContext, planSyncDispatch
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -147,6 +147,35 @@ test('planChannelLogo: an avatar that FAILS TO LOAD becomes fetchable again (v1.
 
   assert.deepEqual(planChannelLogo(null, { hasKey: false, now }), { api: false, scrape: true },
     'never throws on a channel record that does not exist yet');
+});
+
+test('planSyncDispatch: a FORCED sync never rides a run that already read (v1.0.25)', () => {
+  // THE field bug. v1.0.21 wrote "a forced sync CHAINS, NEVER JOINS" in the comment above
+  // syncLibrary but shipped `if (!opts.force || cur.force) return cur.promise` — which
+  // joins whenever the RUNNING sync is itself forced. The first sync of every launch is
+  // forced and takes minutes, so a parent adding a channel inside that window rode a run
+  // that had listed the channels before their channel existed: it finished "successfully",
+  // offerChannelApproval found 0 pending videos, the three-way dialog never appeared, and
+  // the parent was told "הערוץ סונכרן ✅" over an empty import.
+  assert.equal(planSyncDispatch({ running: true, queued: false, force: true }), 'queue',
+    'a forced caller joined a forced run — the exact shipped bug');
+
+  // nothing in flight
+  assert.equal(planSyncDispatch({ running: false, force: false }), 'start');
+  assert.equal(planSyncDispatch({ running: false, force: true }), 'start');
+  assert.equal(planSyncDispatch({ running: false, queued: true, force: true }), 'start',
+    'a queue with nothing running is not a state that can block a fresh run');
+
+  // unforced callers are cheap and may always ride
+  assert.equal(planSyncDispatch({ running: true, force: false }), 'join-running');
+  assert.equal(planSyncDispatch({ running: true, queued: true, force: false }), 'join-running');
+
+  // a QUEUED run has read nothing yet, so it is guaranteed to observe our write. This is
+  // what keeps three adds in a row from queueing three full library sweeps.
+  assert.equal(planSyncDispatch({ running: true, queued: true, force: true }), 'join-queued');
+
+  assert.equal(planSyncDispatch(), 'start', 'must never throw on junk input');
+  assert.equal(planSyncDispatch({}), 'start');
 });
 
 test('attentionDot: CONTENT wins the dot, and the colour names the errand (v1.0.24)', () => {
