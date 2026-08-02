@@ -876,3 +876,24 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .toast-ok { background: #1f7a46; }
 .toast-warn { background: #8a6d1f; }
 .toast-err { background: #a3323a; }
+
+/* v1.0.26: empty-list line for the parent's queue — reassuring, not an error */
+.list-empty {
+  text-align: center; color: var(--muted);
+  font-size: 17px; font-weight: 700; padding: 26px 16px;
+}
+/* v1.0.26: profile names went from 12 to 20 characters, and the tile is the ONE place a
+   name is drawn at full length (the header chip has been ellipsised at 90px all along).
+   The tile had no width bound at all, so a long name simply made its flex item wider and
+   the picker went ragged.
+   `9em` = 180px at this font size, which holds the widest possible 20 characters in
+   exactly two lines — browser-measured, not guessed, including an all-'מ' worst case.
+   `overflow-wrap: anywhere` is load-bearing: a 20-character name with no spaces is one
+   unbreakable word and would otherwise overflow the cap instead of wrapping.
+   The 2-line clamp is INSURANCE, not the normal path — `store.normalizeProfileName` caps
+   creation at 20, so it can only ever fire on a longer name reaching us from a peer. */
+.profile-name {
+  max-width: 9em; text-align: center; line-height: 1.2;
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}

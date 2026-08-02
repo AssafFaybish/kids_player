@@ -135,7 +135,7 @@
         <button id="create-back" class="text-btn create-back" type="button">◀ חזרה</button>
         <h2 class="create-title">פרופיל חדש</h2>
         <div class="create-preview"><span id="create-preview-av" class="avatar avatar-lg">🙂</span></div>
-        <input id="create-name" class="input" type="text" maxlength="12" placeholder="איך קוראים לך?" />
+        <input id="create-name" class="input" type="text" maxlength="20" placeholder="איך קוראים לך?" />
         <p class="create-sub">בחרו תמונה:</p>
         <div id="avatar-grid" class="avatar-grid"></div>
         <button id="create-save" class="btn btn-primary" type="button">יצירת פרופיל</button>
@@ -365,6 +365,10 @@
           <button id="pending-none" class="btn btn-small" type="button">נקה בחירה</button>
         </div>
         <div id="approve-msg" class="form-msg"></div>
+        <!-- v1.0.26: an empty queue must SAY it is empty. A bare blank area reads as
+             "still loading" or "something is broken", and this screen is now where the
+             blue attention dot sends the parent. -->
+        <p id="pending-empty" class="list-empty hidden">אין סרטונים שממתינים לאישור 🎉</p>
         <ul id="pending-list" class="parent-list"></ul>
 
         <!-- v1.0.23: REJECTED, and recoverable. A rejection used to erase the record and

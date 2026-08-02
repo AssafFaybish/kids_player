@@ -52,6 +52,48 @@ test('fresh device: empty local + full remote restores everything', () => {
   assert.deepEqual(list.map((p) => p.id), ['a', 'b']);
 });
 
+/* ---------------- the name a profile is STORED under (v1.0.26) ---------------- */
+
+test('normalizeProfileName: trims, collapses whitespace, falls back for empty', async () => {
+  const { normalizeProfileName } = await import('../www/js/store.js');
+  assert.equal(normalizeProfileName('נועם'), 'נועם');
+  assert.equal(normalizeProfileName('  נועם  '), 'נועם');
+  assert.equal(normalizeProfileName('נועה   לוי'), 'נועה לוי');   // collapsed, like the compare helpers
+  assert.equal(normalizeProfileName('נועם\n\tבן'), 'נועם בן');
+  // a nameless profile must still be tappable
+  for (const empty of ['', '   ', null, undefined]) {
+    assert.equal(normalizeProfileName(empty), 'ילד/ה', `empty input ${JSON.stringify(empty)}`);
+  }
+});
+
+test('normalizeProfileName: caps at PROFILE_NAME_MAX, and the cap is by CODE POINT', async () => {
+  const { normalizeProfileName, PROFILE_NAME_MAX } = await import('../www/js/store.js');
+  assert.equal(PROFILE_NAME_MAX, 20);
+
+  const exact = 'אבגדהוזחטיכלמנסעפצקר';                       // exactly 20 — untouched
+  assert.equal([...exact].length, 20);
+  assert.equal(normalizeProfileName(exact), exact);
+
+  const over = exact + 'שתאבגד';                              // 26 — cut back to 20
+  assert.equal([...normalizeProfileName(over)].length, 20);
+  assert.equal(normalizeProfileName(over), exact);
+
+  // A cut that lands on a space must not store a trailing one.
+  assert.equal(normalizeProfileName('אבגדהוזחטיכלמנסעפצק רשת'), 'אבגדהוזחטיכלמנסעפצק');
+
+  // THE POINT of slicing by code point: an emoji name must never be cut mid-surrogate.
+  // '🦁' is one code point but two UTF-16 units, so a `.slice(0,20)` would store '\uD83E'.
+  const emoji = 'אבגדהוזחטיכלמנסעפצק🦁ר';                     // the 🦁 is code point #20
+  const out = normalizeProfileName(emoji);
+  assert.equal([...out].length, 20);
+  assert.ok(out.endsWith('🦁'), `kept the whole emoji, got ${JSON.stringify(out)}`);
+  // An UNPAIRED surrogate — a high one not followed by a low, or a low not preceded by a
+  // high. A correctly kept 🦁 legitimately ends in its low half, so a bare `[\uD800-\uDFFF]$`
+  // would fire on the passing case (it did, first time round).
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  assert.ok(!lone.test(out), `stored a lone surrogate half: ${JSON.stringify(out)}`);
+});
+
 /* ---------------- unique profile names (v1.0.8) ---------------- */
 
 test('profileNameExists: trims + collapses whitespace; empty never matches', async () => {

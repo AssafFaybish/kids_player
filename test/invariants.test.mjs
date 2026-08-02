@@ -579,6 +579,24 @@ test('every $(id) the code asks for EXISTS in index.html', () => {
   assert.deepEqual(missing, [], 'these ids are read from JS but are not in index.html');
 });
 
+test("the name input's maxlength IS store.PROFILE_NAME_MAX", async () => {
+  // v1.0.26: the profile-name limit lives in TWO places that cannot see each other — the
+  // `maxlength` attribute the parent actually types against, and the cap `createProfile`
+  // stores by. Before this release the attribute was the ONLY one, so the limit was a DOM
+  // detail no test could reach; now that both exist, the failure mode is drift: raise the
+  // attribute alone and long names reach storage unbounded, raise the constant alone and
+  // the parent simply cannot type them. The profile TILE is sized for `PROFILE_NAME_MAX`
+  // (2 lines at 9em, browser-measured), so the attribute is what keeps that promise true.
+  const { PROFILE_NAME_MAX } = await import('../www/js/store.js');
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  const tag = html.match(/<input[^>]*id="create-name"[^>]*>/);
+  assert.ok(tag, 'index.html has no #create-name input');
+  const attr = tag[0].match(/maxlength="(\d+)"/);
+  assert.ok(attr, `#create-name has no maxlength — the cap would be silent: ${tag[0]}`);
+  assert.equal(Number(attr[1]), PROFILE_NAME_MAX,
+    'index.html maxlength and store.PROFILE_NAME_MAX disagree');
+});
+
 test('the version chain is not one deletable line', () => {
   // EVERY APK's version comes from one `apply from` at the END of a CAPACITOR-GENERATED
   // file. `npx cap add android` regenerates that file, and its own defaultConfig still says

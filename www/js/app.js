@@ -2225,6 +2225,9 @@ async function refreshPendingList() {
   badge.classList.toggle('hidden', grandTotal === 0);
   const ul = $('pending-list');
   ul.innerHTML = '';
+  // v1.0.26: say it out loud. An empty list looked identical to a list that had not
+  // loaded, on the very screen the blue dot sends the parent to.
+  $('pending-empty').classList.toggle('hidden', grandTotal > 0);
   // A rebuild always follows a mutation, so a surviving tick could point at a row that is
   // gone (or is now live) — which is why this used to clear the whole selection.
   //
