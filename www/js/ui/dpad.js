@@ -17,9 +17,16 @@ const KEY_DIR = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDo
 
 /** Focusable, actually-visible controls of the current context (modal wins). */
 function candidates() {
+  // v1.0.29: the preview bubble is an OVERLAY, not a view (that is its whole design —
+  // the screen behind keeps its state), so the view-scoped scan below could never see
+  // its buttons: on TV the bubble opened and the remote was trapped behind it. Priority
+  // matches stacking: modal (a confirm can stack over the bubble) → open bubble → view.
+  const pv = document.getElementById('preview-bubble');
   const scope = isModalOpen()
     ? document.getElementById('modal')
-    : document.querySelector('.view.active');
+    : (pv && !pv.classList.contains('hidden'))
+      ? pv
+      : document.querySelector('.view.active');
   if (!scope) return [];
   // v1.0.28: `summary` is focusable and toggles its <details> natively on Enter — but it
   // was missing here, so every folded section (the rejected archive since v1.0.23, the

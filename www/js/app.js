@@ -2206,6 +2206,13 @@ function parentRow({ rec, onDelete, onApprove, onPreview = null, note = '', sele
     img.setAttribute('role', 'button');
     img.title = 'צפייה מהירה';
     img.addEventListener('click', (e) => { e.stopPropagation(); onPreview(rec); });
+    // v1.0.29 (TV): a bare <img> is invisible to the D-pad. tabIndex puts it in the
+    // focus scan; Enter needs explicit handling because only buttons activate natively.
+    img.tabIndex = 0;
+    img.setAttribute('role', 'button');
+    img.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onPreview(rec); }
+    });
   }
   const body = document.createElement('div');
   body.className = 'li-body';
