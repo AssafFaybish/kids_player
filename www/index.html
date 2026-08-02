@@ -374,6 +374,9 @@
         <details id="rejected-box" class="rejected-box hidden">
           <summary id="rejected-summary" class="rejected-summary">דחויים</summary>
           <p class="form-msg">הילד לא רואה אותם. אפשר להחזיר סרטון לתור האישורים, או לרוקן את הרשימה לגמרי.</p>
+          <!-- v1.0.26: the auto-purge is irreversible, so it is stated up front and each
+               row shows its own countdown — see planRejectedPurge. -->
+          <p id="rejected-ttl" class="form-msg"></p>
           <div class="row-btns">
             <button id="purge-rejected" class="btn btn-small btn-danger" type="button">🗑️ מחק לצמיתות</button>
           </div>

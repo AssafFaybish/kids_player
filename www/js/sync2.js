@@ -22,12 +22,12 @@ import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
-  planChannelLogo, planSyncDispatch, playlistVideoFolder
+  planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge
 } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
-import { QUOTA_DAILY_SOFT_CAP } from './config.js';
+import { QUOTA_DAILY_SOFT_CAP, REJECTED_TTL_DAYS } from './config.js';
 import * as yt from './yt.js';
 import {
   getSources, putSources, getChannel, putChannel,
@@ -35,7 +35,7 @@ import {
   loadDenySet, loadMergeIndex, putVideos, setVideoFields, deleteVideoRaw, deleteVideo,
   getVideo, unDeny,
   putVideoStates, getMeta, putMeta, profScope, countFolder, pageFolder,
-  getLogoFailedAt, setLogoFailedAt
+  getLogoFailedAt, setLogoFailedAt, pageRejected
 } from './db.js';
 
 const BACKFILL_PAGE_BUDGET = 40; // ~2000 videos per run; continues next launch
@@ -683,6 +683,24 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       }
     }
   }
+
+  /* ---------- stage: expire the rejected archive (v1.0.26) ----------
+   * A rejection is PARKED so the parent can undo it, which means the archive only grows —
+   * and a channel re-offers its catalogue every 30 minutes, so it grows fast. After the
+   * window the record is purged for real (delete + deny tombstone, the same thing
+   * "מחק לצמיתות" does), which is also what stops the video returning on the next sync.
+   *
+   * Here rather than in the parent screen because it must happen whether or not anyone
+   * opens that screen — and ONE place, so the two can never disagree about the deadline.
+   * Both scopes: a rejection can be parked in the shared library or in the personal one.
+   */
+  try {
+    for (const s2 of new Set([scope, profScope(profileId)])) {
+      const { items } = await pageRejected(s2, { limit: 5000 });
+      const { expired } = planRejectedPurge(items, { days: REJECTED_TTL_DAYS });
+      for (const k of expired) await deleteVideo(s2, k, 'rejected-expired');
+    }
+  } catch { /* housekeeping must never take the sync down with it */ }
 
   /* ---------- stage: plan + persist ---------- */
   report('plan', 70, 'מסדרים את הסרטונים…');

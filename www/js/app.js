@@ -14,14 +14,14 @@ import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
-  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from './config.js';
+  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge } from './plan.js';
+  planProfilePurge, planRejectedPurge } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -2009,7 +2009,7 @@ async function previewDecide(fn) {
   renderPreview();
 }
 
-function parentRow({ rec, onDelete, onApprove, onPreview = null, select = null }) {
+function parentRow({ rec, onDelete, onApprove, onPreview = null, note = '', select = null }) {
   const li = document.createElement('li');
   if (select) {
     const cb = document.createElement('input');
@@ -2058,6 +2058,13 @@ function parentRow({ rec, onDelete, onApprove, onPreview = null, select = null }
   sub.textContent = rec.srcUrl || rec.url || '';
   body.appendChild(title);
   body.appendChild(sub);
+  // v1.0.26: the rejected archive's per-row countdown to permanent deletion
+  if (note) {
+    const n = document.createElement('div');
+    n.className = 'li-note li-ttl';
+    n.textContent = '⏳ ' + note;
+    body.appendChild(n);
+  }
   li.appendChild(img);
   li.appendChild(body);
   if (onApprove) {
@@ -2289,11 +2296,18 @@ async function refreshRejectedList() {
   const box = $('rejected-box');
   box.classList.toggle('hidden', rej.length === 0);
   $('rejected-summary').textContent = `דחויים (${rej.length})`;
+  // v1.0.26 — the archive empties itself, and that deletion CANNOT be undone (for a video
+  // inside a channel there is no way back at all: only a sheet re-add revokes a tombstone,
+  // and a channel video has no row). So say it, and give every row its own countdown.
+  const { daysLeft } = planRejectedPurge(rej, { days: REJECTED_TTL_DAYS });
+  $('rejected-ttl').textContent = `סרטון שנדחה נמחק לצמיתות אוטומטית אחרי ${REJECTED_TTL_DAYS} יום.`;
   const ul = $('rejected-list');
   ul.innerHTML = '';
   for (const rec of rej.slice(0, PARENT_LIST_CAP)) {
+    const left = daysLeft.get(rec.key);
     ul.appendChild(parentRow({
       rec,
+      note: left ? (left === 1 ? 'נמחק מחר' : `נמחק בעוד ${left} ימים`) : '',
       // ↩️ back to the approval queue — deliberately NOT straight to live: the parent is
       // reconsidering, and the queue is where a decision gets made.
       onApprove: async () => {

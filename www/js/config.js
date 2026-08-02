@@ -22,6 +22,12 @@ export const AUTOPLAY_RETRY_MS = 4000;   // one retry of the SAME video before m
 // unplayable videos would flip through black screens indefinitely.
 export const AUTOPLAY_MAX_FAILURES = 5;
 
+/* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
+   is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
+   Long enough that a parent who changes their mind has a real window; short enough that
+   the archive does not become a second library nobody prunes. */
+export const REJECTED_TTL_DAYS = 30;
+
 /* Sync */
 export const MAX_ITEMS_PER_CHANNEL = 500;
 export const MAX_ITEMS_TOTAL = 5000;
