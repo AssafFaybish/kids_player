@@ -298,17 +298,30 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
  *    folder by — so without it the video sits in the loose "סרטונים נוספים" list;
  *  - `giftRank` is assigned only by `planProfileGifts`, so the video is not a 🎁 either.
  * Both used to appear only after the parent happened to press "רענון נתונים" (field bug).
- * Silent and non-blocking on purpose: the child may be looking at a populated grid, and
+ * Silent and non-blocking BY DEFAULT: the child may be looking at a populated grid, and
  * covering it with the loading screen is the worse bug (v1.0.18).
+ *
+ * v1.0.26 — `wait: true` RETURNS the promise instead, for the one context where the
+ * opposite is true: the parent is standing in front of the screen having just answered
+ * "what should I do with this catalogue?", and this is a SECOND full library sync that can
+ * run for minutes. Silence there was read as "it finished" or "it is stuck" — the field
+ * report this option exists for. The default is untouched precisely because the v1.0.18
+ * reasoning still holds everywhere else; only the caller that owns a waiting screen may
+ * ask to wait.
  */
-function refreshAfterAdd({ parent = false } = {}) {
-  if (!activeProfileId) return;
+function refreshAfterAdd({ parent = false, wait = false } = {}) {
+  if (!activeProfileId) return wait ? Promise.resolve() : undefined;
   // NEVER while a video plays: a forced sync also bypasses the 30-min per-channel RSS
   // throttle, so this is a full sweep of every channel plus a whole-library re-plan —
   // on a low-end tablet, under a playing video. The gallery/parent screens are the only
   // safe places, and the next home entry re-runs it anyway.
-  if (nav.isActive('watch')) return;
-  syncLibrary(activeProfileId, { force: true }).then(async () => {
+  if (nav.isActive('watch')) return wait ? Promise.resolve() : undefined;
+  // `onProgress` is passed ONLY when a caller is waiting: it fans out to a loading screen
+  // that does not exist otherwise, and sync2 skips the work of building labels nobody reads.
+  const run = syncLibrary(activeProfileId, {
+    force: true,
+    ...(wait ? { onProgress: (p) => loading.progress(p) } : {})
+  }).then(async () => {
     await loadGiftStates();
     if (nav.isActive('gallery')) renderHome();
     if (parent && nav.isActive('parent')) {
@@ -316,6 +329,7 @@ function refreshAfterAdd({ parent = false } = {}) {
     }
     refreshGateDot();
   }).catch(() => {});
+  return wait ? run : undefined;
 }
 
 /**
@@ -2695,22 +2709,25 @@ async function offerChannelApproval(channelId) {
   });
 
   if (answer === 'ok') {
-    const lc = (await db.listLibraryChannels(scope)).find((c) => c.channelId === channelId);
-    // The ✅ in the parent's channel list IS this flag — refreshChannelsList renders
-    // `cb.checked = !!lc.autoApprove`, so approving here is what ticks it.
-    if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
-    await db.approvePending(scope, keys);
-    // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
-    // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
-    // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
-    // later then asks ITS parent the same question instead of inheriting our answer.
-    await enqueueChannelSheetRow(channelId, 'auto');
+    // The dialog has closed, so the loading screen may come up without stacking on it.
+    await withChannelWait('approve', { count: keys.length }, async () => {
+      const lc = (await db.listLibraryChannels(scope)).find((c) => c.channelId === channelId);
+      // The ✅ in the parent's channel list IS this flag — refreshChannelsList renders
+      // `cb.checked = !!lc.autoApprove`, so approving here is what ticks it.
+      if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
+      await db.approvePending(scope, keys);
+      // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
+      // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
+      // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
+      // later then asks ITS parent the same question instead of inheriting our answer.
+      await enqueueChannelSheetRow(channelId, 'auto');
+    });
     return { approved: true, count: keys.length };
   }
 
   if (answer === 'third') {
     const picked = await pickChannelVideos(channelId, name);
-    return { approved: false, count: keys.length, picked };
+    return { approved: false, count: keys.length, picked, kept: picked ? picked.kept : 0 };
   }
   // 'cancel' (אחר כך) and 'dismiss' both leave everything waiting — the safe default.
   return { approved: false, count: keys.length };
@@ -2730,6 +2747,38 @@ async function offerChannelApproval(channelId) {
  * The wait is unavoidable: the dialog needs the backlog, and the backlog needs the sync.
  * loading.hide() runs in a `finally` and BEFORE the dialog — modals must never stack.
  */
+/**
+ * v1.0.26 — run one step of the channel-add flow behind a waiting screen that SAYS which
+ * step it is (pure `plan.channelAddWait`).
+ *
+ * `defer: 250` is what makes this safe to wrap around short steps too: a fast path never
+ * flashes a screen, so a two-video channel behaves exactly as it did before, while a
+ * 500-video one has no silent gap left anywhere.
+ *
+ * ALWAYS hides in a `finally`, and every caller must hide BEFORE raising a modal — a
+ * loading screen under a dialog is the stacking bug v1.0.18 called out.
+ */
+async function withChannelWait(stage, opts, fn) {
+  const { channelAddWait } = await import('./plan.js');
+  const text = channelAddWait(stage, opts) || {};
+  loading.show({ defer: 250, title: text.title, step: text.step });
+  try { return await fn(); } finally { await loading.hide(); }
+}
+
+// The blocking wait on the post-decision sync must not become a TRAP: nav swallows back on
+// the loading view, so a sync that never settles would hold the parent there forever. The
+// valve does not silently drop the screen — that would restore the exact ambiguity this
+// feature removes — it hands back control and SAYS the work continues in the background.
+const CHANNEL_FINISH_MAX_MS = 90000;
+
+/** -> true if the work finished, false if the valve fired and it is still running. */
+async function waitWithValve(promise, ms = CHANNEL_FINISH_MAX_MS) {
+  let timer = null;
+  const timeout = new Promise((r) => { timer = setTimeout(() => r(false), ms); });
+  try { return await Promise.race([promise.then(() => true).catch(() => true), timeout]); }
+  finally { clearTimeout(timer); }
+}
+
 async function importChannelAndAsk(channelId) {
   // A brand-new channel backfills up to ~2000 videos — by far the longest wait a parent
   // triggers by hand, and it used to run behind a one-line message (v1.0.18).
@@ -2741,15 +2790,28 @@ async function importChannelAndAsk(channelId) {
   } catch { /* reported by the caller */ } finally {
     await loading.hide();
   }
-  if (!synced) return { synced: false, approved: false, count: 0, empty: {} };
+  if (!synced) return { synced: false, approved: false, count: 0, picked: null, empty: {} };
 
-  const { approved, count } = await offerChannelApproval(channelId);
-  await loadGiftStates();
-  await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
-  renderHome();
-  if (approved) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
-  maybeSchedulePush();
-  return { synced: true, approved, count, empty: await diagnoseEmptyChannel(channelId, count) };
+  const { approved, count, kept = 0, picked = null } = await offerChannelApproval(channelId);
+  // Everything below used to run with the ORDINARY screen showing and no indication at
+  // all — the field report. The heavy part is the second full sync inside refreshAfterAdd.
+  let backgrounded = false;
+  await withChannelWait('finishing', {}, async () => {
+    await loadGiftStates();
+    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+    renderHome();
+    // AWAITED here, silent everywhere else — see refreshAfterAdd's own comment. BOTH
+    // answers need it: "אישור הכל" approves the backlog, and the manual picker keeps a
+    // subset — either way those records are live but have no gift rank yet.
+    if (approved || kept > 0) {
+      backgrounded = !(await waitWithValve(refreshAfterAdd({ parent: true, wait: true })));
+    }
+    maybeSchedulePush();
+  });
+  return {
+    synced: true, approved, count, backgrounded, picked,
+    empty: await diagnoseEmptyChannel(channelId, count)
+  };
 }
 
 /**
@@ -2795,8 +2857,13 @@ function pickChannelVideos(channelId, name) {
       // Resolved, not the bare global: since v1.0.25 a channel SHARED from YouTube can
       // reach this picker before any home render has published `libScope`.
       const scope = await currentLibScope();
-      const { items } = await db.pagePending(scope, { limit: 5000 });
-      const recs = items.filter((r) => r.channelId === channelId).sort(compareForDisplay);
+      // v1.0.26: reading up to 5000 pending records and building a row + thumbnail for
+      // each is the step that looked most like "my tap did nothing" — the parent screen
+      // simply stayed put for seconds after they chose "אישור ידני".
+      const recs = await withChannelWait('building', {}, async () => {
+        const { items } = await db.pagePending(scope, { limit: 5000 });
+        return items.filter((r) => r.channelId === channelId).sort(compareForDisplay);
+      });
       const chosen = new Set(recs.map((r) => r.key)); // all ticked
       const ul = $('pick-list');
       const boxes = new Map();
@@ -2858,15 +2925,22 @@ function pickChannelVideos(channelId, name) {
         if (!commit) { resolve(null); return; }
         const keep = recs.filter((r) => chosen.has(r.key)).map((r) => r.key);
         const drop = recs.filter((r) => !chosen.has(r.key)).map((r) => r.key);
-        if (keep.length) {
-          await db.approvePending(scope, keep);
-          await enqueueApprovedForSheet(recs.filter((r) => chosen.has(r.key)));
-        }
-        if (drop.length) await db.rejectPending(scope, drop); // parked, NOT tombstoned
-        await loadGiftStates();
-        await Promise.all([refreshPendingList(), refreshParentList(), refreshChannelsList()]);
-        renderHome();
-        if (keep.length) refreshAfterAdd({ parent: true }); // newly-live records need gift ranks
+        // v1.0.26: the same silent gap as the bulk path — the parent tapped "להשאיר N"
+        // and got the parent screen back while hundreds of records were still being
+        // written. `importChannelAndAsk` owns the 'finishing' wait that follows.
+        await withChannelWait('saving', { count: keep.length }, async () => {
+          if (keep.length) {
+            await db.approvePending(scope, keep);
+            await enqueueApprovedForSheet(recs.filter((r) => chosen.has(r.key)));
+          }
+          if (drop.length) await db.rejectPending(scope, drop); // parked, NOT tombstoned
+          await loadGiftStates();
+          await Promise.all([refreshPendingList(), refreshParentList(), refreshChannelsList()]);
+          renderHome();
+        });
+        // NO refreshAfterAdd here: `importChannelAndAsk` runs the one blocking
+        // 'finishing' wait for BOTH answers. Firing a second, silent sync from this
+        // branch is what left the manual path with the very gap this release removes.
         maybeSchedulePush();
         resolve({ kept: keep.length, rejected: drop.length });
       };
@@ -2948,27 +3022,34 @@ async function parentAdd() {
 
   if (row.kind === 'channel') {
     msg.textContent = 'מזהה את הערוץ…';
-    await ensureSources();
-    const ytApi = await import('./yt.js');
-    const channelId = await ytApi.resolveChannelRef(row.channelRef, await ytApi.getApiKey());
-    if (!channelId) { msg.textContent = 'לא הצלחנו לזהות את הערוץ'; msg.className = 'form-msg err'; return; }
-    const known = (await db.listLibraryChannels(libScope)).some((c) => c.channelId === channelId);
-    await db.putLibraryChannel({
-      libraryId: libScope, channelId, autoApprove: false, autoApproveSource: 'ui',
-      order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
+    // v1.0.26: a @handle resolve is a real network step (up to a 1.5MB page scrape when
+    // keyless) that used to run behind that one line of small text. defer:250 means a raw
+    // /channel/UC… link — which resolves instantly — never flashes a screen for it.
+    const channelId = await withChannelWait('resolve', {}, async () => {
+      await ensureSources();
+      const ytApi = await import('./yt.js');
+      return ytApi.resolveChannelRef(row.channelRef, await ytApi.getApiKey());
     });
-    if (!known) { // v1.0.6: channels added here become sheet rows too (single master list)
-      // AWAITED, like the video path above: the forced sync below runs the presence-mirror,
-      // and a subscribed channel the sheet does not list is exactly what that deletes. The
-      // queued append is what protects it (planSheetMirror's pendingAppendKeys).
-      await enqueueChannelSheetRow(channelId, 'manual'); // approval-required for now
-    }
+    if (!channelId) { msg.textContent = 'לא הצלחנו לזהות את הערוץ'; msg.className = 'form-msg err'; return; }
+    await withChannelWait('subscribe', {}, async () => {
+      const k = (await db.listLibraryChannels(libScope)).some((c) => c.channelId === channelId);
+      await db.putLibraryChannel({
+        libraryId: libScope, channelId, autoApprove: false, autoApproveSource: 'ui',
+        order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
+      });
+      if (!k) { // v1.0.6: channels added here become sheet rows too (single master list)
+        // AWAITED, like the video path above: the forced sync below runs the presence-mirror,
+        // and a subscribed channel the sheet does not list is exactly what that deletes. The
+        // queued append is what protects it (planSheetMirror's pendingAppendKeys).
+        await enqueueChannelSheetRow(channelId, 'manual'); // approval-required for now
+      }
+    });
     msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
     $('add-url').value = '';
     await refreshChannelsList();
-    const { synced, approved, count, empty } = await importChannelAndAsk(channelId);
+    const { synced, approved, count, empty, picked } = await importChannelAndAsk(channelId);
     if (!synced) { msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err'; return; }
-    msg.textContent = channelAddOutcome(approved, count, empty);
+    msg.textContent = channelAddOutcome(approved, count, empty, picked);
     msg.className = 'form-msg ok';
     return;
   }
@@ -2993,9 +3074,9 @@ async function parentAdd() {
     msg.textContent = 'רשימת ההשמעה נוספה! מושכים סרטונים…'; msg.className = 'form-msg ok';
     $('add-url').value = '';
     await refreshChannelsList();
-    const { synced, approved, count, empty } = await importChannelAndAsk(plId);
+    const { synced, approved, count, empty, picked } = await importChannelAndAsk(plId);
     if (!synced) { msg.textContent = 'שגיאה במשיכת רשימת ההשמעה'; msg.className = 'form-msg err'; return; }
-    msg.textContent = channelAddOutcome(approved, count, empty);
+    msg.textContent = channelAddOutcome(approved, count, empty, picked);
     msg.className = 'form-msg ok';
     return;
   }
@@ -4235,9 +4316,9 @@ async function init() {
         // bare "הערוץ נוסף! ✅ … חדשים ימתינו לאישור" over a catalogue that was still
         // downloading — the parent was told the outcome before there was one, and the
         // backlog then sat in ממתינים unannounced.
-        const { synced, approved, count, empty } = await importChannelAndAsk(channelAdded);
+        const { synced, approved, count, empty, picked } = await importChannelAndAsk(channelAdded);
         await alertKid(synced
-          ? { emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — ${channelAddOutcome(approved, count, empty)}`, ok: 'מעולה' }
+          ? { emoji: '📺', title: 'הערוץ נוסף! ✅', text: `${title || 'הערוץ'} — ${channelAddOutcome(approved, count, empty, picked)}`, ok: 'מעולה' }
           : { emoji: '😕', title: 'הערוץ נוסף, אבל המשיכה נכשלה', text: 'אפשר לנסות שוב ממסך ההורים ← מקורות ← רענון נתונים.', ok: 'בסדר' });
         if (nav.isActive('gallery')) renderHome();
         return; // importChannelAndAsk already re-rendered and scheduled the push

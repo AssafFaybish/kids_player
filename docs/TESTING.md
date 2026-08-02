@@ -160,6 +160,7 @@ for anything destructive, and purge it afterwards.
 | 30-day purge | Age one rejected record past the window in IndexedDB, run a sync, confirm it is gone, a tombstone exists with `reason: 'rejected-expired'`, and fresher rows survive. |
 | PIN recovery | Request a reset, then age `pinRecoveryAt` back past 24h in Preferences. Check BOTH the PIN screen and the child's home — the banner is the actual safeguard. Restore the sandbox PIN afterwards. |
 | Share feedback | `plan.shareOutcome` covers every reason `routeShare` can return (pinned). On a device, the toast is the diagnostic — read it before assuming the share was lost. |
+| Channel-add waits | Add an already-synced channel: the dialog must appear in <300ms with ZERO loading flashes (defer:250). Then stage pending videos and answer each dialog button — every step must name itself, and the finishing screen must stream the sync's real labels. |
 | Empty queue | Approve or reject the last waiting video **without leaving the tab** — the line must appear and the badge must clear on the same rebuild. |
 | 20-char names | Create a profile with a 20-character name: the tile wraps to two lines and the picker stays aligned. Note `maxlength` does **not** bind a scripted `.value` — test the stored name, not the input. |
 

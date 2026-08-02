@@ -144,6 +144,48 @@ export function planRejectedPurge(records, { now = Date.now(), days = 30 } = {})
 }
 
 /**
+ * v1.0.26 — PURE: what the waiting screen says at each step of adding a channel.
+ * -> { title, step } , or null for a stage nobody should be waiting on.
+ *
+ * REPORTED FROM THE FIELD: "adding a channel takes a while — that is fine — but I cannot
+ * tell whether it is still working or waiting for me to tap." Only ONE step of the flow
+ * ever showed anything (the long import), so between every other click the parent got the
+ * ordinary screen back with work still running behind it, and no way to know whether
+ * tapping would do something or interrupt something.
+ *
+ * The text lives here rather than inline because it is the whole feature: a waiting screen
+ * with no explanation is the same ambiguity in a different colour. `invariants.test.mjs`
+ * pins that every stage app.js actually waits on has an entry — the shareOutcome rule, for
+ * the same reason (a stage added later with no text would silently show "בטעינה…").
+ *
+ * The COUNT is part of the sentence wherever we know it: "מאשרים 109 סרטונים" tells the
+ * parent both what is happening and why it is not instant.
+ */
+const CHANNEL_ADD_WAITS = {
+  resolve:  { title: 'מזהים את הערוץ', step: 'בודקים את הקישור מול יוטיוב…' },
+  subscribe:{ title: 'מוסיפים את הערוץ', step: 'שומרים אותו ברשימת המקורות…' },
+  approve:  { title: 'מאשרים את הסרטונים', step: 'עוד רגע והכול יהיה אצל הילד…' },
+  building: { title: 'מכינים את רשימת הסרטונים', step: 'טוענים את מה שהערוץ הביא…' },
+  saving:   { title: 'שומרים את הבחירה', step: 'מאשרים את מה שסימנתם…' },
+  finishing:{ title: 'מסדרים את הספרייה', step: 'משבצים את הסרטונים בתיקיות ובמתנות…' }
+};
+
+export function channelAddWait(stage, { count = 0 } = {}) {
+  const base = CHANNEL_ADD_WAITS[stage];
+  if (!base) return null;
+  const n = Number(count);
+  if (stage === 'approve' && Number.isFinite(n) && n > 0) {
+    return { title: `מאשרים ${n} סרטונים`, step: base.step };
+  }
+  if (stage === 'building' && Number.isFinite(n) && n > 0) {
+    return { title: base.title, step: `${n} סרטונים — עוד רגע…` };
+  }
+  return { ...base };
+}
+
+export const CHANNEL_ADD_STAGES = Object.keys(CHANNEL_ADD_WAITS);
+
+/**
  * v1.0.26 — PURE: where a "I forgot the parent code" request stands.
  * -> { state: 'none' | 'waiting' | 'ready', msLeft, hoursLeft }
  *
@@ -932,7 +974,7 @@ export function pendingBulkAction(selected = 0, total = 0) {
  * @param count    the backlog size, whichever way they answered
  * @param empty    only consulted when count is 0 — { noLongForm, hasLive }
  */
-export function channelAddOutcome(approved, count = 0, empty = {}) {
+export function channelAddOutcome(approved, count = 0, empty = {}, picked = null) {
   const n = Math.max(0, count | 0);
   const { noLongForm = false, hasLive = true, isPlaylist = false } = empty || {};
   // v1.0.26: a playlist is a source too, and calling it "הערוץ" is the kind of small lie
@@ -941,6 +983,16 @@ export function channelAddOutcome(approved, count = 0, empty = {}) {
   const what = isPlaylist ? 'רשימת ההשמעה נוספה' : 'הערוץ נוסף';
   const inIt = isPlaylist ? 'בה' : 'בו';
   if (approved && n) return `${what} ו-${n} סרטונים אושרו ✅`;
+  // v1.0.26 FIELD-ADJACENT BUG, found while verifying the waiting screens: after the
+  // MANUAL pick the message fell through to "N ממתינים לאישור" — reporting a queue the
+  // parent had just emptied by hand. Nothing is waiting after a pick; say what they chose.
+  if (picked && (picked.kept | 0) + (picked.rejected | 0) > 0) {
+    const kept = picked.kept | 0;
+    const rej = picked.rejected | 0;
+    if (kept && rej) return `${what}: ${kept} סרטונים אושרו ו-${rej} נדחו ✅`;
+    if (kept) return `${what} ו-${kept} סרטונים אושרו ✅`;
+    return `${what}, וכל ${rej} הסרטונים נדחו`;
+  }
   if (n) return `${what}. ${n} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`;
   if (noLongForm) return 'הערוץ נוסף, אבל הוא מפרסם רק Shorts — לא נמשכו ממנו סרטונים';
   if (!hasLive) return `${what}, אבל לא נמצאו ${inIt} סרטונים`;

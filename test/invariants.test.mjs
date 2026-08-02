@@ -237,7 +237,10 @@ test('every path that makes a record LIVE forces a refresh', () => {
   assert.ok(sites >= 5, `only ${sites} refreshAfterAdd call sites — an add path stopped refreshing`);
   // it must FORCE: the 3-min shouldSync throttle is what made the bug invisible
   const fn = app.slice(app.indexOf('function refreshAfterAdd('));
-  assert.match(fn.slice(0, 900), /syncLibrary\(activeProfileId,\s*\{\s*force:\s*true\s*\}/,
+  // `[^}]*` rather than an immediate `}`: v1.0.26 added an `onProgress` option for the one
+  // caller that waits behind a loading screen. The RULE is "it must force" — the old regex
+  // also pinned the punctuation, so a legitimate second option failed it.
+  assert.match(fn.slice(0, 900), /syncLibrary\(activeProfileId,\s*\{[^}]*force:\s*true\b/,
     'refreshAfterAdd must force the sync, or the 3-min throttle swallows it');
   // …and never under a playing video: a forced sync also bypasses the per-channel RSS
   // throttle, so it is a full sweep of every channel on a low-end tablet
@@ -685,4 +688,34 @@ test('a failed device prompt still offers the wait', () => {
   const dev = body.slice(from, to);
   assert.match(dev, /requestRecovery\(/,
     'the device branch never falls back to the wait when the prompt fails');
+});
+
+test('no step of the channel-add flow is left silent (v1.0.26)', () => {
+  // FIELD REPORT: "adding a channel takes a while — fine — but between clicks I cannot
+  // tell whether it is still working or waiting for me." Only the long import ever showed
+  // anything; every other step handed back the ordinary screen with work still running.
+  //
+  // Two things must hold, and neither is visible to a unit test:
+  //   (a) every stage app.js waits on has TEXT in plan.js — otherwise the parent gets the
+  //       generic "בטעינה…", which is the same non-answer;
+  //   (b) the post-decision sync is AWAITED, because that one is a second full library
+  //       sync and was by far the longest silence.
+  const app = MODULES.get('www/js/app.js');
+  const plan = MODULES.get('www/js/plan.js');
+
+  const used = [...app.matchAll(/withChannelWait\(\s*'([a-z-]+)'/g)].map((m) => m[1]);
+  assert.ok(used.length >= 4, `only ${used.length} waited steps — the flow went quiet again`);
+  for (const stage of new Set(used)) {
+    assert.match(plan, new RegExp(`^\\s{2}${stage}\\s*:`, 'm'),
+      `app.js waits on '${stage}' but plan.channelAddWait has no text for it`);
+  }
+
+  // The blocking wait, and its valve. `wait: true` is what turns the fire-and-forget
+  // refresh into something the parent can see finish.
+  const imp = app.slice(app.indexOf('async function importChannelAndAsk('));
+  const body = imp.slice(0, imp.indexOf('\n}\n'));
+  assert.match(body, /withChannelWait\(\s*'finishing'/, 'the post-decision work went silent again');
+  assert.match(body, /refreshAfterAdd\(\{[^}]*wait:\s*true/, 'the second sync is fire-and-forget again');
+  // A loading screen swallows back, so an unbounded wait is a trap, not a courtesy.
+  assert.match(body, /waitWithValve\(/, 'the blocking wait lost its escape valve');
 });

@@ -262,6 +262,33 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.27 — **NO STEP OF ADDING A CHANNEL IS SILENT ANY MORE.** Field report: "the add
+  takes a while — fine — but between clicks I cannot tell whether it is still working or
+  waiting for me." Only the long import ever showed the loading screen; resolve, subscribe,
+  the bulk approve, building the manual-pick list, saving the pick, and above all the
+  SECOND full sync after the decision all ran behind the ordinary screen.
+  - The texts are pure `plan.channelAddWait(stage, {count})` — a waiting screen with no
+    explanation is the same ambiguity in a different colour, so the words ARE the feature
+    and are test-pinned (never the generic "בטעינה…", the count in the sentence when known,
+    and no NaN/0 leaking in). `invariants.test.mjs` pins that every stage `app.js` waits on
+    via `withChannelWait` has an entry — a stage added without text fails the suite.
+  - `withChannelWait` keeps `defer: 250`, so THE FAST PATH NEVER FLASHES — measured: an
+    already-synced channel reaches the dialog in 150ms with zero screens, while the same
+    flow with real work shows each step with its own words (and the finishing screen
+    streams the sync's real progress labels via `onProgress`).
+  - **`refreshAfterAdd` gained `wait: true` for exactly ONE caller** (`importChannelAndAsk`,
+    which owns the waiting screen); the default stays silent because the v1.0.18 rule
+    still holds everywhere else — covering the child's populated grid is the worse bug.
+    BOTH dialog answers route through the same awaited 'finishing' wait: the manual pick
+    used to fire its own silent sync, which was the exact gap on that branch.
+  - **A blocking wait must not become a TRAP**: the loading view swallows back, so the
+    post-decision sync is raced against `waitWithValve` (90s). The valve does not drop the
+    screen silently — that would restore the ambiguity — it reports `backgrounded` so the
+    caller can say the work continues.
+  - **Found while verifying: the manual pick reported a queue the parent had just emptied**
+    ("3 סרטונים ממתינים לאישור" after they kept 2 and rejected 1). `channelAddOutcome` now
+    takes the pick result and says what was chosen; a missing pick keeps the honest
+    "waiting" sentence because that queue is real.
 - v1.0.26 — **AN EMPTY QUEUE SAYS SO** (`#pending-empty`, `.list-empty`). ממתינים rendered a
   blank area when nothing was waiting, which is indistinguishable from a list that has not
   loaded or a screen that is broken — and since v1.0.24 the BLUE attention dot deliberately
