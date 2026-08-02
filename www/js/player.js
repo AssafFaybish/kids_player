@@ -298,7 +298,11 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
     try { player && player.stopVideo && player.stopVideo(); } catch {}
     try { player && player.destroy && player.destroy(); } catch {}
   };
-  const finish = () => { const first = !torn; cleanup(); if (first && cb.onExit) cb.onExit(); };
+  // v1.0.25: onExit now says WHY. finish() fires for a clean end AND for an
+  // embedding-disabled video, and an autoplay chain hooked to it would skip silently
+  // through every broken video in the library — the parent would never learn the content
+  // is dead, and the child would watch the grid flicker.
+  const finish = (reason = 'ended') => { const first = !torn; cleanup(); if (first && cb.onExit) cb.onExit(reason); };
 
   const reuse = (nextItem, nextOpts) => {
     if (torn || !player || !player.loadVideoById) throw new Error('not-reusable');
@@ -362,7 +366,7 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
       onError: () => {
         if (errTimer) clearTimeout(errTimer);
         const firedFor = swapAt;
-        errTimer = setTimeout(() => { if (!torn && swapAt === firedFor) finish(); }, 400);
+        errTimer = setTimeout(() => { if (!torn && swapAt === firedFor) finish('error'); }, 400);
       }
     }
   });
@@ -401,7 +405,7 @@ async function playFile(item, host, { onExit, onStatus, onThumb } = {}, seq = 0)
     video.removeEventListener('pause', onTime);
     try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
   };
-  const finish = () => { const first = !torn; cleanup(); if (first && onExit) onExit(); };
+  const finish = (reason = 'ended') => { const first = !torn; cleanup(); if (first && onExit) onExit(reason); };
   current = { cleanup, kind: 'file' };
   hud = setupHud(ctl);
 
@@ -409,7 +413,8 @@ async function playFile(item, host, { onExit, onStatus, onThumb } = {}, seq = 0)
   video.addEventListener('loadedmetadata', onTime);
   video.addEventListener('play', onTime);
   video.addEventListener('pause', onTime);
-  video.addEventListener('ended', finish);
+  // wrapped: the DOM hands the listener an Event, which would arrive as the exit REASON
+  video.addEventListener('ended', () => finish('ended'));
   // F3: a media-fragment (#t=30) that survived somewhere WILL seek — force 0 once.
   video.addEventListener('loadedmetadata', () => {
     if (!forcedZero && video.currentTime > 0.5) { try { video.currentTime = 0; } catch {} }

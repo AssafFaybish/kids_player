@@ -13,9 +13,11 @@ import { playItem, stop } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
-import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS } from './config.js';
+import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
+  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
+import { planAutoplay, nextInOrder } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh } from './plan.js';
@@ -158,7 +160,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -509,6 +511,7 @@ function registerViews() {
   nav.register('watch', {
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
+      resetAutoplayChain(); // a queued next video must never follow the child out
       stop();
       wake.releaseAll();
       currentWatch = null;
@@ -969,6 +972,39 @@ async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {})
   return { items: [...eSlice, ...res.items], total: res.total + extras.length };
 }
 
+/**
+ * v1.0.25 — the video AFTER `current`, in the order the child is looking at.
+ *
+ * Lives inside pageAnyFolder's region deliberately: that is the one pagination entry
+ * point (invariants.test.mjs pins `db.pageFolder`/`db.pageGifts` to these lines), and a
+ * second renderer growing its own private branch is the v1.0.21 bug that rule exists for.
+ * "Next" must mean the tile that follows on screen, or the chain disagrees with the grid.
+ *
+ * The plain branch uses pageFolder's KEYSET mode — O(1) at any depth, and until now it
+ * had no caller at all. Loading the whole folder to find one index would read 2000
+ * records at the end of every video on a low-end tablet.
+ */
+async function nextAfter(scope, fid, current) {
+  if (!scope || !fid || !current || !current.key) return null;
+  // 🎁 is never chained (planAutoplay stops first); it is also not a stored folder, so
+  // there is no cursor to advance here even if it were.
+  if (fid === 'new') return null;
+  if (String(fid).startsWith('grp:')) return nextInOrder(singleGroups.get(String(fid).slice(4)) || [], current.key);
+  if (fid === 'sheet' && looseSingles.length) return nextInOrder(looseSingles, current.key);
+
+  // A channel folder shows its absorbed singles FIRST, then the channel's own videos.
+  const extras = (String(fid).startsWith('ch:') && absorbedSingles.get(String(fid).slice(3))) || [];
+  const at = extras.findIndex((v) => v && v.key === current.key);
+  if (at >= 0) {
+    if (at + 1 < extras.length) return extras[at + 1];
+    const first = await db.pageFolder(scope, fid, { offset: 0, limit: 1 }); // cross into the channel's own
+    return first.items[0] || null;
+  }
+  if (!Number.isFinite(Number(current.sortKey))) return null; // no cursor to resume from
+  const res = await db.pageFolder(scope, fid, { after: { sortKey: current.sortKey, key: current.key }, limit: 1 });
+  return res.items[0] || null;
+}
+
 /** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
 async function renderGridPage(grid, scope, fid, which) {
   const pg = which === 'home' ? page : folderPage;
@@ -1132,6 +1168,105 @@ function leaveWatch() {
   if (!nav.back()) goGallery();
 }
 
+/* ---------------- Continuous play (v1.0.25) ----------------
+ * OFF by default, per child, synced. The decision itself is pure `planAutoplay`
+ * (playerlogic.js) — read its comment for the 🎁 rule and the failure ceiling.
+ * Everything here is the DOM half: a countdown the child can stop, and the chain state.
+ */
+let autoplayTimer = null;
+let autoplayFailures = 0;   // CONSECUTIVE; a video that plays resets it
+let autoplayRetriedKey = null;
+
+/** Called on every exit from the watch view, and before every new video starts. */
+function cancelAutoplay() {
+  clearInterval(autoplayTimer);
+  autoplayTimer = null;
+  const el = $('autoplay-next');
+  if (el) el.classList.add('hidden');
+}
+
+function resetAutoplayChain() {
+  cancelAutoplay();
+  autoplayFailures = 0;
+  autoplayRetriedKey = null;
+}
+
+/**
+ * Count down in front of the child, then play `item`.
+ *
+ * The countdown is not decoration: continuous play keeps the app in fullscreen, where the
+ * 🏠 button lives OUTSIDE the player and is therefore invisible (v1.0.2). Without this the
+ * only way out is Android's back gesture, which in immersive mode needs an edge swipe a
+ * 5-year-old does not know. `retry` reuses the same overlay with no thumbnail change —
+ * the child does not need to know a video failed, only that something is about to happen.
+ */
+function countdownThen(item, ms) {
+  cancelAutoplay();
+  const el = $('autoplay-next');
+  const img = $('autoplay-thumb');
+  img.src = item.thumbUrl || PLACEHOLDER;
+  img.onerror = () => { img.onerror = null; img.src = PLACEHOLDER; };
+  $('autoplay-title').textContent = item.title || '';
+  el.classList.remove('hidden');
+
+  let left = Math.max(1, Math.ceil(ms / 1000));
+  $('autoplay-count').textContent = String(left);
+  autoplayTimer = setInterval(() => {
+    left -= 1;
+    if (left > 0) { $('autoplay-count').textContent = String(left); return; }
+    cancelAutoplay();
+    // The child may have navigated away while it ticked — never yank them back.
+    if (!nav.isActive('watch')) { resetAutoplayChain(); return; }
+    openWatch(item).catch(() => { resetAutoplayChain(); leaveWatch(); });
+  }, 1000);
+}
+
+/**
+ * A video finished. This replaces the old unconditional `leaveWatch()`.
+ * @param reason 'ended' | 'error', from player.js
+ */
+async function onVideoFinished(reason = 'ended') {
+  const item = currentWatch;
+  if (!item) { leaveWatch(); return; }
+
+  let enabled = false;
+  try { enabled = (await getSetting(activeProfileId, 'autoplay', false)) === true; } catch {}
+  // The child can leave during those awaits; anything after this point would act on a
+  // screen they are no longer looking at.
+  if (!nav.isActive('watch')) { resetAutoplayChain(); return; }
+
+  let next = null;
+  if (enabled) {
+    try { next = await nextAfter(watchCtx.scope, watchCtx.folderId, item); } catch { next = null; }
+    if (!nav.isActive('watch')) { resetAutoplayChain(); return; }
+  }
+
+  // A wrapped gift is a deliberate tap, never something a chain opens for the child.
+  const nextState = next ? giftStates.get(next.key) : null;
+  const plan = planAutoplay({
+    enabled,
+    folderId: watchCtx.folderId,
+    reason,
+    failures: autoplayFailures,
+    retriedCurrent: autoplayRetriedKey === item.key,
+    hasNext: !!next,
+    nextIsGift: !!(nextState && nextState.giftRank && !nextState.unwrappedAt)
+  });
+
+  if (plan.action === 'stop') { resetAutoplayChain(); leaveWatch(); return; }
+  // Count the failure only once the decision is made, so `failures` is what the NEXT
+  // call sees rather than something this call already acted on.
+  autoplayFailures = reason === 'error' ? autoplayFailures + 1 : 0;
+
+  if (plan.action === 'retry') {
+    autoplayRetriedKey = item.key;
+    countdownThen(item, AUTOPLAY_RETRY_MS);
+    return;
+  }
+  autoplayRetriedKey = null;
+  countdownThen(next, AUTOPLAY_COUNTDOWN_MS);
+}
+
 /** Enter fullscreen on the player. MUST be called synchronously inside the tap's
     user-activation window — after an await the browser may deny the request. */
 function enterPlayerFullscreen() {
@@ -1145,6 +1280,9 @@ function enterPlayerFullscreen() {
 
 async function openWatch(item) {
   currentWatch = item;
+  // A tap during the continuous-play countdown wins over the queued video. Synchronous
+  // and BEFORE the fullscreen request, so it cannot cost the tap its user activation.
+  cancelAutoplay();
   // Tapping a video goes straight to fullscreen (user request). Synchronous — still
   // inside the tap gesture. Exiting fullscreen (back / ⛶) lands on the watch page,
   // where the 🏠 button lives.
@@ -1175,7 +1313,7 @@ async function openWatch(item) {
   renderWatchGrid(item);
 
   await playItem(item, $('player-host'), {
-    onExit: () => { if ($('view-watch').classList.contains('active')) leaveWatch(); },
+    onExit: (reason) => { if ($('view-watch').classList.contains('active')) onVideoFinished(reason).catch(() => leaveWatch()); },
     onStatus: (s) => {
       if (!s) { status.classList.add('hidden'); status.textContent = ''; return; }
       status.textContent = s === 'downloading' ? 'טוען את הסרטון… רגע אחד ⏳'
@@ -1564,6 +1702,7 @@ async function refreshParent() {
   $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
   $('share-approval-toggle').checked = await getSetting(activeProfileId, 'shareApproval', true) !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
+  $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
   await labelProfileSettings();
   // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
   // cannot be blocked retroactively, and merging or renaming it silently would be worse —
@@ -3142,6 +3281,9 @@ function wire() {
     searchTimer = setTimeout(() => { renderSearchResults().catch(() => {}); }, 180);
   });
 
+  // ✋ — the child's way out of a chain. Same destination a video END has with continuous
+  // play OFF: the folder they came from, not the home screen.
+  $('autoplay-stop').addEventListener('click', () => { resetAutoplayChain(); leaveWatch(); });
   $('watch-home').addEventListener('click', goGallery);
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
@@ -3364,6 +3506,15 @@ function wire() {
 
   // v1.0.11: exit lock — applying is immediate (Android may show its own one-time
   // pinning confirmation); turning it off unpins right away (we're behind the PIN).
+  $('autoplay-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'autoplay', e.target.checked);
+    maybeSchedulePush(); // per-profile and synced, like the exit lock
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'ניגון רציף הופעל ✅ — בסוף כל סרטון יתחיל הבא בתור'
+      : 'ניגון רציף כובה — בסוף סרטון חוזרים לתיקייה';
+    msg.className = 'form-msg ok';
+  });
   $('exit-lock-toggle').addEventListener('change', async (e) => {
     const on = e.target.checked;
     await putSetting(activeProfileId, 'exitLock', on);

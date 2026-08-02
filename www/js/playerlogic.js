@@ -7,7 +7,7 @@
 //
 // Imports NOTHING but config.js (which imports nothing), so this sits safely in the
 // `store/classify/csv/util` band and can be imported by player.js and ui/dpad.js alike.
-import { SEEK_STEP } from './config.js';
+import { SEEK_STEP, AUTOPLAY_MAX_FAILURES } from './config.js';
 
 /**
  * Clamp a seek target into the video.
@@ -73,6 +73,66 @@ export function shouldFinishNearEnd({
   if (d - c > tailSec) return false;                 // not in the tail
   if (expectedId && reportedId && expectedId !== reportedId) return false; // stale swap
   return Number(now) - Number(swapAt || 0) > graceMs;
+}
+
+/**
+ * v1.0.25 — PURE: a video just ended. Play the next one, retry this one, or stop?
+ *
+ * Continuous play is OFF by default and set per child, because "one more video" is a
+ * parenting decision and not a device preference.
+ *
+ * THE 🎁 RULE. The gift folder is never chained, whatever the setting says. Opening a
+ * gift is a one-way, permanent act (`unwrappedAt` is min-merged forever, across every
+ * device), so an unattended chain would unwrap the child's entire queue of new videos in
+ * one sitting with no way to put them back. The parent's decision, 2026-08-02.
+ *
+ * FAILURE HANDLING. `finish()` fires for a broken video too, so a naive chain skips
+ * through dead content invisibly. One retry of the same video absorbs a blip; after that
+ * we move on; and a RUN of failures ends the chain rather than flipping through black
+ * screens. `failures` counts CONSECUTIVE failures — a video that plays resets it.
+ *
+ * @param enabled        the profile's continuous-play setting
+ * @param folderId       the folder the under-player grid is paging ('new' is 🎁)
+ * @param reason         'ended' | 'error', straight from player.js
+ * @param failures       consecutive failures so far in this chain
+ * @param retriedCurrent has this video already been retried once?
+ * @param hasNext        is there another video after this one in the folder?
+ * @param nextIsGift     is the next video still a WRAPPED gift?
+ */
+export function planAutoplay({
+  enabled = false, folderId = null, reason = 'ended',
+  failures = 0, retriedCurrent = false, hasNext = true, nextIsGift = false
+} = {}) {
+  if (!enabled) return { action: 'stop', reason: 'disabled' };
+  if (folderId === 'new') return { action: 'stop', reason: 'gift' };
+  // A wrapped gift can sit in ANY folder, not just 🎁 — the gift state lives per child on
+  // the video, so a channel folder shows wrapped tiles too. The first TAP on one unwraps
+  // it and deliberately does not play; a chain that just played it would both skip the
+  // ritual and leave the tile wrapped forever while its video had already been watched.
+  // Stopping hands the choice back to the child, which is what a gift is for.
+  if (hasNext && nextIsGift) return { action: 'stop', reason: 'next-is-gift' };
+  if (reason === 'error') {
+    const n = Number(failures) || 0;
+    if (n + 1 >= AUTOPLAY_MAX_FAILURES) return { action: 'stop', reason: 'too-many-failures' };
+    if (!retriedCurrent) return { action: 'retry', reason: 'first-failure' };
+    if (!hasNext) return { action: 'stop', reason: 'end-of-folder' };
+    return { action: 'next', reason: 'skip-broken' };
+  }
+  if (!hasNext) return { action: 'stop', reason: 'end-of-folder' };
+  return { action: 'next', reason: 'ended' };
+}
+
+/**
+ * PURE: the video after `key` in the order the child is actually looking at.
+ * The grid renders newest-first, so "next" is the tile that follows on screen — any other
+ * order would make the chain disagree with what the child can see.
+ * A key that is not in the list (deleted mid-play, or a different folder) has no next.
+ */
+export function nextInOrder(items, key) {
+  const list = Array.isArray(items) ? items.filter((v) => v && v.key) : [];
+  const i = list.findIndex((v) => v.key === key);
+  if (i < 0 || i + 1 >= list.length) return null;
+  return list[i + 1];
 }
 
 /**

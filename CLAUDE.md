@@ -259,6 +259,41 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.25 — **CONTINUOUS PLAY: at the end of a video the next one starts, without leaving
+  the player.** OFF by default, PER PROFILE, and synced (it rides the v1.0.25 settings
+  channel) — "one more video" is a parenting decision, not a device preference, and one
+  account can hold a 3-year-old and a 7-year-old. A family that never opens the settings
+  screen keeps v1.0.16 behaviour exactly: a video that ends calls `leaveWatch()`.
+  The decision is pure `playerlogic.planAutoplay` → `'next' | 'retry' | 'stop'`:
+  - **`onExit` NOW CARRIES A REASON** (`'ended' | 'error'`). `finish()` fires for an
+    embedding-disabled video too, so without it a chain skips silently through every
+    broken video in the library and the failure ceiling can never trigger. Note the
+    `<video>` element's `'ended'` listener MUST be wrapped — the DOM hands a listener an
+    Event, which would arrive as the reason.
+  - **A CHAIN CAN ALWAYS END.** One retry of the same video absorbs a blip
+    (`AUTOPLAY_RETRY_MS`), then it is skipped, and `AUTOPLAY_MAX_FAILURES` (5) consecutive
+    failures stop the chain — a run of unplayable videos must never flip through black
+    screens forever. `failures` counts CONSECUTIVE failures; a video that plays resets it.
+  - **NEITHER 🎁 FOLDER NOR 🎁 VIDEO IS EVER CHAINED.** The `'new'` folder is refused
+    outright — but gift state lives per child ON THE VIDEO, so wrapped tiles appear inside
+    channel folders too, and the chain stops when the NEXT video is still wrapped
+    (`nextIsGift`, from `giftStates`: `giftRank && !unwrappedAt`, the same predicate
+    `tileEl` renders by). Found in the browser, not by reasoning: the first tap on a gift
+    unwraps it and deliberately does NOT play, so a chain that called `openWatch` would
+    skip the ritual AND leave the tile wrapped forever with its video already watched.
+  - **`nextAfter` IS A THIRD MEMBER OF THE PAGINATION FAMILY** and lives beside
+    `pageAnyFolder` for the reason that rule exists — "next" must be the tile that FOLLOWS
+    ON SCREEN, so it has to know the same folder kinds (`new`/`grp:`/`sheet`/`ch:`+absorbed).
+    The invariants test now pins that both cover the same set; a kind added to one and not
+    the other means the chain silently disagrees with the grid. It uses `db.pageFolder`'s
+    KEYSET mode — which had no caller until now — because loading a 2000-record folder to
+    find one index at the end of every video is not acceptable on a low-end tablet.
+  - The countdown overlay lives INSIDE `#player-wrap` (the element that goes fullscreen;
+    anything outside it is invisible while playing) and sits ABOVE `.tap-shield`, which
+    otherwise swallows every tap. It is the child's ONLY visible way out of a chain: 🏠 is
+    outside the player by design (v1.0.2) and Android's back needs an edge swipe in
+    immersive mode. Opening any video cancels a pending countdown, and leaving the watch
+    view resets the whole chain — a queued video must never follow the child out.
 - v1.0.25 — **SETTINGS TRAVEL NOW, THROUGH ONE CHANNEL** ([settings.js](www/js/settings.js)).
   Until this, exactly ONE setting-like value crossed between a family's devices —
   `libraryChannels.autoApprove`, and only because it rides a record that carries a

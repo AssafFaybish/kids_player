@@ -249,6 +249,18 @@
         <div id="player-host" class="player-host"></div>
         <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
         <div id="seek-feedback" class="seek-feedback"></div>
+        <!-- v1.0.25 continuous play. INSIDE player-wrap on purpose: that is the element
+             that goes fullscreen, and anything outside it is invisible while a video
+             plays. It is the child's only visible way to stop a chain, so the stop button
+             is deliberately the biggest thing on it. -->
+        <div id="autoplay-next" class="autoplay-next hidden">
+          <img id="autoplay-thumb" class="autoplay-thumb" alt="" />
+          <div class="autoplay-body">
+            <div class="autoplay-label">הסרטון הבא מתחיל בעוד <span id="autoplay-count">5</span></div>
+            <div id="autoplay-title" class="autoplay-title"></div>
+          </div>
+          <button id="autoplay-stop" class="btn autoplay-stop" type="button">✋ עצור</button>
+        </div>
         <div class="player-hud">
           <div class="player-controls">
             <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
@@ -455,6 +467,12 @@
         <label class="switch-row">
           <input id="share-approval-toggle" type="checkbox" checked />
           <span>סרטון ששותף מיוטיוב צריך אישור הורים לפני שהוא נכנס<b id="share-approval-owner" class="setting-owner"></b></span>
+        </label>
+        <!-- v1.0.25: continuous play. OFF by default — "one more video" is a parenting
+             decision, so nothing changes for a family that never opens this screen. -->
+        <label class="switch-row">
+          <input id="autoplay-toggle" type="checkbox" />
+          <span>ניגון רציף — בסוף סרטון מתחיל הבא בתור, בלי לחזור לתיקייה<b id="autoplay-owner" class="setting-owner"></b></span>
         </label>
         <!-- v1.0.11: OS screen-pinning kiosk — exiting requires the parent PIN -->
         <label class="switch-row">
