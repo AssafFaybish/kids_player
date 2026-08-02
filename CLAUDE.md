@@ -259,6 +259,10 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- **v1.0.25 overview: [docs/V1025.md](docs/V1025.md)** — the five features of this release
+  in one place, including which three ALREADY EXISTED and were broken, and the two bugs
+  that browser verification caught while the suite was green. The per-feature invariants
+  stay below; that file is the map.
 - v1.0.25 — **CONTINUOUS PLAY: at the end of a video the next one starts, without leaving
   the player.** OFF by default, PER PROFILE, and synced (it rides the v1.0.25 settings
   channel) — "one more video" is a parenting decision, not a device preference, and one
