@@ -280,7 +280,10 @@ test('BOTH ways to add a channel import it and then ASK (v1.0.25)', () => {
   // The share layer must NOT run its own sync: it cannot show the loading screen or the
   // modal (it may not import ui/*), and a second sync would make the parent wait twice.
   const share = MODULES.get('www/js/share.js');
-  const chan = share.slice(share.indexOf('async function handleChannelShare'));
+  // v1.0.26 renamed it: a shared PLAYLIST takes the same path as a shared channel.
+  const at = share.indexOf('async function handleSourceShare');
+  assert.ok(at > 0, 'the shared channel/playlist handler is gone');
+  const chan = share.slice(at);
   assert.doesNotMatch(chan, /syncLibrary\(/, 'share.js syncs a shared channel behind onAdded again');
   assert.match(chan, /await onAdded\(/, 'the share must AWAIT the import, or it reports an outcome it does not have');
 });
@@ -505,6 +508,42 @@ test('the preview bubble leaves the screen behind it untouched (v1.0.26)', () =>
   const pd = app.slice(app.indexOf('async function previewDecide('));
   assert.match(pd.slice(0, pd.indexOf('\n}\n') + 1), /!== false/,
     'backing out of the delete confirm still advances past the video');
+});
+
+test('NO share route can be silent (v1.0.26)', () => {
+  // THE field bug: a parent reported that sharing from YouTube does not work, and the app
+  // could not answer which of seven silent `return`s it had taken — nor did success say
+  // anything either. Every route now ends in a reason, and app.js shows it.
+  const share = MODULES.get('www/js/share.js');
+  const route = share.slice(share.indexOf('async function routeShare('));
+  const body = route.slice(0, route.indexOf('\n}\n') + 1);
+
+  // A bare `return;` anywhere inside routeShare is, by construction, a silent drop.
+  // The pattern must be shape-based, not line-based: the real ones look like
+  // `if (!c) return;` — an earlier version of this guard anchored to the start of a line
+  // and therefore could not fail on the exact code it was written to catch.
+  assert.doesNotMatch(body, /\breturn\s*;/,
+    'routeShare has a bare `return` again — that is a share the parent never hears about');
+
+  // and handleShare must actually report what routeShare answered
+  const handle = share.slice(share.indexOf('async function handleShare('));
+  assert.match(handle.slice(0, handle.indexOf('\n}\n') + 1), /onResult\(reason\)/,
+    'the reason is computed and then thrown away');
+
+  // every reason share.js can return must exist in the pure message table
+  const reasons = [...body.matchAll(/return '([a-z-]+)'/g)].map((m) => m[1]);
+  assert.ok(reasons.length >= 5, 'routeShare stopped returning reasons');
+  const table = MODULES.get('www/js/plan.js');
+  for (const r of new Set(reasons)) {
+    assert.ok(table.includes(`  ${r}: {`) || table.includes(`  '${r}': {`),
+      `share.js can answer '${r}' but plan.js has no message for it`);
+  }
+
+  // app.js must render them
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /resultHandler:/, 'app.js no longer listens for share outcomes');
+  assert.match(app, /shareOutcome\(reason\)/, 'the outcome is not turned into a message');
+  assert.match(app, /toast\(/, 'nothing shows the message');
 });
 
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {

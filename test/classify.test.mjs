@@ -218,3 +218,44 @@ test('a WATCH link that merely carries &list= is still a VIDEO, not a playlist',
   assert.equal(row.kind, 'video');
   assert.equal(row.id, 'dQw4w9WgXcQ');
 });
+
+test('a playlist SHARED from YouTube is recognised, like a pasted one (v1.0.26)', async () => {
+  // classifySourceRow understood playlists since v1.0.12 but classifyShared never did, so
+  // sharing a playlist answered "unsupported" while pasting the identical link worked.
+  const { classifyShared } = await import('../www/js/classify.js');
+  const ID = 'PLEs_hxq8IYwlNwIf_RUNUnHp38YGR1W7P';
+  for (const u of [
+    'https://m.youtube.com/playlist?list=' + ID,
+    'https://youtube.com/playlist?list=' + ID + '&si=abc123',
+    'רשימת שירים\n\nhttps://www.youtube.com/playlist?list=' + ID
+  ]) {
+    const r = classifyShared(u, '');
+    assert.equal(r && r.kind, 'playlist', 'not recognised: ' + u);
+    assert.equal(r.playlistId, ID);
+  }
+});
+
+test('a shared WATCH link carrying &list= stays a VIDEO', () => {
+  // The trap on the other side: YouTube appends &list= when a video is opened from a
+  // playlist. Treating that as "subscribe to the playlist" would import hundreds of videos
+  // when the parent shared one.
+  const r = classifyShared('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc1234567', '');
+  assert.equal(r.kind, 'video');
+  assert.equal(r.id, 'dQw4w9WgXcQ');
+});
+
+test('the YouTube app share shapes all classify (v1.0.26 regression net)', () => {
+  // Exactly what the Android YouTube app puts on the clipboard, including the ?si=
+  // tracking parameter it started appending.
+  const cases = [
+    ['https://youtu.be/dQw4w9WgXcQ?si=Ab3xYz9', 'video'],
+    ['שיר ילדים\n\nhttps://youtu.be/dQw4w9WgXcQ?si=Ab3xYz9', 'video'],
+    ['https://m.youtube.com/watch?v=dQw4w9WgXcQ&si=Ab3', 'video'],
+    ['https://www.youtube.com/@rotemama4kids?si=Ab3xYz9', 'channel'],
+    ['https://m.youtube.com/channel/UCWF5vshm5UfF59-rtvsE5WA?si=x', 'channel']
+  ];
+  for (const [text, kind] of cases) {
+    const r = classifyShared(text, '');
+    assert.equal(r && r.kind, kind, 'wrong kind for: ' + text);
+  }
+});

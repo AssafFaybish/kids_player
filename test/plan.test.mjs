@@ -6,11 +6,10 @@ import {
   planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
   sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
-  shouldAskShareProfile,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
-  playlistVideoFolder, planRejectedPurge
+  playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -76,27 +75,6 @@ test('a REJECTED record survives every later sync (v1.0.23)', () => {
   }
 });
 
-test('shouldAskShareProfile: only when the answer changes where the video lands', () => {
-  const A = { profileId: 'p1', scope: 'lib:aaa' };
-  const B = { profileId: 'p2', scope: 'lib:bbb' };
-  const sameSheet = { profileId: 'p2', scope: 'lib:aaa' };
-
-  assert.equal(shouldAskShareProfile([A, B]), true, 'different libraries → the choice matters');
-  assert.equal(shouldAskShareProfile([A]), false, 'one profile → nothing to ask');
-  assert.equal(shouldAskShareProfile([]), false);
-  assert.equal(shouldAskShareProfile(null), false, 'never throws on a missing list');
-  // THE case this helper exists for: two children on ONE family sheet share the library
-  // scope, so the video is the same row either way. Asking would train the parent to tap
-  // through the dialog without reading it.
-  assert.equal(shouldAskShareProfile([A, sameSheet]), false, 'same sheet ⇒ same destination');
-  // three profiles, two sheets → still a real choice
-  assert.equal(shouldAskShareProfile([A, sameSheet, B]), true);
-  // a profile with no sources yet is its own destination, so it counts as distinct
-  assert.equal(shouldAskShareProfile([A, { profileId: 'p3' }]), true);
-  assert.equal(shouldAskShareProfile([{ profileId: 'p1' }, { profileId: 'p2' }]), true);
-  // junk entries are ignored rather than counted as profiles
-  assert.equal(shouldAskShareProfile([A, null, {}]), false);
-});
 
 test('planChannelLogo: a keyless sync must NOT suppress the scrape (v1.0.24)', () => {
   const now = 1_000_000_000_000;
@@ -1006,4 +984,44 @@ test('planRejectedPurge never throws, and a future timestamp is not "expired"', 
   assert.deepEqual(planRejectedPurge(old8, { now, days: 0 }).expired, [], 'days:0 wiped the archive');
   assert.deepEqual(planRejectedPurge(old8, { now, days: -5 }).expired, []);
   assert.deepEqual(planRejectedPurge(old8, { now, days: 'x' }).expired, []);
+});
+
+/* ---------------- sharing tells the parent what happened (v1.0.26) ---------------- */
+
+test('EVERY share outcome has a message — silence is what the bug was', () => {
+  // handleShare had seven silent `return`s and no success message either, so a parent
+  // sharing from YouTube saw the same nothing whether the video was added, parked for
+  // approval, a duplicate, previously deleted, or dropped. "Sharing does not work" could
+  // not be diagnosed from inside the app.
+  for (const reason of SHARE_REASONS) {
+    const o = shareOutcome(reason);
+    assert.ok(o && o.text, `no message for '${reason}'`);
+    assert.ok(['ok', 'warn', 'err'].includes(o.kind), `bad kind for '${reason}': ${o.kind}`);
+  }
+  assert.ok(SHARE_REASONS.length >= 10, 'the outcome table lost routes');
+});
+
+test('a share that WORKED and one that failed never read the same', () => {
+  assert.equal(shareOutcome('added').kind, 'ok');
+  assert.equal(shareOutcome('channel-added').kind, 'ok');
+  assert.equal(shareOutcome('playlist-added').kind, 'ok');
+  // parked for approval is NOT a failure, but it is not "done" either — the parent has to
+  // know to go and look, which is exactly the case that read as "nothing happened".
+  assert.equal(shareOutcome('pending').kind, 'warn');
+  assert.match(shareOutcome('pending').text, /ממתינים/, 'it must say WHERE to find it');
+  // a previously deleted video is refused on purpose — say so, and say what to do
+  assert.equal(shareOutcome('denied').kind, 'warn');
+  assert.match(shareOutcome('denied').text, /נמחק/);
+  for (const r of ['unsupported', 'no-library', 'resolve-failed', 'failed']) {
+    assert.equal(shareOutcome(r).kind, 'err', `${r} should read as a failure`);
+  }
+});
+
+test('an UNKNOWN reason still produces a failure message, never silence', () => {
+  // The whole point is that no route can be silent — including one added later that
+  // forgets to register itself here.
+  assert.equal(shareOutcome('something-new-someone-added').kind, 'err');
+  assert.ok(shareOutcome(undefined).text);
+  assert.ok(shareOutcome(null).text);
+  assert.ok(shareOutcome('').text);
 });

@@ -259,6 +259,35 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.26 — **A SHARE FROM YOUTUBE COULD FAIL IN SEVEN WAYS AND SAY NOTHING.** Reported
+  from the field as "sharing does not add the video, the parent screen does". The native
+  side was never at fault (intent-filter, `onNewIntent` for cold+warm, matching field
+  names, retained event) and neither was the classifier — verified against the real
+  YouTube-app payloads including the `?si=` parameter. `handleShare` simply had **seven
+  silent `return`s and no success message either**, so added / parked-for-approval /
+  duplicate / previously-deleted / cancelled / unsupported all looked identical: nothing.
+  - **EVERY ROUTE NOW ENDS IN A REASON** (`routeShare` returns one, `handleShare` reports
+    it) and pure `plan.shareOutcome` turns it into text. `ui/toast.js` is the app's first
+    non-blocking feedback channel — it must never block, never need dismissing, and never
+    fight the PIN screen or a confirm that is already up. `invariants.test.mjs` pins that
+    routeShare contains **no bare `return;`** and that every reason it can answer has a
+    message. That guard's first version anchored to the start of a line and so could not
+    fail on `if (!c) return;` — the exact shape it exists to catch.
+  - **THREE REAL DROPS, all in the channel path**: a `null` decision (which
+    `handleShareInteractive` returns for a channel whenever the PIN screen or a modal is
+    already up — easy to hit on a share into a running app); a profile with no `sources`
+    record, which returned instead of creating one the way the parent screen always has;
+    and a failed reference resolve that reported `channelFailed` to a handler that showed
+    nothing.
+  - **A SHARED PLAYLIST WORKS TOO.** `classifySourceRow` understood playlists since
+    v1.0.12 but `classifyShared` never did, so sharing one answered "unsupported" while
+    pasting the identical link worked. A watch link merely CARRYING `&list=` must stay a
+    video — otherwise sharing one video imports hundreds.
+  - **THE PROFILE QUESTION IS ASKED WHENEVER THERE IS A CHOICE** (parent's decision
+    2026-08-02). v1.0.23 also skipped it when several profiles followed one sheet — same
+    library row either way — but a parent reported not knowing where a shared video went,
+    and "it does not matter" is only true of the DATA. One profile still skips.
+    `plan.shouldAskShareProfile` is deleted, not left dangling.
 - v1.0.26 — **THE REJECTED ARCHIVE EMPTIES ITSELF AFTER 30 DAYS** (`REJECTED_TTL_DAYS`).
   v1.0.23 made a rejection PARKED rather than deleted so the parent can pull it back — but
   that means the archive only grows, and a channel re-offers its whole catalogue every 30
