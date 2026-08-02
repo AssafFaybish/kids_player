@@ -815,3 +815,41 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 
 .rejected-box { margin-top: 18px; border-top: 2px dashed #d8d5f0; padding-top: 12px; }
 .rejected-summary { font-size: 19px; font-weight: 700; color: var(--muted); cursor: pointer; padding: 8px 0; }
+
+/* ---------- Preview bubble (v1.0.26) ----------
+   A parent-only floating player for checking a video before approving it. FIXED, not a
+   view: the parent screen behind it keeps its scroll, its tab and its ticked rows, which
+   is the whole point — triaging a queue means coming straight back to the list. */
+.preview-bubble {
+  position: fixed; z-index: 60;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  inset-inline-end: 12px;
+  width: min(420px, calc(100vw - 24px));
+  background: var(--bg-2); border-radius: 18px;
+  box-shadow: 0 14px 40px rgba(45, 42, 74, 0.34);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.pv-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; }
+.pv-title {
+  flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 800; color: var(--ink);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.pv-close {
+  flex: 0 0 auto; border: none; background: #eceaff; color: var(--brand-2);
+  width: 38px; height: 38px; border-radius: 12px; font-size: 18px; cursor: pointer;
+}
+.pv-host { position: relative; aspect-ratio: 16 / 9; background: #000; }
+.pv-host iframe, .pv-host video { width: 100%; height: 100%; border: 0; display: block; }
+.pv-note { padding: 0 12px; font-size: 13px; color: var(--muted); }
+.pv-note:empty { display: none; }
+.pv-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px 12px;
+}
+.pv-approve { background: #e7f8ee; color: var(--green); font-weight: 800; }
+.pv-reject, .pv-delete { background: #ffe2e3; color: var(--danger); font-weight: 800; }
+.pv-open { margin-inline-start: auto; font-size: 14px; }
+/* Portrait phones: full width under the header rather than a cramped floating card */
+@media (max-width: 560px) {
+  .preview-bubble { inset-inline: 8px; width: auto; }
+}

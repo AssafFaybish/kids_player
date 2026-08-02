@@ -259,6 +259,37 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.26 — **THE PARENT CAN WATCH A VIDEO WITHOUT LEAVING THE QUEUE** (preview bubble).
+  Tapping a row's THUMBNAIL in ממתינים or in הוספה opens a floating player over the parent
+  screen. It is an OVERLAY, never a view: the scroll position, the open tab and the ticked
+  rows all survive, because triaging a queue means coming straight back to the list.
+  - **IT IS NOT THE KID PLAYER, DELIBERATELY.** `setupHud` binds window/document listeners
+    and must never run twice without a teardown, and the kid HUD hides the timeline and
+    turns a centre tap into play/pause — exactly backwards for a parent jumping through a
+    video to judge it. The bubble builds a plain iframe from pure
+    `playerlogic.previewEmbedUrl`: `controls=1` (YouTube's real scrub bar), `mute=1`
+    (a child is usually in the room, and browsers block unmuted autoplay anyway — parent's
+    decision), `rel=0`. A direct file gets a `<video controls>`. All three params are
+    silent when wrong, so they are test-pinned.
+  - `closePreview` empties the host: tearing the iframe out is what actually STOPS
+    playback, and the parent view's `onLeave` calls it so no player survives the screen.
+    Hardware back closes the BUBBLE first (`nav.register('parent')`), or the parent is
+    thrown out of the screen they were triaging in.
+  - **A DECISION ADVANCES TO THE NEXT ITEM** rather than closing (parent's decision):
+    thirty videos must not cost thirty open/close cycles. `previewDecide` treats a handler
+    returning `false` as "nothing happened" — a cancelled delete confirm must not skip the
+    video the parent is still looking at.
+  - **`refreshPendingList` NOW KEEPS THE TICKS.** It used to clear the whole selection on
+    every rebuild, which would have silently undone twenty ticks each time the parent
+    decided one video — the exact opposite of "the screen behind stays as it was". The old
+    reason (a tick could point at a row that is gone) is answered by filtering the carried
+    ids against the REBUILT list. Doing it by parameter first was wrong and the browser
+    proved it: `refreshAfterAdd` rebuilds the list a beat later and cleared them back.
+  - `parentRow` gained `onPreview` on the thumbnail, so BOTH lists got this from one
+    change; the thumbnail is excluded from the row's selection toggle for the same reason
+    ✅ and 🗑️ are. "פתח ביוטיוב" is offered unconditionally — an embedding-disabled video
+    is a black box with no cheap way to detect it, and is exactly what a parent most wants
+    to inspect.
 - v1.0.26 — **A PLAYLIST IS A SOURCE.** Reported from the field, repeatedly, as "the link
   is not supported". The classifier was never at fault: `classifySourceRow` has answered
   `{kind:'playlist', playlistId}` since v1.0.12, for `m.youtube.com` and `www` alike. The

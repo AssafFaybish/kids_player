@@ -17,7 +17,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
-import { planAutoplay, nextInOrder } from './playerlogic.js';
+import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, shouldAskShareProfile, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -521,7 +521,16 @@ function registerViews() {
   // Leaving the pin view WITHOUT success (cancel button / hardware back) resolves
   // the session as cancelled — waiting flows (share add, update) get their answer.
   nav.register('pin', { onLeave: () => consumePinDone(false) });
-  nav.register('parent', { onBack: () => { goGallery(); return true; } });
+  nav.register('parent', {
+    onBack: () => {
+      // v1.0.26: the bubble is an overlay, not a view — back must close IT first, or the
+      // parent is thrown out of the screen they were triaging in.
+      if (isPreviewOpen()) { closePreview(); return true; }
+      goGallery();
+      return true;
+    },
+    onLeave: () => closePreview() // never leave a player running behind another screen
+  });
   loading.registerLoadingView();
 }
 
@@ -1904,7 +1913,103 @@ async function maybeSchedulePush() {
  * `.pick-off` — see the CSS note: an unticked row here is simply outside the current bulk
  * action, not a video about to be thrown out.
  */
-function parentRow({ rec, onDelete, onApprove, select = null }) {
+/* ---------------- Preview bubble (v1.0.26) ----------------
+ * The parent needs to WATCH a video — scrub it, jump around — before deciding. Doing that
+ * in the kid player would mean leaving the parent screen and losing the queue, the open
+ * tab and the ticked rows, so this is an OVERLAY that changes nothing behind it.
+ *
+ * It deliberately does NOT reuse player.js:
+ *  - `setupHud` binds window/document listeners and the invariant is that it must never
+ *    run twice without a teardown; the parent screen is the wrong place to risk that;
+ *  - the kid HUD hides the timeline and turns a centre tap into play/pause. For a parent
+ *    EVALUATING content that is exactly backwards — they need YouTube's own scrub bar.
+ * So: a plain iframe with `controls=1`, and a <video controls> for a direct file.
+ *
+ * MUTED on open (parent's decision): checking a video usually happens with the child in
+ * the room, and a nursery rhyme at full volume is the one thing guaranteed to summon
+ * them. Browsers also block autoplay WITH sound, so unmuted would often just not start.
+ */
+let previewCtx = null; // { items, idx, mode, onDecision }
+
+function closePreview() {
+  previewCtx = null;
+  const host = $('pv-host');
+  if (host) host.innerHTML = ''; // tearing out the iframe is what actually stops playback
+  const el = $('preview-bubble');
+  if (el) el.classList.add('hidden');
+}
+
+function isPreviewOpen() {
+  const el = $('preview-bubble');
+  return !!el && !el.classList.contains('hidden');
+}
+
+function renderPreview() {
+  const ctx = previewCtx;
+  if (!ctx) return closePreview();
+  const rec = ctx.items[ctx.idx];
+  if (!rec) return closePreview();
+
+  $('preview-bubble').classList.remove('hidden');
+  $('pv-title').textContent = (rec.title || '(ללא שם)')
+    + (ctx.items.length > 1 ? `  ·  ${ctx.idx + 1}/${ctx.items.length}` : '');
+  const host = $('pv-host');
+  host.innerHTML = '';
+  const src = previewEmbedUrl(rec);
+  if (src) {
+    const f = document.createElement('iframe');
+    f.src = src;
+    f.allow = 'autoplay; encrypted-media; picture-in-picture';
+    f.setAttribute('allowfullscreen', '');
+    host.appendChild(f);
+  } else if (rec.url || rec.localPath) {
+    const v = document.createElement('video');
+    v.src = rec.localPath || rec.url;
+    v.controls = true; v.muted = true; v.autoplay = true; v.playsInline = true;
+    host.appendChild(v);
+  }
+  // Always offered, never conditional: an embedding-disabled video shows a black box
+  // inside the iframe and there is no reliable, cheap way to detect that from here — and
+  // a blocked video is exactly the kind a parent most wants to look at before deciding.
+  $('pv-note').textContent = rec.type === 'youtube'
+    ? 'לא מתנגן? ייתכן שהערוץ חסם הטמעה — אפשר לפתוח ביוטיוב.' : '';
+  $('pv-open').classList.toggle('hidden', rec.type !== 'youtube');
+
+  const pending = ctx.mode === 'pending';
+  $('pv-approve').classList.toggle('hidden', !pending);
+  $('pv-reject').classList.toggle('hidden', !pending);
+  $('pv-delete').classList.toggle('hidden', pending);
+}
+
+/** Open the bubble on `items[idx]`. `mode` is 'pending' (approve/reject) or 'library'. */
+function openPreview(items, idx, mode) {
+  previewCtx = { items: (items || []).filter(Boolean), idx: Math.max(0, idx | 0), mode };
+  renderPreview();
+}
+
+/**
+ * The parent decided from inside the bubble. Advance to the next item rather than closing
+ * (parent's decision): triaging thirty videos must not cost thirty open/close cycles.
+ * The decided row is dropped from the local list so the counter stays honest.
+ */
+async function previewDecide(fn) {
+  const ctx = previewCtx;
+  if (!ctx) return;
+  const rec = ctx.items[ctx.idx];
+  if (!rec) return closePreview();
+  let done = true;
+  // `false` means the parent backed out (a cancelled confirm) — the video is untouched, so
+  // advancing past it would silently skip the one they were still looking at.
+  try { done = (await fn(rec)) !== false; } catch { done = false; }
+  if (previewCtx !== ctx) return;          // the parent closed it while we awaited
+  if (!done) return;
+  ctx.items.splice(ctx.idx, 1);
+  if (ctx.idx >= ctx.items.length) ctx.idx = ctx.items.length - 1;
+  if (!ctx.items.length) return closePreview();
+  renderPreview();
+}
+
+function parentRow({ rec, onDelete, onApprove, onPreview = null, select = null }) {
   const li = document.createElement('li');
   if (select) {
     const cb = document.createElement('input');
@@ -1922,7 +2027,7 @@ function parentRow({ rec, onDelete, onApprove, select = null }) {
     // The whole row toggles (a bare checkbox is a cruel target on a tablet) — but this row
     // also carries ✅ and 🗑️, and a tap on either must NEVER also flip the selection.
     li.addEventListener('click', (e) => {
-      if (e.target === cb || (e.target.closest && e.target.closest('button'))) return;
+      if (e.target === cb || e.target === img || (e.target.closest && e.target.closest('button'))) return;
       apply(!cb.checked);
     });
     li.appendChild(cb);
@@ -1930,6 +2035,15 @@ function parentRow({ rec, onDelete, onApprove, select = null }) {
   const img = document.createElement('img');
   img.className = 'li-thumb';
   setThumb(img, rec);
+  // v1.0.26: the thumbnail is the preview target — the obvious thing to tap when you want
+  // to SEE the video. It is excluded from the row's selection toggle below for the same
+  // reason ✅ and 🗑️ are: one tap must mean one thing.
+  if (onPreview) {
+    img.classList.add('li-thumb-play');
+    img.setAttribute('role', 'button');
+    img.title = 'צפייה מהירה';
+    img.addEventListener('click', (e) => { e.stopPropagation(); onPreview(rec); });
+  }
   const body = document.createElement('div');
   body.className = 'li-body';
   const title = document.createElement('div');
@@ -1980,9 +2094,14 @@ async function refreshParentList() {
     : `${all.length} סרטונים`;
   const ul = $('parent-list');
   ul.innerHTML = '';
-  for (const rec of all.slice(0, PARENT_LIST_CAP)) {
+  const shownLive = all.slice(0, PARENT_LIST_CAP);
+  for (const rec of shownLive) {
     ul.appendChild(parentRow({
       rec,
+      // v1.0.26: same quick-look here. These videos are already approved, so the bubble
+      // offers DELETE — the one action this list has — after the parent has actually seen
+      // what they are about to remove.
+      onPreview: () => openPreview(shownLive, shownLive.indexOf(rec), 'library'),
       onDelete: async () => {
         await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
         // the sheet carries it to everyone: singles lose their row, channel videos
@@ -2098,16 +2217,28 @@ async function refreshPendingList() {
   badge.classList.toggle('hidden', grandTotal === 0);
   const ul = $('pending-list');
   ul.innerHTML = '';
-  // Every rebuild follows a mutation, so a surviving tick could point at a row that is no
-  // longer here (or is now live). Callers that need the selection snapshot it first.
+  // A rebuild always follows a mutation, so a surviving tick could point at a row that is
+  // gone (or is now live) — which is why this used to clear the whole selection.
+  //
+  // v1.0.26 keeps the ticks that are STILL THERE instead. Filtering against the rebuilt
+  // list gives the same guarantee (no id can survive its row) while not throwing away work
+  // the parent did: deciding one video — from its own ✅, or from the preview bubble —
+  // must not silently untick the twenty rows they had lined up. Doing this by parameter
+  // first was wrong and the browser showed it: `refreshAfterAdd` rebuilds the list too, a
+  // beat later, and cleared them right back.
+  const carried = new Set(pendingSel);
   pendingSel.clear();
   pendingShownTotal = grandTotal;
-  for (const rec of all.slice(0, PARENT_LIST_CAP)) {
+  const shown = all.slice(0, PARENT_LIST_CAP);
+  const alive = new Set(shown.map((r) => selIdOf(r)));
+  for (const id of carried) if (alive.has(id)) pendingSel.add(id);
+  for (const rec of shown) {
     ul.appendChild(parentRow({
       rec,
+      onPreview: () => openPreview(all, all.indexOf(rec), 'pending'),
       select: {
         id: selIdOf(rec),
-        checked: false,
+        checked: pendingSel.has(selIdOf(rec)),
         onToggle: (r, on) => {
           if (on) pendingSel.add(selIdOf(r)); else pendingSel.delete(selIdOf(r));
           paintPendingBulk();
@@ -3362,6 +3493,40 @@ function wire() {
   // ✋ — the child's way out of a chain. Same destination a video END has with continuous
   // play OFF: the folder they came from, not the home screen.
   $('autoplay-stop').addEventListener('click', () => { resetAutoplayChain(); leaveWatch(); });
+  /* preview bubble (v1.0.26) */
+  $('pv-close').addEventListener('click', closePreview);
+  $('pv-open').addEventListener('click', async () => {
+    const rec = previewCtx && previewCtx.items[previewCtx.idx];
+    if (!rec) return;
+    const { openExternal } = await import('./platform.js');
+    openExternal(rec.srcUrl || ('https://www.youtube.com/watch?v=' + rec.id)).catch(() => {});
+  });
+  $('pv-approve').addEventListener('click', () => previewDecide(async (rec) => {
+    await db.approvePending(rec.scopeId, [rec.key]);
+    await enqueueApprovedForSheet([rec]);
+    await refreshPendingList();
+    renderHome();
+    refreshAfterAdd({ parent: true }); // approval is what makes it live — enrich + gift it
+    maybeSchedulePush();
+  }));
+  $('pv-reject').addEventListener('click', () => previewDecide(async (rec) => {
+    // Parked in '~rejected', exactly like the row's 🗑️ — recoverable, no sheet removal row.
+    await db.rejectPending(rec.scopeId, [rec.key]);
+    await refreshPendingList();
+  }));
+  $('pv-delete').addEventListener('click', () => previewDecide(async (rec) => {
+    const yes = await confirmKid({
+      emoji: '🗑️', title: 'למחוק את הסרטון?', text: rec.title || '',
+      ok: 'מחיקה', cancel: 'ביטול', danger: true
+    });
+    if (!yes) return false; // backed out — stay on this video
+    await db.deleteVideo(rec.scopeId, rec.key);
+    if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
+    else if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
+    await refreshParentList();
+    renderHome();
+    maybeSchedulePush();
+  }));
   $('watch-home').addEventListener('click', goGallery);
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {

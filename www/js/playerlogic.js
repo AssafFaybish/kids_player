@@ -136,6 +136,26 @@ export function nextInOrder(items, key) {
 }
 
 /**
+ * v1.0.26 — PURE: the embed URL for the parent's PREVIEW bubble.
+ *
+ * Not the kid player. Three of these params are the whole point and are silent when wrong:
+ *  - `controls=1` — the parent is EVALUATING, so they need YouTube's real scrub bar. The
+ *    kid HUD deliberately hides the timeline and turns a centre tap into play/pause, which
+ *    is exactly backwards for someone jumping through a video to check it.
+ *  - `mute=1` — checking a video usually happens with the child in the room, and a nursery
+ *    rhyme at full volume is what summons them. Browsers also block autoplay WITH sound,
+ *    so unmuted would often simply not start (parent's decision, 2026-08-02).
+ *  - `rel=0` — never surface YouTube's related-video rail inside this app.
+ * Returns null for anything that is not a YouTube video; the caller falls back to <video>.
+ */
+export function previewEmbedUrl(rec) {
+  const id = rec && rec.type === 'youtube' ? String(rec.id || '') : '';
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+  return 'https://www.youtube-nocookie.com/embed/' + id
+    + '?rel=0&modestbranding=1&playsinline=1&autoplay=1&mute=1&controls=1&iv_load_policy=3';
+}
+
+/**
  * The TV remote's intent for one key press. Kept here so the repeat rule and the seek
  * clamp cannot drift between the touch and remote paths.
  * A HELD key auto-repeats at ~30/s on Android TV; scrubbing on every one of those jumped
