@@ -1,0 +1,123 @@
+// settings.js — the SYNCED settings channel (v1.0.25).
+//
+// Before this, exactly one setting-like value travelled between a family's devices:
+// `libraryChannels.autoApprove`, and only because it rides a record that happens to carry
+// a timestamp. Everything a parent can actually change — the PIN, the exit lock, "a shared
+// video needs approval" — was device-local, so changing it on the phone did nothing to the
+// tablet the child actually uses. There was no general mechanism; this is it.
+//
+// STORAGE: Preferences (platform.js), not IndexedDB. These are preferences — small, read
+// at boot, and needed by pin.js before any database work happens. It also keeps the whole
+// channel node-testable behind the same localStorage stub the rest of the suite uses.
+//
+// SHAPE: { account: { <name>: {v, at} }, profiles: { <profileId>: { <name>: {v, at} } } }
+//   account  — one answer for the whole Google account (the parent PIN).
+//   profiles — one answer per child (exit lock, share approval, autoplay).
+//
+// The `at` stamp is written HERE, never by the call sites. That is the v1.0.22 lesson from
+// `putLibraryChannel`: an `updatedAt` that nobody sets makes the merge compare 0 > 0, so
+// the FIRST document always wins and merge(A,B) stops equalling merge(B,A) — the
+// documented commutativity invariant was provably false for that field.
+
+import { prefGet, prefSet } from './platform.js';
+
+const K = 'settings';
+
+/** Scope value for a setting that belongs to the account rather than to one child. */
+export const ACCOUNT = 'account';
+
+const empty = () => ({ account: {}, profiles: {} });
+
+export async function getAllSettings() {
+  try {
+    const raw = JSON.parse((await prefGet(K)) || '{}');
+    return { account: raw.account || {}, profiles: raw.profiles || {} };
+  } catch { return empty(); }
+}
+
+/** Whole-document write. Used by the Drive apply path, which carries real stamps already. */
+export async function putAllSettings(next) {
+  await prefSet(K, JSON.stringify({
+    account: (next && next.account) || {},
+    profiles: (next && next.profiles) || {}
+  }));
+}
+
+/** @param scope ACCOUNT for an account-wide setting, otherwise a profileId. */
+export async function putSetting(scope, name, value) {
+  const all = await getAllSettings();
+  const entry = { v: value, at: Date.now() };
+  if (scope === ACCOUNT) all.account[name] = entry;
+  else {
+    if (!all.profiles[scope]) all.profiles[scope] = {};
+    all.profiles[scope][name] = entry;
+  }
+  await putAllSettings(all);
+}
+
+/**
+ * `fallback` comes back only when the setting was NEVER written. An explicit write of a
+ * falsy value — a cleared PIN, a toggle switched off — is an ANSWER and must not be
+ * replaced by the default, or turning something off would silently turn it back on.
+ */
+export async function getSetting(scope, name, fallback = null) {
+  const all = await getAllSettings();
+  const bag = scope === ACCOUNT ? all.account : (all.profiles[scope] || {});
+  const entry = bag[name];
+  return entry && 'v' in entry ? entry.v : fallback;
+}
+
+/**
+ * Tie-break table. An exact `at` collision is rare but must be DETERMINISTIC, or
+ * merge(A,B) !== merge(B,A) and two devices ping-pong forever — the v1.0.22 bug on
+ * libraryChannels, which shipped because the fixtures carried timestamps and so pinned
+ * the fixture rather than the production path.
+ *
+ * Where a tie has a SAFE direction we take it: one extra locked tablet or one extra
+ * approval prompt costs a parent a few taps, and the opposite costs a child's safety.
+ */
+const SAFE_ON_TIE = {
+  exitLock: true,       // stay in kiosk mode
+  shareApproval: true,  // keep asking before a shared video reaches the child
+  autoplay: false       // stop at the end of the video
+};
+
+/** PURE: which of two writes of ONE setting survives. Commutative — tests pin that. */
+export function mergeSettingEntry(name, a, b) {
+  const okA = a && typeof a === 'object' && 'v' in a;
+  const okB = b && typeof b === 'object' && 'v' in b;
+  if (!okA) return okB ? b : null;
+  if (!okB) return a;
+  const ta = a.at || 0;
+  const tb = b.at || 0;
+  if (tb > ta) return b;
+  if (ta > tb) return a;
+  if (a.v === b.v) return a;
+  const safe = SAFE_ON_TIE[name];
+  if (safe !== undefined) return a.v === safe ? a : b;
+  // No safe direction (the PIN hash is just an opaque string): order by VALUE so both
+  // argument orders answer identically.
+  return String(a.v) > String(b.v) ? a : b;
+}
+
+/** PURE: merge two whole settings documents, per scope, per key. */
+export function mergeSettings(a, b) {
+  const A = a || {};
+  const B = b || {};
+  const out = empty();
+  for (const n of new Set([...Object.keys(A.account || {}), ...Object.keys(B.account || {})])) {
+    const m = mergeSettingEntry(n, (A.account || {})[n], (B.account || {})[n]);
+    if (m) out.account[n] = m;
+  }
+  for (const pid of new Set([...Object.keys(A.profiles || {}), ...Object.keys(B.profiles || {})])) {
+    const pa = (A.profiles || {})[pid] || {};
+    const pb = (B.profiles || {})[pid] || {};
+    const bag = {};
+    for (const n of new Set([...Object.keys(pa), ...Object.keys(pb)])) {
+      const m = mergeSettingEntry(n, pa[n], pb[n]);
+      if (m) bag[n] = m;
+    }
+    out.profiles[pid] = bag;
+  }
+  return out;
+}

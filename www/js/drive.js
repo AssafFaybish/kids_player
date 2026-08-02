@@ -22,6 +22,7 @@ import {
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
   loadDenyRecords, denyActive, tx, profScope, putVideoStates
 } from './db.js';
+import { getAllSettings, putAllSettings, mergeSettings } from './settings.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
@@ -138,7 +139,7 @@ export function mergeChannelForApply(prev, remote) {
   return { ...prev, ...shared, ...keep };
 }
 
-export function serializeDb({ profiles, libraries, profileState, profileSources }) {
+export function serializeDb({ profiles, libraries, profileState, profileSources, settings }) {
   const clean = {};
   for (const [libId, lib] of Object.entries(libraries || {})) {
     clean[libId] = {
@@ -155,7 +156,9 @@ export function serializeDb({ profiles, libraries, profileState, profileSources 
   return JSON.stringify({
     kind: 'kids-player-db', schema: 1, exportedAt: Date.now(),
     profiles: profiles || [], libraries: clean, profileState: profileState || {},
-    profileSources: profileSources || {}
+    profileSources: profileSources || {},
+    // Additive, like profileSources was in v1.0.4 — an older app simply ignores the key.
+    settings: settings || { account: {}, profiles: {} }
   });
 }
 
@@ -276,6 +279,10 @@ export function mergeDbFiles(a, b) {
     }
     out.profileState[pid] = merged;
   }
+
+  // synced settings (v1.0.25): per key, later write wins; an exact tie resolves the SAFE
+  // way. Absent on a doc written by an older app — then the present side is the answer.
+  out.settings = mergeSettings(a.settings, b.settings);
   return out;
 }
 
@@ -385,7 +392,7 @@ async function buildLocalDoc(profiles) {
     });
     profileState[p.id] = states;
   }
-  return { profiles, libraries, profileState, profileSources };
+  return { profiles, libraries, profileState, profileSources, settings: await getAllSettings() };
 }
 
 async function applyRemoteDoc(doc) {
@@ -461,6 +468,13 @@ async function applyRemoteDoc(doc) {
     }
     if (puts.length) await putVideoStates(puts);
   }
+
+  // Synced settings (v1.0.25). Merged against what this device already has rather than
+  // overwritten: a change made HERE since the last push must not be undone by a doc that
+  // predates it. The merged entries keep their ORIGINAL `at` — restamping an applied
+  // record would make it instantly newer than the peer's and the two would ping-pong
+  // forever (the same reason mergeChannelForApply exists).
+  if (doc.settings) await putAllSettings(mergeSettings(await getAllSettings(), doc.settings));
 }
 
 /* =================== public: push / pull =================== */

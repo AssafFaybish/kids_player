@@ -8,6 +8,7 @@ import {
 } from './store.js';
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
+import { getSetting, putSetting } from './settings.js';
 import { playItem, stop } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
@@ -88,17 +89,79 @@ function goGallery() {
   nav.reset('gallery');
 }
 
-/* ---------------- Exit lock (v1.0.11, per-device) ---------------- */
+/* ---------------- Exit lock (v1.0.11; PER-PROFILE since v1.0.25) ---------------- */
 // When ON: the app is OS-pinned (home/recents/back contained by Android — the only
 // sanctioned way to catch the HOME button), the exit button disappears, and every
 // exit path runs confirm → parent PIN → unpin + exit.
-async function exitLockOn() {
-  try { return (await prefGet('exitLock')) === '1'; } catch { return false; }
+//
+// v1.0.25 — it belongs to the CHILD, not the tablet: one account can hold a 3-year-old
+// who must not get out and a 7-year-old who may. It also syncs, so setting it once
+// covers every device that child uses.
+//
+// `pid` defaults to the active profile, but the launch arming runs BEFORE a profile is
+// chosen and passes the last active one — otherwise the app sits unlocked from launch
+// until someone taps a tile, which is exactly when an unattended child is holding it.
+async function exitLockOn(pid = activeProfileId) {
+  if (!pid) return false;
+  try { return (await getSetting(pid, 'exitLock', false)) === true; } catch { return false; }
 }
 
 async function applyExitLockUi() {
   const on = await exitLockOn();
   $('exit-btn').classList.toggle('hidden', on);
+}
+
+/**
+ * Bring the OS pinning and the exit button in line with the ACTIVE profile's setting.
+ *
+ * Must run on every profile activation, not only at launch: once the lock belongs to a
+ * child rather than to the tablet, switching children changes the answer. Both directions
+ * were wrong without this, and one of them is a real escape — arriving at a LOCKED profile
+ * from an unlocked one left the device unpinned with the exit button still on screen, so
+ * the child the lock exists for could simply walk out. (The other direction merely leaves
+ * a sibling pinned until the next launch.)
+ */
+async function applyExitLock() {
+  const on = await exitLockOn();
+  try {
+    const { lockTask, unlockTask } = await import('./platform.js');
+    if (on) await lockTask(); else await unlockTask();
+  } catch { /* browser preview / plugin absent — the UI half still applies */ }
+  await applyExitLockUi();
+}
+
+/**
+ * v1.0.25 — THE HOLE A PER-PROFILE LOCK OPENS, closed in the same release.
+ *
+ * The lock contains HOME, recents and back, and hides the exit button — but the profile
+ * chip was never protected: `$('profile-chip')` went straight to `backToProfiles`. Once
+ * the lock belongs to a profile rather than the device, a child on a locked profile could
+ * tap their own avatar, pick a sibling whose profile is NOT locked, and walk out. Two
+ * taps, and the lock becomes decoration.
+ *
+ * The chip stays VISIBLE on purpose — it is also how the child sees whose library they are
+ * in — but leaving the locked profile is now the protected act, like the exit itself.
+ */
+async function onProfileChip() {
+  if (!(await exitLockOn())) { backToProfiles(); return; }
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    title: 'קוד הורים להחלפת פרופיל',
+    onSuccess: backToProfiles
+  });
+}
+
+/**
+ * Name the child that the per-profile toggles belong to. A settings screen that says
+ * "נעילת יציאה" with no owner reads as a device switch, which is exactly what it used
+ * to be — a parent would flip it for one child and expect it everywhere.
+ */
+async function labelProfileSettings() {
+  const p = await getActiveProfile();
+  const who = p ? ` — ${p.name}` : '';
+  for (const id of ['exit-lock-owner', 'share-approval-owner']) {
+    const el = $(id);
+    if (el) el.textContent = who;
+  }
 }
 
 async function askExit() {
@@ -1499,8 +1562,9 @@ async function refreshParent() {
   const src = await db.getSources(activeProfileId);
   await refreshSourcesPanel();
   $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
-  $('share-approval-toggle').checked = !src || !src.shareIntent || src.shareIntent.requireApproval !== false;
+  $('share-approval-toggle').checked = await getSetting(activeProfileId, 'shareApproval', true) !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
+  await labelProfileSettings();
   // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
   // cannot be blocked retroactively, and merging or renaming it silently would be worse —
   // so tell the parent and let them rename or delete. Nothing is touched automatically.
@@ -2958,6 +3022,9 @@ async function activateProfile(id) {
   await loadGiftStates();
   await renderHome();
   await updateProfileChip();
+  // v1.0.25: the exit lock belongs to the CHILD now, so switching children changes the
+  // answer — re-arm (or release) it and repaint the exit button for whoever this is.
+  await applyExitLock();
 
   const hasContent = folders.length > 0;
   if (!hasContent) {
@@ -3054,7 +3121,9 @@ function wire() {
     startAtProfiles();
   });
 
-  $('profile-chip').addEventListener('click', backToProfiles);
+  // Fails CLOSED: if anything in the gate throws, the child stays put. Falling back to
+  // backToProfiles() would make a locked profile escapable by whatever made it throw.
+  $('profile-chip').addEventListener('click', () => { onProfileChip().catch(() => {}); });
   $('create-back').addEventListener('click', backToProfiles);
   $('create-save').addEventListener('click', createNewProfile);
   $('delete-profile').addEventListener('click', deleteCurrentProfile);
@@ -3297,7 +3366,8 @@ function wire() {
   // pinning confirmation); turning it off unpins right away (we're behind the PIN).
   $('exit-lock-toggle').addEventListener('change', async (e) => {
     const on = e.target.checked;
-    await prefSet('exitLock', on ? '1' : '');
+    await putSetting(activeProfileId, 'exitLock', on);
+    maybeSchedulePush(); // it travels now — the other device must hear about it
     const { lockTask, unlockTask, isNative } = await import('./platform.js');
     let note = on ? 'נעילת היציאה הופעלה ✅' : 'נעילת היציאה כובתה';
     if (on) {
@@ -3316,7 +3386,8 @@ function wire() {
   $('share-approval-toggle').addEventListener('change', async (e) => {
     const src = (await db.getSources(activeProfileId));
     if (!src) return;
-    await db.putSources({ ...src, shareIntent: { ...(src.shareIntent || {}), enabled: true, requireApproval: e.target.checked }, updatedAt: Date.now() });
+    await putSetting(activeProfileId, 'shareApproval', e.target.checked);
+    maybeSchedulePush();
     $('settings-msg').textContent = 'נשמר ✅';
     $('settings-msg').className = 'form-msg ok';
   });
@@ -3535,9 +3606,12 @@ async function init() {
     }
   } catch {}
 
-  // v1.0.11: re-arm the exit lock on every launch (pinning does not survive restarts)
+  // v1.0.11: re-arm the exit lock on every launch (pinning does not survive restarts).
+  // v1.0.25: the lock is per-profile now, and this runs BEFORE a profile is picked — so
+  // it arms from the LAST active one. Without that there is an unlocked window between
+  // launch and the profile tap, which is precisely when an unattended child is holding it.
   try {
-    if (await exitLockOn()) {
+    if (await exitLockOn(await prefGet('activeProfile'))) {
       const { lockTask } = await import('./platform.js');
       lockTask().catch(() => {});
     }

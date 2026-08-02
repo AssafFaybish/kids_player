@@ -259,6 +259,48 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.25 — **SETTINGS TRAVEL NOW, THROUGH ONE CHANNEL** ([settings.js](www/js/settings.js)).
+  Until this, exactly ONE setting-like value crossed between a family's devices —
+  `libraryChannels.autoApprove`, and only because it rides a record that carries a
+  timestamp. Everything a parent could actually change was device-local, so a PIN set on
+  the phone left the tablet on its old code. Shape:
+  `{ account: { <name>:{v,at} }, profiles: { <pid>: { <name>:{v,at} } } }`, stored in
+  **Preferences, not IndexedDB** — these are preferences, pin.js needs them before any DB
+  work, and it keeps the whole channel node-testable behind the existing localStorage stub.
+  `at` is stamped INSIDE `putSetting`, never at the call sites (the v1.0.22
+  `putLibraryChannel` lesson). Merge is per key: later write wins, and an exact tie takes
+  the SAFE direction (`exitLock`/`shareApproval` → true, `autoplay` → false; the PIN hash
+  has no safe direction so it orders by value — still commutative). Tests pin
+  `merge(A,B) === merge(B,A)` **and** idempotence; a doc from an older app carries no
+  `settings` key and must never read as "the family cleared everything".
+  **`getSetting`'s fallback cannot answer "was this ever written?"** — passing `undefined`
+  triggers the `fallback = null` default. pin.js reads the ENTRY via `getAllSettings`.
+  That exact mistake shipped in this branch and every unit test stayed green, because they
+  all call `setPin` first and so never took the migration branch; the browser caught it.
+  - **THE PIN MIGRATES, the other settings do not** (parent's decision 2026-08-02 was
+    "start fresh", but that question named exitLock and shareApproval). An existing hash is
+    lifted out of Preferences on first read, then the legacy key is dropped — channel
+    first, so no failure leaves the PIN nowhere. Resetting it would leave every installed
+    app with NO gate for one launch, and `startPin`'s SETUP flow lets whoever arrives first
+    pick the new code — on a child's tablet, the child. `clearPin` writes an explicit `''`
+    rather than deleting the entry, or the next read would lift the old hash straight back.
+  - **EXIT LOCK AND SHARE-APPROVAL ARE PER PROFILE** and both toggles name their child in
+    the UI (`labelProfileSettings`). ⚠️ Existing values do NOT carry over — a family with
+    the kiosk on finds it off after the update. Must appear in the release notes.
+  - **A PER-PROFILE LOCK OPENS A HOLE, closed in the same release.** The lock contains
+    HOME/recents/back and hides the exit button, but the profile chip went straight to
+    `backToProfiles` — so a child on a locked profile could tap their avatar, pick a
+    sibling who is NOT locked, and walk out. Two taps. `onProfileChip` now PIN-gates
+    leaving a locked profile; the chip stays visible because it is also how the child sees
+    whose library they are in. It **fails CLOSED**: a throw leaves the child where they are,
+    because falling back to `backToProfiles` would make the lock escapable by whatever
+    threw. The launch arming reads the LAST ACTIVE profile (`prefGet('activeProfile')`) —
+    it runs before a profile is picked, and without that there is an unlocked window from
+    launch until someone taps a tile. **`activateProfile` re-applies it on every profile
+    switch** (`applyExitLock` — pin/unpin plus the exit button). Both directions were wrong
+    without that, and one is a real escape: arriving at a LOCKED profile from an unlocked
+    one left the device unpinned with the exit button on screen, so the child the lock
+    exists for could simply walk out.
 - v1.0.25 — **ENTERING THE HOME PULLS, THEN SYNCS — AND THAT IS FINALLY TRUE ON LAUNCH.**
   v1.0.22 declared the two SERIALIZED because both write the same video records, and
   `pullThenSync` did serialize them — but it was never the only pipeline.
