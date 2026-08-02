@@ -1,5 +1,7 @@
 # ARCHITECTURE.md — module map, data model, and flows
 
+> Testing: [docs/TESTING.md](docs/TESTING.md). Release records: [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md).
+
 Companion to [CLAUDE.md](CLAUDE.md) (invariants) and [DEVELOPMENT.md](DEVELOPMENT.md)
 (original architecture + overhaul addendum §14-§18). This file answers "where does X
 live and how does data flow".
@@ -14,10 +16,11 @@ live and how does data flow".
 | `classify.js` | **THE safety boundary**: classifyLink, parseChannelRef, classifySourceRow (watch-link-wins; kind 'removed' for `# הוסר` rows), parseRemovalRow, stripTimeHints, classifyFromSharedText/classifyShared | — |
 | `order.js` | sortKeyFor domains (channel=publishedAt / sheet=BASE+rowIndex / manual=above-all), compareForDisplay | — |
 | `normalize.js` | normalizeTitle (Hebrew: niqqud/bidi/emoji), mergeVideoRecord (survivor policy) | — |
-| `store.js` | legacy Preferences layer (profiles, PIN key, oEmbed title, thumb candidates hq-first); re-exports classify | platform, classify |
+| `store.js` | legacy Preferences layer (profiles, oEmbed title, thumb candidates hq-first); re-exports classify. v1.0.25: the PIN moved OUT to settings.js. v1.0.25 also added the grow-only DELETED-PROFILE tombstones (`markProfileDeleted`, pure `mergeDeletedProfiles`) — without them a Drive pull unions a deleted profile straight back in | platform, classify |
+| `settings.js` | **the SYNCED settings channel** (v1.0.25): `{account:{name:{v,at}}, profiles:{pid:{name:{v,at}}}}` in Preferences — the parent PIN (account-wide) plus per-child exit lock / share approval / continuous play. `at` is stamped INSIDE `putSetting`, never by callers. Pure `mergeSettingEntry`/`mergeSettings`: per-key LWW, exact ties resolve the SAFE way. Before it, the only value that crossed devices was `libraryChannels.autoApprove` | platform |
 | `db.js` | IndexedDB I/O ONLY (no business logic) — see schema below; `dataVersion()` is a committed-write counter bumped inside `tx()` (v1.0.20 derived-state cache key) | — |
 | `migrate.js` | one-time resumable Preferences→IDB migration (never deletes the legacy blob) | platform, db, order, util |
-| `plan.js` | PURE decisions — mostly sync, some home: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental), planSheetMirror, groupSinglesByChannel, `isSheetBacked`/`sheetBackedKeysOf` (the sheet-backed boundary), planScopeAdoption, shouldRecordGiftBaseline, planGiftRunawayRepair, shouldFlattenHome (home-render rule), and the v1.0.24 parent-attention rules: attentionDot (blue=content / red=update), parentLandingTab + PARENT_TAB_IDS, pendingBulkAction (what a bulk button acts on), planChannelLogo (when to (re)fetch a channel avatar, API vs scrape) | normalize, order |
+| `plan.js` | PURE decisions — mostly sync, some home: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental), planSheetMirror, groupSinglesByChannel, `isSheetBacked`/`sheetBackedKeysOf` (the sheet-backed boundary), planScopeAdoption, shouldRecordGiftBaseline, planGiftRunawayRepair, shouldFlattenHome (home-render rule), and the v1.0.24 parent-attention rules: attentionDot (blue=content / red=update), parentLandingTab + PARENT_TAB_IDS, pendingBulkAction (what a bulk button acts on), planChannelLogo (when to (re)fetch a channel avatar, API vs scrape); v1.0.25 `planSyncDispatch` (start/join/queue a sync — a forced caller may never ride a run that already read), `planEntryRefresh` (pull+force gates on home entry), `channelAddOutcome`, `planProfilePurge` (which scopes a deleted profile may erase — never a SHARED library); v1.0.26 `playlistVideoFolder` (a playlist video whose channel is subscribed unifies into the channel folder) and `planRejectedPurge` (the 30-day archive expiry) | normalize, order |
 | `sync2.js` | the staged pipeline (below); parseSourceRows (+parseSourceSheet — test-only since v1.0.19, no production caller) | csv, classify, plan, yt, db, quota |
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
 | `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, playlist-id derivation: `UU` uploads / `UULF` long-form ("Videos" tab) / `UUSH` Shorts | — |
@@ -32,7 +35,7 @@ live and how does data flow".
 | `dataver.js` | one-shot data migrations after an app update (meta dataVersion; pure pendingSteps) | db, store, plan (dynamic) |
 | `links.js` | CONFIG ONLY (v1.0.15): every external address — donation links, contact mail, public site, update repo. Consumers: donate.js, update.js, app.js | — |
 | `spatial.js` | PURE TV D-pad geometry: pickNextIndex / pickFirstIndex (no wrap, drift penalty) | — |
-| `playerlogic.js` | PURE player decisions (player.js is untestable DOM): clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent | config |
+| `playerlogic.js` | PURE player decisions (player.js is untestable DOM): clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent; v1.0.25 `planAutoplay` (continuous play: next/retry/stop, never in 🎁, never into a wrapped gift) + `nextInOrder`; v1.0.26 `previewEmbedUrl` (the parent's preview bubble — controls=1, mute=1, rel=0) | config |
 | `ui/dpad.js` | Android TV focus manager (v1.0.9): spatial nav over the active view, watch-view player mode via player.handleTvKey | spatial, nav, modal, player |
 | `update.js` | GitHub-releases updater: compareVersions, checkForUpdate (throttled; honors `update.skip` on silent checks), downloadAndInstall (size-verified) | platform |
 | `wake.js` | ref-counted keep-screen-on (KidsNative → KeepAwake → wakeLock → noop) | — |
@@ -41,7 +44,7 @@ live and how does data flow".
 | `nav.js` | explicit view stack, hardware-back precedence (fullscreen→modal→view→pop→swallow), scroll restore | ui/modal |
 | `ui/*` | modal (confirmKid/alertKid), pager, tiles (in app.js currently), confetti (CSS), sound (WebAudio synth), loading (4 scenes) | — |
 | `app.js` | boot + all views (connect/profiles/folders home/folder/watch/pin/parent) + launch update prompt + attention dots + wiring — the candidate for a future views/ split | everything above |
-| `pin.js` | SHA-256 parent PIN | platform |
+| `pin.js` | SHA-256 parent PIN. v1.0.25: the hash lives in the SYNCED settings channel, so one family code opens the parent screen on every device; an existing Preferences hash is lifted across on first read (the other settings deliberately do NOT migrate) | platform, settings |
 | `sync.js` | **DEAD in production since v1.0.19** — zero importers outside tests. Embodies the removed model (public CSV export of a pasted sheet). Scheduled for deletion. | platform, csv, store |
 
 Native (android/, canonical copies in native-reference/): `MainActivity.java`

@@ -27,7 +27,7 @@ download/cache, durable storage).
 | YouTube + direct-file players | ✅ Done |
 | Native code applied + compiled into the APK | ✅ Done |
 | Android **APK build** | ✅ Built → `android/app/build/outputs/apk/debug/app-debug.apk` (~3.6 MB) |
-| Automated tests | ✅ `npm test` (node:test) — 7 passing |
+| Automated tests | ✅ `npm test` (node:test) — **382 passing**. Pure logic only: no DOM, no IndexedDB, no network — see [docs/TESTING.md](docs/TESTING.md) for what that means a green run does NOT prove |
 
 **Build env used:** JDK 17 (`/opt/homebrew/opt/openjdk@17`), Android SDK at
 `~/Library/Android/sdk`, `compileSdk/targetSdk = 35` (set in `android/variables.gradle`, since
@@ -283,5 +283,7 @@ never blocks boot. Full release checklist: PUBLISHING.md.
 - An Android-app-restricted YouTube API key breaks CapacitorHttp requests — restrict
   by API only.
 - Registering Capacitor's backButton listener disables ALL default back handling.
-- Stale §13 note: the test harness EXISTS — `npm test`, 84 node:test cases across
+- Stale §13 note: the test harness EXISTS — `npm test`, 382 node:test cases across
   test/*.test.mjs; classifyLink & friends moved to classify.js (re-exported).
+  Counts in this file go stale fast; `npm test` is the truth, and
+  [docs/TESTING.md](docs/TESTING.md) is the guide.
