@@ -95,7 +95,12 @@ for anything destructive, and purge it afterwards.
 **Never install a debug build over the release app.** These cannot be verified any other way.
 
 ### Android intents and native APIs
-- [ ] **Share a video from the YouTube app** → PIN → confirm → it appears.
+- [ ] **Share a video from the YouTube app** → PIN → confirm → it appears, **and a toast at
+      the bottom says what happened** (added / waiting for approval / why it failed). Since
+      v1.0.26 no share route is silent: if nothing is added, the toast names the reason.
+- [ ] Share a link that was **deleted before** → the toast must say so, not stay silent.
+- [ ] Share a **playlist** from the YouTube app (v1.0.26).
+- [ ] With TWO+ profiles, every share must **ask which profile first**.
 - [ ] **Share a CHANNEL** → loading screen → the three-way dialog (`אישור הכל` / `אישור ידני` /
       `אחר כך`) with a real count. *(v1.0.25 rewrote this path; it does not exist in a browser.)*
 - [ ] Share with **no profile active** (cold start) → lands on the profile picker, and the
@@ -146,6 +151,7 @@ for anything destructive, and purge it afterwards.
 | Playlist source | The exact field URL, in an isolated profile. Check the folder title, the 🎵 chip and the video count. |
 | Preview bubble | Tick two rows, preview a third, decide → **the ticks must survive**. |
 | 30-day purge | Age one rejected record past the window in IndexedDB, run a sync, confirm it is gone, a tombstone exists with `reason: 'rejected-expired'`, and fresher rows survive. |
+| Share feedback | `plan.shareOutcome` covers every reason `routeShare` can return (pinned). On a device, the toast is the diagnostic — read it before assuming the share was lost. |
 
 ---
 
