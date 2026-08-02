@@ -698,6 +698,38 @@ export function pendingBulkAction(selected = 0, total = 0) {
 }
 
 /**
+ * v1.0.25 — PURE: what does the parent get told after a channel finishes importing?
+ *
+ * A reassuring "הערוץ סונכרן ✅" over a backlog of 109 videos the child cannot see is how
+ * the v1.0.22 bug stayed invisible for a whole release: the parent had no reason to look
+ * in ממתינים, so the child's home just stayed empty. The message must therefore always
+ * name the outcome — approved, waiting, or genuinely nothing.
+ *
+ * Both entry points share it (parent screen + a channel shared from YouTube), which is
+ * the point: the share path used to announce success before the import had even run.
+ *
+ * A ZERO gets named too. Until the forced-sync fix a zero was usually a lie (the sync had
+ * joined the launch run and never looked at this channel); now that it is real, "nothing
+ * arrived" and "this channel publishes only Shorts" are different facts, and the second
+ * one is permanent — Shorts are excluded on purpose (v1.0.21), so the parent should hear
+ * it rather than stare at an empty folder. A plain ✅ is left for the one case that
+ * deserves it: nothing new, but the channel does have content the child can see.
+ *
+ * @param approved did the parent choose "אישור הכל"?
+ * @param count    the backlog size, whichever way they answered
+ * @param empty    only consulted when count is 0 — { noLongForm, hasLive }
+ */
+export function channelAddOutcome(approved, count = 0, empty = {}) {
+  const n = Math.max(0, count | 0);
+  if (approved && n) return `הערוץ נוסף ו-${n} סרטונים אושרו ✅`;
+  if (n) return `הערוץ נוסף. ${n} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`;
+  const { noLongForm = false, hasLive = true } = empty || {};
+  if (noLongForm) return 'הערוץ נוסף, אבל הוא מפרסם רק Shorts — לא נמשכו ממנו סרטונים';
+  if (!hasLive) return 'הערוץ נוסף, אבל לא נמצאו בו סרטונים';
+  return 'הערוץ סונכרן ✅';
+}
+
+/**
  * v1.0.20 — PURE: may the home render its ONE folder's videos flat, with no tile?
  *
  * The rule exists for the sheet-only setup: when the only folder is the shared

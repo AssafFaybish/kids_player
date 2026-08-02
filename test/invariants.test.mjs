@@ -246,6 +246,55 @@ test('syncLibrary DELEGATES the join-or-queue decision to planSyncDispatch', () 
   assert.doesNotMatch(body, /cur\.force/, 'the v1.0.21 join-a-forced-run condition is back');
 });
 
+test('BOTH ways to add a channel import it and then ASK (v1.0.25)', () => {
+  // v1.0.22 made the parent screen ask before a stranger's whole catalogue reaches a
+  // 5-year-old. The SHARE path never got it: handleChannelShare subscribed, fired a sync
+  // it did not await, and reported success immediately — so the backlog landed in
+  // ממתינים with no dialog and no count. CLAUDE.md already claimed the question covered
+  // "parent screen + share"; only one of them was true. Pin that they share one path.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /async function importChannelAndAsk\(/, 'the shared import-then-ask path is gone');
+  const sites = (app.match(/importChannelAndAsk\(/g) || []).length - 1;
+  assert.equal(sites, 2, `expected exactly 2 callers (parent screen + share), found ${sites}`);
+
+  // The share layer must NOT run its own sync: it cannot show the loading screen or the
+  // modal (it may not import ui/*), and a second sync would make the parent wait twice.
+  const share = MODULES.get('www/js/share.js');
+  const chan = share.slice(share.indexOf('async function handleChannelShare'));
+  assert.doesNotMatch(chan, /syncLibrary\(/, 'share.js syncs a shared channel behind onAdded again');
+  assert.match(chan, /await onAdded\(/, 'the share must AWAIT the import, or it reports an outcome it does not have');
+});
+
+test('the new-channel dialog offers three answers and handles every one', () => {
+  // A three-way question needs three REAL buttons: mapping an answer onto an accidental
+  // dismiss (scrim tap, hardware back) would let a child decide what reaches them. The
+  // labels are the parent-facing contract, so they are pinned with the routing.
+  const app = MODULES.get('www/js/app.js');
+  const fn = app.slice(app.indexOf('async function offerChannelApproval('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  for (const label of ['אישור הכל', 'אישור ידני', 'אחר כך']) {
+    assert.ok(body.includes(`'${label}'`), `the dialog lost its "${label}" button`);
+  }
+  assert.match(body, /answer === 'ok'/, "the 'אישור הכל' branch is gone");
+  assert.match(body, /answer === 'third'/, "the 'אישור ידני' branch is gone");
+  // "approve everything" is exactly what ticks the ✅ in the parent's channel list
+  assert.match(body, /autoApprove:\s*true/, 'approving all no longer flips autoApprove');
+  assert.match(body, /pickChannelVideos\(/, "'אישור ידני' no longer opens the picker");
+});
+
+test('the channel-approval paths resolve the library scope, never the bare global', () => {
+  // `libScope` is published by buildFolders — only after a home render. A channel shared
+  // from YouTube can now reach these on a cold start, and a null scope reads as "this
+  // library is empty": no dialog, and a picker with no rows.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /async function currentLibScope\(/, 'the defensive scope resolver is gone');
+  for (const name of ['pendingKeysOfChannel', 'pickChannelVideos', 'offerChannelApproval']) {
+    const fn = app.slice(app.indexOf(`function ${name}(`));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+    assert.match(body, /currentLibScope\(\)/, `${name} reads the bare libScope global again`);
+  }
+});
+
 test('no module parses an ISO-8601 duration (Shorts are not a length)', () => {
   // THE trap. YouTube defines a Short as "≤3 minutes AND square-or-taller"; the Data API
   // exposes no aspect ratio and no isShort field, so length can never reproduce the rule.

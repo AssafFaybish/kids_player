@@ -135,6 +135,13 @@ async function handleShare(o, { alreadyRouted = false } = {}) {
  * approval-required default, register a sheet row, then sync pulls its videos.
  * Without the interactive handler a channel share is ignored (subscribing a whole
  * channel silently is too big a side effect for a fallback path).
+ *
+ * v1.0.25: "behaves exactly like the parent screen" is now TRUE. This used to fire the
+ * sync without awaiting it and report success immediately, so the whole back catalogue
+ * landed in ממתינים with no dialog and no count — the v1.0.22 bug, still live on this
+ * path. The import and the question belong to app.js (they need the loading screen and
+ * the modal, neither of which this layer may import), so `onAdded` owns them and this
+ * function stops at subscribing.
  */
 async function handleChannelShare(pid, c) {
   if (!interactive) return;
@@ -165,8 +172,8 @@ async function handleChannelShare(pid, c) {
         });
       } catch {}
     }
-    const { syncLibrary } = await import('./sync2.js');
-    syncLibrary(pid, { force: true }).catch(() => {});
-    try { onAdded({ channelAdded: channelId, title: c.title }); } catch {}
+    // No sync here: `onAdded` awaits one behind the loading screen and then raises the
+    // approval dialog. Firing one here too would just make the parent wait twice.
+    try { await onAdded({ channelAdded: channelId, title: c.title }); } catch {}
   } catch { /* a failed resolve must not crash the share pipeline */ }
 }
