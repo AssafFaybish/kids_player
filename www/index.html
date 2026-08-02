@@ -31,8 +31,9 @@
         <button id="connect-google" class="btn btn-primary connect-btn" type="button">חיבור חשבון Google</button>
         <button id="connect-skip" class="text-btn connect-skip" type="button">דילוג — אתחבר אחר-כך</button>
         <p class="connect-hint">אפשר להתחבר בכל שלב דרך מסך ההורים ← הגדרות ← גיבוי וסנכרון</p>
-        <p class="connect-hint">ℹ️ אם גוגל מציגה אזהרת "האפליקציה לא אומתה" — זה תקין: זו אפליקציה
-          משפחתית פרטית, והנתונים נשארים בחשבון שלכם. לחצו "מתקדם" ← "המשך".</p>
+        <p class="connect-hint">ℹ️ אם גוגל שואלת אם להמשיך כי היא לא מכירה את האפליקציה —
+          זה צפוי וזה בסדר: זו אפליקציה משפחתית קטנה, והכול נשאר בחשבון שלכם.
+          לוחצים "מתקדם" ואז "המשך".</p>
         <div id="connect-msg" class="form-msg"></div>
       </div>
     </section>
@@ -471,24 +472,10 @@
         <div class="list-head"><span class="list-count">ערוצים</span></div>
         <ul id="channels-list" class="parent-list"></ul>
 
-        <div class="list-head" style="margin-top:18px"><span class="list-count">🔑 מפתח YouTube API</span></div>
-        <p class="hint">
-          <b>למה צריך?</b> כשמוסיפים ערוץ שלם, המפתח מאפשר לאפליקציה למשוך מיוטיוב את
-          <b>כל</b> הסרטונים של הערוץ (גם ישנים), את שם הערוץ ואת הלוגו שלו.
-          <br><b>מה קורה בלי מפתח?</b> האפליקציה עדיין עובדת, אבל מכל ערוץ יגיעו רק
-          <b>15 הסרטונים האחרונים</b> (ללא ההיסטוריה), בלי לוגו — וסרטונים חדשים ימשיכו
-          להתווסף עם הזמן. סרטונים בודדים לא מושפעים בכלל.
-          <br>באפליקציה כבר מובנה מפתח ברירת-מחדל, כך שבדרך כלל <b>אין צורך למלא כאן כלום</b> —
-          השדה נועד להחלפה אם המפתח המובנה יפסיק לעבוד או ייגמר לו המכסה היומית
-          (יצירת מפתח: מדריך <code>GOOGLE_CLOUD_SETUP.md</code> בפרויקט).
-        </p>
-        <div class="field">
-          <input id="apikey-input" class="input" type="text" dir="ltr" placeholder="AIza... (לא חובה)" />
-        </div>
-        <div class="row-btns">
-          <button id="apikey-save" class="btn btn-small" type="button">שמירת מפתח</button>
-        </div>
-        <div id="apikey-msg" class="form-msg"></div>
+        <!-- v1.0.28: the YouTube-API-key form is gone (parent's decision): the target
+             user cannot mint a Google Cloud key, so the form only added jargon. A key
+             saved here in the PAST keeps working — yt.getApiKey still reads the stored
+             override before the built-in key. Developers: GOOGLE_CLOUD_SETUP.md. -->
 
         <!-- v1.0.8: cache cleanup lives HERE only (it sat in the footer, which renders
              under EVERY tab — the user saw it "twice") -->

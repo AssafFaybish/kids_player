@@ -1877,7 +1877,6 @@ async function refreshSourcesPanel() {
 async function refreshParent() {
   const src = await db.getSources(activeProfileId);
   await refreshSourcesPanel();
-  $('apikey-input').value = (await import('./platform.js').then((p) => p.prefGet('yt:apiKey'))) || '';
   $('share-approval-toggle').checked = await getSetting(activeProfileId, 'shareApproval', true) !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
@@ -3992,14 +3991,8 @@ function wire() {
     $('remote-status').className = 'form-msg';
   });
 
-  $('apikey-save').addEventListener('click', async () => {
-    const { prefSet, prefRemove } = await import('./platform.js');
-    const v = $('apikey-input').value.trim();
-    if (v) await prefSet('yt:apiKey', v); else await prefRemove('yt:apiKey');
-    await prefRemove('yt:apiKeyState');
-    $('apikey-msg').textContent = v ? 'המפתח נשמר ✅' : 'המפתח הוסר — האפליקציה תשתמש במפתח המובנה';
-    $('apikey-msg').className = 'form-msg ok';
-  });
+  // v1.0.28: the API-key form is gone from the UI; a stored 'yt:apiKey' override is
+  // still honored by yt.getApiKey, so past users lose nothing.
 
   // v1.0.11: exit lock — applying is immediate (Android may show its own one-time
   // pinning confirmation); turning it off unpins right away (we're behind the PIN).
