@@ -262,6 +262,15 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.29 — **LAUNCH RESUMES THE LAST-USED PROFILE, PER DEVICE** (pure
+  `plan.planBootProfile`). The stored id was ALREADY device-local (`prefGet('activeProfile')`
+  — Preferences never sync; one account, several devices, a different child on each); the
+  boot flow just never used it. Three fallbacks to the picker, each load-bearing: nothing
+  stored; the stored profile no longer exists (deleted, possibly via a peer's tombstone);
+  and a QUEUED COLD-START SHARE — the boot picker IS that share's routing question
+  (v1.0.23, `alreadyRouted`), so auto-resuming would route a share nobody addressed.
+  Combined with v1.0.28's chip gate, the model is now: the device belongs to its child;
+  entering ANY other profile costs the parent code.
 - v1.0.28 — **A HANDLE COULD RESOLVE TO A STRANGER'S CHANNEL, AND THE MISTAKE WAS
   PERMANENT** (@RabbiRosenblum, field). Current channel pages no longer carry
   `"channelId":"UC…"` at all, so the keyless scrape fell to its loose second pattern —

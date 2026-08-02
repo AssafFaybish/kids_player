@@ -1221,3 +1221,20 @@ test('groupLibraryByFolder: an unsubscribed leftover is grouped, never lost', as
   // junk records are skipped, not thrown on
   assert.deepEqual(groupLibraryByFolder([null, {}], []), []);
 });
+
+/* ---------------- resume the last profile on launch (v1.0.29) ---------------- */
+
+test('planBootProfile: resumes the stored profile, device-locally', async () => {
+  const { planBootProfile } = await import('../www/js/plan.js');
+  const ids = ['p1', 'p2'];
+  assert.equal(planBootProfile({ storedId: 'p2', profileIds: ids }), 'p2');
+  // the three fallbacks, each load-bearing:
+  assert.equal(planBootProfile({ storedId: '', profileIds: ids }), null, 'nothing stored');
+  assert.equal(planBootProfile({ storedId: 'pGone', profileIds: ids }), null,
+    'a deleted (possibly peer-tombstoned) profile must not auto-enter');
+  assert.equal(planBootProfile({ storedId: 'p2', profileIds: ids, hasQueuedShare: true }), null,
+    'a cold-start share gets the PICKER — it is that share\'s routing question (v1.0.23)');
+  // junk never throws
+  assert.equal(planBootProfile(), null);
+  assert.equal(planBootProfile({ storedId: null, profileIds: null }), null);
+});

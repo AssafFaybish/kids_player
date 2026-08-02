@@ -23,7 +23,7 @@ import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder } from './plan.js';
+  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -3400,8 +3400,23 @@ function gauthErrorText(err) {
 
 /** The normal boot landing: profiles picker, or profile creation when none exist. */
 function startAtProfiles() {
-  if (profiles.length === 0) openCreateProfile();
-  else { renderProfiles(); nav.reset('profiles'); }
+  if (profiles.length === 0) { openCreateProfile(); return; }
+  // v1.0.29: resume the LAST-USED profile (device-local — prefGet, never the synced
+  // channel: one account, several devices, a different child on each). The decision is
+  // pure planBootProfile; a queued cold-start share still gets the picker, because the
+  // picker IS that share's routing question (v1.0.23). Falls back to the picker on any
+  // doubt — auto-entering a deleted profile would be worse than one extra tap.
+  (async () => {
+    const { prefGet } = await import('./platform.js');
+    const { hasQueuedShares } = await import('./share.js');
+    const id = planBootProfile({
+      storedId: await prefGet('activeProfile'),
+      profileIds: profiles.map((pr) => pr.id),
+      hasQueuedShare: await hasQueuedShares()
+    });
+    if (id) { await activateProfile(id); return; }
+    renderProfiles(); nav.reset('profiles');
+  })().catch(() => { renderProfiles(); nav.reset('profiles'); });
 }
 
 /**
