@@ -882,3 +882,23 @@ test('the TV remote can reach folded sections (v1.0.28)', () => {
   const sel = dpad.slice(at, dpad.indexOf('offsetParent', at));
   assert.match(sel, /\bsummary\b/, 'summary fell out of the D-pad focusable selector');
 });
+
+test('the preview bubble is reachable from a TV remote (v1.0.29)', () => {
+  // The bubble is an OVERLAY outside every .view (deliberately — the screen behind keeps
+  // its state), so the D-pad's view-scoped scan could never see its buttons: on TV it
+  // opened and the remote was trapped behind it. And the thumbnail that OPENS it was a
+  // bare <img> with a click listener — not focusable, Enter-dead.
+  // comments stripped: the fix's own comment names the bubble, and a pin a comment can
+  // satisfy pins prose (this exact plant passed the first version of this guard)
+  const dpad = MODULES.get('www/js/ui/dpad.js')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.match(dpad, /getElementById\('preview-bubble'\)/,
+    "dpad's scope priority lost the open bubble");
+  assert.match(dpad, /\?\s*pv\s*:/, 'the bubble branch fell out of the scope ternary');
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('function parentRow(');
+  assert.ok(at > 0, 'parentRow moved');
+  const fn = app.slice(at, at + 3500);
+  assert.match(fn, /img\.tabIndex = 0/, 'the preview thumbnail fell out of the focus scan');
+  assert.match(fn, /'Enter'/, 'Enter no longer opens the preview from the remote');
+});
