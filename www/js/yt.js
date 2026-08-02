@@ -63,14 +63,43 @@ export function channelPageUrl(ref) {
 }
 
 /** handle -> channelId, cached FOREVER in meta (forHandle is not batchable). */
+/**
+ * PURE (v1.0.28) — the channel id out of a public channel page, ANCHORED matches only.
+ *
+ * FIELD BUG (@RabbiRosenblum): current channel pages no longer carry the
+ * `"channelId":"UC…"` shape at all, so the old scrape fell to its second pattern —
+ * the FIRST `channel/UC…` anywhere in ~1.2MB of HTML — and that is not necessarily
+ * this channel (measured: a decoy UC id appears BEFORE the real one). The wrong id
+ * was then cached forever, so the subscription was permanently empty ("הערוץ נוסף,
+ * אבל אין בו סרטונים") — or worse, could have been someone else's channel entirely,
+ * which for THIS app is a safety hole, not a cosmetic one.
+ *
+ * Only shapes that name THIS page's identity may match: `externalId` (present today),
+ * the canonical link, and the legacy `channelId` (older cached pages). NO bare-UC
+ * fallback — a resolve that occasionally fails beats one that occasionally answers
+ * with a stranger's channel.
+ */
+export function extractChannelIdFromHtml(html) {
+  const s = String(html || '');
+  const m = s.match(/"externalId":"(UC[A-Za-z0-9_-]{22})"/)
+    || s.match(/rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})"/)
+    || s.match(/"channelId":"(UC[A-Za-z0-9_-]{22})"/);
+  return m ? m[1] : '';
+}
+
 export async function resolveChannelRef(ref, key) {
   if (ref.by === 'id') return ref.value;
   const cacheKey = 'handleMap';
   const map = (await getMeta(cacheKey)) || {};
   const ck = ref.by + ':' + ref.value.toLowerCase();
-  if (map[ck]) return map[ck];
 
   let channelId = null;
+  // v1.0.28: THE API OUTRANKS THE CACHE when a key is available. The old order (cache
+  // first, forever) is what made a bad scrape PERMANENT: the built-in key's quota is
+  // shared by every family, one exhausted afternoon pushed a resolve onto the loose
+  // scrape, and the wrong id it answered was then served from cache for good. The API
+  // answer now refreshes the cache on every keyed resolve (~1 unit — channels.list),
+  // which also HEALS devices already carrying a poisoned entry.
   if (key) {
     const params = { part: 'id' };
     if (ref.by === 'handle') params.forHandle = ref.value;
@@ -80,17 +109,15 @@ export async function resolveChannelRef(ref, key) {
       channelId = r.data?.items?.[0]?.id || null;
     }
   }
+  if (!channelId && map[ck]) return map[ck];
   if (!channelId) {
     // Keyless (and /c/ custom URLs, which the API can't resolve): scrape the public
     // channel page for the canonical id. Zero quota; CapacitorHttp is CORS-free.
     try {
-      const html = await httpGetText(channelPageUrl(ref));
-      const m = String(html).match(/"channelId":"(UC[A-Za-z0-9_-]{22})"/)
-        || String(html).match(/channel\/(UC[A-Za-z0-9_-]{22})/);
-      channelId = m ? m[1] : null;
+      channelId = extractChannelIdFromHtml(await httpGetText(channelPageUrl(ref))) || null;
     } catch { channelId = null; }
   }
-  if (channelId) {
+  if (channelId && map[ck] !== channelId) {
     map[ck] = channelId;
     const { putMeta } = await import('./db.js');
     await putMeta(cacheKey, map);
