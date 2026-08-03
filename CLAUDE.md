@@ -285,6 +285,17 @@ pins that the consumers follow the config and that every address is well-formed.
   - @BARDAK613's page carries a real `"channelId":"UC…"` — but it is a DECOY (the real id
     is in `externalId`). `extractChannelIdFromHtml` already tries `externalId` first, so
     the anchored order was already correct; a test now pins the decoy case explicitly.
+- v1.0.31 — **A KEYLESS RELEASE COULD NOT HEAL A POISONED HANDLE CACHE** (@BARDAK613,
+  reported STILL failing on v1.0.30 which already had the v1.0.29 heal). The v1.0.29 fix
+  keyed the cache-first shortcut on `!key` — but `keys.local.js` is GITIGNORED, so a
+  release built without it ships NO API key, and then the ADD path (`resolveChannelRef(ref,
+  getApiKey())`) passes `''` too, hits the keyless cache-first shortcut, and returns the
+  poisoned decoy forever. The scrape (which heals) was never reached. Now the shortcut is
+  gated on an explicit `cacheFirst` OPT-IN that ONLY the per-video enrichment caller passes;
+  every ADD/SHEET path resolves LIVE regardless of the key, so healing is key-independent.
+  A test pins that exactly ONE caller opts into `cacheFirst`. The channel resolves and
+  imports (98 via API, ~13 via keyless RSS) — verified; a device already carrying the bad
+  SUBSCRIPTION still needs a delete + re-add, which now resolves correctly.
 - v1.0.28 — **A HANDLE COULD RESOLVE TO A STRANGER'S CHANNEL, AND THE MISTAKE WAS
   PERMANENT** (@RabbiRosenblum, field). Current channel pages no longer carry
   `"channelId":"UC…"` at all, so the keyless scrape fell to its loose second pattern —

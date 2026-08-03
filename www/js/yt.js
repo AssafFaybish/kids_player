@@ -87,18 +87,22 @@ export function extractChannelIdFromHtml(html) {
   return m ? m[1] : '';
 }
 
-export async function resolveChannelRef(ref, key) {
+export async function resolveChannelRef(ref, key, { cacheFirst = false } = {}) {
   if (ref.by === 'id') return ref.value;
   const cacheKey = 'handleMap';
   const map = (await getMeta(cacheKey)) || {};
   const ck = ref.by + ':' + ref.value.toLowerCase();
 
-  // v1.0.29: a KEYLESS caller (per-video enrichment, `resolveChannelRef(ref, '')`) trusts
-  // the cache first — it runs N times per sync and must not scrape the channel page N
-  // times, and a slightly stale id there only affects GROUPING, never what reaches the
-  // child. A KEYED caller (every ADD path) skips this: for it the cache is the LAST
-  // resort, below both live resolutions, so a poisoned entry cannot survive the fix.
-  if (!key && map[ck]) return map[ck];
+  // v1.0.31: ONLY the per-video ENRICHMENT path (fetchVideoMeta) trusts the cache first —
+  // it runs N times per sync and must not scrape the channel page N times, and a stale id
+  // there only affects GROUPING, never what reaches the child. It opts in with cacheFirst.
+  //
+  // Every ADD/SHEET path resolves LIVE (scrape before cache, cache last resort) so a
+  // poisoned entry heals — and it is distinguished by INTENT, not by the key. v1.0.29 keyed
+  // this on `!key`, which broke on a KEYLESS RELEASE (keys.local.js is gitignored, so a
+  // build without it ships no key): the ADD path then passed '' too, hit the keyless
+  // cache-first shortcut, and returned the poisoned decoy forever — the @BARDAK613 report.
+  if (cacheFirst && map[ck]) return map[ck];
 
   let channelId = null;
   if (key) {
@@ -303,7 +307,7 @@ export async function fetchVideoMeta(ids, key) {
       if (data.status !== 200 || !data.data) return null;
       const d = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
       const ref = d.author_url ? parseChannelRef(d.author_url) : null;
-      const channelId = ref ? await resolveChannelRef(ref, '') : null; // cached forever
+      const channelId = ref ? await resolveChannelRef(ref, '', { cacheFirst: true }) : null; // per-video: cache-first
       return { title: d.title || '', channelId: channelId || null, channelTitle: d.author_name || '' };
     } catch { return null; }
   });
