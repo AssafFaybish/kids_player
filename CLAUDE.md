@@ -262,6 +262,31 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.31 — **A COLD-START SPLASH + A SCHEDULED PER-PROFILE LOCK.**
+  - **SPLASH** (`#splash-overlay`): a FIXED overlay above the nav (not a view — a view would
+    vanish the moment `nav.reset` runs behind it), shown for ~1.3s while the app boots, then
+    faded. Cold-start-only is automatic: `init()` runs once per process; resume never
+    re-enters. Inline emoji + CSS animation, self-contained.
+  - **SCHEDULED LOCK** ("time to do something else"): after `lockAfterMin` minutes of a
+    session the app locks for `lockDurationMin`, shows the child a calm sleeping-tablet
+    screen with a live countdown, then returns to normal and re-arms on the next video.
+    - **SETTINGS SYNC, LIVE TIMER IS DEVICE-LOCAL** (`schedlock:<pid>:armed`/`:until` in
+      Preferences). A lock is about THIS device's session — syncing "locked until X" would
+      lock a sibling's device on one account. `drive.js` must never carry these keys; a test
+      pins it. Same split as PIN recovery.
+    - The timer **ACCUMULATES** (armed by the first video, runs continuously, never resets on
+      a later video — the user's decision; resetting would let continuous play defeat it) and
+      counts wall-clock while the app is open. Pure `plan.evalScheduledLock` decides; a
+      nonsense window falls back to the default (`scheduledLockDurationMs`, the
+      `planRejectedPurge` rule — a 0 duration would unlock instantly).
+    - **IT SURVIVES A RESTART** (persisted `:until`, checked on boot + resume + profile
+      switch) so a child cannot bypass it by force-closing. The locked view swallows
+      hardware-back.
+    - **THE EXIT BUTTON IS GATED ON THE KIOSK LOCK**: shown only when the exit-lock is OFF
+      (closing the app is then a legitimate escape); with the kiosk ON the child is fully
+      contained. A discreet `פתיחה להורים` tap → parent code → unlock early (and re-arm).
+      Both pinned by an invariants test.
+    - lockAfter 0 = OFF (the default), so a family that never opens this setting sees nothing.
 - v1.0.29 — **LAUNCH RESUMES THE LAST-USED PROFILE, PER DEVICE** (pure
   `plan.planBootProfile`). The stored id was ALREADY device-local (`prefGet('activeProfile')`
   — Preferences never sync; one account, several devices, a different child on each); the

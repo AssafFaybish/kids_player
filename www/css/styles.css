@@ -947,3 +947,48 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .library-group-head::-webkit-details-marker { display: none; }
 .library-group-head::before { content: '◂ '; color: var(--muted); }
 .library-group[open] > .library-group-head::before { content: '▾ '; }
+
+/* ===================== v1.0.31: splash + scheduled lock ===================== */
+/* Cold-start splash — a FIXED overlay above everything, faded out by init(). */
+.splash-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: radial-gradient(circle at 50% 38%, #fff6d8 0%, var(--bg) 70%);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  transition: opacity 0.45s ease;
+}
+.splash-overlay.splash-hide { opacity: 0; pointer-events: none; }
+.splash-art { position: relative; width: 200px; height: 150px; margin-bottom: 6px; }
+.splash-sun { position: absolute; top: 0; inset-inline-end: 24px; font-size: 52px; animation: splash-spin 6s linear infinite; }
+.splash-tv { position: absolute; bottom: 6px; inset-inline-start: 60px; font-size: 76px; animation: splash-bob 1.6s ease-in-out infinite; }
+.splash-spark { position: absolute; font-size: 30px; animation: splash-twinkle 1.8s ease-in-out infinite; }
+.splash-spark.s1 { top: 10px; inset-inline-start: 20px; animation-delay: 0.1s; }
+.splash-spark.s2 { top: 60px; inset-inline-end: 0; font-size: 40px; animation-delay: 0.5s; }
+.splash-spark.s3 { bottom: 0; inset-inline-end: 40px; animation-delay: 0.9s; }
+.splash-title { font-size: 34px; font-weight: 800; color: var(--brand-2); margin: 4px 0 0; }
+.splash-sub { font-size: 18px; color: var(--muted); font-weight: 700; margin: 0; }
+@keyframes splash-bob { 0%,100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-12px) rotate(3deg); } }
+@keyframes splash-spin { to { transform: rotate(360deg); } }
+@keyframes splash-twinkle { 0%,100% { transform: scale(0.7); opacity: 0.4; } 50% { transform: scale(1.15); opacity: 1; } }
+
+/* The scheduled-lock screen — calm, child-facing, inescapable. */
+#view-locked { min-height: 100dvh; }
+#view-locked.active { display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 40%, #e9e6ff 0%, var(--bg) 72%); }
+.locked-wrap { text-align: center; padding: 30px; max-width: 90vw; }
+.locked-art { margin-bottom: 10px; }
+.locked-tablet { position: relative; display: inline-block; font-size: 96px; animation: splash-bob 3s ease-in-out infinite; }
+.locked-zzz { position: absolute; top: -6px; inset-inline-end: -18px; font-size: 40px; animation: splash-twinkle 2.2s ease-in-out infinite; }
+.locked-title { font-size: 28px; font-weight: 800; color: var(--brand-2); margin: 8px 0; }
+.locked-sub { font-size: 19px; color: var(--ink); font-weight: 700; margin: 0 0 6px; }
+.locked-countdown { font-size: 56px; font-weight: 800; color: var(--brand-2); font-variant-numeric: tabular-nums; letter-spacing: 2px; }
+.locked-exit { margin: 22px auto 0; display: block; }
+/* discreet, low-contrast — a child should not read it as the obvious way out */
+.locked-parent { display: block; margin: 16px auto 0; color: var(--muted); opacity: 0.5; font-size: 13px; }
+
+/* settings: the scheduled-lock number fields */
+.sched-lock-row { margin: 4px 0 2px; }
+.sched-lock-label { font-size: 16px; font-weight: 700; color: var(--ink); }
+.sched-lock-fields { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 2px; }
+.sched-lock-fields label { font-size: 15px; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; }
+.sched-num { width: 4.5em; text-align: center; font-size: 17px; padding: 6px 4px; }
+.sched-lock-hint { margin: 2px 0 0; }
