@@ -213,6 +213,11 @@ async function tickScheduledLock() {
 async function showLockedScreen() {
   const e = await evalActiveLock();
   if (e.phase !== 'locked') return;
+  // v1.0.31: NEVER slam the lock over the parent mid-configuration. The parent screen and
+  // its PIN sit behind the code, so a child is not there — and locking a parent out of the
+  // very screen where they set the timer would be absurd. The next tick (or their return to
+  // the gallery) shows it once they leave. The lock is stamped either way, so no time is lost.
+  if (nav.isActive('parent') || nav.isActive('pin') || nav.isActive('connect') || nav.isActive('tour')) return;
   $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
   // The exit button appears ONLY when the kiosk exit-lock is OFF. With it ON the child is
   // fully contained (no exit at all); with it off, closing the app is a legitimate escape.
@@ -4193,6 +4198,11 @@ function wire() {
     await putSetting(activeProfileId, 'lockAfterMin', after);
     await putSetting(activeProfileId, 'lockDurationMin', dur);
     maybeSchedulePush();
+    // v1.0.31: apply to the CURRENT session at once (the timer accumulates against a fixed
+    // armedAt, so reducing the minutes shortens the ongoing countdown). Safe to run from the
+    // parent screen: showLockedScreen refuses to reveal the lock while the parent is here.
+    startLockTicker();
+    await tickScheduledLock();
     const msg = $('settings-msg');
     msg.textContent = after > 0
       ? `נעילה מתוזמנת: אחרי ${after} דקות, למשך ${dur} דקות ✅`
