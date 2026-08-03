@@ -14,6 +14,23 @@
 <body>
   <div id="app">
 
+    <!-- ===================== SPLASH (v1.0.31, cold start only) ===================== -->
+    <!-- A FIXED OVERLAY, not a nav view: it sits above whatever the boot flow makes active
+         behind it, so `nav.reset` can't vanish it early. init() hides it after ~1.3s.
+         Cold-start-only is automatic — init() runs once per process; resume never re-enters.
+         The illustration is inline emoji + CSS animation (self-contained, theme-matching). -->
+    <div id="splash-overlay" class="splash-overlay">
+      <div class="splash-art" aria-hidden="true">
+        <div class="splash-sun">☀️</div>
+        <div class="splash-tv">📺</div>
+        <div class="splash-spark s1">✨</div>
+        <div class="splash-spark s2">🌈</div>
+        <div class="splash-spark s3">⭐</div>
+      </div>
+      <h1 class="splash-title">הסרטונים שלי</h1>
+      <p class="splash-sub">🍿 המסך שלך נטען…</p>
+    </div>
+
     <!-- ===================== CONNECT GOOGLE (first launch, one-time) ===================== -->
     <section id="view-connect" class="view">
       <div class="connect-wrap">
@@ -236,6 +253,23 @@
     </section>
 
     <!-- ===================== LOADING (kids) ===================== -->
+    <!-- ===================== SCHEDULED LOCK (v1.0.31) ===================== -->
+    <!-- "Time to do something else." A swallow-back view the child cannot escape. The
+         exit button appears ONLY when the kiosk exit-lock is OFF (app.js decides); the
+         discreet פתיחה tap opens the parent code to unlock early. -->
+    <section id="view-locked" class="view">
+      <div class="locked-wrap">
+        <div class="locked-art" aria-hidden="true">
+          <div class="locked-tablet">📱<span class="locked-zzz">💤</span></div>
+        </div>
+        <h1 class="locked-title">הגיע הזמן לעשות משהו אחר 😴</h1>
+        <p class="locked-sub">הטאבלט נח עכשיו. נחזור עוד:</p>
+        <div id="locked-countdown" class="locked-countdown">0:00</div>
+        <button id="locked-exit" class="btn locked-exit hidden" type="button">🚪 יציאה מהאפליקציה</button>
+        <button id="locked-parent" class="text-btn locked-parent" type="button">פתיחה להורים</button>
+      </div>
+    </section>
+
     <section id="view-loading" class="view">
       <div class="load-wrap">
         <div id="load-stage" class="load-stage"></div>
@@ -516,6 +550,19 @@
           <input id="exit-lock-toggle" type="checkbox" />
           <span>יציאה מהאפליקציה רק עם קוד הורים (נעילת מסך מלאה — גם כפתור הבית)<b id="exit-lock-owner" class="setting-owner"></b></span>
         </label>
+        <!-- v1.0.31: scheduled per-profile lock. Both PER PROFILE and SYNCED. 0 = off. -->
+        <div class="sched-lock-row">
+          <span class="sched-lock-label">⏱️ נעילה מתוזמנת<b id="sched-lock-owner" class="setting-owner"></b></span>
+          <div class="sched-lock-fields">
+            <label>נעילה אחרי
+              <input id="lock-after-min" class="input sched-num" type="number" min="0" max="600" step="1" inputmode="numeric" value="0" />
+              דקות</label>
+            <label>למשך
+              <input id="lock-duration-min" class="input sched-num" type="number" min="1" max="600" step="1" inputmode="numeric" value="20" />
+              דקות</label>
+          </div>
+          <p class="hint sched-lock-hint">0 = ללא נעילה. הזמן מתחיל כשהילד מתחיל לצפות, ורץ ברציפות.</p>
+        </div>
         <div id="settings-msg" class="form-msg"></div>
 
         <!-- the version/update section moved to the About tab (v1.0.8) -->

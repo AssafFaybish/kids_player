@@ -1238,3 +1238,45 @@ test('planBootProfile: resumes the stored profile, device-locally', async () => 
   assert.equal(planBootProfile(), null);
   assert.equal(planBootProfile({ storedId: null, profileIds: null }), null);
 });
+
+/* ---------------- scheduled per-profile lock (v1.0.31) ---------------- */
+
+test('evalScheduledLock: the five phases, and off when disabled', async () => {
+  const { evalScheduledLock } = await import('../www/js/plan.js');
+  const M = 60000;
+  // afterMin 0 (default) or nonsense ⇒ the feature is OFF
+  for (const a of [0, -5, NaN, null, undefined, 'x']) {
+    assert.equal(evalScheduledLock({ afterMin: a, armedAt: 1, now: 9e9 }).phase, 'off', `after=${a}`);
+  }
+  // armed but not elapsed ⇒ counting, with the real remaining time
+  assert.deepEqual(evalScheduledLock({ afterMin: 10, armedAt: 1000, now: 1000 + 3 * M }),
+    { phase: 'counting', msLeft: 7 * M });
+  // not armed ⇒ idle (waiting for the first video)
+  assert.equal(evalScheduledLock({ afterMin: 10, armedAt: 0 }).phase, 'idle');
+  // elapsed ⇒ due (the caller must start the lock)
+  assert.equal(evalScheduledLock({ afterMin: 10, armedAt: 1000, now: 1000 + 10 * M }).phase, 'due');
+  assert.equal(evalScheduledLock({ afterMin: 10, armedAt: 1000, now: 1000 + 99 * M }).phase, 'due');
+  // locked wins over everything while it runs, and never reports negative
+  assert.deepEqual(evalScheduledLock({ afterMin: 10, armedAt: 1000, lockedUntil: 5000, now: 2000 }),
+    { phase: 'locked', msLeft: 3000 });
+  assert.equal(evalScheduledLock({ afterMin: 10, lockedUntil: 5000, now: 9000 }).msLeft, 0,
+    'an expired lock reports 0, not a negative — the caller then clears it');
+  assert.equal(evalScheduledLock().phase, 'off');
+});
+
+test('scheduledLockDurationMs: nonsense falls back to the DEFAULT, never 0', async () => {
+  const { scheduledLockDurationMs } = await import('../www/js/plan.js');
+  assert.equal(scheduledLockDurationMs(15), 15 * 60000);
+  for (const bad of [0, -3, NaN, null, undefined, 'x', Infinity]) {
+    assert.equal(scheduledLockDurationMs(bad, 20), 20 * 60000, `dur=${bad} must default, a 0 would unlock instantly`);
+  }
+  assert.equal(scheduledLockDurationMs(0, -1), 20 * 60000, 'a nonsense default itself falls back to 20');
+});
+
+test('lockCountdownLabel: mm:ss, never negative, never blank', async () => {
+  const { lockCountdownLabel } = await import('../www/js/plan.js');
+  assert.equal(lockCountdownLabel(65000), '1:05');
+  assert.equal(lockCountdownLabel(600000), '10:00');
+  assert.equal(lockCountdownLabel(999), '0:01');
+  for (const z of [0, -1, NaN, null, undefined]) assert.equal(lockCountdownLabel(z), '0:00', String(z));
+});

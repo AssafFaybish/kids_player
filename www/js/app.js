@@ -11,11 +11,11 @@ import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, putSetting } from './settings.js';
 import { playItem, stop } from './player.js';
 import { clearCache } from './media.js';
-import { onAppResume, onBackButton, exitApp, prefGet, prefSet } from './platform.js';
+import { onAppResume, onBackButton, exitApp, prefGet, prefSet, prefRemove } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS,
-  PIN_RECOVERY_DELAY_HOURS } from './config.js';
+  PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -23,7 +23,7 @@ import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile } from './plan.js';
+  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -135,6 +135,116 @@ async function applyExitLock() {
   await applyExitLockUi();
 }
 
+/* ---------------- Scheduled per-profile lock (v1.0.31) ---------------- */
+// A screen-time limit: after N minutes of a session the app LOCKS for M minutes, then
+// returns to normal and re-arms on the child's next video. SETTINGS sync per profile;
+// the live timer state is DEVICE-LOCAL (Preferences, keyed by profile) — a lock is about
+// THIS device's session, and syncing "locked until X" would lock a sibling's device.
+// The pure decision lives in plan.evalScheduledLock; here is only the plumbing.
+const lockArmedKey = (pid) => 'schedlock:' + pid + ':armed';
+const lockUntilKey = (pid) => 'schedlock:' + pid + ':until';
+let lockTicker = null;
+
+async function schedLockSettings(pid) {
+  let after = 0, dur = SCHED_LOCK_DEFAULT_DURATION_MIN;
+  try { after = Number(await getSetting(pid, 'lockAfterMin', 0)) || 0; } catch {}
+  try { dur = Number(await getSetting(pid, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)); } catch {}
+  return { afterMin: after, durationMin: dur };
+}
+
+/** Read the device-local timer state + settings and let the pure helper decide. */
+async function evalActiveLock() {
+  const pid = activeProfileId;
+  if (!pid) return { phase: 'off', msLeft: 0, pid: null };
+  const { afterMin, durationMin } = await schedLockSettings(pid);
+  const armedAt = Number(await prefGet(lockArmedKey(pid))) || 0;
+  const lockedUntil = Number(await prefGet(lockUntilKey(pid))) || 0;
+  return { ...evalScheduledLock({ armedAt, lockedUntil, afterMin, durationMin }), pid, durationMin };
+}
+
+/**
+ * Arm the countdown on the child's FIRST video of a session (user's decision: the timer
+ * ACCUMULATES — it never resets on a later video, or continuous play would defeat it).
+ * Idempotent: only the first call while idle sets the stamp.
+ */
+async function armScheduledLock() {
+  try {
+    const e = await evalActiveLock();
+    if (e.phase === 'idle') await prefSet(lockArmedKey(e.pid), String(Date.now()));
+  } catch {}
+}
+
+/** Enter the lock: stamp the end time, drop the armed stamp, show the locked screen. */
+async function enterScheduledLock(pid, durationMin) {
+  await prefSet(lockUntilKey(pid), String(Date.now() + scheduledLockDurationMs(durationMin, SCHED_LOCK_DEFAULT_DURATION_MIN)));
+  await prefRemove(lockArmedKey(pid)).catch(() => {});
+  await showLockedScreen();
+}
+
+/** Clear the lock AND the armed stamp — the next video re-arms a fresh cycle. */
+async function clearScheduledLock(pid = activeProfileId) {
+  if (!pid) return;
+  await prefRemove(lockUntilKey(pid)).catch(() => {});
+  await prefRemove(lockArmedKey(pid)).catch(() => {});
+}
+
+/**
+ * The one evaluator, run on a timer and on lifecycle events. Transitions:
+ *   due    → start the lock (unless already showing it);
+ *   locked → show the screen (or refresh the countdown) — expired clears and re-arms;
+ *   else   → if the locked screen is up but the lock is gone, leave it.
+ */
+async function tickScheduledLock() {
+  try {
+    const e = await evalActiveLock();
+    if (e.phase === 'due') { await enterScheduledLock(e.pid, e.durationMin); return; }
+    if (e.phase === 'locked') {
+      if (e.msLeft <= 0) { await clearScheduledLock(e.pid); if (nav.isActive('locked')) leaveLockedScreen(); return; }
+      if (nav.isActive('locked')) $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
+      else await showLockedScreen();
+      return;
+    }
+    // not locked any more but the screen is still up (parent unlocked elsewhere)
+    if (nav.isActive('locked')) leaveLockedScreen();
+  } catch {}
+}
+
+/** Draw + reveal the locked screen for the active profile, exit button per the kiosk lock. */
+async function showLockedScreen() {
+  const e = await evalActiveLock();
+  if (e.phase !== 'locked') return;
+  // v1.0.31: NEVER slam the lock over the parent mid-configuration. The parent screen and
+  // its PIN sit behind the code, so a child is not there — and locking a parent out of the
+  // very screen where they set the timer would be absurd. The next tick (or their return to
+  // the gallery) shows it once they leave. The lock is stamped either way, so no time is lost.
+  if (nav.isActive('parent') || nav.isActive('pin') || nav.isActive('connect') || nav.isActive('tour')) return;
+  $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
+  // The exit button appears ONLY when the kiosk exit-lock is OFF. With it ON the child is
+  // fully contained (no exit at all); with it off, closing the app is a legitimate escape.
+  let kiosk = false;
+  try { kiosk = await exitLockOn(); } catch {}
+  $('locked-exit').classList.toggle('hidden', kiosk);
+  if (!nav.isActive('locked')) nav.reset('locked');
+}
+
+function leaveLockedScreen() {
+  // back to where the child belongs — their gallery
+  if (activeProfileId) nav.reset('gallery'); else nav.reset('profiles');
+}
+
+/** The discreet פתיחה tap: parent code → unlock immediately (and re-arm on next video). */
+async function onLockedParentTap() {
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    replace: true, title: 'קוד הורים לפתיחת הנעילה',
+    onSuccess: async () => { await clearScheduledLock(); leaveLockedScreen(); }
+  });
+}
+
+function startLockTicker() {
+  if (lockTicker) return;
+  lockTicker = setInterval(() => { tickScheduledLock().catch(() => {}); }, 5000);
+}
+
 /**
  * v1.0.25 — THE HOLE A PER-PROFILE LOCK OPENS, closed in the same release.
  *
@@ -171,7 +281,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'sched-lock-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -581,6 +691,8 @@ function registerViews() {
     onLeave: () => closePreview() // never leave a player running behind another screen
   });
   loading.registerLoadingView();
+  // v1.0.31: the scheduled-lock screen swallows hardware-back — a child must not escape it.
+  nav.register('locked', { onBack: () => true });
 }
 
 /* ---------------- Tiles (IDB records) ---------------- */
@@ -1352,6 +1464,7 @@ function enterPlayerFullscreen() {
 
 async function openWatch(item) {
   currentWatch = item;
+  armScheduledLock().catch(() => {}); // v1.0.31: first video arms the screen-time countdown
   // A tap during the continuous-play countdown wins over the queued video. Synchronous
   // and BEFORE the fullscreen request, so it cannot cost the tap its user activation.
   cancelAutoplay();
@@ -1888,6 +2001,9 @@ async function refreshParent() {
   $('share-approval-toggle').checked = await getSetting(activeProfileId, 'shareApproval', true) !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
+  // v1.0.31: scheduled lock — load both numbers (0 after = off)
+  $('lock-after-min').value = String(Number(await getSetting(activeProfileId, 'lockAfterMin', 0)) || 0);
+  $('lock-duration-min').value = String(Number(await getSetting(activeProfileId, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)) || SCHED_LOCK_DEFAULT_DURATION_MIN);
   await labelProfileSettings();
   // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
   // cannot be blocked retroactively, and merging or renaming it silently would be worse —
@@ -3659,6 +3775,10 @@ async function activateProfile(id) {
   // v1.0.25: the exit lock belongs to the CHILD now, so switching children changes the
   // answer — re-arm (or release) it and repaint the exit button for whoever this is.
   await applyExitLock();
+  // v1.0.31: a persisted scheduled lock survives a restart AND a profile switch — check it
+  // now (it overrides the gallery), and keep the ticker running for this session.
+  startLockTicker();
+  await tickScheduledLock();
 
   const hasContent = folders.length > 0;
   if (!hasContent) {
@@ -3794,6 +3914,10 @@ function wire() {
   // ✋ — the child's way out of a chain. Same destination a video END has with continuous
   // play OFF: the folder they came from, not the home screen.
   $('autoplay-stop').addEventListener('click', () => { resetAutoplayChain(); leaveWatch(); });
+  // v1.0.31: scheduled lock — the exit button (only shown when the kiosk lock is off) and
+  // the discreet parent-unlock tap.
+  $('locked-exit').addEventListener('click', () => exitApp());
+  $('locked-parent').addEventListener('click', () => { onLockedParentTap().catch(() => {}); });
   /* preview bubble (v1.0.26) */
   $('pv-close').addEventListener('click', closePreview);
   $('pv-open').addEventListener('click', async () => {
@@ -4064,6 +4188,29 @@ function wire() {
       : 'ניגון רציף כובה — בסוף סרטון חוזרים לתיקייה';
     msg.className = 'form-msg ok';
   });
+  // v1.0.31: scheduled per-profile lock — two synced numbers. Clamp to sane bounds and
+  // reflect the outcome. A change takes effect on the child's next armed cycle.
+  const saveSchedLock = async () => {
+    const after = Math.max(0, Math.min(600, parseInt($('lock-after-min').value, 10) || 0));
+    const dur = Math.max(1, Math.min(600, parseInt($('lock-duration-min').value, 10) || SCHED_LOCK_DEFAULT_DURATION_MIN));
+    $('lock-after-min').value = String(after);
+    $('lock-duration-min').value = String(dur);
+    await putSetting(activeProfileId, 'lockAfterMin', after);
+    await putSetting(activeProfileId, 'lockDurationMin', dur);
+    maybeSchedulePush();
+    // v1.0.31: apply to the CURRENT session at once (the timer accumulates against a fixed
+    // armedAt, so reducing the minutes shortens the ongoing countdown). Safe to run from the
+    // parent screen: showLockedScreen refuses to reveal the lock while the parent is here.
+    startLockTicker();
+    await tickScheduledLock();
+    const msg = $('settings-msg');
+    msg.textContent = after > 0
+      ? `נעילה מתוזמנת: אחרי ${after} דקות, למשך ${dur} דקות ✅`
+      : 'נעילה מתוזמנת כבויה';
+    msg.className = 'form-msg ok';
+  };
+  $('lock-after-min').addEventListener('change', () => saveSchedLock().catch(() => {}));
+  $('lock-duration-min').addEventListener('change', () => saveSchedLock().catch(() => {}));
   $('exit-lock-toggle').addEventListener('change', async (e) => {
     const on = e.target.checked;
     await putSetting(activeProfileId, 'exitLock', on);
@@ -4291,6 +4438,10 @@ function wire() {
 
 /* ---------------- Init ---------------- */
 async function init() {
+  // v1.0.31: the cold-start splash. init() runs once per process, so this fires only on a
+  // real launch, never on resume. The app boots behind it; ~1.3s later it fades away.
+  const splash = document.getElementById('splash-overlay');
+  if (splash) setTimeout(() => splash.classList.add('splash-hide'), 1300);
   mountModal();
   registerViews();
   wire();
@@ -4319,6 +4470,8 @@ async function init() {
   } catch {}
 
   onAppResume(async () => {
+    // v1.0.31: a scheduled lock may have matured while backgrounded — check before anything.
+    await tickScheduledLock().catch(() => {});
     // v1.0.22 — pull the family's shared state FIRST: the parent very often approves on
     // the phone and then hands the tablet to the child, and resume does not re-fire the
     // gallery's onEnter. Same guards as the resync below (never mid-video, home only),

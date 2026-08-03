@@ -918,3 +918,35 @@ test('every D-pad-focusable type that has no native ring gets the TV focus ring 
     assert.ok(ring.includes(sel), `the TV focus ring does not cover ${sel} — it is focusable but invisible on TV`);
   }
 });
+
+test('the scheduled lock is device-local timer + synced settings (v1.0.31)', () => {
+  // A lock is about THIS device's session — syncing "locked until X" would lock a sibling's
+  // device on the same account. So the two live timestamps live in Preferences keyed by
+  // profile, and MUST NOT appear in the Drive settings channel. The SETTINGS (after/duration)
+  // do sync, like the other per-profile settings.
+  const app = MODULES.get('www/js/app.js');
+  // the timer keys are prefGet/prefSet only, never getSetting/putSetting
+  assert.match(app, /schedlock:.*:armed/, 'the armed-timer pref key is gone');
+  assert.match(app, /schedlock:.*:until/, 'the locked-until pref key is gone');
+  // the SETTINGS travel through the synced channel
+  assert.match(app, /putSetting\(activeProfileId, 'lockAfterMin'/, 'lockAfterMin is not saved to the synced settings');
+  assert.match(app, /putSetting\(activeProfileId, 'lockDurationMin'/, 'lockDurationMin is not saved to the synced settings');
+  // the live timer must never be serialized to Drive
+  const drive = MODULES.get('www/js/drive.js');
+  assert.doesNotMatch(drive, /schedlock:/, 'the device-local lock timer leaked into the Drive document');
+  // the decision is the pure helper, not re-implemented inline
+  assert.match(app, /evalScheduledLock\(/, 'app.js re-implements the lock decision inline');
+});
+
+test('the scheduled-lock screen cannot be escaped by the child (v1.0.31)', () => {
+  // It swallows hardware-back (like the loading screen), and the ONLY exit is the exit
+  // button — shown solely when the kiosk lock is OFF — or the discreet parent-code tap.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /nav\.register\('locked',\s*\{\s*onBack:\s*\(\)\s*=>\s*true/,
+    "the locked view does not swallow back — a child can navigate out of it");
+  const fn = app.slice(app.indexOf('async function showLockedScreen('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /exitLockOn\(\)/, 'the exit button is shown without checking the kiosk lock');
+  assert.match(body, /locked-exit'\)\.classList\.toggle\('hidden', kiosk\)/,
+    'the exit button is not gated on the kiosk lock (must hide when kiosk is ON)');
+});

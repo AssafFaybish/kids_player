@@ -309,6 +309,59 @@ export function channelAddWait(stage, { count = 0 } = {}) {
 export const CHANNEL_ADD_STAGES = Object.keys(CHANNEL_ADD_WAITS);
 
 /**
+ * v1.0.31 — PURE: the scheduled per-profile lock ("time to do something else").
+ *
+ * A parenting screen-time limit: after `afterMin` minutes of a session the app LOCKS for
+ * `durationMin` minutes, then returns to normal and re-arms on the child's next video.
+ *
+ * DEVICE-LOCAL live state (the two timestamps), SYNCED settings (`afterMin`/`durationMin`):
+ * a lock is about THIS device's session — syncing "locked until X" would lock a sibling's
+ * device on the same account. Same split as PIN recovery (v1.0.26).
+ *
+ * The USER'S DECISIONS, encoded here:
+ *  - the timer ACCUMULATES (armed by the first video, runs continuously) — it never resets
+ *    on a new video, or continuous play would make the limit meaningless;
+ *  - it counts wall-clock while the app is open, not only during playback.
+ *
+ * @param armedAt      ms when the session's countdown started (0 = not armed yet)
+ * @param lockedUntil  ms the current lock ends (0 = not locked)
+ * @param afterMin     lock after this many minutes (<=0 or nonsense ⇒ feature OFF)
+ * @param durationMin  how long the lock lasts (nonsense ⇒ the default, never 0)
+ * @returns { phase: 'off'|'idle'|'counting'|'due'|'locked', msLeft }
+ *   'due' = the countdown elapsed; the caller must START the lock (set lockedUntil).
+ *   'locked' with msLeft<=0 = expired; the caller must CLEAR it and re-arm on next video.
+ */
+export function evalScheduledLock({ now = Date.now(), armedAt = 0, lockedUntil = 0, afterMin = 0, durationMin = 20 } = {}) {
+  const after = Number(afterMin);
+  if (!Number.isFinite(after) || after <= 0) return { phase: 'off', msLeft: 0 };
+  const until = Number(lockedUntil) || 0;
+  if (until > 0) return { phase: 'locked', msLeft: Math.max(0, until - now) };
+  const armed = Number(armedAt) || 0;
+  if (armed <= 0) return { phase: 'idle', msLeft: 0 };
+  const deadline = armed + after * 60000;
+  if (now >= deadline) return { phase: 'due', msLeft: 0 };
+  return { phase: 'counting', msLeft: deadline - now };
+}
+
+/**
+ * v1.0.31 — PURE: how long the current lock should last, from the profile's setting.
+ * A nonsense value falls back to the default (never 0 — that would unlock on the spot),
+ * the `planRejectedPurge` rule.
+ */
+export function scheduledLockDurationMs(durationMin, defMin = 20) {
+  const n = Number(durationMin);
+  return (Number.isFinite(n) && n > 0 ? n : (Number.isFinite(+defMin) && +defMin > 0 ? +defMin : 20)) * 60000;
+}
+
+/** v1.0.31 — PURE: a mm:ss countdown, never negative, never blank. */
+export function lockCountdownLabel(msLeft) {
+  const s = Math.max(0, Math.ceil((Number(msLeft) || 0) / 1000));
+  const m = Math.floor(s / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return m + ':' + ss;
+}
+
+/**
  * v1.0.26 — PURE: where a "I forgot the parent code" request stands.
  * -> { state: 'none' | 'waiting' | 'ready', msLeft, hoursLeft }
  *

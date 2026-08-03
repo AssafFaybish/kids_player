@@ -35,6 +35,12 @@ export const REJECTED_TTL_DAYS = 30;
 // that have no lock screen at all.
 export const PIN_RECOVERY_DELAY_HOURS = 24;
 
+// v1.0.31 — scheduled per-profile lock ("time to do something else"). Both are PER PROFILE
+// and SYNCED. `AFTER` 0 = the feature is off for that child (the default). A nonsense
+// DURATION falls back to this default rather than to 0 (a 0 would unlock instantly).
+export const SCHED_LOCK_DEFAULT_DURATION_MIN = 20;
+
+
 /* Sync */
 export const MAX_ITEMS_PER_CHANNEL = 500;
 export const MAX_ITEMS_TOTAL = 5000;
