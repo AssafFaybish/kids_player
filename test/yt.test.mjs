@@ -78,27 +78,30 @@ test('extractChannelIdFromHtml: anchored shapes only — a decoy UC id must NOT 
   assert.equal(extractChannelIdFromHtml(null), '');
 });
 
-test('resolveChannelRef: the live scrape outranks the cache, so a poisoned entry heals', async () => {
-  // Source-level pin (the function does network+IDB, so behaviour is asserted by shape).
-  // TWO field bugs are pinned here, both from real channels:
-  //  - @RabbiRosenblum/@BARDAK613: the scrape must use the ANCHORED extractor, never the
-  //    loose first-`channel/UC` pattern (a decoy id sits before the real one);
-  //  - the healing must be INDEPENDENT of the shared built-in key's quota: on a KEYED
-  //    resolve the live scrape must run BEFORE the cache is ever returned, or a device
-  //    with a poisoned entry and an exhausted key is stuck forever (v1.0.28 → v1.0.29).
+test('resolveChannelRef: only ENRICHMENT trusts the cache first; ADD paths resolve live', () => {
+  // TWO field bugs pinned here, both from real channels (@RabbiRosenblum, @BARDAK613):
+  //  - the scrape must use the ANCHORED extractor, never the loose first-`channel/UC`;
+  //  - a poisoned entry must heal on EVERY add path, INCLUDING a keyless release.
+  // v1.0.29 keyed the cache-first shortcut on `!key`, which broke on a keyless build
+  // (keys.local.js is gitignored, so a release without it ships no key): the ADD path
+  // then passed '' too and returned the poisoned decoy forever. The shortcut is now gated
+  // on an explicit `cacheFirst` OPT-IN that ONLY the per-video enrichment caller passes.
   const src = readFileSync(new URL('../www/js/yt.js', import.meta.url), 'utf8');
   const fn = src.slice(src.indexOf('export async function resolveChannelRef('));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-
-  // the only EARLY cache return is guarded by !key (keyless enrichment); the keyed path
-  // must never short-circuit to the cache before resolving live
-  assert.match(body, /if \(!key && map\[ck\]\) return map\[ck\]/,
-    'the early cache return is no longer keyless-only — a keyed add can hit a stale id');
+  // the early cache return is gated on cacheFirst, never on the key
+  assert.match(body, /if \(cacheFirst && map\[ck\]\) return map\[ck\]/,
+    'the early cache return is not gated on cacheFirst — a keyless add can return a stale id');
+  assert.doesNotMatch(body, /if \(!key && map\[ck\]\)/, 'the !key cache shortcut is back (breaks keyless releases)');
+  // live scrape sits before the last-resort cache return
   const scrapeAt = body.indexOf('extractChannelIdFromHtml(');
   const finalCacheAt = body.indexOf('return map[ck] || null');
-  assert.ok(scrapeAt > 0 && finalCacheAt > 0, 'resolveChannelRef restructured — re-anchor this guard');
-  assert.ok(scrapeAt < finalCacheAt, 'the cache is returned before the live scrape — a poisoned entry is permanent');
-  // and the extractor stays anchored (no loose first-UC fallback anywhere in the module)
+  assert.ok(scrapeAt > 0 && finalCacheAt > 0 && scrapeAt < finalCacheAt,
+    'the cache is returned before the live scrape — a poisoned entry is permanent');
   assert.doesNotMatch(src, /match\(\/channel\\\/\(UC\[A-Za-z0-9_-\]\{22\}\)\//,
     'the loose first-UC-in-page pattern is back');
-});
+  // EXACTLY ONE caller opts into cache-first — the per-video enrichment. Any new
+  // cacheFirst caller must be a deliberate, reviewed choice (it can serve a stale id).
+  assert.equal((src.match(/cacheFirst: true/g) || []).length, 1,
+    'a second cacheFirst caller appeared — an add/sheet path must resolve live');
+})
