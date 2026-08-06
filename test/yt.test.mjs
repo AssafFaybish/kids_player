@@ -105,3 +105,42 @@ test('resolveChannelRef: only ENRICHMENT trusts the cache first; ADD paths resol
   assert.equal((src.match(/cacheFirst: true/g) || []).length, 1,
     'a second cacheFirst caller appeared — an add/sheet path must resolve live');
 })
+
+test('extractChannelIdFromHtml: the MOBILE page resolves — its identity lives in the feed link and og/twitter metas', async () => {
+  // FIELD BUG №2 (@BARDAK613, v1.0.32): a mobile user-agent (the tablet WebView, or the
+  // native HTTP layer's Dalvik default) is redirected to m.youtube.com, whose page has NO
+  // externalId and NO canonical-channel link — while carrying FIVE decoy "channelId"
+  // occurrences (measured live). Every earlier fix verified in a desktop browser, which
+  // gets the www page — exactly why the bug kept passing verification and failing on the
+  // device. The mobile page names its identity in its RSS alternate link and in
+  // og:url/twitter:url metas; those must win over the decoy-prone legacy key.
+  const { extractChannelIdFromHtml } = await import('../www/js/yt.js');
+  const REAL = 'UCjftf4k2ZNX32zFwXjWXxLA';   // the real @BARDAK613
+  const DECOY = 'UCFhhYk_qxfupMCOVO1rs0Cg';  // the decoy its pages actually carry
+
+  // the measured m.youtube.com shape: decoy "channelId" keys, identity ONLY in the metas
+  const mobile = `"channelId":"${DECOY}" ...`
+    + `<link rel="alternate" type="application/rss+xml" href="https://www.youtube.com/feeds/videos.xml?channel_id=${REAL}">`
+    + `<meta property="og:url" content="https://www.youtube.com/channel/${REAL}">`
+    + `... "channelId":"${DECOY}"`;
+  assert.equal(extractChannelIdFromHtml(mobile), REAL,
+    'the decoy channelId beat the mobile page\'s own identity — the @BARDAK613 recurrence');
+
+  // each mobile anchor alone suffices
+  assert.equal(extractChannelIdFromHtml(
+    `href="https://www.youtube.com/feeds/videos.xml?channel_id=${REAL}"`), REAL);
+  assert.equal(extractChannelIdFromHtml(
+    `<meta property="og:url" content="https://www.youtube.com/channel/${REAL}">`), REAL);
+  assert.equal(extractChannelIdFromHtml(
+    `<meta name="twitter:url" content="https://www.youtube.com/channel/${REAL}">`), REAL);
+  // og:url pointing at the /channel/ form may carry a query suffix (al: variants do)
+  assert.equal(extractChannelIdFromHtml(
+    `<meta property="og:url" content="https://www.youtube.com/channel/${REAL}?feature=applinks">`), REAL);
+
+  // an og:url in the @handle form anchors NOTHING — it names no UC id
+  assert.equal(extractChannelIdFromHtml(
+    `<meta property="og:url" content="https://www.youtube.com/@SomeHandle"> channel/${DECOY}`), '');
+  // and externalId still outranks every new shape (the www page's primary key)
+  assert.equal(extractChannelIdFromHtml(
+    `href="https://www.youtube.com/feeds/videos.xml?channel_id=${DECOY}" "externalId":"${REAL}"`), REAL);
+});
