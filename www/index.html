@@ -452,17 +452,11 @@
           <input id="add-url" class="input" type="url" inputmode="url" dir="ltr"
                  placeholder="https://www.youtube.com/watch?v=... או youtube.com/@channel" />
         </div>
-        <details class="opt-details">
-          <summary>אפשרויות (שם / תמונה לקובץ וידאו)</summary>
-          <div class="field">
-            <label for="add-title">שם להצגה (לא חובה)</label>
-            <input id="add-title" class="input" type="text" placeholder="לדוגמה: פרפרים" />
-          </div>
-          <div class="field">
-            <label for="add-thumb">קישור לתמונה (לא חובה, לקובץ וידאו)</label>
-            <input id="add-thumb" class="input" type="url" dir="ltr" placeholder="https://.../image.jpg" />
-          </div>
-        </details>
+        <!-- v1.0.32: the "אפשרויות (שם / תמונה)" details is GONE (user request) — the
+             name and picture come from the content itself: YouTube titles/thumbnails
+             are fetched automatically, a direct file's name derives from its filename
+             (classify.titleFromFileUrl) and its thumbnail from the captured first
+             frame. Never re-add the form. -->
         <button id="add-btn" class="btn btn-primary" type="button">➕ הוספה</button>
         <div id="add-msg" class="form-msg"></div>
 

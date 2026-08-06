@@ -262,6 +262,14 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE ADD FORM LOST ITS NAME/IMAGE FIELDS** (user request): the `אפשרויות`
+  details (add-title/add-thumb) is gone — never re-add it. The name and picture come
+  from the content itself: YouTube titles/thumbnails were already fetched when the field
+  was left empty (now always); a direct FILE has no metadata, so its display name derives
+  from the filename in the link — pure `classify.titleFromFileUrl` (percent-DECODED, so
+  Hebrew filenames work; extension stripped; `_-+` opened into spaces; '' for anything
+  unusable — no caption beats a caption of garbage) — and its thumbnail from the captured
+  first frame (`persistThumb`, unchanged since v1.0.5).
 - v1.0.32 — **THE ABOUT TAB LOST THREE BUTTONS** (user request): מדיניות פרטיות, תנאי
   שימוש, מה חדש בגירסה. The policies LIVE ON THE SITE as sticky nav tabs (all three
   docs/ pages carry the same `.site-tabs` bar) — **the privacy/terms URLs must stay
