@@ -262,6 +262,22 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE MOBILE CHANNEL PAGE FINALLY RESOLVES — @BARDAK613, THIRD RECURRENCE,
+  ROOT CAUSE AT LAST.** A request carrying a MOBILE user-agent (the tablet WebView, or
+  the native HTTP layer's Dalvik default) is REDIRECTED to m.youtube.com, whose page has
+  NO `externalId` and NO canonical-channel link while carrying FIVE decoy `"channelId"`
+  occurrences (measured live) — so the anchored extractor correctly refused, fell back to
+  the poisoned cache, and returned the decoy. **Every earlier fix (v1.0.29–31) verified
+  in a DESKTOP browser, which gets the www page — that is why they kept passing
+  verification and failing on the device.** The mobile page names its identity in its own
+  anchored shapes: the RSS alternate link (`feeds/videos.xml?channel_id=UC…`) and the
+  og:url/twitter:url metas pointing at `/channel/UC…` — both now matched, BEFORE the
+  decoy-prone legacy key. Verified live across the full UA matrix (none/Dalvik/okhttp/
+  mobile-Chrome) and generalized on @rotemama4kids + @RabbiRosenblum mobile pages.
+  A device already carrying the bad subscription self-heals: the sheet row keeps the
+  @handle and re-resolves on every sync, so once resolution answers the real id the real
+  channel subscribes and imports by itself. **LESSON: any scrape-parsing fix must be
+  probed against the MOBILE page variant, not just the browser's desktop one.**
 - v1.0.32 — **BACKUP AND LIST MANAGEMENT LEFT THE UI; THE MACHINERY IS UNTOUCHED** (user
   request: backup is automatic — never let the user run it by hand).
   - Settings: the status line and "גיבוי עכשיו" are GONE. The `#drive-block` shows ONLY

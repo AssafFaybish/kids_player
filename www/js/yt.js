@@ -74,15 +74,28 @@ export function channelPageUrl(ref) {
  * אבל אין בו סרטונים") — or worse, could have been someone else's channel entirely,
  * which for THIS app is a safety hole, not a cosmetic one.
  *
- * Only shapes that name THIS page's identity may match: `externalId` (present today),
- * the canonical link, and the legacy `channelId` (older cached pages). NO bare-UC
- * fallback — a resolve that occasionally fails beats one that occasionally answers
- * with a stranger's channel.
+ * FIELD BUG №2 (@BARDAK613 again, v1.0.32 — why v1.0.29–31 kept "working" in
+ * verification and failing on the tablet): a request carrying a MOBILE user-agent (the
+ * WebView's, or the native HTTP layer's Dalvik default) is REDIRECTED to m.youtube.com,
+ * and the MOBILE page carries NO externalId and NO canonical-channel link — while its
+ * `"channelId"` occurrences are decoys (measured live: 5 decoys, 0 identity keys). The
+ * desktop dev browser gets the full www page, which is why every fix verified there.
+ * The mobile page DOES name its identity, in its own anchored shapes: the page's RSS
+ * alternate link (`feeds/videos.xml?channel_id=UC…`) and the og:url/twitter:url metas
+ * pointing at /channel/UC…. Both are matched below, BEFORE the decoy-prone legacy key.
+ *
+ * Only shapes that name THIS page's identity may match: `externalId` (the www page),
+ * the canonical link, the mobile page's RSS-alternate + og/twitter metas, and the
+ * legacy `channelId` (older cached pages) as the last resort. NO bare-UC fallback —
+ * a resolve that occasionally fails beats one that occasionally answers with a
+ * stranger's channel.
  */
 export function extractChannelIdFromHtml(html) {
   const s = String(html || '');
   const m = s.match(/"externalId":"(UC[A-Za-z0-9_-]{22})"/)
     || s.match(/rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})"/)
+    || s.match(/href="https:\/\/www\.youtube\.com\/feeds\/videos\.xml\?channel_id=(UC[A-Za-z0-9_-]{22})"/)
+    || s.match(/(?:property="og:url"|name="twitter:url") content="https:\/\/www\.youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})/)
     || s.match(/"channelId":"(UC[A-Za-z0-9_-]{22})"/);
   return m ? m[1] : '';
 }
