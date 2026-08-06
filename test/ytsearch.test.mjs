@@ -436,6 +436,53 @@ test('an unrecognized browse document -> null; a recognized empty one -> {items:
   assert.deepEqual(empty.items, []);
 });
 
+/* ---------------- totality: malformed-but-truthy shapes must never THROW ---------------- */
+
+test('the parsers are TOTAL: innertube array→object churn returns null/items, never throws', () => {
+  // The module's design premise is "YouTube may change its shapes". A THROW here used
+  // to escape as a generic error and the UI said "בדקו את החיבור לאינטרנט" over working
+  // Wi-Fi — the shape-changed alarm never fired (review-caught, demonstrated live).
+  const malformed = [
+    { onResponseReceivedCommands: {} },                                        // spread site
+    { onResponseReceivedActions: { a: 1 } },
+    firstPage([{ itemSectionRenderer: { contents: {} } }]),                    // section contents
+    firstPage([vid(VID_A, 'x', { thumbnailOverlays: {} })]),                   // overlay loop
+    firstPage([{ shelfRenderer: { content: { verticalListRenderer: { items: {} } } } }]),
+    { contents: { twoColumnBrowseResultsRenderer: { tabs: {} } } },            // tabs loop
+    playlistBrowsePage([{ playlistVideoListRenderer: { contents: {} } }], null),
+    { contents: { twoColumnSearchResultsRenderer: { primaryContents: { sectionListRenderer: { contents: [null, 42, 'str'] } } } } }
+  ];
+  for (const [i, doc] of malformed.entries()) {
+    let r;
+    assert.doesNotThrow(() => { r = parseSearchResponse(doc); }, `search parser threw on malformed doc #${i}`);
+    assert.doesNotThrow(() => { r = parseBrowseResponse(doc); }, `browse parser threw on malformed doc #${i}`);
+  }
+});
+
+test('lockup videos carrying only a reelWatchEndpoint (no /shorts/ url) are dropped too', () => {
+  // parity with isShortVideo — either signal alone is a Short
+  const reel = browseLockup(VID_SHORT, 'שורט חבוי');
+  reel.lockupViewModel.rendererContext = {
+    commandContext: { onTap: { innertubeCommand: { reelWatchEndpoint: { videoId: VID_SHORT } } } }
+  };
+  const r = parseBrowseResponse(channelBrowsePage([
+    { richItemRenderer: { content: reel } },
+    { richItemRenderer: { content: browseLockup(VID_A, 'רגיל') } }
+  ], null));
+  assert.deepEqual(r.items.map((i) => i.id), [VID_A],
+    'a reel-endpoint lockup leaked past the Shorts filter');
+});
+
+test('playlist ids are validated like every other identifier class', () => {
+  // a hostile id containing `"]` used to flow into a querySelector string and throw
+  // AFTER a successful add (review finding) — now it never leaves the parser
+  const bad = lockupPlaylist('PL"]evil', 'עוין');
+  const short = lockupPlaylist('PL123', 'קצר מדי');
+  const good = lockupPlaylist('PLsJS3uJXxKz9worTXC-m35wB-nQXSRGug', 'תקין');
+  const r = parseSearchResponse(firstPage([bad, short, good]));
+  assert.deepEqual(r.items.map((i) => i.id), ['PLsJS3uJXxKz9worTXC-m35wB-nQXSRGug']);
+});
+
 /* ---------------- suggestions ---------------- */
 
 test('parseSuggestions: clean firefox JSON, the JSONP wrapper, and junk', () => {
@@ -463,7 +510,9 @@ test('suggestUrl encodes the query and asks for Hebrew', () => {
 /* ---------------- messages (the words ARE the feature — v1.0.27) ---------------- */
 
 test('searchMessage: every stage distinct and honest, nothing leaks undefined', () => {
-  const stages = ['searching', 'browse', 'more', 'empty', 'network', 'parse', 'added', 'exists'];
+  // no 'added'/'exists' here on purpose: the add outcome text is addClassifiedRow's
+  // message (one add path = one voice) — the stages were dead code and were deleted
+  const stages = ['searching', 'browse', 'more', 'empty', 'network', 'parse'];
   const texts = stages.map((s) => searchMessage(s, { query: 'בוב' }));
   for (const [i, t] of texts.entries()) {
     assert.ok(t && t.trim(), stages[i] + ' has no text');

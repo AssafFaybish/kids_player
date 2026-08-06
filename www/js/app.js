@@ -19,7 +19,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
-import { planAutoplay, nextInOrder, previewEmbedUrl,
+import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, attentionDot, parentLandingTab,
@@ -700,10 +700,14 @@ function registerViews() {
       // v1.0.26: the bubble is an overlay, not a view — back must close IT first, or the
       // parent is thrown out of the screen they were triaging in.
       if (isPreviewOpen()) { closePreview(); return true; }
-      // v1.0.33: same for a browse-inside-a-result — back returns to the search results
-      // first. Gated on the add panel being VISIBLE: a browse left behind on another tab
-      // must not silently eat a back press.
-      if (!$('panel-add').classList.contains('hidden') && closeYtsBrowse()) return true;
+      // v1.0.33: overlays inside the add tab close before the screen does — the
+      // suggestion dropdown first, then a browse-inside-a-result. Both gated on the
+      // add panel being VISIBLE: state left behind on another tab must not silently
+      // eat a back press.
+      if (!$('panel-add').classList.contains('hidden')) {
+        if (!$('yts-suggest').classList.contains('hidden')) { ytsHideSuggest(); return true; }
+        if (closeYtsBrowse()) return true;
+      }
       goGallery();
       return true;
     },
@@ -2379,14 +2383,14 @@ function renderPreview() {
     ? 'לא מתנגן? ייתכן שהערוץ חסם הטמעה — אפשר לפתוח ביוטיוב.' : '';
   $('pv-open').classList.toggle('hidden', rec.type !== 'youtube');
 
-  const pending = ctx.mode === 'pending';
-  const search = ctx.mode === 'search';
-  $('pv-approve').classList.toggle('hidden', !pending);
-  $('pv-reject').classList.toggle('hidden', !pending);
-  // hidden in 'search' too, not just the old `pending` toggle: a search result has
-  // no stored record, and the old condition would have rendered a LIVE 🗑️ over it
-  $('pv-delete').classList.toggle('hidden', pending || search);
-  $('pv-add').classList.toggle('hidden', !search);
+  // the per-mode button matrix is PURE and node-tested (playerlogic.previewBubbleButtons)
+  // — the hand-ordered toggles that used to live here are where the "live 🗑️ over a
+  // search result" bug had to be hand-avoided
+  const btns = previewBubbleButtons(ctx.mode);
+  $('pv-approve').classList.toggle('hidden', !btns.approve);
+  $('pv-reject').classList.toggle('hidden', !btns.reject);
+  $('pv-delete').classList.toggle('hidden', !btns.del);
+  $('pv-add').classList.toggle('hidden', !btns.add);
 }
 
 /** Open the bubble on `items[idx]`. `mode` is 'pending' (approve/reject) or 'library'. */
@@ -2399,16 +2403,24 @@ function openPreview(items, idx, mode) {
  * The parent decided from inside the bubble. Advance to the next item rather than closing
  * (parent's decision): triaging thirty videos must not cost thirty open/close cycles.
  * The decided row is dropped from the local list so the counter stays honest.
+ *
+ * RE-ENTRANCY GUARDED (review finding, v1.0.33): a double-tap used to run TWO
+ * decisions on the same ctx — the `previewCtx !== ctx` check cannot catch it because
+ * splice MUTATES the shared object — so the second splice removed the NEXT video,
+ * which the parent never saw. The window is real for ➕ הוספה: its handler awaits a
+ * whole add round-trip (putVideos + sheet append + list refresh).
  */
+let previewDeciding = false;
 async function previewDecide(fn) {
   const ctx = previewCtx;
-  if (!ctx) return;
+  if (!ctx || previewDeciding) return;
   const rec = ctx.items[ctx.idx];
   if (!rec) return closePreview();
+  previewDeciding = true;
   let done = true;
   // `false` means the parent backed out (a cancelled confirm) — the video is untouched, so
   // advancing past it would silently skip the one they were still looking at.
-  try { done = (await fn(rec)) !== false; } catch { done = false; }
+  try { done = (await fn(rec)) !== false; } catch { done = false; } finally { previewDeciding = false; }
   if (previewCtx !== ctx) return;          // the parent closed it while we awaited
   if (!done) return;
   ctx.items.splice(ctx.idx, 1);
@@ -3358,8 +3370,9 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     // v1.0.6: manual adds live in the SHARED library folder (single list for the
     // whole family) and are appended to the sheet — one master list, everywhere.
     const scope = (await ensureSources()).libraryId;
-    const exists = (await db.getVideo(scope, row.key)) || (await db.getVideo(db.profScope(activeProfileId), row.key));
-    if (exists) return { status: 'exists', message: 'הסרטון כבר קיים ברשימה' };
+    // the SAME helper the search rows precompute "✓ קיים" with — the row must agree
+    // with what this add answers (v1.0.33 review)
+    if (await libraryHasVideo(scope, row.key)) return { status: 'exists', message: 'הסרטון כבר קיים ברשימה' };
     const now = Date.now();
     // v1.0.32: the name/image form is gone (user request) — the name comes from the
     // content itself. YouTube: fetched below, like an empty field always was. A direct
@@ -3498,6 +3511,36 @@ let ytsSuggestTimer = 0;
 /** Whichever list currently owns the results area. */
 function activeYtsItems() { return ytsBrowse ? ytsBrowse.items : ytsCtx.items; }
 
+/** Profile switch wipes the whole search area (results, browse, marks, input). */
+function resetYtsUi() {
+  ytsSearchSeq++;
+  ytsSuggestSeq++;
+  ytsCtx = { query: '', filter: 'all', items: [], continuation: null, state: new Map() };
+  ytsBrowse = null;
+  const input = $('yts-input');
+  if (!input) return; // callable before the DOM exists (unit-less boot paths)
+  input.value = '';
+  $('yts-results').innerHTML = '';
+  $('yts-browse-head').classList.add('hidden');
+  $('yts-chips').classList.add('hidden');
+  $('yts-more').classList.add('hidden');
+  ytsHideSuggest();
+  ytsMsg('');
+  const all = document.querySelector('#yts-chips .yts-chip[data-f="all"]');
+  for (const c of document.querySelectorAll('#yts-chips .yts-chip')) {
+    c.classList.toggle('chip-on', c === all);
+  }
+}
+
+/**
+ * Is this video anywhere the CURRENT profile can see it? ONE helper for both the
+ * "✓ קיים" precompute and addClassifiedRow's dedupe — the row must agree with what
+ * the add would answer, and two hand-copied scope pairs is how they drift apart.
+ */
+async function libraryHasVideo(libraryId, key) {
+  return !!((await db.getVideo(libraryId, key)) || (await db.getVideo(db.profScope(activeProfileId), key)));
+}
+
 function ytsMsg(text, cls = '') {
   const el = $('yts-msg');
   el.textContent = text || '';
@@ -3505,6 +3548,10 @@ function ytsMsg(text, cls = '') {
 }
 
 function ytsHideSuggest() {
+  // hiding INVALIDATES any in-flight fetch (review finding): blur/Escape used to hide
+  // without bumping the seq, so a resolving fetch re-opened the dropdown over an
+  // unfocused input — and nothing short of picking a suggestion could dismiss it
+  ytsSuggestSeq++;
   const host = $('yts-suggest');
   host.classList.add('hidden');
   host.innerHTML = '';
@@ -3524,13 +3571,19 @@ async function ytsShowSuggestions() {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = s;
-    // pointerdown, not click: it fires BEFORE the input's blur (which closes the
-    // dropdown 150ms later) — a click handler loses that race and the tap picks nothing
-    b.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
+    // pointerdown fires BEFORE the input's blur (which closes the dropdown 150ms
+    // later) — a click-only handler loses that race and a tap picks nothing. But a
+    // TV remote's OK produces a native click and NO pointerdown (review finding), so
+    // both are bound, latched against double-fire.
+    let fired = false;
+    const pick = () => {
+      if (fired) return;
+      fired = true;
       $('yts-input').value = s;
       ytsSearch().catch(() => {});
-    });
+    };
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); pick(); });
+    b.addEventListener('click', pick);
     host.appendChild(b);
   }
   host.classList.remove('hidden');
@@ -3550,10 +3603,7 @@ async function ytsMarkExisting(items) {
     const k = it.type + ':' + it.id;
     if (ytsCtx.state.has(k)) continue;
     if (it.type === 'video') {
-      const key = 'yt:' + it.id;
-      if ((await db.getVideo(scope, key)) || (await db.getVideo(db.profScope(activeProfileId), key))) {
-        ytsCtx.state.set(k, 'exists');
-      }
+      if (await libraryHasVideo(scope, 'yt:' + it.id)) ytsCtx.state.set(k, 'exists');
     } else if (subs.has(it.id)) {
       ytsCtx.state.set(k, 'exists');
     }
@@ -3626,7 +3676,7 @@ function ytsRow(item) {
   const st = ytsCtx.state.get(item.type + ':' + item.id);
   if (st) {
     add.disabled = true;
-    add.textContent = st === 'exists' ? '✓ קיים' : '✓ נוסף';
+    add.textContent = st === 'adding' ? '⏳' : st === 'exists' ? '✓ קיים' : '✓ נוסף';
   } else {
     add.textContent = '➕';
     add.title = 'הוספה לספרייה';
@@ -3667,17 +3717,35 @@ function ytsMarkRow(item, status) {
  * guessed). -> addClassifiedRow's result, or null on refusal.
  */
 async function ytsAdd(item) {
+  // one add per source at a time, ACROSS surfaces (review finding): the browse-head ➕
+  // disables itself, but going back mid-flight exposed the same source's still-enabled
+  // row button — two concurrent channel imports away from stacked dialogs. 'adding' in
+  // the shared state map is the cross-surface latch; re-renders draw it as ⏳.
+  const k = item.type + ':' + item.id;
+  const prior = ytsCtx.state.get(k) || null;
+  if (prior === 'adding') return null;
+  ytsCtx.state.set(k, 'adding');
+  const restore = () => {
+    if (ytsCtx.state.get(k) !== 'adding') return;
+    if (prior) ytsCtx.state.set(k, prior); else ytsCtx.state.delete(k);
+  };
   const { classifySourceRow } = await import('./classify.js');
   const row = classifySourceRow(item.url);
   if (!row || row.kind !== item.type) {
+    restore();
     ytsMsg('הקישור לא עבר את בדיקת הבטיחות של האפליקציה', 'err');
     return null;
   }
-  const r = await addClassifiedRow(row, {
-    title: item.title,
-    onNote: (t, ok) => ytsMsg(t, ok ? 'ok' : '')
-  });
-  if (r.status === 'added' || r.status === 'exists') ytsMarkRow(item, r.status);
+  let r = null;
+  try {
+    r = await addClassifiedRow(row, {
+      title: item.title,
+      onNote: (t, ok) => ytsMsg(t, ok ? 'ok' : '')
+    });
+  } finally {
+    if (r && (r.status === 'added' || r.status === 'exists')) ytsMarkRow(item, r.status);
+    else restore(); // a failed/thrown add must not leave a ⏳ button stuck forever
+  }
   ytsMsg(r.message, r.status === 'added' ? 'ok' : r.status === 'exists' ? '' : 'err');
   return r;
 }
@@ -3686,12 +3754,14 @@ async function ytsAdd(item) {
 async function ytsSearch() {
   const q = $('yts-input').value.trim();
   ytsHideSuggest();
-  ytsSuggestSeq++; // a submitted search owns the field — kill any in-flight suggestion
   clearTimeout(ytsSuggestTimer);
   if (!q) return;
-  // a new search always returns the area to RESULTS mode
-  ytsBrowse = null;
-  $('yts-browse-head').classList.add('hidden');
+  // a new search always returns the area to RESULTS mode — through closeYtsBrowse,
+  // never by hand (review finding: the manual two-line teardown left the OLD browse
+  // rows rendered and tappable while the fetch ran — and FOREVER when it failed —
+  // so a thumbnail tap previewed the WRONG video via activeYtsItems()'s fallback,
+  // and hardware back, with no browse to close, threw the parent out of the screen)
+  closeYtsBrowse();
   const seq = ++ytsSearchSeq;
   const yts = await import('./ytsearch.js');
   ytsMsg(yts.searchMessage('searching'));
@@ -3729,7 +3799,7 @@ function renderYtsBrowseHead() {
   const add = $('yts-browse-add');
   const st = ytsCtx.state.get(b.item.type + ':' + b.item.id);
   add.disabled = !!st;
-  add.textContent = st ? (st === 'exists' ? '✓ קיים' : '✓ נוסף') : '➕';
+  add.textContent = !st ? '➕' : st === 'adding' ? '⏳' : st === 'exists' ? '✓ קיים' : '✓ נוסף';
   add.title = b.item.type === 'channel' ? 'הוספת כל הערוץ' : 'הוספת כל הרשימה';
   $('yts-browse-head').classList.remove('hidden');
 }
@@ -4351,6 +4421,11 @@ async function activateProfile(id) {
   source = await getSource();
   items = await loadItems(); // legacy list — parent screen only
   page = 0;
+  // v1.0.33 (review finding): the search area is PER PROFILE — its "✓ קיים" marks were
+  // computed against the previous child's scopes, and rendered rows would keep lying
+  // (disabled buttons over videos the new child does NOT have). Same profile-identity
+  // rule as the buildFolders cache key (v1.0.20).
+  resetYtsUi();
 
   // HYDRATE first: render whatever IndexedDB has, instantly. Sync runs after.
   await absorbMineIntoShared(id); // v1.0.6: fold personal adds into the shared list
@@ -4606,10 +4681,23 @@ function wire() {
     clearTimeout(ytsSuggestTimer);
     ytsSuggestTimer = setTimeout(() => { ytsShowSuggestions().catch(() => {}); }, 250);
   });
-  // delayed so a suggestion's pointerdown (which fires before blur) wins the race
-  $('yts-input').addEventListener('blur', () => { setTimeout(ytsHideSuggest, 150); });
+  // delayed so a suggestion's pointerdown (which fires before blur) wins the race;
+  // skipped when focus moved INTO the dropdown (TV: arrowing down blurs the input,
+  // and hiding would destroy the very node the remote just focused)
+  $('yts-input').addEventListener('blur', () => {
+    setTimeout(() => {
+      if ($('yts-suggest').contains(document.activeElement)) return;
+      ytsHideSuggest();
+    }, 150);
+  });
   for (const chip of document.querySelectorAll('#yts-chips .yts-chip')) {
     chip.addEventListener('click', () => {
+      // an emptied input re-runs the LAST query under the new filter (review finding:
+      // flipping the chip without searching left the highlight and ytsCtx.filter
+      // claiming channels-only over mixed results, and 'עוד תוצאות' then appended
+      // under the wrong chip)
+      if (!$('yts-input').value.trim() && ytsCtx.query) $('yts-input').value = ytsCtx.query;
+      if (!$('yts-input').value.trim()) return;
       for (const c of document.querySelectorAll('#yts-chips .yts-chip')) {
         c.classList.toggle('chip-on', c === chip);
       }

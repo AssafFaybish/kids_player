@@ -31,8 +31,12 @@ import { httpPostJson, httpGetText } from './platform.js';
 /* ---------------- the sanctioned endpoints ---------------- */
 
 // The youtubei literals (invariant: exactly one module carries ANY youtubei endpoint).
-export const SEARCH_ENDPOINT = 'https://www.youtube.com/youtubei/v1/search?prettyPrint=false';
-export const BROWSE_ENDPOINT = 'https://www.youtube.com/youtubei/v1/browse?prettyPrint=false';
+// NOT exported (review finding, 2026-08-06): an exported endpoint constant is a drift
+// hole — `import { SEARCH_ENDPOINT }` elsewhere plus a hand-appended key parameter
+// would trip none of the guards, because the key ban is scoped to THIS module and the
+// importer carries no youtubei literal of its own.
+const SEARCH_ENDPOINT = 'https://www.youtube.com/youtubei/v1/search?prettyPrint=false';
+const BROWSE_ENDPOINT = 'https://www.youtube.com/youtubei/v1/browse?prettyPrint=false';
 
 // The Videos-tab selector for a channel browse — the same protobuf youtube.com sends
 // when the user opens the tab. Videos-tab-only is a POLICY match, not a shortcut:
@@ -71,7 +75,9 @@ export function buildSearchBody(query, { filter = 'all', continuation = null } =
   const context = { client: { clientName: 'WEB', clientVersion: CLIENT_VERSION, hl: 'he', gl: 'IL' } };
   if (continuation) return { context, continuation };
   const body = { context, query: String(query || '') };
-  const params = FILTER_PARAMS[filter] || null;
+  // own-property lookup: a hostile/garbage filter string must fall to "unfiltered",
+  // never to something inherited off Object.prototype
+  const params = (Object.hasOwn(FILTER_PARAMS, filter) && FILTER_PARAMS[filter]) || null;
   if (params) body.params = params;
   return body;
 }
@@ -95,6 +101,17 @@ export function buildBrowseBody(target, { continuation = null } = {}) {
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 const CHANNEL_ID = /^UC[A-Za-z0-9_-]{22}$/;
+// aligned with classify.js's playlist rule ({10,} of the URL-safe class), capped for
+// sanity — an unvalidated id was the one identifier class the parser let through
+// (review finding: a hostile id containing `"]` would throw inside ytsMarkRow's
+// querySelector AFTER a successful add)
+const PLAYLIST_ID = /^[A-Za-z0-9_-]{10,64}$/;
+
+/** Every list the endpoint may hand us — tolerate the array→keyed-object churn
+    innertube is known for. THE PARSERS MUST BE TOTAL (review finding: a truthy
+    non-array here used to THROW, and the caller reported "בדקו את החיבור" over
+    working Wi-Fi instead of the shape-changed alarm). */
+function list(x) { return Array.isArray(x) ? x : []; }
 
 /** Every text shape the endpoint uses: 'x' | {simpleText} | {content} | {runs:[{text}]}. */
 function textOf(t) {
@@ -131,7 +148,7 @@ function collectKey(node, key, out) {
  * signal means include — a wrongly hidden video is a bug the parent cannot explain).
  */
 function isShortVideo(v) {
-  for (const o of v.thumbnailOverlays || []) {
+  for (const o of list(v.thumbnailOverlays)) {
     if (o && o.thumbnailOverlayTimeStatusRenderer
       && String(o.thumbnailOverlayTimeStatusRenderer.style || '') === 'SHORTS') return true;
   }
@@ -220,15 +237,20 @@ function lockupItem(l) {
   if (kind === 'LOCKUP_CONTENT_TYPE_PLAYLIST') {
     // RD… = an auto-generated MIX: an endless radio, not a real list — importing it
     // is meaningless and its id would sit in libraryChannels forever. Filtered.
-    if (!id || /^RD/.test(id)) return null;
+    if (!PLAYLIST_ID.test(id) || /^RD/.test(id)) return null;
     return { type: 'playlist', id, url: 'https://www.youtube.com/playlist?list=' + id, title, subText: '', thumbUrl };
   }
   if (kind === 'LOCKUP_CONTENT_TYPE_VIDEO') {
     if (!VIDEO_ID.test(id)) return null;
-    // a lockup video's tap target names /shorts/ when it is one
+    // a lockup video's tap target names /shorts/ when it is one — and parity with
+    // isShortVideo: a reelWatchEndpoint anywhere in the lockup is the same signal
+    // even when no url string spells it out
     const urls = [];
     collectKey(l, 'url', urls);
     if (urls.some((u) => typeof u === 'string' && u.includes('/shorts/'))) return null;
+    const reels = [];
+    collectKey(l, 'reelWatchEndpoint', reels);
+    if (reels.length) return null;
     // the duration rides the thumbnail's corner badge (thumbnailBadgeViewModel.text,
     // measured live in browse responses) — the only time-shaped badge text there
     const badges = [];
@@ -255,6 +277,7 @@ function lockupItem(l) {
 function playlistVideoItem(p) {
   const id = String(p.videoId || '');
   if (!VIDEO_ID.test(id) || isShortVideo(p)) return null;
+  // (title/byline/thumb below all go through the total textOf/bestThumb helpers)
   return {
     type: 'video', id, url: 'https://www.youtube.com/watch?v=' + id,
     title: textOf(p.title),
@@ -267,7 +290,7 @@ function playlistVideoItem(p) {
 
 function playlistRendererItem(p) {
   const id = String(p.playlistId || '');
-  if (!id || /^RD/.test(id)) return null;
+  if (!PLAYLIST_ID.test(id) || /^RD/.test(id)) return null;
   const first = Array.isArray(p.thumbnails) ? p.thumbnails[0] : null;
   return {
     type: 'playlist',
@@ -282,7 +305,7 @@ function playlistRendererItem(p) {
 function collectNode(node, state) {
   if (!node || typeof node !== 'object') return;
   if (node.itemSectionRenderer) {
-    for (const it of node.itemSectionRenderer.contents || []) collectNode(it, state);
+    for (const it of list(node.itemSectionRenderer.contents)) collectNode(it, state);
     return;
   }
   // browse wrappers (v1.0.33): a channel's Videos tab wraps each lockup in a
@@ -292,7 +315,7 @@ function collectNode(node, state) {
     return;
   }
   if (node.playlistVideoListRenderer) {
-    for (const it of node.playlistVideoListRenderer.contents || []) collectNode(it, state);
+    for (const it of list(node.playlistVideoListRenderer.contents)) collectNode(it, state);
     return;
   }
   if (node.continuationItemRenderer) {
@@ -306,9 +329,9 @@ function collectNode(node, state) {
   if (node.reelShelfRenderer) return;
   if (node.shelfRenderer) {
     const content = node.shelfRenderer.content || {};
-    const list = (content.verticalListRenderer && content.verticalListRenderer.items)
-      || (content.horizontalListRenderer && content.horizontalListRenderer.items) || [];
-    for (const it of list) collectNode(it, state);
+    const items = (content.verticalListRenderer && content.verticalListRenderer.items)
+      || (content.horizontalListRenderer && content.horizontalListRenderer.items);
+    for (const it of list(items)) collectNode(it, state);
     return;
   }
   let item = null;
@@ -337,8 +360,8 @@ function collectNode(node, state) {
     browse answers onResponseReceivedActions (both measured live). */
 function continuationSections(json) {
   const groups = [
-    ...((json && json.onResponseReceivedCommands) || []),
-    ...((json && json.onResponseReceivedActions) || [])
+    ...list(json && json.onResponseReceivedCommands),
+    ...list(json && json.onResponseReceivedActions)
   ];
   for (const c of groups) {
     const items = c && c.appendContinuationItemsAction && c.appendContinuationItemsAction.continuationItems;
@@ -375,7 +398,7 @@ export function parseBrowseResponse(json) {
   let sections = null;
   const tabs = json && json.contents && json.contents.twoColumnBrowseResultsRenderer
     && json.contents.twoColumnBrowseResultsRenderer.tabs;
-  for (const t of tabs || []) {
+  for (const t of list(tabs)) {
     const content = t && t.tabRenderer && t.tabRenderer.content;
     const list = (content && content.richGridRenderer && content.richGridRenderer.contents)
       || (content && content.sectionListRenderer && content.sectionListRenderer.contents);
@@ -427,8 +450,8 @@ export function searchMessage(stage, { query = '' } = {}) {
     case 'empty': return 'לא נמצאו תוצאות עבור "' + q + '"';
     case 'network': return 'החיפוש לא הצליח — בדקו את החיבור לאינטרנט ונסו שוב';
     case 'parse': return 'החיפוש לא זמין כרגע (יוטיוב שינה משהו בצד שלו) — אפשר עדיין להדביק קישור';
-    case 'added': return 'נוסף! ✅';
-    case 'exists': return 'כבר נמצא בספרייה';
+    // NOTE: no 'added'/'exists' stages here — the add outcome text comes from
+    // addClassifiedRow's own message (one add path = one voice; review-caught dead code)
     default: return '';
   }
 }
@@ -440,9 +463,18 @@ async function postAndParse(endpoint, body, parse, { endOnUnparsed = false } = {
   if (res.status !== 200 || !res.data) throw new Error('network');
   let data = res.data;
   if (typeof data === 'string') {
-    try { data = JSON.parse(data); } catch { throw new Error('parse'); }
+    // A 200 whose body is not JSON is a consent/captcha interstitial or similar
+    // transport weirdness — 'network' (try again), NOT the shape-changed alarm.
+    // Review-caught: this used to throw 'parse' here, so the same interstitial read
+    // as "update the app" on device and as 'network' in the browser (whose fetch
+    // path nulls a non-JSON body) — two transports disagreeing about one fact.
+    try { data = JSON.parse(data); } catch { throw new Error('network'); }
   }
-  const parsed = parse(data);
+  // The parsers aim to be TOTAL, but the caller must not bet the error message on
+  // that: a throw on some future shape must read exactly like "unrecognized",
+  // or the parent gets "בדקו את החיבור" over working Wi-Fi (review-caught).
+  let parsed = null;
+  try { parsed = parse(data); } catch { parsed = null; }
   if (!parsed) {
     // A CONTINUATION that parses to nothing means "no more pages", never the
     // shape-changed alarm: measured live — a playlist delivered whole on page one

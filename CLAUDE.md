@@ -338,6 +338,43 @@ pins that the consumers follow the config and that every address is well-formed.
     server only, same SSRF guard). No public-CORS-proxy POST rung on purpose.
   - The guide gained 2 slides at the end of 'דרך 2 · במסך ההורים' — the deck is now
     EXACTLY at the 20-slide test cap; the next slide must raise the cap deliberately.
+  - **THE REVIEW PASS IS PART OF THE RELEASE** ([docs/V1033.md](docs/V1033.md) §4 has
+    the full list; every fix is pinned). The rules it minted:
+    - **The parsers are TOTAL** — innertube's array→keyed-object churn answers
+      "unrecognized", never a throw. A throw used to read as 'network' ("בדקו את
+      החיבור" over working Wi-Fi) and the shape-changed alarm never fired; a totality
+      test feeds truthy-malformed docs to both parsers. A 200-with-HTML interstitial
+      is 'network' on BOTH transports (device and browser used to disagree).
+    - **Browse teardown has ONE path** (`closeYtsBrowse`) — a hand-rolled two-line
+      teardown in ytsSearch left the old browse rows rendered and tappable while the
+      fetch ran (and forever when it failed), so a thumbnail tap previewed the WRONG
+      video via `activeYtsItems()`'s fallback. The HIGH finding of the pass.
+    - **`previewDecide` is re-entrancy-latched**: the `previewCtx !== ctx` check
+      cannot catch a double-tap because splice MUTATES the shared object — the second
+      splice removed the NEXT video, which the parent never saw.
+    - **The bubble's button matrix is pure** (`playerlogic.previewBubbleButtons`,
+      per-mode node tests, unknown mode = nothing destructive); renderPreview's
+      delegation is guard-pinned.
+    - **Hiding the suggest dropdown invalidates its in-flight fetch** (seq bump inside
+      `ytsHideSuggest`), suggestion taps bind pointerdown AND click (a TV remote's OK
+      produces no pointerdown), and blur skips the hide when focus moved INTO the
+      dropdown. Hardware back closes dropdown → browse → screen, in that order,
+      guard-pinned with the panel-add visibility gate.
+    - **`resetYtsUi()` on profile activation** — the search area is per profile; the
+      previous child's "✓ קיים" marks were computed against the other child's scopes
+      (the buildFolders profile-identity rule, applied here).
+    - **One `libraryHasVideo` helper** for the row precompute AND addClassifiedRow's
+      dedupe (the row must agree with what the add answers), and one transient
+      `'adding'` state (⏳) latches the same source across surfaces — the browse-head ➕
+      and the result row could run two concurrent imports.
+    - `addClassifiedRow` has EXACTLY two callers (parentAdd + ytsAdd, the
+      importChannelAndAsk-style pin); ytsAdd's kind-mismatch refusal is pinned by its
+      FULL conditional shape — the bare-substring version stayed green under a
+      `false &&` plant, caught by its own red-check.
+    - Playlist ids are validated (`PLAYLIST_ID`) like every other id class; the
+      youtubei endpoint constants are NOT exported (an import plus a hand-appended
+      key parameter would have tripped no guard); dead `searchMessage` stages deleted
+      — the add outcome speaks in `addClassifiedRow`'s voice only.
 - v1.0.32 — **CHANNEL LOGOS ARE CACHED AS BYTES AND RETRY ON EVERY HOME ENTRY** (user
   request: the folder picture must always load). The avatar used to be re-fetched from
   the network on EVERY render (`<img src=url>`) — flaky Wi-Fi or a rebrand (old URL
@@ -880,10 +917,10 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **Release records: [docs/V1032.md](docs/V1032.md), [docs/V1026.md](docs/V1026.md),
-  [docs/V1025.md](docs/V1025.md)** — what changed in each and why, including which features
-  ALREADY EXISTED and were broken. The per-feature invariants stay below; those files are
-  the map.
+- **Release records: [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
+  [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what changed in each
+  and why, including which features ALREADY EXISTED and were broken. The per-feature
+  invariants stay below; those files are the map.
 - **[docs/TESTING.md](docs/TESTING.md) — read before trusting a green run.** What the suite
   covers, what it structurally CANNOT see (no DOM, no IndexedDB, no network), the four bugs
   that shipped past it, and the device checklist for everything a browser cannot prove

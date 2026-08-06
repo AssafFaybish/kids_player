@@ -145,6 +145,67 @@ test('the keyless youtubei endpoints live in EXACTLY one module and never see a 
     'ytsearch.js imports above its tier: ' + deps);
 });
 
+test('the search feature keeps one add path, its words, and its safe transport (v1.0.33)', () => {
+  const app = MODULES.get('www/js/app.js');
+  const yts = MODULES.get('www/js/ytsearch.js');
+  const platform = MODULES.get('www/js/platform.js');
+
+  // ONE add path (the v1.0.25 lesson — the importChannelAndAsk pin, applied to the
+  // extraction whose whole point was that pasting and search-adding cannot drift).
+  // Raise the count only for a new deliberate ADD surface, never to silence a break.
+  assert.match(app, /async function addClassifiedRow\(/, 'the shared add path is gone');
+  const sites = (app.match(/addClassifiedRow\(/g) || []).length - 1;
+  assert.equal(sites, 2, `expected exactly 2 callers (parentAdd + ytsAdd), found ${sites}`);
+
+  // a search result re-enters through the classify boundary, and a kind mismatch is
+  // refused — classifyLink stays THE safety gate even for content YouTube handed us
+  const ytsAddFn = app.slice(app.indexOf('async function ytsAdd('));
+  const ytsAddBody = ytsAddFn.slice(0, ytsAddFn.indexOf('\n}\n'));
+  assert.match(ytsAddBody, /classifySourceRow\(/, 'search adds bypass the classify boundary');
+  // the FULL conditional shape, not the bare comparison: a `false &&` plant kept the
+  // substring alive and this guard green (caught by its own red-check)
+  assert.match(ytsAddBody, /if \(!row \|\| row\.kind !== item\.type\)/,
+    'a classify/kind mismatch is no longer refused');
+
+  // every stage app.js asks searchMessage for has TEXT (the channelAddWait analog —
+  // a stage without words is a silent wait, the exact v1.0.27 ambiguity)
+  const used = [...app.matchAll(/searchMessage\(\s*'([a-z-]+)'/g)].map((m) => m[1]);
+  assert.ok(new Set(used).size >= 4, `only ${new Set(used).size} message stages used — the flow went quiet`);
+  for (const stage of new Set(used)) {
+    assert.match(yts, new RegExp(`case '${stage}':`),
+      `app.js asks for '${stage}' but searchMessage has no text for it`);
+  }
+
+  // the transport seam owns BOTH halves of the CapacitorHttp body trap: an explicit
+  // Content-Type (or the body is silently discarded) and a pre-stringified body
+  // (the drive.js precedent)
+  const post = platform.slice(platform.indexOf('export async function httpPostJson('));
+  const postBody = post.slice(0, post.indexOf('\n}\n'));
+  assert.match(postBody, /JSON\.stringify\(/, 'httpPostJson no longer pre-stringifies the body');
+  assert.match(postBody, /'Content-Type': 'application\/json'/,
+    'the explicit Content-Type is gone — CapacitorHttp silently drops the body without it');
+
+  // hardware back closes the add tab's overlays before the screen — suggestion
+  // dropdown, then browse, then goGallery — and only while the add panel is VISIBLE
+  // (state left on another tab must not eat a back press). Deleting the gate or
+  // reordering the chain fails here.
+  const reg = app.slice(app.indexOf("nav.register('parent'"));
+  const regBody = reg.slice(0, reg.indexOf('onLeave'));
+  const iPrev = regBody.indexOf('isPreviewOpen()');
+  const iSuggest = regBody.indexOf('ytsHideSuggest()');
+  const iBrowse = regBody.indexOf('closeYtsBrowse()');
+  const iGallery = regBody.indexOf('goGallery()');
+  assert.ok(iPrev > -1 && iSuggest > iPrev && iBrowse > iSuggest && iGallery > iBrowse,
+    'parent onBack order broke: preview → suggest → browse → goGallery');
+  assert.match(regBody, /panel-add/, 'the overlay back-close lost its panel-add visibility gate');
+
+  // renderPreview delegates its per-mode button matrix to the TESTED pure helper —
+  // hand-ordered toggles are where the "live 🗑️ over a search result" bug lived
+  const rp = app.slice(app.indexOf('function renderPreview('));
+  assert.match(rp.slice(0, rp.indexOf('\n}\n')), /previewBubbleButtons\(/,
+    'renderPreview grew a private button matrix again');
+});
+
 test('the sensitive `spreadsheets` OAuth scope is gone for good', () => {
   // v1.0.19: that scope is what triggered Google's "hasn't verified this app" screen
   // for every family, and verification needs DNS we do not control. Re-adding it to
