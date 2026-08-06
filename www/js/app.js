@@ -24,7 +24,8 @@ import { planAutoplay, nextInOrder, previewEmbedUrl,
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel } from './plan.js';
+  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
+  planChannelSections } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -2738,37 +2739,74 @@ async function refreshRejectedList() {
   }
 }
 
-async function refreshChannelsList() {
-  const ul = $('channels-list');
-  ul.innerHTML = '';
-  if (!libScope) return;
-  for (const lc of await db.listLibraryChannels(libScope)) {
-    const ch = (await db.getChannel(lc.channelId)) || {};
-    const li = document.createElement('li');
-    const logo = document.createElement('img');
-    logo.className = 'li-thumb';
-    logo.style.width = '46px';
-    logo.style.aspectRatio = '1';
-    logo.style.borderRadius = '50%';
-    // v1.0.24: a channel with no avatar used to render an EMPTY <img> here — a blank hole,
-    // not even the 📺 the home screen falls back to. And a URL that failed to load was
-    // never reported, so it could never be replaced.
-    if (ch.logoUrl) {
-      logo.src = ch.logoUrl;
-      logo.onerror = () => { logo.removeAttribute('src'); noteLogoFailure(lc.channelId); };
-    }
-    const body = document.createElement('div');
-    body.className = 'li-body';
-    const title = document.createElement('div');
-    title.className = 'li-title';
-    title.textContent = lc.titleOverride || ch.title || lc.channelId;
+/**
+ * v1.0.32 — stamp "the parent made this channel's sync decision". What clears a row out
+ * of the "ערוצים חדשים" section (pure plan.planChannelSections reads it). Stamped by the
+ * three-way dialog's REAL answers and by the auto-approve toggle — never by "אחר כך".
+ */
+async function markChannelDecided(channelId) {
+  const scope = await currentLibScope();
+  if (!scope) return;
+  const lc = (await db.listLibraryChannels(scope)).find((c) => c.channelId === channelId);
+  if (lc && !lc.decidedAt) await db.putLibraryChannel({ ...lc, decidedAt: Date.now() });
+}
+
+/** A tap on a row in "ערוצים חדשים": the same three-way dialog the add flow raises. */
+async function decideNewChannel(lc) {
+  const res = await offerChannelApproval(lc.channelId);
+  // A channel with an EMPTY queue has nothing to decide (Shorts-only, or auto-approved
+  // meanwhile) — the dialog never opened, and a row that does nothing on tap reads as
+  // broken. Treat the tap itself as the review.
+  if (res.count === 0) {
+    await markChannelDecided(lc.channelId);
+    toast('אין סרטונים שממתינים בערוץ הזה — הועבר לרשימת הערוצים');
+  }
+  await Promise.all([refreshChannelsList(), refreshPendingList()]);
+  renderHome();
+}
+
+/** One subscription row. `fresh` rows trade the auto-approve toggle for the decision button. */
+async function channelRow(lc, { fresh = false } = {}) {
+  const ch = (await db.getChannel(lc.channelId)) || {};
+  const li = document.createElement('li');
+  const logo = document.createElement('img');
+  logo.className = 'li-thumb';
+  logo.style.width = '46px';
+  logo.style.aspectRatio = '1';
+  logo.style.borderRadius = '50%';
+  // v1.0.24: a channel with no avatar used to render an EMPTY <img> here — a blank hole,
+  // not even the 📺 the home screen falls back to. And a URL that failed to load was
+  // never reported, so it could never be replaced.
+  if (ch.logoUrl) {
+    logo.src = ch.logoUrl;
+    logo.onerror = () => { logo.removeAttribute('src'); noteLogoFailure(lc.channelId); };
+  }
+  const body = document.createElement('div');
+  body.className = 'li-body';
+  const title = document.createElement('div');
+  title.className = 'li-title';
+  title.textContent = lc.titleOverride || ch.title || lc.channelId;
+  body.appendChild(title);
+  if (fresh) {
+    // v1.0.32: the decision affordance — a real <button> (the TV remote needs one).
+    const decide = document.createElement('button');
+    decide.className = 'btn btn-small btn-primary';
+    decide.type = 'button';
+    decide.textContent = '⚙️ איך לסנכרן את הערוץ?';
+    decide.addEventListener('click', () => decideNewChannel(lc).catch(() => {}));
+    body.appendChild(decide);
+  } else {
     const toggle = document.createElement('label');
     toggle.className = 'li-toggle';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!lc.autoApprove;
     cb.addEventListener('change', async () => {
-      await db.putLibraryChannel({ ...lc, autoApprove: cb.checked, autoApproveSource: 'ui' });
+      // flipping the toggle IS the sync decision (v1.0.32) — in either direction
+      await db.putLibraryChannel({
+        ...lc, autoApprove: cb.checked, autoApproveSource: 'ui',
+        decidedAt: lc.decidedAt || Date.now()
+      });
       if (!cb.checked) return;
       // v1.0.6: turning auto-approve ON offers to flush the channel's WAITING videos
       // too — otherwise they'd sit in ממתינים forever ("approved the channel, why is
@@ -2785,41 +2823,58 @@ async function refreshChannelsList() {
     });
     toggle.appendChild(cb);
     toggle.appendChild(document.createTextNode('אישור אוטומטי לסרטונים חדשים'));
-    body.appendChild(title);
     body.appendChild(toggle);
-    const del = document.createElement('button');
-    del.className = 'li-del'; del.type = 'button'; del.textContent = '🗑️';
-    del.addEventListener('click', async () => {
-      const yes = await confirmKid({
-        emoji: '📺', title: 'להסיר את הערוץ?',
-        text: 'הערוץ וכל הסרטונים שלו יימחקו — גם מקובץ המקורות, אצל כל מי שמשתמש בו. אפשר להוסיף אותו שוב בעתיד.',
-        ok: 'הסרה', cancel: 'ביטול', danger: true
-      });
-      if (!yes) return;
-      // v1.0.10: full cleanup — the subscription, its imported videos, AND the
-      // sheet row (so the channel doesn't resurrect on the next sync, anywhere)
-      const { applySheetMirror } = await import('./sync2.js');
-      await applySheetMirror(libScope, { deleteChannelIds: [lc.channelId] });
-      enqueueSheetDeleteChannel(lc.channelId, lc.kind || 'channel');
-      await loadGiftStates();
-      await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
-      renderHome();
-      maybeSchedulePush();
-    });
-    // v1.0.21: a channel with NO long-form videos yields nothing, because Shorts are
-    // excluded on purpose. Say it here — otherwise the parent sees an empty folder and
-    // reasonably concludes the app is broken.
-    if (ch.noLongForm) {
-      const note = document.createElement('div');
-      note.className = 'li-note';
-      note.textContent = 'הערוץ הזה מפרסם רק Shorts — לא נמשכו ממנו סרטונים.';
-      body.appendChild(note);
-    }
-    li.appendChild(logo);
-    li.appendChild(body);
-    li.appendChild(del);
-    ul.appendChild(li);
   }
+  const del = document.createElement('button');
+  del.className = 'li-del'; del.type = 'button'; del.textContent = '🗑️';
+  del.addEventListener('click', async () => {
+    const yes = await confirmKid({
+      emoji: '📺', title: 'להסיר את הערוץ?',
+      text: 'הערוץ וכל הסרטונים שלו יימחקו — גם מקובץ המקורות, אצל כל מי שמשתמש בו. אפשר להוסיף אותו שוב בעתיד.',
+      ok: 'הסרה', cancel: 'ביטול', danger: true
+    });
+    if (!yes) return;
+    // v1.0.10: full cleanup — the subscription, its imported videos, AND the
+    // sheet row (so the channel doesn't resurrect on the next sync, anywhere)
+    const { applySheetMirror } = await import('./sync2.js');
+    await applySheetMirror(libScope, { deleteChannelIds: [lc.channelId] });
+    enqueueSheetDeleteChannel(lc.channelId, lc.kind || 'channel');
+    await loadGiftStates();
+    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+    renderHome();
+    maybeSchedulePush();
+  });
+  // v1.0.21: a channel with NO long-form videos yields nothing, because Shorts are
+  // excluded on purpose. Say it here — otherwise the parent sees an empty folder and
+  // reasonably concludes the app is broken.
+  if (ch.noLongForm) {
+    const note = document.createElement('div');
+    note.className = 'li-note';
+    note.textContent = 'הערוץ הזה מפרסם רק Shorts — לא נמשכו ממנו סרטונים.';
+    body.appendChild(note);
+  }
+  li.appendChild(logo);
+  li.appendChild(body);
+  li.appendChild(del);
+  return li;
+}
+
+async function refreshChannelsList() {
+  const ul = $('channels-list');
+  const newUl = $('channels-new-list');
+  ul.innerHTML = '';
+  newUl.innerHTML = '';
+  $('channels-new-box').classList.add('hidden');
+  $('channels-count').textContent = 'ערוצים';
+  if (!libScope) return;
+  // v1.0.32: "ערוצים חדשים" above, the folded regular list below — pure
+  // plan.planChannelSections decides membership (undecided + ≤24h) and the
+  // newest-first order in both.
+  const { fresh, rest } = planChannelSections(await db.listLibraryChannels(libScope));
+  $('channels-new-box').classList.toggle('hidden', fresh.length === 0);
+  $('channels-count').textContent = rest.length ? `ערוצים (${rest.length})` : 'ערוצים';
+  for (const lc of fresh) newUl.appendChild(await channelRow(lc, { fresh: true }));
+  for (const lc of rest) ul.appendChild(await channelRow(lc, { fresh: false }));
 }
 
 /**
@@ -2974,7 +3029,8 @@ async function offerChannelApproval(channelId) {
       const lc = (await db.listLibraryChannels(scope)).find((c) => c.channelId === channelId);
       // The ✅ in the parent's channel list IS this flag — refreshChannelsList renders
       // `cb.checked = !!lc.autoApprove`, so approving here is what ticks it.
-      if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui' });
+      // decidedAt (v1.0.32): this answer is THE sync decision — the row leaves "ערוצים חדשים".
+      if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui', decidedAt: lc.decidedAt || Date.now() });
       await db.approvePending(scope, keys);
       // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
       // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
@@ -2987,6 +3043,9 @@ async function offerChannelApproval(channelId) {
 
   if (answer === 'third') {
     const picked = await pickChannelVideos(channelId, name);
+    // v1.0.32: a SAVED pick is a sync decision; backing out of the picker is not —
+    // exactly like "אחר כך", the row stays in "ערוצים חדשים".
+    if (picked) await markChannelDecided(channelId);
     return { approved: false, count: keys.length, picked, kept: picked ? picked.kept : 0 };
   }
   // 'cancel' (אחר כך) and 'dismiss' both leave everything waiting — the safe default.

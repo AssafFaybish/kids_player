@@ -9,7 +9,8 @@ import {
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
-  playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS
+  playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
+  planChannelSections, NEW_CHANNEL_WINDOW_MS
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -1279,4 +1280,48 @@ test('lockCountdownLabel: mm:ss, never negative, never blank', async () => {
   assert.equal(lockCountdownLabel(600000), '10:00');
   assert.equal(lockCountdownLabel(999), '0:01');
   for (const z of [0, -1, NaN, null, undefined]) assert.equal(lockCountdownLabel(z), '0:00', String(z));
+});
+
+/* ---------------- the parent's channel list sections (v1.0.32) ---------------- */
+
+test('planChannelSections: fresh = undecided AND inside the 24h window, newest first', () => {
+  const now = 1000 * NEW_CHANNEL_WINDOW_MS; // any fixed clock
+  const H = 60 * 60 * 1000;
+  const rows = [
+    { channelId: 'A', addedAt: now - 2 * H },                        // fresh, newer
+    { channelId: 'B', addedAt: now - 20 * H },                       // fresh, older
+    { channelId: 'C', addedAt: now - 2 * H, decidedAt: now - H },    // decided -> rest
+    { channelId: 'D', addedAt: now - 30 * H },                       // window passed -> rest
+    { channelId: 'E' },                                              // pre-v1.0.21 row, no addedAt
+  ];
+  const { fresh, rest } = planChannelSections(rows, { now });
+  assert.deepEqual(fresh.map((c) => c.channelId), ['A', 'B'], 'undecided + in-window only, newest first');
+  // rest is newest-first too, and the age-less legacy row sinks to the END — surprising
+  // an old subscription into "חדשים" (or to the top of the list) would read as a bug
+  assert.deepEqual(rest.map((c) => c.channelId), ['C', 'D', 'E']);
+});
+
+test('planChannelSections: "אחר כך" is not a decision, and 24h drains the section by itself', () => {
+  const now = 1000 * NEW_CHANNEL_WINDOW_MS;
+  const undecided = { channelId: 'A', addedAt: now - NEW_CHANNEL_WINDOW_MS + 1000 };
+  assert.equal(planChannelSections([undecided], { now }).fresh.length, 1, 'still inside the window');
+  // …and the SAME row a little later has drained into the regular list, untouched
+  assert.equal(planChannelSections([undecided], { now: now + 2000 }).fresh.length, 0);
+  assert.equal(planChannelSections([undecided], { now: now + 2000 }).rest.length, 1);
+});
+
+test('planChannelSections: a peer clock slightly AHEAD still reads as new; a broken one does not', () => {
+  const now = 1000 * NEW_CHANNEL_WINDOW_MS;
+  // a phone 10 minutes ahead adds a channel; the tablet must still show it as new
+  assert.equal(planChannelSections([{ channelId: 'A', addedAt: now + 10 * 60 * 1000 }], { now }).fresh.length, 1);
+  // a stamp a year in the future must not pin a row into the section until then
+  assert.equal(planChannelSections([{ channelId: 'A', addedAt: now + 365 * 24 * 3600 * 1000 }], { now }).fresh.length, 0);
+});
+
+test('planChannelSections never throws on junk and never drops a real row', () => {
+  const now = 1000 * NEW_CHANNEL_WINDOW_MS;
+  const { fresh, rest } = planChannelSections(
+    [null, {}, { channelId: 'A', addedAt: 'garbage' }, { channelId: 'B', addedAt: now }], { now });
+  assert.equal(fresh.length + rest.length, 2, 'junk skipped, real rows kept');
+  assert.deepEqual(planChannelSections(undefined, { now }), { fresh: [], rest: [] });
 });

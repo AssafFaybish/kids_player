@@ -516,8 +516,20 @@
           שורת <code>#</code> תדולג. <b>לא</b> קובץ Excel/xlsx — גיליון Google משותף בלבד.
         </p>
 
-        <div class="list-head"><span class="list-count">ערוצים</span></div>
-        <ul id="channels-list" class="parent-list"></ul>
+        <!-- v1.0.32: a channel awaiting its sync decision surfaces HERE for 24h (pure
+             plan.planChannelSections). Hidden whenever the section is empty. -->
+        <div id="channels-new-box" class="hidden">
+          <div class="list-head"><span class="list-count">🆕 ערוצים חדשים</span></div>
+          <p class="hint">לחצו על ערוץ כדי לקבוע איך הסרטונים שלו ייכנסו.
+            ערוץ שלא טופל יעבור לרשימת הערוצים אחרי 24 שעות.</p>
+          <ul id="channels-new-list" class="parent-list"></ul>
+        </div>
+        <!-- v1.0.32: the subscriptions fold away like the library list (v1.0.28), CLOSED
+             by default and sorted newest-first — the user's request for a cleaner tab. -->
+        <details id="channels-box" class="library-box">
+          <summary class="list-head library-summary"><span id="channels-count" class="list-count">ערוצים</span></summary>
+          <ul id="channels-list" class="parent-list"></ul>
+        </details>
 
         <!-- v1.0.28: the YouTube-API-key form is gone (parent's decision): the target
              user cannot mint a Google Cloud key, so the form only added jargon. A key
