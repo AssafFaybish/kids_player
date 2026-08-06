@@ -296,7 +296,10 @@ async function askExit() {
     ok: 'צא', cancel: 'השאר', danger: true
   });
   if (!leave) return;
-  if (await exitLockOn()) {
+  // v1.0.32: on the BOOT picker no profile is active yet, but the kiosk was armed from
+  // the LAST ACTIVE one (the launch rule) — the lock check must read the same answer,
+  // or the picker's exit button walks straight through an armed lock.
+  if (await exitLockOn(activeProfileId || await prefGet('activeProfile'))) {
     // the exit itself is the protected resource — PIN before unpinning
     startPin((await hasPin()) ? 'verify' : 'setup', {
       title: 'קוד הורים ליציאה מהאפליקציה',
@@ -4000,6 +4003,8 @@ function wire() {
   $('pg-prev').addEventListener('click', () => { page -= 1; renderHome(); });
   $('pg-next').addEventListener('click', () => { page += 1; renderHome(); });
   $('exit-btn').addEventListener('click', askExit);
+  // v1.0.32: the picker's exit button — same flow as hardware back there (user request)
+  $('profiles-exit').addEventListener('click', askExit);
   $('folder-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
 
   // v1.0.7: home search

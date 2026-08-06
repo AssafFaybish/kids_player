@@ -262,6 +262,14 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE PROFILE PICKER HAS AN EXIT BUTTON** (user request): same `.exit-btn`
+  as the home's, same `askExit` flow hardware-back there always ran — confirm, then a
+  free exit, **or the parent code first when the kiosk lock is armed** (user's decision:
+  always visible, never a silent hole). The lock check reads
+  `activeProfileId || prefGet('activeProfile')` — on a boot picker no profile is active
+  yet but the kiosk was armed from the LAST ACTIVE one (the launch rule), and reading
+  only the live global would have walked straight through an armed lock (the cold-start
+  share picker is the real case: stored profile + lock + picker shown).
 - v1.0.32 — **THE MOBILE CHANNEL PAGE FINALLY RESOLVES — @BARDAK613, THIRD RECURRENCE,
   ROOT CAUSE AT LAST.** A request carrying a MOBILE user-agent (the tablet WebView, or
   the native HTTP layer's Dalvik default) is REDIRECTED to m.youtube.com, whose page has
