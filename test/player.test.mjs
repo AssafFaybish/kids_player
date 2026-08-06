@@ -3,7 +3,7 @@
 // bug these cover was found by reading it, not by the suite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampSeek, fractionFromX, progressPct, shouldFinishNearEnd, tvKeyIntent,
+import { clampSeek, fractionFromX, formatTime, progressPct, shouldFinishNearEnd, tvKeyIntent,
   planAutoplay, nextInOrder, previewEmbedUrl } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY,
   AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from '../www/js/config.js';
@@ -221,4 +221,29 @@ test('previewEmbedUrl refuses anything that is not a YouTube video', () => {
   assert.equal(previewEmbedUrl({ type: 'youtube', id: 'abc&autoplay' }), null);
   assert.equal(previewEmbedUrl(null), null);
   assert.equal(previewEmbedUrl(), null);
+});
+
+/* ---------------- HUD time labels (v1.0.32) ---------------- */
+
+test('formatTime renders m:ss below an hour and h:mm:ss above it', () => {
+  assert.equal(formatTime(0), '0:00');
+  assert.equal(formatTime(7), '0:07');
+  assert.equal(formatTime(59.9), '0:59', 'floored — a second that has not finished must not show');
+  assert.equal(formatTime(61), '1:01');
+  assert.equal(formatTime(600), '10:00');
+  assert.equal(formatTime(3599), '59:59');
+  assert.equal(formatTime(3600), '1:00:00');
+  assert.equal(formatTime(3661), '1:01:01');
+  assert.equal(formatTime(7325), '2:02:05');
+});
+
+test('formatTime never leaks NaN/Infinity onto the child\'s screen', () => {
+  // getDuration() answers 0 before metadata and Infinity for a live stream; getTime()
+  // can answer NaN mid-teardown. Every one of those must read as the neutral 0:00.
+  assert.equal(formatTime(NaN), '0:00');
+  assert.equal(formatTime(Infinity), '0:00');
+  assert.equal(formatTime(-5), '0:00');
+  assert.equal(formatTime(undefined), '0:00');
+  assert.equal(formatTime(null), '0:00');
+  assert.equal(formatTime('90'), '1:30', 'numeric strings pass through Number()');
 });

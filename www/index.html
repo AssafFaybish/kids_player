@@ -310,10 +310,16 @@
           <div class="player-controls">
             <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
           </div>
-          <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
-            <div class="seek-track"></div>
-            <div id="seek-fill" class="seek-fill"></div>
-            <div id="seek-knob" class="seek-knob"></div>
+          <!-- v1.0.32: elapsed ⁄ total flank the bar (user request — like YouTube's app).
+               The row is LTR like the timeline itself, so elapsed sits by the bar's start. -->
+          <div class="seek-row" dir="ltr">
+            <span id="time-cur" class="seek-time">0:00</span>
+            <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
+              <div class="seek-track"></div>
+              <div id="seek-fill" class="seek-fill"></div>
+              <div id="seek-knob" class="seek-knob"></div>
+            </div>
+            <span id="time-dur" class="seek-time">0:00</span>
           </div>
         </div>
       </div>

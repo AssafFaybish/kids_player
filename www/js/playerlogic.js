@@ -39,6 +39,24 @@ export function fractionFromX(clientX, rectLeft, rectWidth) {
   return Math.max(0, Math.min(1, f));
 }
 
+/**
+ * v1.0.32 — PURE: seconds → "m:ss" / "h:mm:ss" for the HUD time labels.
+ *
+ * YouTube-style: elapsed on one side of the bar, total on the other. Digits are floored
+ * (58.9s reads 0:58 — a countdown that briefly shows a second that has not finished yet
+ * reads as a stutter). Anything unusable — NaN, negative, a live stream's Infinity —
+ * renders as the neutral "0:00" rather than leaking "NaN:NaN" onto the child's screen.
+ */
+export function formatTime(sec) {
+  const s = Math.floor(Number(sec));
+  if (!Number.isFinite(s) || s <= 0) return '0:00';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const two = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${two(m)}:${two(r)}` : `${m}:${two(r)}`;
+}
+
 /** Progress percentage for the HUD fill. Unknown duration ⇒ 0. */
 export function progressPct(time, duration) {
   const d = Number(duration);

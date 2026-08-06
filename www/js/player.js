@@ -19,7 +19,7 @@
 import { prepareStreamSrc, downloadAndCache, captureFrame } from './media.js';
 import { stripTimeHints } from './classify.js';
 import { HUD_HIDE_MS, SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY } from './config.js';
-import { clampSeek, fractionFromX, shouldFinishNearEnd, tvKeyIntent } from './playerlogic.js';
+import { clampSeek, fractionFromX, formatTime, shouldFinishNearEnd, tvKeyIntent } from './playerlogic.js';
 import * as wake from './wake.js';
 
 const $id = (id) => document.getElementById(id);
@@ -102,6 +102,8 @@ function setupHud(ctl) {
   const seek = $id('seek');
   const fill = $id('seek-fill');
   const knob = $id('seek-knob');
+  const tCur = $id('time-cur');   // v1.0.32: elapsed / total flank the bar
+  const tDur = $id('time-dur');
   const fb = $id('seek-feedback');
   let fbTimer = null;
   let hideTimer = null;
@@ -119,12 +121,20 @@ function setupHud(ctl) {
     if (ctl.isPlaying() && !dragging) hideTimer = setTimeout(hideNow, HUD_HIDE_MS);
   };
 
+  // Text writes are guarded by value: this runs 4×/s and touching textContent with the
+  // same string still invalidates layout on cheap tablets.
+  const setTimes = (t, d) => {
+    if (tCur) { const s = formatTime(t); if (tCur.textContent !== s) tCur.textContent = s; }
+    if (tDur) { const s = formatTime(d); if (tDur.textContent !== s) tDur.textContent = s; }
+  };
+
   const renderProgress = () => {
     const d = ctl.getDuration() || 0;
     const t = ctl.getTime() || 0;
     const pct = d > 0 ? Math.max(0, Math.min(100, (t / d) * 100)) : 0;
     if (fill) fill.style.width = pct + '%';
     if (knob) knob.style.left = pct + '%';
+    setTimes(t, d);
     const playing = ctl.isPlaying();
     wake.set('play', playing); // F7 heartbeat — self-healing, can't miss a transition
     if (playing !== lastPlaying) { lastPlaying = playing; reveal(); } // pin on pause, re-arm on play
@@ -212,6 +222,7 @@ function setupHud(ctl) {
     clearTimeout(hideTimer);
     if (fill) fill.style.width = '0%';
     if (knob) knob.style.left = '0%';
+    setTimes(0, 0);
     if (fb) fb.classList.remove('show');
     setHud(true); // next video starts with controls visible
     wake.release('play');
@@ -224,6 +235,7 @@ function setupHud(ctl) {
     clearTimeout(tapTimer);
     if (fill) fill.style.width = '0%';
     if (knob) knob.style.left = '0%';
+    setTimes(0, 0); // the new video's numbers arrive with its first heartbeat
     if (fb) fb.classList.remove('show');
     reveal();
   };
