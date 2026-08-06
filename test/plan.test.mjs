@@ -10,7 +10,7 @@ import {
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
-  planChannelSections, NEW_CHANNEL_WINDOW_MS
+  planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -1324,4 +1324,29 @@ test('planChannelSections never throws on junk and never drops a real row', () =
     [null, {}, { channelId: 'A', addedAt: 'garbage' }, { channelId: 'B', addedAt: now }], { now });
   assert.equal(fresh.length + rest.length, 2, 'junk skipped, real rows kept');
   assert.deepEqual(planChannelSections(undefined, { now }), { fresh: [], rest: [] });
+});
+
+/* ---------------- channel-logo byte cache (v1.0.32) ---------------- */
+
+test('planLogoCache: cached bytes always render, and the render never waits for the network', () => {
+  // no cache yet: paint the URL and go fetch the bytes
+  assert.deepEqual(planLogoCache({ hasBlob: false, url: 'https://yt3/x.jpg' }),
+    { render: 'url', fetch: true });
+  // cached and current: the device serves itself, zero network
+  assert.deepEqual(planLogoCache({ hasBlob: true, blobSrcUrl: 'https://yt3/x.jpg', url: 'https://yt3/x.jpg' }),
+    { render: 'blob', fetch: false });
+  // REBRAND (new URL): keep showing the picture we have, refresh in the background —
+  // waiting for the network here is exactly the flakiness this cache exists to remove
+  assert.deepEqual(planLogoCache({ hasBlob: true, blobSrcUrl: 'https://yt3/old.jpg', url: 'https://yt3/new.jpg' }),
+    { render: 'blob', fetch: true });
+  // dead/absent URL with cached bytes: the picture SURVIVES (the v1.0.24 lesson —
+  // a stored URL that will not load is worse than no URL; stored BYTES beat both)
+  assert.deepEqual(planLogoCache({ hasBlob: true, blobSrcUrl: 'https://yt3/old.jpg', url: null }),
+    { render: 'blob', fetch: false });
+  // nothing at all: the emoji fallback, and nothing to fetch
+  assert.deepEqual(planLogoCache({ hasBlob: false, url: null }), { render: 'emoji', fetch: false });
+  assert.deepEqual(planLogoCache({}), { render: 'emoji', fetch: false });
+  // junk url types never trigger a fetch
+  assert.deepEqual(planLogoCache({ hasBlob: false, url: 42 }), { render: 'emoji', fetch: false });
+  assert.deepEqual(planLogoCache({ hasBlob: true, blobSrcUrl: 'x', url: '' }), { render: 'blob', fetch: false });
 });

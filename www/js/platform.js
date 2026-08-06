@@ -80,6 +80,30 @@ export async function httpRequest({ method = 'GET', url, headers = {}, body = nu
   }
 }
 
+/**
+ * v1.0.32 — small binary GET (channel logos). Returns a Blob or null, never throws.
+ * Native: CapacitorHttp answers base64 for responseType 'blob'. Browser preview: direct
+ * fetch, then the dev proxy, then the public CORS proxies — same ladder as text.
+ */
+export async function httpGetBlob(url) {
+  const CH = plugin('CapacitorHttp');
+  if (CH) {
+    try {
+      const res = await CH.request({ method: 'GET', url, responseType: 'blob' });
+      if (res.status < 200 || res.status >= 300 || typeof res.data !== 'string' || !res.data) return null;
+      const bin = atob(res.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const mime = String((res.headers && (res.headers['Content-Type'] || res.headers['content-type'])) || 'image/jpeg');
+      return new Blob([bytes], { type: mime.split(';')[0] });
+    } catch { return null; }
+  }
+  for (const u of [url, '/__proxy?url=' + encodeURIComponent(url), ...CORS_PROXIES.map((p) => p(url))]) {
+    try { const r = await fetch(u); if (r.ok) return await r.blob(); } catch {}
+  }
+  return null;
+}
+
 export async function httpGetText(url) {
   if (plugin('CapacitorHttp')) {
     const data = await nativeRequest(url, 'text');
