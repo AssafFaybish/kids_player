@@ -3328,33 +3328,43 @@ async function ensureSources() {
   return src;
 }
 
-/** Add a single video (live immediately — the parent is right here) or a whole channel. */
-async function parentAdd() {
-  const url = $('add-url').value.trim();
-  const msg = $('add-msg');
-  if (!url) { msg.textContent = 'הדביקו קודם לינק'; msg.className = 'form-msg err'; return; }
-  msg.textContent = 'מוסיף…'; msg.className = 'form-msg';
-
-  const { classifySourceRow, titleFromFileUrl } = await import('./classify.js');
-  const row = classifySourceRow(url);
-
-  if (row.kind === 'video') {
+/**
+ * v1.0.33 — THE one add path, shared by pasting a link and by picking a search
+ * result. The v1.0.25 lesson: two callers with private copies of "add" is exactly
+ * how the share path once shipped without the import-and-ask flow — sharing the
+ * path is what stops the drift. share.js stays SEPARATE on purpose: its videos
+ * park as PENDING (requireApproval), a different curation policy.
+ *
+ * `row` must come from classifySourceRow — classifyLink is THE safety boundary,
+ * and search results are normalized to canonical URLs precisely so they pass
+ * through it like any pasted link. `title` is a display name the caller already
+ * knows (search results carry one), which also skips the async oEmbed fetch.
+ * `onNote(text, ok)` carries the intermediate progress lines to whichever status
+ * element the caller owns (#add-msg vs #yts-msg — the two flows must not fight
+ * over one line).
+ *
+ * -> { status: 'added'|'exists'|'error'|'unsupported', message, subscribed? }
+ */
+async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
+  if (row && row.kind === 'video') {
     // v1.0.6: manual adds live in the SHARED library folder (single list for the
     // whole family) and are appended to the sheet — one master list, everywhere.
     const scope = (await ensureSources()).libraryId;
     const exists = (await db.getVideo(scope, row.key)) || (await db.getVideo(db.profScope(activeProfileId), row.key));
-    if (exists) { msg.textContent = 'הסרטון כבר קיים ברשימה'; msg.className = 'form-msg err'; return; }
+    if (exists) return { status: 'exists', message: 'הסרטון כבר קיים ברשימה' };
     const now = Date.now();
     // v1.0.32: the name/image form is gone (user request) — the name comes from the
     // content itself. YouTube: fetched below, like an empty field always was. A direct
     // file has no metadata to fetch, so its DISPLAY NAME derives from the filename in
     // the link (pure classify.titleFromFileUrl; Hebrew percent-encoding included) and
     // its thumbnail from the captured first frame (persistThumb, since v1.0.5).
-    const title = row.type === 'file' ? titleFromFileUrl(row.srcUrl || row.url) : '';
+    const known = String(title || '').trim();
+    const display = known || (row.type === 'file'
+      ? (await import('./classify.js')).titleFromFileUrl(row.srcUrl || row.url) : '');
     const rec = {
       scopeId: scope, key: row.key, type: row.type, id: row.id ?? null, url: row.url ?? null,
       srcUrl: row.srcUrl, driveId: row.driveId ?? null,
-      title, titleSource: title ? 'sheet' : null, normTitle: normalizeTitle(title),
+      title: display, titleSource: display ? 'sheet' : null, normTitle: normalizeTitle(display),
       folderId: 'sheet', channelId: null,
       sortKey: (await import('./order.js')).sortKeyFor({ origin: 'manual', addedAt: now }),
       publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
@@ -3371,18 +3381,16 @@ async function parentAdd() {
     if (!rec.title && rec.type === 'youtube') {
       fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
     }
-    $('add-url').value = '';
-    msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
     // the record is live but not yet enriched or gifted — see refreshAfterAdd
     refreshAfterAdd({ parent: true });
     await refreshParentList();
     renderHome();
     maybeSchedulePush();
-    return;
+    return { status: 'added', message: 'נוסף! ✅' };
   }
 
-  if (row.kind === 'channel') {
-    msg.textContent = 'מזהה את הערוץ…';
+  if (row && row.kind === 'channel') {
+    onNote('מזהה את הערוץ…');
     // v1.0.26: a @handle resolve is a real network step (up to a 1.5MB page scrape when
     // keyless) that used to run behind that one line of small text. defer:250 means a raw
     // /channel/UC… link — which resolves instantly — never flashes a screen for it.
@@ -3391,7 +3399,7 @@ async function parentAdd() {
       const ytApi = await import('./yt.js');
       return ytApi.resolveChannelRef(row.channelRef, await ytApi.getApiKey());
     });
-    if (!channelId) { msg.textContent = 'לא הצלחנו לזהות את הערוץ'; msg.className = 'form-msg err'; return; }
+    if (!channelId) return { status: 'error', message: 'לא הצלחנו לזהות את הערוץ' };
     await withChannelWait('subscribe', {}, async () => {
       const k = (await db.listLibraryChannels(libScope)).some((c) => c.channelId === channelId);
       await db.putLibraryChannel({
@@ -3405,22 +3413,19 @@ async function parentAdd() {
         await enqueueChannelSheetRow(channelId, 'manual'); // approval-required for now
       }
     });
-    msg.textContent = 'הערוץ נוסף! מושכים סרטונים…'; msg.className = 'form-msg ok';
-    $('add-url').value = '';
+    onNote('הערוץ נוסף! מושכים סרטונים…', true);
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(channelId);
-    if (!synced) { msg.textContent = 'שגיאה במשיכת הערוץ'; msg.className = 'form-msg err'; return; }
-    msg.textContent = channelAddOutcome(approved, count, empty, picked);
-    msg.className = 'form-msg ok';
-    return;
+    if (!synced) return { status: 'error', message: 'שגיאה במשיכת הערוץ', subscribed: true };
+    return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
   }
 
-  if (row.kind === 'playlist') {
+  if (row && row.kind === 'playlist') {
     // v1.0.26 — a playlist is a SUBSCRIPTION, stored in the same table as a channel with
     // `kind:'playlist'`. classifySourceRow has recognised these since v1.0.12 and the app
     // then dropped them on the floor here, which is why pasting one has always answered
     // "הלינק לא נתמך" — a missing feature wearing the costume of a parse error.
-    msg.textContent = 'מזהה את רשימת ההשמעה…';
+    onNote('מזהה את רשימת ההשמעה…');
     await ensureSources();
     const plId = row.playlistId;
     const known = (await db.listLibraryChannels(libScope)).some((c) => c.channelId === plId);
@@ -3432,18 +3437,33 @@ async function parentAdd() {
     // Same reason the channel path awaits this: the forced sync below runs the
     // presence-mirror, and a subscription the sheet does not list is what it deletes.
     if (!known) await enqueuePlaylistSheetRow(plId, 'manual');
-    msg.textContent = 'רשימת ההשמעה נוספה! מושכים סרטונים…'; msg.className = 'form-msg ok';
-    $('add-url').value = '';
+    onNote('רשימת ההשמעה נוספה! מושכים סרטונים…', true);
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(plId);
-    if (!synced) { msg.textContent = 'שגיאה במשיכת רשימת ההשמעה'; msg.className = 'form-msg err'; return; }
-    msg.textContent = channelAddOutcome(approved, count, empty, picked);
-    msg.className = 'form-msg ok';
-    return;
+    if (!synced) return { status: 'error', message: 'שגיאה במשיכת רשימת ההשמעה', subscribed: true };
+    return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
   }
 
-  msg.textContent = 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ mp4)';
-  msg.className = 'form-msg err';
+  return { status: 'unsupported', message: 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ mp4)' };
+}
+
+/** Add a single video (live immediately — the parent is right here) or a whole channel. */
+async function parentAdd() {
+  const url = $('add-url').value.trim();
+  const msg = $('add-msg');
+  if (!url) { msg.textContent = 'הדביקו קודם לינק'; msg.className = 'form-msg err'; return; }
+  msg.textContent = 'מוסיף…'; msg.className = 'form-msg';
+
+  const { classifySourceRow } = await import('./classify.js');
+  const row = classifySourceRow(url);
+  const r = await addClassifiedRow(row, {
+    onNote: (text, ok) => { msg.textContent = text; msg.className = ok ? 'form-msg ok' : 'form-msg'; }
+  });
+  // the input clears once something was actually stored (a video record or a
+  // subscription) — a refused/duplicate link stays put for the parent to fix
+  if (r.status === 'added' || r.subscribed) $('add-url').value = '';
+  msg.textContent = r.message;
+  msg.className = r.status === 'added' ? 'form-msg ok' : 'form-msg err';
 }
 
 async function doSyncAndRefresh() {
