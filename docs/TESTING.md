@@ -119,6 +119,13 @@ for anything destructive, and purge it afterwards.
       reach it rather than dead-ending.
 - [ ] Real fullscreen on tap, and 🏠 only after leaving fullscreen.
 - [ ] Keep-awake during playback.
+- [ ] **Physical power button mid-video** (v1.0.32): the soundtrack STOPS with the screen;
+      screen back on → the video is waiting, PAUSED, at the same second — not gone, not
+      restarted. Repeat with the exit lock ON: identical. *(The browser only simulates
+      `visibilitychange`; the real button and lock-task interplay exist only on a device.)*
+- [ ] **Picker exit button** (v1.0.32): with the kiosk armed for the last-used child,
+      reach the profile picker (cold-start share is the honest route) → 🚪 must ask for
+      the parent code before leaving. With the kiosk off: confirm → straight out.
 
 ### Cross-device (needs TWO devices on one Google account)
 > Nothing here has ever been verified end to end. The merge logic and local storage are
@@ -133,6 +140,11 @@ for anything destructive, and purge it afterwards.
 ### Content sources
 - [ ] Add a channel by **Hebrew @handle** (e.g. `@חלומותחסידיים`) — CORS blocks the keyless
       page scrape in a browser, so only a device proves this.
+- [ ] **Add `@BARDAK613` from the tablet** (v1.0.32). The device's HTTP layer gets the
+      MOBILE page (m.youtube.com), which has none of the desktop identity keys — v1.0.29–31
+      all passed in a desktop browser and failed here. The channel must import its real
+      videos (~97 long-form), not "הערוץ נוסף, אבל לא נמצאו בו סרטונים".
+      **Any scrape-parsing fix must be probed against the mobile page variant.**
 - [ ] Add a **playlist** link, `m.youtube.com` form (v1.0.26).
 - [ ] Add a channel **and** a playlist of that same channel → one folder, no duplicates.
 
@@ -141,11 +153,18 @@ for anything destructive, and purge it afterwards.
       overlay appears and the next video starts without leaving the player. ✋ returns to the
       folder. With it OFF, a video ending returns to the folder as before.
 - [ ] Continuous play must **stop** at the 🎁 folder and before a wrapped gift.
+- [ ] **Resume playback** (v1.0.32): enable the setting, stop a video mid-way, force-close
+      the app, reopen the video → it continues ~3s before the stop point, and the tile
+      carries the red progress sliver. Let a video END → next opening starts at 0, no bar.
+- [ ] **Channel logos offline** (v1.0.32): open the app once online, then again in airplane
+      mode → the channel folders keep their pictures (served from the byte cache).
+      *(CapacitorHttp's `responseType:'blob'` base64 answer is assumed from its docs — the
+      first device run of the logo fetch is what proves it.)*
 - [ ] TV: D-pad through the parent screens, OK toggles checkboxes.
 
 ---
 
-## 5. Verifying each v1.0.25 / v1.0.26 feature
+## 5. Verifying each v1.0.25 / v1.0.26 / v1.0.32 feature
 
 | Feature | Fastest honest check |
 |---|---|
@@ -163,6 +182,11 @@ for anything destructive, and purge it afterwards.
 | Channel-add waits | Add an already-synced channel: the dialog must appear in <300ms with ZERO loading flashes (defer:250). Then stage pending videos and answer each dialog button — every step must name itself, and the finishing screen must stream the sync's real labels. |
 | Empty queue | Approve or reject the last waiting video **without leaving the tab** — the line must appear and the badge must clear on the same rebuild. |
 | 20-char names | Create a profile with a 20-character name: the tile wraps to two lines and the picker stays aligned. Note `maxlength` does **not** bind a scripted `.value` — test the stored name, not the input. |
+| Resume playback (v1.0.32) | Save at ~60s, reopen → `playbackState().time ≈ 57`. Seek into the tail with `player.handleTvKey('fwd')`, let it end → the position record is GONE, `unwrappedAt` intact, no tile bar. The position must never appear in a serialized Drive doc (`serializeStateEntry` is the pin). |
+| Screen-off pause (v1.0.32) | In the browser: `Object.defineProperty(document,'hidden',{value:true,configurable:true})` + dispatch `visibilitychange` → `playbackState().playing === false`, same `time`, position banked. The invariants guard pins listener + order + no-`stop()`. |
+| ערוצים חדשים (v1.0.32) | Plant a `libraryChannels` row with `addedAt: Date.now()`, no `decidedAt` → it renders in the new section with the ⚙️ button; answering the dialog (or an empty queue tap) stamps `decidedAt` and moves it. `planChannelSections` covers the clock-skew and legacy-row rules. |
+| Logo byte cache (v1.0.32) | After one online render: the folder `<img>` src starts with `blob:` and `performance.getEntriesByType('resource')` shows ZERO new ggpht requests on re-render. The two traps are pinned pure: `logoFirstPaint` (warm memory never touches the network) and `planLogoDelivery` (a late fetch may not paint into a host that moved on — `#folder-logo-top` is shared). |
+| Mobile channel resolve (v1.0.32) | `extractChannelIdFromHtml` against an m.youtube.com page body: decoy `"channelId"`s must lose to the RSS-alternate link / og:url / twitter:url. Probe fixes with a MOBILE UA — a desktop browser cannot reproduce the failure. |
 
 ---
 

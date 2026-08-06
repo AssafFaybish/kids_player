@@ -280,6 +280,17 @@ pins that the consumers follow the config and that every address is well-formed.
   LATEST mounted img per channel; delivery re-mounts into the host when onerror already
   swapped the emoji in. Used logos get `touchThumbs` so the LRU eviction never takes
   them. The parent's channel list heals through the same cache.
+  Hardening pass (self-review, all three pinned pure):
+  - **A late fetch may NOT paint into a host that moved on** (`planLogoDelivery`):
+    `#folder-logo-top` is ONE element shared by every folder view, and channel A's slow
+    fetch used to plant A's logo into folder B's header. The host carries
+    `dataset.logoChannel`; a mismatch skips.
+  - **Warm memory paints FIRST** (`logoFirstPaint`): the unconditional `img.src = url`
+    hit the network on every render even with a full cache. Verified: zero ggpht
+    requests across a whole re-rendering session.
+  - **The refreshed logo's OLD objectURL is never revoked**: a background view's img may
+    still display it, and revoking fires a spurious `noteLogoFailure`. One leaked URL
+    per rebrand is nothing.
 - v1.0.32 — **THE PROFILE PICKER HAS AN EXIT BUTTON** (user request): same `.exit-btn`
   as the home's, same `askExit` flow hardware-back there always ran — confirm, then a
   free exit, **or the parent code first when the kiosk lock is armed** (user's decision:
@@ -793,9 +804,10 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **Release records: [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what
-  changed in each and why, including which features ALREADY EXISTED and were broken. The
-  per-feature invariants stay below; those files are the map.
+- **Release records: [docs/V1032.md](docs/V1032.md), [docs/V1026.md](docs/V1026.md),
+  [docs/V1025.md](docs/V1025.md)** — what changed in each and why, including which features
+  ALREADY EXISTED and were broken. The per-feature invariants stay below; those files are
+  the map.
 - **[docs/TESTING.md](docs/TESTING.md) — read before trusting a green run.** What the suite
   covers, what it structurally CANNOT see (no DOM, no IndexedDB, no network), the four bugs
   that shipped past it, and the device checklist for everything a browser cannot prove

@@ -25,7 +25,7 @@ import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBac
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
-  planChannelSections, planLogoCache } from './plan.js';
+  planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -914,7 +914,17 @@ const logoTarget = new Map();   // channelId -> { img, host } — the LATEST mou
 const showLogo = (channelId, objUrl) => {
   const t = logoTarget.get(channelId);
   if (!t || !t.img) return;
-  if (!t.img.isConnected && t.host && t.host.isConnected) { t.host.textContent = ''; t.host.appendChild(t.img); }
+  // planLogoDelivery (pure): the re-mount branch must verify the host still shows THIS
+  // channel — #folder-logo-top is one element shared by every folder view, and channel
+  // A's late fetch used to plant A's logo into folder B's header (self-review catch).
+  const action = planLogoDelivery({
+    imgConnected: t.img.isConnected,
+    hostConnected: !!(t.host && t.host.isConnected),
+    hostChannelId: t.host && t.host.dataset ? (t.host.dataset.logoChannel || null) : null,
+    channelId
+  });
+  if (action === 'skip') return;
+  if (action === 'remount') { t.host.textContent = ''; t.host.appendChild(t.img); }
   if (t.img.isConnected) t.img.src = objUrl;
 };
 
@@ -943,8 +953,10 @@ async function resolveLogo(channelId, url, img, host) {
     const blob = await httpGetBlob(url);
     if (blob && blob.size > 0) {
       await db.putThumb('logo:' + channelId, blob, { origin: 'logo', srcUrl: url });
-      const old = logoObjUrls.get(channelId);
-      if (old && old.objUrl) { try { URL.revokeObjectURL(old.objUrl); } catch {} }
+      // The OLD objectURL is deliberately NOT revoked (hardening): an img on a
+      // background view may still display it, and revoking breaks that img the moment
+      // it scrolls back — firing a spurious noteLogoFailure. One leaked URL per
+      // rebrand-refresh is nothing; the session map keeps at most one per channel.
       const objUrl = URL.createObjectURL(blob);
       logoObjUrls.set(channelId, { objUrl, srcUrl: url });
       showLogo(channelId, objUrl);
@@ -954,11 +966,17 @@ async function resolveLogo(channelId, url, img, host) {
 }
 
 function mountChannelLogo(host, url, channelId, emoji) {
+  if (channelId) host.dataset.logoChannel = channelId; // planLogoDelivery's re-mount guard
   const img = document.createElement('img');
   img.alt = '';
   img.onerror = () => { img.remove(); if (!host.firstChild) host.textContent = emoji; noteLogoFailure(channelId); };
-  if (url) { img.src = url; host.appendChild(img); } // first paint from the URL, as before
-  else host.textContent = emoji;                     // until (maybe) cached bytes arrive
+  // Hardening: bytes already in MEMORY paint first (pure logoFirstPaint) — the
+  // unconditional `img.src = url` hit the network on every render even with a full
+  // cache, which is the exact waste this cache exists to remove.
+  const cached = channelId ? logoObjUrls.get(channelId) : null;
+  const paint = logoFirstPaint({ cachedObjUrl: cached && cached.objUrl, url });
+  if (paint.kind !== 'emoji') { img.src = paint.src; host.appendChild(img); }
+  else host.textContent = emoji; // until (maybe) IDB bytes arrive
   // v1.0.32: cached bytes outrank the network — swap in when found, fetch+store when not
   if (channelId) resolveLogo(channelId, url || null, img, host).catch(() => {});
 }
@@ -2790,12 +2808,15 @@ async function channelRow(lc, { fresh = false } = {}) {
   // v1.0.24: a channel with no avatar used to render an EMPTY <img> here — a blank hole,
   // not even the 📺 the home screen falls back to. And a URL that failed to load was
   // never reported, so it could never be replaced.
-  if (ch.logoUrl) {
-    logo.src = ch.logoUrl;
+  // v1.0.32: cached bytes swap in (and get fetched when missing) — same cache the
+  // child's folder tiles use, so this list heals the same way. Memory-cached bytes
+  // paint FIRST (hardening): no network <img> when the cache is already warm.
+  const cachedLogo = logoObjUrls.get(lc.channelId);
+  const firstPaint = logoFirstPaint({ cachedObjUrl: cachedLogo && cachedLogo.objUrl, url: ch.logoUrl || null });
+  if (firstPaint.kind !== 'emoji') logo.src = firstPaint.src;
+  if (firstPaint.kind === 'url') {
     logo.onerror = () => { logo.removeAttribute('src'); noteLogoFailure(lc.channelId); };
   }
-  // v1.0.32: cached bytes swap in (and get fetched when missing) — same cache the
-  // child's folder tiles use, so this list heals the same way.
   resolveLogo(lc.channelId, ch.logoUrl || null, logo, null).catch(() => {});
   const body = document.createElement('div');
   body.className = 'li-body';
