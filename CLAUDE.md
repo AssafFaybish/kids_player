@@ -262,6 +262,35 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **RESUME PLAYBACK: a stopped video reopens where it stopped** (per-profile
+  setting, OFF by default — a family that never opens the settings screen keeps today's
+  start-from-zero exactly). The SETTING syncs (`resume`, safe-on-tie false); **THE
+  POSITION IS DEVICE-LOCAL**: it changes every few seconds of watching, so
+  `drive.serializeStateEntry` (pure, tested) never emits `posSec`/`durSec`/`posAt`, and
+  the apply side folds through pure `mergeAppliedState`, which PRESERVES the local
+  position and MIN-MERGES `unwrappedAt` — the old blind put erased the local record
+  wholesale on every pull (and let a later remote unwrap beat an earlier local one).
+  - The decisions are pure (`playerlogic.resumeStartAt` / `resumeSaveDecision` /
+    `watchedFraction`): resume lands `RESUME_REWIND_SEC` (3s) before the stop point; a
+    stop inside `RESUME_TAIL_SEC` (12s) of the end CLEARS the position (or every video
+    "sticks" seconds before its end forever); below `RESUME_MIN_POS_SEC` (8s) nothing is
+    saved and clearing is refused — a 2-second accidental tap must not erase progress; an
+    unknown duration never saves (a wrong resume point is worse than none).
+  - Saved every `RESUME_SAVE_MS` while playing (survives a process kill), plus in watch's
+    `onLeave` (BEFORE `stop()` — the teardown takes the clock with it) and at the top of
+    `openWatch` for the video→video path (`playItem` reuses the player, same reason).
+    A video that ENDS clears its position in `onVideoFinished`.
+  - The tile's red progress bar (`.tile-progress`, inside `.thumb`) is gated on the
+    SETTING, not just the data — a stale position from an earlier ON period must not
+    draw; a wrapped gift never shows one. `giftStates` mirrors every write so the next
+    render needs no extra IDB read. **The folder view re-renders on BACK-restores**
+    (`nav.register('folder')` gained onEnter, like the home view always had) or the tile
+    the child just left keeps its stale bar.
+  - `player.playbackState()` lends app.js the live clock (null after teardown, never a
+    stale player's numbers); `opts.startAt` is the app's resume decision — a URL's t=
+    hint still never chooses where a video starts (classifyLink keeps stripping it).
+  - Verified in the browser end-to-end: save at 64s → bar at 44.4% → reopen at 61s →
+    seek to the tail → ended → position cleared, bar gone, `unwrappedAt` intact.
 - v1.0.32 — **THE HUD SHOWS ELAPSED / TOTAL TIME** (user request: like the YouTube app).
   `playerlogic.formatTime` is pure + tested: floored seconds (a second that has not
   finished must not show), `h:mm:ss` above an hour, and `0:00` for NaN/Infinity/negative —

@@ -551,6 +551,12 @@
           <input id="autoplay-toggle" type="checkbox" />
           <span>ניגון רציף — בסוף סרטון מתחיל הבא בתור, בלי לחזור לתיקייה<b id="autoplay-owner" class="setting-owner"></b></span>
         </label>
+        <!-- v1.0.32: resume playback. OFF by default — a video starts from the beginning
+             unless the parent opts in; the position itself never leaves the device. -->
+        <label class="switch-row">
+          <input id="resume-toggle" type="checkbox" />
+          <span>להמשיך סרטון מהנקודה שבה הפסקנו (במקום מההתחלה)<b id="resume-owner" class="setting-owner"></b></span>
+        </label>
         <!-- v1.0.11: OS screen-pinning kiosk — exiting requires the parent PIN -->
         <label class="switch-row">
           <input id="exit-lock-toggle" type="checkbox" />

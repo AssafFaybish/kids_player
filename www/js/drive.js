@@ -20,7 +20,7 @@ import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
-  loadDenyRecords, denyActive, tx, profScope, putVideoStates, purgeProfile
+  loadDenyRecords, denyActive, tx, profScope, putVideoStates, getVideoState, purgeProfile
 } from './db.js';
 import { getAllSettings, putAllSettings, mergeSettings } from './settings.js';
 import { getDeletedProfiles, putDeletedProfiles, mergeDeletedProfiles } from './store.js';
@@ -120,6 +120,45 @@ const PER_DEVICE_CHANNEL_FIELDS = [
 ];
 
 /** PURE: strip this device's progress fields from a channel record. */
+/**
+ * PURE (v1.0.32): what one profileVideoState record contributes to the Drive doc.
+ * `unwrappedAt` travels (what a child opened stays open, everywhere); a wrapped gift's
+ * rank is emitted for compatibility but stays remote-only on apply (local assignment
+ * wins). THE PLAYBACK POSITION (posSec/durSec/posAt) NEVER TRAVELS — it changes every
+ * few seconds of watching, so pushing it would rewrite the family document on every
+ * pause, and a lock is about THIS device's session anyway (the giftRank decision,
+ * 2026-07-31, replayed). A record carrying ONLY a position contributes nothing.
+ */
+export function serializeStateEntry(v) {
+  if (!v) return null;
+  if (v.unwrappedAt) return { unwrappedAt: v.unwrappedAt };
+  if (v.giftRank !== undefined) return { giftRank: v.giftRank };
+  return null;
+}
+
+/**
+ * PURE (v1.0.32): fold a REMOTE state entry into the LOCAL record on apply.
+ * Only an unwrap applies (giftRank stays remote-only, unchanged rule). `unwrappedAt` is
+ * min-merged — the EARLIEST open wins, per the "unwrappedAt is forever" invariant; the
+ * old blind put let a later remote stamp overwrite an earlier local one. The local
+ * playback position survives the fold: a pull must not erase where the child stopped.
+ * Dropping giftRank from the result is the unwrap semantics (db.unwrapGift does the same).
+ */
+export function mergeAppliedState(mine, remote) {
+  if (!remote || !remote.unwrappedAt) return null;
+  const out = {
+    unwrappedAt: mine && mine.unwrappedAt
+      ? Math.min(mine.unwrappedAt, remote.unwrappedAt)
+      : remote.unwrappedAt
+  };
+  if (mine) {
+    if (mine.posSec !== undefined) out.posSec = mine.posSec;
+    if (mine.durSec !== undefined) out.durSec = mine.durSec;
+    if (mine.posAt !== undefined) out.posAt = mine.posAt;
+  }
+  return out;
+}
+
 export function stripPerDeviceChannel(c) {
   const out = { ...(c || {}) };
   for (const f of PER_DEVICE_CHANNEL_FIELDS) delete out[f];
@@ -392,7 +431,8 @@ async function buildLocalDoc(profiles) {
         const cur = req.result;
         if (!cur) return resolve();
         const v = cur.value;
-        states[v.key] = v.unwrappedAt ? { unwrappedAt: v.unwrappedAt } : { giftRank: v.giftRank };
+        const entry = serializeStateEntry(v); // v1.0.32: a pos-only record travels NOWHERE
+        if (entry) states[v.key] = entry;
         cur.continue();
       };
       req.onerror = () => resolve();
@@ -469,10 +509,17 @@ async function applyRemoteDoc(doc) {
   // unwrappedAt states apply for EVERY profile in the doc (v1.0.4): a fresh device
   // restoring the backup must not re-gift videos the children already opened.
   // giftRank states deliberately stay remote-only — local gift assignment wins.
+  // v1.0.32: folded through pure mergeAppliedState instead of a blind put — the local
+  // record may now carry the device's playback position, and the old shape erased it
+  // on every pull (it also let a LATER remote unwrappedAt beat an earlier local one,
+  // violating min-merge).
   for (const [pid, st] of Object.entries(doc.profileState || {})) {
+    const keys = Object.keys(st || {});
+    if (!keys.length) continue;
     const puts = [];
-    for (const [key, v] of Object.entries(st || {})) {
-      if (v && v.unwrappedAt) puts.push({ profileId: pid, key, unwrappedAt: v.unwrappedAt });
+    for (const key of keys) {
+      const merged = mergeAppliedState(await getVideoState(pid, key), st[key]);
+      if (merged) puts.push({ profileId: pid, key, ...merged });
     }
     if (puts.length) await putVideoStates(puts);
   }

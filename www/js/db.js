@@ -402,6 +402,41 @@ export async function countGifts(profileId) {
     .index('by_gift').count(IDBKeyRange.bound([profileId, -Infinity], [profileId, Infinity])));
 }
 
+/**
+ * v1.0.32 — playback position, riding the SAME per-profile record as the gift state.
+ * DEVICE-LOCAL by design: drive.serializeStateEntry never emits these fields and the
+ * apply side preserves the local ones, so a pull cannot erase where the child stopped.
+ * The write MERGES into the existing record — a blind put here would erase a gift.
+ */
+export async function savePlayPosition(profileId, key, posSec, durSec) {
+  await tx(['profileVideoState'], 'readwrite', (s) => {
+    const r = s.get([profileId, key]);
+    r.onsuccess = () => {
+      const rec = r.result || { profileId, key };
+      rec.posSec = posSec;
+      rec.durSec = durSec;
+      rec.posAt = Date.now();
+      s.put(rec);
+    };
+  });
+}
+
+/** Clear the position (video finished). A record left with nothing else is deleted. */
+export async function clearPlayPosition(profileId, key) {
+  await tx(['profileVideoState'], 'readwrite', (s) => {
+    const r = s.get([profileId, key]);
+    r.onsuccess = () => {
+      const rec = r.result;
+      if (!rec) return;
+      delete rec.posSec;
+      delete rec.durSec;
+      delete rec.posAt;
+      if (rec.giftRank === undefined && !rec.unwrappedAt) s.delete([profileId, key]);
+      else s.put(rec);
+    };
+  });
+}
+
 /** Remove an orphaned gift/unwrap state row (its video no longer exists anywhere). */
 export async function deleteVideoState(profileId, key) {
   await tx(['profileVideoState'], 'readwrite', (s) => { s.delete([profileId, key]); });

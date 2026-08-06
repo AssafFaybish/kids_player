@@ -73,6 +73,17 @@ export function stop() {
   current = null;
 }
 
+/**
+ * v1.0.32 — the live playhead, for the resume feature (app.js owns the profile and the
+ * database; this module only lends it the clock). Null when nothing is mounted — a
+ * caller reading it after finish()/stop() gets null, never a stale player's numbers.
+ */
+export function playbackState() {
+  if (!current || !current.ctl) return null;
+  const c = current.ctl;
+  return { time: c.getTime(), duration: c.getDuration(), playing: c.isPlaying() };
+}
+
 // v1.0.18 — supersession token. playYouTube can only register itself in `current`
 // AFTER `await loadYouTubeApi()`, so a second tap while that script is still loading
 // found current === null, made stop() a no-op, and mounted a SECOND player and HUD.
@@ -81,6 +92,12 @@ export function stop() {
 // poll alive until it hits the near-end check and fires a stale onExit — yanking the
 // child out of the video they are actually watching, with no way for stop() to kill it.
 let playSeq = 0;
+
+/** v1.0.32: sanitized resume offset from opts.startAt (app.js's decision). */
+const startFrom = (opts) => {
+  const s = Math.floor(Number(opts && opts.startAt));
+  return Number.isFinite(s) && s > 0 ? s : 0;
+};
 
 export async function playItem(item, host, opts = {}) {
   // Fast path: YouTube → YouTube switches reuse the live player (no black flash).
@@ -322,12 +339,14 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
     swapAt = Date.now();
     curId = nextItem.id; // so the near-end guard can tell a slow swap from a real tail
     if (errTimer) { clearTimeout(errTimer); errTimer = null; } // A's error must not exit B
-    player.loadVideoById({ videoId: nextItem.id, startSeconds: 0 }); // F3: always from 0
+    // startSeconds is OUR resume decision (v1.0.32) — never the link's (classifyLink
+    // still strips t= hints; F3's "always from 0" became "always from what app.js says").
+    player.loadVideoById({ videoId: nextItem.id, startSeconds: startFrom(cb) });
     killCaptions(true);
     hud.reset();
   };
 
-  current = { cleanup, kind: 'youtube', reuse };
+  current = { cleanup, kind: 'youtube', reuse, ctl }; // ctl: playbackState (v1.0.32)
   hud = setupHud(ctl);
 
   player = new YT.Player(mount.id, {
@@ -340,7 +359,9 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
       fs: 0, controls: 0, autoplay: 1, enablejsapi: 1,
       modestbranding: 1, origin: window.location.origin,
       cc_load_policy: 0, // F2 (do NOT set cc_lang_pref/hl — they can enable a track)
-      start: 0           // F3 (classifyLink already dropped t=; this is belt-and-braces)
+      // v1.0.32: OUR resume decision, never the link's (classifyLink already dropped t=,
+      // and that stays true — a URL must not choose where a video starts).
+      start: startFrom(opts)
     },
     events: {
       onReady: (e) => {
@@ -385,7 +406,8 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
 }
 
 /* ---------------- Direct file ---------------- */
-async function playFile(item, host, { onExit, onStatus, onThumb } = {}, seq = 0) {
+async function playFile(item, host, opts = {}, seq = 0) {
+  const { onExit, onStatus, onThumb } = opts;
   const video = document.createElement('video');
   video.setAttribute('playsinline', '');
   video.controls = false; // we provide our own HUD
@@ -418,7 +440,7 @@ async function playFile(item, host, { onExit, onStatus, onThumb } = {}, seq = 0)
     try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
   };
   const finish = (reason = 'ended') => { const first = !torn; cleanup(); if (first && onExit) onExit(reason); };
-  current = { cleanup, kind: 'file' };
+  current = { cleanup, kind: 'file', ctl }; // ctl: playbackState (v1.0.32)
   hud = setupHud(ctl);
 
   video.addEventListener('timeupdate', onTime);
@@ -427,9 +449,13 @@ async function playFile(item, host, { onExit, onStatus, onThumb } = {}, seq = 0)
   video.addEventListener('pause', onTime);
   // wrapped: the DOM hands the listener an Event, which would arrive as the exit REASON
   video.addEventListener('ended', () => finish('ended'));
-  // F3: a media-fragment (#t=30) that survived somewhere WILL seek — force 0 once.
+  // F3 + v1.0.32: the start is OUR decision (the resume offset, usually 0) — a
+  // media-fragment (#t=30) that survived somewhere WILL seek, so force ours once.
   video.addEventListener('loadedmetadata', () => {
-    if (!forcedZero && video.currentTime > 0.5) { try { video.currentTime = 0; } catch {} }
+    const want = startFrom(opts);
+    if (!forcedZero && Math.abs((video.currentTime || 0) - want) > 0.5) {
+      try { video.currentTime = want; } catch {}
+    }
     forcedZero = true; // once-only: never stomp a legitimate later seek
   });
 

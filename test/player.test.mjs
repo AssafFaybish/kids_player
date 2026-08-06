@@ -4,9 +4,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clampSeek, fractionFromX, formatTime, progressPct, shouldFinishNearEnd, tvKeyIntent,
-  planAutoplay, nextInOrder, previewEmbedUrl } from '../www/js/playerlogic.js';
+  planAutoplay, nextInOrder, previewEmbedUrl,
+  resumeStartAt, resumeSaveDecision, watchedFraction } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY,
-  AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS } from '../www/js/config.js';
+  AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS,
+  RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from '../www/js/config.js';
 
 test('clampSeek never runs past the end — a forward seek must not EJECT the child', () => {
   // Every forward seek was `getTime() + SEEK_STEP` unbounded. Past the end YouTube fires
@@ -246,4 +248,52 @@ test('formatTime never leaks NaN/Infinity onto the child\'s screen', () => {
   assert.equal(formatTime(undefined), '0:00');
   assert.equal(formatTime(null), '0:00');
   assert.equal(formatTime('90'), '1:30', 'numeric strings pass through Number()');
+});
+
+/* ---------------- Resume playback (v1.0.32) ---------------- */
+
+test('resumeStartAt: rewinds a few seconds, and 0 whenever resuming makes no sense', () => {
+  // The user's spec: re-entering a stopped video continues from RESUME_REWIND_SEC before
+  // the stop point — a moment of context, like the YouTube app.
+  assert.equal(resumeStartAt({ enabled: true, posSec: 60, durSec: 300 }), 60 - RESUME_REWIND_SEC);
+  // OFF is the default and must behave exactly like today: always from the top.
+  assert.equal(resumeStartAt({ enabled: false, posSec: 60, durSec: 300 }), 0);
+  assert.equal(resumeStartAt({}), 0);
+  // a stop too early to matter starts over (also mirrors what the save side refuses)
+  assert.equal(resumeStartAt({ enabled: true, posSec: RESUME_MIN_POS_SEC - 1, durSec: 300 }), 0);
+  // a STALE near-end position (app died before the 'ended' clear) must not drop the
+  // child onto YouTube's end screen — start over instead
+  assert.equal(resumeStartAt({ enabled: true, posSec: 295, durSec: 300 }), 0);
+  // garbage never becomes a seek target
+  assert.equal(resumeStartAt({ enabled: true, posSec: NaN, durSec: 300 }), 0);
+  assert.equal(resumeStartAt({ enabled: true, posSec: undefined, durSec: undefined }), 0);
+  // rewind can never produce a negative start
+  assert.equal(resumeStartAt({ enabled: true, posSec: RESUME_MIN_POS_SEC, durSec: 300 }),
+    Math.max(0, RESUME_MIN_POS_SEC - RESUME_REWIND_SEC));
+});
+
+test('resumeSaveDecision: save mid-video, clear in the tail, ignore the unusable', () => {
+  assert.equal(resumeSaveDecision({ pos: 60, dur: 300 }), 'save');
+  // inside the tail = effectively finished: clear, or every video "sticks" at its end
+  assert.equal(resumeSaveDecision({ pos: 300 - RESUME_TAIL_SEC, dur: 300 }), 'clear');
+  assert.equal(resumeSaveDecision({ pos: 299, dur: 300 }), 'clear');
+  // a 2-second accidental tap must not throw away real progress -> ignore, not clear
+  assert.equal(resumeSaveDecision({ pos: 2, dur: 300 }), 'ignore');
+  // an unknown duration cannot tell the tail from the middle: never save a wrong point
+  assert.equal(resumeSaveDecision({ pos: 60, dur: 0 }), 'ignore');
+  assert.equal(resumeSaveDecision({ pos: 60, dur: Infinity }), 'ignore');
+  assert.equal(resumeSaveDecision({ pos: NaN, dur: 300 }), 'ignore');
+  assert.equal(resumeSaveDecision({}), 'ignore');
+  // a SHORT video: the tail rule wins over the minimum, in both orders of magnitude
+  assert.equal(resumeSaveDecision({ pos: 5, dur: 10 }), 'clear', 'a 10s clip is finished at 5s? no — inside the 12s tail');
+});
+
+test('watchedFraction: a bar only when both numbers are usable, clamped to [0,1]', () => {
+  assert.equal(watchedFraction(150, 300), 0.5);
+  assert.equal(watchedFraction(400, 300), 1, 'clamped — a stale over-long position');
+  // mirrors the save floor: a position too small to resume never draws a sliver
+  assert.equal(watchedFraction(RESUME_MIN_POS_SEC - 1, 300), null);
+  assert.equal(watchedFraction(60, 0), null);
+  assert.equal(watchedFraction(60, Infinity), null);
+  assert.equal(watchedFraction(undefined, undefined), null);
 });

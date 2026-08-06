@@ -7,7 +7,8 @@
 //
 // Imports NOTHING but config.js (which imports nothing), so this sits safely in the
 // `store/classify/csv/util` band and can be imported by player.js and ui/dpad.js alike.
-import { SEEK_STEP, AUTOPLAY_MAX_FAILURES } from './config.js';
+import { SEEK_STEP, AUTOPLAY_MAX_FAILURES,
+  RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from './config.js';
 
 /**
  * Clamp a seek target into the video.
@@ -171,6 +172,61 @@ export function previewEmbedUrl(rec) {
   if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
   return 'https://www.youtube-nocookie.com/embed/' + id
     + '?rel=0&modestbranding=1&playsinline=1&autoplay=1&mute=1&controls=1&iv_load_policy=3';
+}
+
+/* ---------------- Resume playback (v1.0.32) ----------------
+ * The parent's per-profile setting decides WHETHER; these decide WHERE. The saved
+ * position is device-local (drive.js never serializes it) and rides the same
+ * profileVideoState record as the gift state. */
+
+/**
+ * PURE: what to do with the playhead we just read.
+ *  'clear'  — the child effectively finished the video (inside the tail): the next
+ *             viewing starts fresh and the tile's progress bar disappears. Without this
+ *             every video "sticks" seconds before its end forever.
+ *  'save'   — a real mid-video stop, worth coming back to.
+ *  'ignore' — too early to matter (or unreadable): keep whatever is stored. Clearing on
+ *             a 2-second accidental tap would throw away real progress.
+ * An unknown duration cannot distinguish the tail from the middle, so it never saves —
+ * a wrong resume point is worse than none.
+ */
+export function resumeSaveDecision({ pos, dur } = {}) {
+  const p = Number(pos);
+  const d = Number(dur);
+  if (!Number.isFinite(p) || p < 0) return 'ignore';
+  if (!Number.isFinite(d) || d <= 0) return 'ignore';
+  if (d - p <= RESUME_TAIL_SEC) return 'clear';
+  if (p < RESUME_MIN_POS_SEC) return 'ignore';
+  return 'save';
+}
+
+/**
+ * PURE: where a video should start. 0 unless the profile's resume setting is ON and a
+ * usable position is stored. Resumes RESUME_REWIND_SEC before the stop point (the
+ * user's spec — a few seconds of context, like the YouTube app). A stale near-end
+ * position (written by an app that died before the 'ended' clear) starts over rather
+ * than dropping the child onto the end screen.
+ */
+export function resumeStartAt({ enabled = false, posSec, durSec } = {}) {
+  if (!enabled) return 0;
+  const p = Number(posSec);
+  if (!Number.isFinite(p) || p < RESUME_MIN_POS_SEC) return 0;
+  const d = Number(durSec);
+  if (Number.isFinite(d) && d > 0 && d - p <= RESUME_TAIL_SEC) return 0;
+  return Math.max(0, p - RESUME_REWIND_SEC);
+}
+
+/**
+ * PURE: the tile progress-bar fraction, or null when no bar should show.
+ * Mirrors resumeSaveDecision's floor so a position too small to resume never draws a
+ * sliver, and a fraction is only computable when BOTH numbers are usable.
+ */
+export function watchedFraction(posSec, durSec) {
+  const p = Number(posSec);
+  const d = Number(durSec);
+  if (!Number.isFinite(p) || p < RESUME_MIN_POS_SEC) return null;
+  if (!Number.isFinite(d) || d <= 0) return null;
+  return Math.max(0, Math.min(1, p / d));
 }
 
 /**

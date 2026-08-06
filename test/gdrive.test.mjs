@@ -2,7 +2,7 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState } from '../www/js/drive.js';
 import { mergeSettings } from '../www/js/settings.js';
 import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
@@ -470,4 +470,40 @@ test('the settings channel carries NO secret the refusal list bans', () => {
   for (const banned of ['yt:apiKey', 'localPath', 'thumbId', 'backfillCursor', 'dbFileId']) {
     assert.ok(!wire.includes(banned), `the document carries ${banned}`);
   }
+});
+
+/* ---------------- profileVideoState ⇄ Drive (v1.0.32) ---------------- */
+
+test('the playback position NEVER travels to Drive', () => {
+  // It changes every few seconds of watching — pushing it would rewrite the family
+  // document on every pause (the giftRank lesson). A record carrying ONLY a position
+  // contributes NOTHING, not an empty object the apply side must skip.
+  assert.equal(serializeStateEntry({ posSec: 61, durSec: 300, posAt: 5 }), null);
+  // …and a real gift/unwrap entry must not smuggle the position along
+  assert.deepEqual(serializeStateEntry({ unwrappedAt: 9, posSec: 61, durSec: 300 }),
+    { unwrappedAt: 9 });
+  assert.deepEqual(serializeStateEntry({ giftRank: 3, posSec: 61 }), { giftRank: 3 });
+  // rank 0 is a valid rank, not "no rank"
+  assert.deepEqual(serializeStateEntry({ giftRank: 0 }), { giftRank: 0 });
+  assert.equal(serializeStateEntry(null), null);
+  assert.equal(serializeStateEntry({}), null);
+});
+
+test('applying a remote unwrap PRESERVES the local playback position', () => {
+  // The old shape was a blind put({profileId, key, unwrappedAt}) — it erased the local
+  // record wholesale, so every pull threw away where the child stopped.
+  assert.deepEqual(
+    mergeAppliedState({ posSec: 61, durSec: 300, posAt: 5, giftRank: 2 }, { unwrappedAt: 9 }),
+    { unwrappedAt: 9, posSec: 61, durSec: 300, posAt: 5 });
+  // giftRank is deliberately DROPPED once unwrapped — db.unwrapGift semantics
+  assert.equal(mergeAppliedState({ giftRank: 2 }, { unwrappedAt: 9 }).giftRank, undefined);
+  // unwrappedAt is min-merged: the EARLIEST open wins ("unwrappedAt is forever")
+  assert.equal(mergeAppliedState({ unwrappedAt: 4 }, { unwrappedAt: 9 }).unwrappedAt, 4);
+  assert.equal(mergeAppliedState({ unwrappedAt: 9 }, { unwrappedAt: 4 }).unwrappedAt, 4);
+  // a remote giftRank applies NOTHING (remote-only rule, unchanged since v1.0.4)
+  assert.equal(mergeAppliedState(null, { giftRank: 5 }), null);
+  assert.equal(mergeAppliedState({ posSec: 61 }, { giftRank: 5 }), null);
+  assert.equal(mergeAppliedState({ posSec: 61 }, {}), null);
+  // a fresh device (no local record) simply adopts the unwrap
+  assert.deepEqual(mergeAppliedState(null, { unwrappedAt: 9 }), { unwrappedAt: 9 });
 });
