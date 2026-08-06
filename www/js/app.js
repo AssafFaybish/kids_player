@@ -3298,7 +3298,7 @@ async function parentAdd() {
   if (!url) { msg.textContent = 'הדביקו קודם לינק'; msg.className = 'form-msg err'; return; }
   msg.textContent = 'מוסיף…'; msg.className = 'form-msg';
 
-  const { classifySourceRow } = await import('./classify.js');
+  const { classifySourceRow, titleFromFileUrl } = await import('./classify.js');
   const row = classifySourceRow(url);
 
   if (row.kind === 'video') {
@@ -3308,7 +3308,12 @@ async function parentAdd() {
     const exists = (await db.getVideo(scope, row.key)) || (await db.getVideo(db.profScope(activeProfileId), row.key));
     if (exists) { msg.textContent = 'הסרטון כבר קיים ברשימה'; msg.className = 'form-msg err'; return; }
     const now = Date.now();
-    const title = $('add-title').value.trim();
+    // v1.0.32: the name/image form is gone (user request) — the name comes from the
+    // content itself. YouTube: fetched below, like an empty field always was. A direct
+    // file has no metadata to fetch, so its DISPLAY NAME derives from the filename in
+    // the link (pure classify.titleFromFileUrl; Hebrew percent-encoding included) and
+    // its thumbnail from the captured first frame (persistThumb, since v1.0.5).
+    const title = row.type === 'file' ? titleFromFileUrl(row.srcUrl || row.url) : '';
     const rec = {
       scopeId: scope, key: row.key, type: row.type, id: row.id ?? null, url: row.url ?? null,
       srcUrl: row.srcUrl, driveId: row.driveId ?? null,
@@ -3317,7 +3322,7 @@ async function parentAdd() {
       sortKey: (await import('./order.js')).sortKeyFor({ origin: 'manual', addedAt: now }),
       publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
       addedAt: now, approvedAt: now,
-      thumbId: null, thumbUrl: $('add-thumb').value.trim() || null, localPath: null, updatedAt: now
+      thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
     };
     await db.putVideos([rec]);
     const { enqueueSheetRow } = await import('./sheetwrite.js');
@@ -3329,7 +3334,7 @@ async function parentAdd() {
     if (!rec.title && rec.type === 'youtube') {
       fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
     }
-    $('add-url').value = ''; $('add-title').value = ''; $('add-thumb').value = '';
+    $('add-url').value = '';
     msg.textContent = 'נוסף! ✅'; msg.className = 'form-msg ok';
     // the record is live but not yet enriched or gifted — see refreshAfterAdd
     refreshAfterAdd({ parent: true });

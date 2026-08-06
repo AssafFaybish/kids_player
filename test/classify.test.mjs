@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseChannelRef, classifySourceRow, stripTimeHints, classifyFromSharedText, classifyLink,
-  classifyShared
+  classifyShared, titleFromFileUrl
 } from '../www/js/classify.js';
 
 test('parseChannelRef handles all channel URL shapes', () => {
@@ -258,4 +258,29 @@ test('the YouTube app share shapes all classify (v1.0.26 regression net)', () =>
     const r = classifyShared(text, '');
     assert.equal(r && r.kind, kind, 'wrong kind for: ' + text);
   }
+});
+
+/* ---------------- titleFromFileUrl (v1.0.32) ---------------- */
+
+test('titleFromFileUrl: the filename becomes the display name — Hebrew included', () => {
+  // the manual name field is gone from the add form; a direct file's name is derived
+  assert.equal(titleFromFileUrl('https://x.example/media/butterfly_song.mp4'), 'butterfly song');
+  assert.equal(titleFromFileUrl('https://x.example/a/%D7%A4%D7%A8%D7%A4%D7%A8%D7%99%D7%9D.mp4'),
+    'פרפרים', 'percent-encoded Hebrew filenames are the normal case');
+  assert.equal(titleFromFileUrl('https://x.example/dl/my-video.webm?token=abc#t'), 'my video',
+    'query/fragment are not part of the name');
+  assert.equal(titleFromFileUrl('https://x.example/clip'), 'clip', 'no extension is fine');
+  assert.equal(titleFromFileUrl('relative/שיר+ילדים.mp4'), 'שיר ילדים', 'plus opens into a space');
+});
+
+test('titleFromFileUrl answers "" for anything unusable — no caption beats garbage', () => {
+  assert.equal(titleFromFileUrl('https://x.example/'), '');
+  assert.equal(titleFromFileUrl(''), '');
+  assert.equal(titleFromFileUrl(null), '');
+  assert.equal(titleFromFileUrl(undefined), '');
+  assert.equal(titleFromFileUrl(42), '');
+  // a malformed %-escape must not throw (decodeURIComponent does) — keep the raw name
+  assert.equal(titleFromFileUrl('https://x.example/bad%2.mp4'), 'bad%2');
+  // absurdly long names are capped like shared-text titles
+  assert.equal(titleFromFileUrl('https://x.example/' + 'א'.repeat(300) + '.mp4').length, 120);
 });

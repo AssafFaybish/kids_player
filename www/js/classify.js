@@ -202,3 +202,27 @@ export function classifyShared(text, subject) {
   }
   return null;
 }
+
+/**
+ * v1.0.32 — PURE: a direct file's display name, from the filename in its link.
+ * The add form's manual name field is gone, and an mp4 has no metadata to fetch —
+ * this is what stands in: the last path segment, percent-DECODED (Hebrew filenames
+ * arrive as %D7%…), extension stripped, separators (_-+) opened into spaces.
+ * Anything unusable answers '' — a tile with no caption beats a caption of garbage —
+ * and the result is capped like shared-text titles are.
+ */
+export function titleFromFileUrl(url) {
+  if (typeof url !== 'string') return '';
+  let path = url;
+  try { path = new URL(url).pathname; } catch { /* not absolute — use as is */ }
+  const seg = path.split('/').filter(Boolean).pop() || '';
+  let name = seg;
+  try { name = decodeURIComponent(seg); } catch { /* malformed %-escape: keep raw */ }
+  name = name
+    .replace(/\.[A-Za-z0-9]{1,5}$/, '') // extension (".mp4", ".webm") — never a Hebrew word
+    .replace(/[_\-+]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return name;
+}
