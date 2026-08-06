@@ -262,6 +262,15 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE HUD SHOWS ELAPSED / TOTAL TIME** (user request: like the YouTube app).
+  `playerlogic.formatTime` is pure + tested: floored seconds (a second that has not
+  finished must not show), `h:mm:ss` above an hour, and `0:00` for NaN/Infinity/negative —
+  `getDuration()` answers 0 before metadata and Infinity for a live stream, and none of
+  those may leak onto the child's screen. The labels live INSIDE the `.player-hud`
+  container so they inherit its `pointer-events:none` ALWAYS (the HUD-bar invariant) and
+  fade with the HUD. The `.seek-row` is `dir="ltr"` like the timeline itself — elapsed by
+  the bar's start, total by its end. Text writes are guarded by value: `renderProgress`
+  runs 4×/s and identical textContent writes still invalidate layout on cheap tablets.
 - v1.0.31 — **A COLD-START SPLASH + A SCHEDULED PER-PROFILE LOCK.**
   - **SPLASH** (`#splash-overlay`): a FIXED overlay above the nav (not a view — a view would
     vanish the moment `nav.reset` runs behind it), shown for ~1.3s while the app boots, then

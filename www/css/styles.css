@@ -260,6 +260,16 @@ body {
   display: flex; align-items: center; justify-content: flex-end; gap: 16px;
   padding: 10px 14px 8px;
 }
+/* v1.0.32: elapsed/total labels flank the bar. The ROW inherits the containers'
+   pointer-events:none (only .seek re-enables them while .hud-on — see above), so the
+   labels can never swallow a tap that belongs to the shield. */
+.seek-row { display: flex; align-items: center; gap: 2px; padding: 0 12px; }
+.seek-row .seek { flex: 1 1 auto; margin: 0 4px; }
+.seek-time {
+  color: #fff; font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  min-width: 38px; text-align: center; pointer-events: none; user-select: none;
+}
 .seek { position: relative; height: 26px; margin: 0 14px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
 .seek-track { position: absolute; inset-inline: 0; height: 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.35); }
 .seek-fill { position: absolute; left: 0; height: 6px; border-radius: 6px; background: #ff0033; width: 0; }
