@@ -303,6 +303,9 @@ test('suggestUrl encodes the query and asks for Hebrew', () => {
   assert.ok(u.includes('q=%D7%91%D7%95%D7%91%20%D7%94%D7%91%D7%A0%D7%90%D7%99') || u.includes('q=%D7%91%D7%95%D7%91+%D7%94'), u);
   assert.ok(u.includes('hl=he'), 'suggestions must come back in the UI language');
   assert.ok(u.includes('client=firefox'), 'firefox client = clean JSON, no JSONP');
+  // without oe=utf-8 a Hebrew query is answered in windows-1255 (measured live) and
+  // the dropdown renders ���� — the encoding parameter is part of the contract
+  assert.ok(u.includes('oe=utf-8'), 'missing oe=utf-8: Hebrew suggestions arrive as mojibake');
 });
 
 /* ---------------- messages (the words ARE the feature — v1.0.27) ---------------- */

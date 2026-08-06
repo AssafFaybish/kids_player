@@ -41,9 +41,13 @@ const CLIENT_VERSION = '2.20250801.00.00';
 // user picks a filter chip. Filtering at the SOURCE beats guessing renderer types.
 const FILTER_PARAMS = { all: null, video: 'EgIQAQ==', channel: 'EgIQAg==', playlist: 'EgIQAw==' };
 
-/** The suggestions endpoint (keyless GET; `client=firefox` answers clean JSON). */
+/**
+ * The suggestions endpoint (keyless GET; `client=firefox` answers clean JSON).
+ * `oe=utf-8` is LOAD-BEARING: without it a Hebrew query is answered in
+ * windows-1255 (measured live) and every suggestion renders as ����.
+ */
 export function suggestUrl(query) {
-  return 'https://suggestqueries-clients6.youtube.com/complete/search?client=firefox&ds=yt&hl=he&q='
+  return 'https://suggestqueries-clients6.youtube.com/complete/search?client=firefox&ds=yt&hl=he&oe=utf-8&q='
     + encodeURIComponent(String(query || ''));
 }
 

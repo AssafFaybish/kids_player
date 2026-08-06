@@ -2376,9 +2376,13 @@ function renderPreview() {
   $('pv-open').classList.toggle('hidden', rec.type !== 'youtube');
 
   const pending = ctx.mode === 'pending';
+  const search = ctx.mode === 'search';
   $('pv-approve').classList.toggle('hidden', !pending);
   $('pv-reject').classList.toggle('hidden', !pending);
-  $('pv-delete').classList.toggle('hidden', pending);
+  // hidden in 'search' too, not just the old `pending` toggle: a search result has
+  // no stored record, and the old condition would have rendered a LIVE 🗑️ over it
+  $('pv-delete').classList.toggle('hidden', pending || search);
+  $('pv-add').classList.toggle('hidden', !search);
 }
 
 /** Open the bubble on `items[idx]`. `mode` is 'pending' (approve/reject) or 'library'. */
@@ -3466,6 +3470,264 @@ async function parentAdd() {
   msg.className = r.status === 'added' ? 'form-msg ok' : 'form-msg err';
 }
 
+/* ---------------- v1.0.33: YouTube search in the add tab ----------------
+   The network + parsing live in ytsearch.js (keyless, quota-free, Shorts/mixes
+   filtered in the pure parser); adding routes through addClassifiedRow — the SAME
+   path pasting a link takes, behind the same classifySourceRow safety boundary. */
+
+// Results state + TWO monotonic seq counters. Search and suggestions are separate
+// races — one shared counter would let a keystroke's suggestion fetch invalidate an
+// in-flight search. A response paints only while its seq is still current (the
+// v1.0.32 logoTarget lesson: a late async result must never paint a newer query's
+// screen). `state` maps 'type:id' -> 'added'|'exists' so re-renders keep the ✓s.
+let ytsCtx = { query: '', filter: 'all', items: [], continuation: null, state: new Map() };
+let ytsSearchSeq = 0;
+let ytsSuggestSeq = 0;
+let ytsSuggestTimer = 0;
+
+function ytsMsg(text, cls = '') {
+  const el = $('yts-msg');
+  el.textContent = text || '';
+  el.className = 'form-msg' + (cls ? ' ' + cls : '');
+}
+
+function ytsHideSuggest() {
+  const host = $('yts-suggest');
+  host.classList.add('hidden');
+  host.innerHTML = '';
+}
+
+async function ytsShowSuggestions() {
+  const q = $('yts-input').value.trim();
+  if (q.length < 2) { ytsHideSuggest(); return; }
+  const seq = ++ytsSuggestSeq;
+  const { fetchSuggestions } = await import('./ytsearch.js');
+  const list = await fetchSuggestions(q);
+  if (seq !== ytsSuggestSeq) return; // a newer keystroke (or a submitted search) owns the field
+  const host = $('yts-suggest');
+  host.innerHTML = '';
+  if (!list.length) { ytsHideSuggest(); return; }
+  for (const s of list) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = s;
+    // pointerdown, not click: it fires BEFORE the input's blur (which closes the
+    // dropdown 150ms later) — a click handler loses that race and the tap picks nothing
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      $('yts-input').value = s;
+      ytsSearch().catch(() => {});
+    });
+    host.appendChild(b);
+  }
+  host.classList.remove('hidden');
+}
+
+/**
+ * Which results already exist in the library, so a row says "✓ קיים" up front
+ * instead of answering it only after a tap (a button that lies about being
+ * available is the v1.0.26 empty-queue ambiguity in miniature). Videos are checked
+ * in BOTH scopes — addClassifiedRow dedupes against both, and the row must agree
+ * with what the add will answer.
+ */
+async function ytsMarkExisting(items) {
+  const scope = (await ensureSources()).libraryId;
+  const subs = new Set((await db.listLibraryChannels(scope)).map((c) => c.channelId));
+  for (const it of items) {
+    const k = it.type + ':' + it.id;
+    if (ytsCtx.state.has(k)) continue;
+    if (it.type === 'video') {
+      const key = 'yt:' + it.id;
+      if ((await db.getVideo(scope, key)) || (await db.getVideo(db.profScope(activeProfileId), key))) {
+        ytsCtx.state.set(k, 'exists');
+      }
+    } else if (subs.has(it.id)) {
+      ytsCtx.state.set(k, 'exists');
+    }
+  }
+}
+
+/** One result row. Reuses .parent-list classes; the thumb is the preview trigger. */
+function ytsRow(item) {
+  const li = document.createElement('li');
+  li.dataset.yts = item.type + ':' + item.id;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'yts-thumbwrap';
+  const img = document.createElement('img');
+  img.className = 'li-thumb' + (item.type === 'channel' ? ' yts-round' : '');
+  img.loading = 'lazy';
+  img.alt = '';
+  if (item.thumbUrl) img.src = item.thumbUrl;
+  wrap.appendChild(img);
+  if (item.type === 'video' && item.durationText) {
+    const d = document.createElement('span');
+    d.className = 'yts-dur';
+    d.textContent = item.durationText;
+    wrap.appendChild(d);
+  }
+  if (item.type === 'video') {
+    // the parentRow preview-thumb pattern, verbatim: role/tabIndex/Enter are what
+    // make a bare <img> reachable from a TV remote (v1.0.29)
+    img.classList.add('li-thumb-play');
+    img.setAttribute('role', 'button');
+    img.title = 'צפייה מהירה';
+    img.tabIndex = 0;
+    const open = (e) => { e.preventDefault(); e.stopPropagation(); openYtsPreview(item); };
+    img.addEventListener('click', open);
+    img.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(e); });
+  }
+
+  const body = document.createElement('div');
+  body.className = 'li-body';
+  const title = document.createElement('div');
+  title.className = 'li-title';
+  title.textContent = item.title || '(ללא שם)';
+  const badge = document.createElement('span');
+  badge.className = 'badge-type ' + (item.type === 'video' ? 'badge-yt' : item.type === 'channel' ? 'badge-ch' : 'badge-pl');
+  badge.textContent = item.type === 'video' ? 'סרטון' : item.type === 'channel' ? 'ערוץ' : 'פלייליסט';
+  title.appendChild(badge);
+  // metadata line, not a URL — .li-note wraps and aligns naturally in RTL where
+  // .li-sub (built for URLs) forces ltr + ellipsis
+  const sub = document.createElement('div');
+  sub.className = 'li-note';
+  sub.textContent = item.type === 'video'
+    ? [item.channelTitle, item.viewCountText, item.publishedText].filter(Boolean).join(' · ')
+    : (item.subText || '');
+  body.appendChild(title);
+  body.appendChild(sub);
+
+  const add = document.createElement('button');
+  add.className = 'li-add';
+  add.type = 'button';
+  const st = ytsCtx.state.get(item.type + ':' + item.id);
+  if (st) {
+    add.disabled = true;
+    add.textContent = st === 'exists' ? '✓ קיים' : '✓ נוסף';
+  } else {
+    add.textContent = '➕';
+    add.title = 'הוספה לספרייה';
+    add.addEventListener('click', async () => {
+      add.disabled = true; // one tap = one add; re-enabled only on failure
+      const r = await ytsAdd(item).catch(() => null);
+      if (!r || (r.status !== 'added' && r.status !== 'exists')) add.disabled = false;
+    });
+  }
+
+  li.appendChild(wrap);
+  li.appendChild(body);
+  li.appendChild(add);
+  return li;
+}
+
+function ytsRenderResults() {
+  const host = $('yts-results');
+  host.innerHTML = '';
+  for (const it of ytsCtx.items) host.appendChild(ytsRow(it));
+}
+
+/** Flip one rendered row to its decided state (by key — indexes shift, keys don't). */
+function ytsMarkRow(item, status) {
+  ytsCtx.state.set(item.type + ':' + item.id, status);
+  const li = $('yts-results').querySelector('li[data-yts="' + item.type + ':' + item.id + '"]');
+  const btn = li && li.querySelector('.li-add');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = status === 'exists' ? '✓ קיים' : '✓ נוסף';
+  }
+}
+
+/**
+ * Add one search result through the shared pipeline. The result's canonical URL is
+ * re-classified first — classifyLink stays THE safety boundary, and the classifier
+ * must agree with the renderer about what this item is (a mismatch is refused, not
+ * guessed). -> addClassifiedRow's result, or null on refusal.
+ */
+async function ytsAdd(item) {
+  const { classifySourceRow } = await import('./classify.js');
+  const row = classifySourceRow(item.url);
+  if (!row || row.kind !== item.type) {
+    ytsMsg('הקישור לא עבר את בדיקת הבטיחות של האפליקציה', 'err');
+    return null;
+  }
+  const r = await addClassifiedRow(row, {
+    title: item.title,
+    onNote: (t, ok) => ytsMsg(t, ok ? 'ok' : '')
+  });
+  if (r.status === 'added' || r.status === 'exists') ytsMarkRow(item, r.status);
+  ytsMsg(r.message, r.status === 'added' ? 'ok' : r.status === 'exists' ? '' : 'err');
+  return r;
+}
+
+/** A fresh search from the input + the active chip. */
+async function ytsSearch() {
+  const q = $('yts-input').value.trim();
+  ytsHideSuggest();
+  ytsSuggestSeq++; // a submitted search owns the field — kill any in-flight suggestion
+  clearTimeout(ytsSuggestTimer);
+  if (!q) return;
+  const seq = ++ytsSearchSeq;
+  const yts = await import('./ytsearch.js');
+  ytsMsg(yts.searchMessage('searching'));
+  try {
+    const { items, continuation } = await yts.searchYouTube(q, { filter: ytsCtx.filter });
+    if (seq !== ytsSearchSeq) return;
+    ytsCtx.query = q;
+    ytsCtx.items = items;
+    ytsCtx.continuation = continuation;
+    ytsCtx.state = new Map();
+    await ytsMarkExisting(items);
+    if (seq !== ytsSearchSeq) return;
+    ytsRenderResults();
+    ytsMsg(items.length ? '' : yts.searchMessage('empty', { query: q }));
+    $('yts-chips').classList.remove('hidden');
+    $('yts-more').classList.toggle('hidden', !continuation);
+  } catch (e) {
+    if (seq !== ytsSearchSeq) return;
+    // whatever list was showing stays — a failed refresh must not blank the screen
+    ytsMsg(yts.searchMessage(e && e.message === 'parse' ? 'parse' : 'network'), 'err');
+  }
+}
+
+/** The next continuation page, appended without duplicates. */
+async function ytsMore() {
+  const { query, filter, continuation } = ytsCtx;
+  if (!continuation) return;
+  const seq = ++ytsSearchSeq;
+  const yts = await import('./ytsearch.js');
+  ytsMsg(yts.searchMessage('more'));
+  try {
+    const r = await yts.searchYouTube(query, { continuation });
+    // seq AND query/filter unchanged — a chip tap or a new search reset the list
+    if (seq !== ytsSearchSeq || ytsCtx.query !== query || ytsCtx.filter !== filter) return;
+    const seen = new Set(ytsCtx.items.map((i) => i.type + ':' + i.id));
+    const fresh = r.items.filter((i) => !seen.has(i.type + ':' + i.id));
+    ytsCtx.items = ytsCtx.items.concat(fresh);
+    ytsCtx.continuation = r.continuation;
+    await ytsMarkExisting(fresh);
+    if (seq !== ytsSearchSeq) return;
+    ytsRenderResults();
+    ytsMsg('');
+    $('yts-more').classList.toggle('hidden', !r.continuation);
+  } catch (e) {
+    if (seq !== ytsSearchSeq) return;
+    ytsMsg(yts.searchMessage(e && e.message === 'parse' ? 'parse' : 'network'), 'err');
+  }
+}
+
+/**
+ * Preview a video result in the bubble. The bubble gets rec-shaped COPIES of the
+ * video results only (previewEmbedUrl needs {type:'youtube', id}); previewDecide
+ * splices its own array, so it must never share ytsCtx.items — row state is synced
+ * back by key through ytsMarkRow, never by index.
+ */
+function openYtsPreview(item) {
+  const vids = ytsCtx.items.filter((i) => i.type === 'video');
+  const idx = Math.max(0, vids.findIndex((i) => i.id === item.id));
+  const recs = vids.map((v) => ({ type: 'youtube', id: v.id, title: v.title, srcUrl: v.url, _yts: v }));
+  openPreview(recs, idx, 'search');
+}
+
 async function doSyncAndRefresh() {
   const status = $('remote-status');
   status.textContent = 'טוען…'; status.className = 'form-msg';
@@ -4164,6 +4426,14 @@ function wire() {
     renderHome();
     maybeSchedulePush();
   }));
+  // v1.0.33: ➕ from inside the bubble — the triage flow previewDecide was built for:
+  // added/exists both count as decided (advance to the next result), a failure stays.
+  $('pv-add').addEventListener('click', () => previewDecide(async (rec) => {
+    const it = rec._yts;
+    if (!it) return false;
+    const r = await ytsAdd(it).catch(() => null);
+    return !!r && (r.status === 'added' || r.status === 'exists');
+  }));
   $('watch-home').addEventListener('click', goGallery);
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
@@ -4197,6 +4467,34 @@ function wire() {
 
   for (const t of PARENT_TABS) $('tab-' + t).addEventListener('click', () => setParentTab(t));
   $('add-btn').addEventListener('click', parentAdd);
+
+  // v1.0.33: the YouTube search block above the paste field
+  $('yts-go').addEventListener('click', () => { ytsSearch().catch(() => {}); });
+  $('yts-more').addEventListener('click', () => { ytsMore().catch(() => {}); });
+  $('yts-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); ytsSearch().catch(() => {}); }
+    else if (e.key === 'Escape' && !$('yts-suggest').classList.contains('hidden')) {
+      // close ONLY the dropdown: in the browser Escape doubles as the hardware-back
+      // stand-in, and without stopPropagation one press would also pop the view
+      e.stopPropagation();
+      ytsHideSuggest();
+    }
+  });
+  $('yts-input').addEventListener('input', () => {
+    clearTimeout(ytsSuggestTimer);
+    ytsSuggestTimer = setTimeout(() => { ytsShowSuggestions().catch(() => {}); }, 250);
+  });
+  // delayed so a suggestion's pointerdown (which fires before blur) wins the race
+  $('yts-input').addEventListener('blur', () => { setTimeout(ytsHideSuggest, 150); });
+  for (const chip of document.querySelectorAll('#yts-chips .yts-chip')) {
+    chip.addEventListener('click', () => {
+      for (const c of document.querySelectorAll('#yts-chips .yts-chip')) {
+        c.classList.toggle('chip-on', c === chip);
+      }
+      ytsCtx.filter = chip.dataset.f || 'all';
+      ytsSearch().catch(() => {});
+    });
+  }
 
   $('pending-all').addEventListener('click', () => setPendingSelection(true));
   $('pending-none').addEventListener('click', () => setPendingSelection(false));
