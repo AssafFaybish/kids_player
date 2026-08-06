@@ -155,6 +155,11 @@ for anything destructive, and purge it afterwards.
       adds from the bubble ➕ and advances, a channel add reaches the three-way dialog,
       'עוד תוצאות' appends, and airplane mode shows the network message while the
       existing results stay.
+- [ ] **Browsing inside a result** (v1.0.33): tap a CHANNEL result's picture/name → its
+      Videos-tab list appears with a back header; add one video from inside (✓ נוסף);
+      hardware back returns to the intact search results (never out of the screen);
+      same for a PLAYLIST result; 'עוד תוצאות' inside a big channel appends pages, and
+      on a small playlist the button simply disappears at the end (no error).
 
 ### Playback
 - [ ] **Continuous play** (v1.0.25): enable it for one child, let a video end → the countdown

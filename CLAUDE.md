@@ -289,6 +289,22 @@ pins that the consumers follow the config and that every address is well-formed.
     related-channel ids (measured) — identity is read from the header alone and only
     when every UC id there agrees; an ambiguous card is skipped (the ערוצים chip still
     finds the real channelRenderer). The @RabbiRosenblum decoy class, pre-empted.
+  - **A CHANNEL/PLAYLIST RESULT OPENS FOR BROWSING** (user request, same release):
+    tapping its thumbnail OR its name swaps the list area for the source's own videos —
+    a channel shows its VIDEOS TAB only (`youtubei/v1/browse` + the tab's own protobuf
+    params; Shorts have a separate tab, so this is by construction what a subscription
+    would import), a playlist shows its contents (`VL`-prefixed browseId). The header
+    carries back / avatar / name / one ➕ for adding the whole source; every video row
+    behaves exactly like a search result (bubble preview, single-add, ✓ precompute).
+    Back (button AND hardware back, before goGallery — gated on the add panel being
+    visible) restores the search results untouched; a new search closes the browse.
+    ONE state map serves both lists (a ✓ earned inside the browse must show on the
+    results row and vice versa — a video key is global). Browse continuations ride
+    `onResponseReceivedActions` (search uses ...Commands; the reader takes both), and
+    **an unparsable CONTINUATION is END-OF-LIST, never the 'parse' alarm** — measured:
+    a playlist delivered whole on page one still carries a token whose continuation
+    answers nothing but trackingParams; only a FIRST page may raise 'parse'. The
+    one-module invariant widened from `youtubei/v1/search` to ANY `youtubei/` literal.
   - **Adding routes through the SAME pipeline as pasting**: results are normalized to
     canonical URLs and re-classified (`classifySourceRow` — classifyLink stays THE
     boundary; a kind mismatch is refused), then `addClassifiedRow` — the helper

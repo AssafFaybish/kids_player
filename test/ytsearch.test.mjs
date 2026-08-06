@@ -8,7 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildSearchBody, parseSearchResponse, parseSuggestions, searchMessage, suggestUrl
+  buildSearchBody, buildBrowseBody, parseSearchResponse, parseBrowseResponse,
+  parseSuggestions, searchMessage, suggestUrl
 } from '../www/js/ytsearch.js';
 
 /* ---------------- fixture builders (real shapes, trimmed) ---------------- */
@@ -284,6 +285,157 @@ test('officialCard with CONFLICTING header ids is skipped — ambiguity must not
   assert.deepEqual(r.items.map((i) => i.type), ['video']);
 });
 
+/* ---------------- browsing INSIDE a channel / playlist result (v1.0.33) ---------------- */
+
+// the measured browse-lockup shape: video lockup with the duration on the thumbnail's
+// corner badge and views/age in the metadata rows
+function browseLockup(id, title, { duration = '25:39', shorts = false } = {}) {
+  return {
+    lockupViewModel: {
+      contentId: id,
+      contentType: 'LOCKUP_CONTENT_TYPE_VIDEO',
+      contentImage: {
+        thumbnailViewModel: {
+          image: { sources: [{ url: 'https://i.ytimg.com/vi/' + id + '/hq720.jpg', width: 720 }] },
+          overlays: [{
+            thumbnailBottomOverlayViewModel: {
+              badges: [{ thumbnailBadgeViewModel: { text: duration, badgeStyle: 'THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT' } }]
+            }
+          }]
+        }
+      },
+      metadata: {
+        lockupMetadataViewModel: {
+          title: { content: title },
+          metadata: {
+            contentMetadataViewModel: {
+              metadataRows: [{ metadataParts: [{ text: { content: '406K צפיות' } }, { text: { content: 'לפני חודשיים' } }] }]
+            }
+          }
+        }
+      },
+      rendererContext: {
+        commandContext: { onTap: { innertubeCommand: { commandMetadata: { webCommandMetadata: {
+          url: shorts ? '/shorts/' + id : '/watch?v=' + id
+        } } } } }
+      }
+    }
+  };
+}
+
+function channelBrowsePage(items, token = 'B_TOK') {
+  const contents = items.map((it) => ({ richItemRenderer: { content: it } }));
+  if (token) contents.push({ continuationItemRenderer: { continuationEndpoint: { continuationCommand: { token } } } });
+  return {
+    contents: {
+      twoColumnBrowseResultsRenderer: {
+        tabs: [
+          { tabRenderer: { title: 'בית' } }, // unselected tabs carry NO content (measured)
+          { tabRenderer: { title: 'סרטונים', content: { richGridRenderer: { contents } } } }
+        ]
+      }
+    }
+  };
+}
+
+function playlistBrowsePage(items, token = 'P_TOK') {
+  const sections = [{ itemSectionRenderer: { contents: items } }];
+  if (token) sections.push({ continuationItemRenderer: { continuationEndpoint: { continuationCommand: { token } } } });
+  return {
+    contents: {
+      twoColumnBrowseResultsRenderer: {
+        tabs: [{ tabRenderer: { content: { sectionListRenderer: { contents: sections } } } }]
+      }
+    }
+  };
+}
+
+test('buildBrowseBody: channel = Videos-tab params, playlist = VL prefix, never a key', () => {
+  const ch = buildBrowseBody({ kind: 'channel', id: 'UCWF5vshm5UfF59-rtvsE5WA' });
+  assert.equal(ch.browseId, 'UCWF5vshm5UfF59-rtvsE5WA');
+  assert.ok(ch.params, 'a channel browse without the Videos-tab params lands on the Home tab');
+  const pl = buildBrowseBody({ kind: 'playlist', id: 'PLsJS3uJXxKz9worTXC-m35wB-nQXSRGug' });
+  assert.equal(pl.browseId, 'VLPLsJS3uJXxKz9worTXC-m35wB-nQXSRGug');
+  assert.equal(pl.params, undefined);
+  const cont = buildBrowseBody({ kind: 'channel', id: 'UCx' }, { continuation: 'T9' });
+  assert.deepEqual(Object.keys(cont).sort(), ['context', 'continuation']);
+  for (const b of [ch, pl, cont]) {
+    assert.doesNotMatch(JSON.stringify(b), /"key"|apiKey|AIza/i, 'an API key leaked into the browse body');
+  }
+});
+
+test('a channel Videos-tab page parses: richItem-wrapped lockups, duration from the badge', () => {
+  const r = parseBrowseResponse(channelBrowsePage([
+    browseLockup(VID_A, 'מחרוזת שירים'),
+    browseLockup(VID_B, 'עוד פרק', { duration: '1:02:03' })
+  ]));
+  assert.ok(r, 'the measured channel-browse shape parsed as null');
+  assert.equal(r.continuation, 'B_TOK');
+  assert.deepEqual(r.items.map((i) => [i.id, i.durationText, i.viewCountText]), [
+    [VID_A, '25:39', '406K צפיות'],
+    [VID_B, '1:02:03', '406K צפיות']
+  ]);
+  assert.equal(r.items[0].url, 'https://www.youtube.com/watch?v=' + VID_A);
+});
+
+test('a playlist page parses, and its Shorts-shaped entries are dropped', () => {
+  const r = parseBrowseResponse(playlistBrowsePage([
+    browseLockup(VID_A, 'רגיל'),
+    browseLockup(VID_SHORT, 'שורט ברשימה', { shorts: true }),
+    browseLockup(VID_B, 'רגיל 2')
+  ]));
+  assert.equal(r.continuation, 'P_TOK');
+  assert.deepEqual(r.items.map((i) => i.id), [VID_A, VID_B],
+    'a /shorts/-tapping lockup leaked into the playlist browse');
+});
+
+test('a browse CONTINUATION page (onResponseReceivedActions) parses and chains', () => {
+  const page = {
+    onResponseReceivedActions: [{
+      appendContinuationItemsAction: {
+        continuationItems: [
+          { richItemRenderer: { content: browseLockup(VID_A, 'המשך') } },
+          { continuationItemRenderer: { continuationEndpoint: { continuationCommand: { token: 'B_NEXT' } } } }
+        ]
+      }
+    }]
+  };
+  const r = parseBrowseResponse(page);
+  assert.equal(r.items.length, 1);
+  assert.equal(r.continuation, 'B_NEXT');
+  // and the search parser accepts the Actions key too (shared reader)
+  assert.ok(parseSearchResponse(page));
+});
+
+test('legacy playlistVideoRenderer items still map (older documents)', () => {
+  const legacy = {
+    playlistVideoListRenderer: {
+      contents: [{
+        playlistVideoRenderer: {
+          videoId: VID_A,
+          title: { runs: [{ text: 'פרק ישן' }] },
+          lengthText: { simpleText: '7:11' },
+          shortBylineText: { runs: [{ text: 'ערוץ פלא' }] },
+          thumbnail: { thumbnails: [{ url: 'https://i.ytimg.com/vi/' + VID_A + '/hqdefault.jpg' }] },
+          navigationEndpoint: { commandMetadata: { webCommandMetadata: { url: '/watch?v=' + VID_A } } }
+        }
+      }]
+    }
+  };
+  const r = parseBrowseResponse(playlistBrowsePage([legacy], null));
+  assert.equal(r.items.length, 1);
+  assert.equal(r.items[0].channelTitle, 'ערוץ פלא');
+  assert.equal(r.items[0].durationText, '7:11');
+});
+
+test('an unrecognized browse document -> null; a recognized empty one -> {items:[]}', () => {
+  assert.equal(parseBrowseResponse(null), null);
+  assert.equal(parseBrowseResponse({ contents: { somethingElse: {} } }), null);
+  const empty = parseBrowseResponse(channelBrowsePage([], null));
+  assert.ok(empty, 'an empty Videos tab must not read as a parse failure');
+  assert.deepEqual(empty.items, []);
+});
+
 /* ---------------- suggestions ---------------- */
 
 test('parseSuggestions: clean firefox JSON, the JSONP wrapper, and junk', () => {
@@ -311,7 +463,7 @@ test('suggestUrl encodes the query and asks for Hebrew', () => {
 /* ---------------- messages (the words ARE the feature — v1.0.27) ---------------- */
 
 test('searchMessage: every stage distinct and honest, nothing leaks undefined', () => {
-  const stages = ['searching', 'more', 'empty', 'network', 'parse', 'added', 'exists'];
+  const stages = ['searching', 'browse', 'more', 'empty', 'network', 'parse', 'added', 'exists'];
   const texts = stages.map((s) => searchMessage(s, { query: 'בוב' }));
   for (const [i, t] of texts.entries()) {
     assert.ok(t && t.trim(), stages[i] + ' has no text');

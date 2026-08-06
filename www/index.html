@@ -477,6 +477,18 @@
           <button class="yts-chip" data-f="channel" type="button">ערוצים</button>
           <button class="yts-chip" data-f="playlist" type="button">פלייליסטים</button>
         </div>
+        <!-- v1.0.33: browsing INSIDE a channel/playlist result — the header replaces the
+             chips while the list below shows the source's own videos; back restores the
+             search results exactly as they were. -->
+        <div id="yts-browse-head" class="yts-browse-head hidden">
+          <button id="yts-browse-back" class="btn btn-small" type="button">→ חזרה לתוצאות</button>
+          <img id="yts-browse-thumb" class="yts-browse-thumb" alt="" />
+          <div class="yts-browse-body">
+            <div id="yts-browse-title" class="li-title"></div>
+            <div id="yts-browse-sub" class="li-note"></div>
+          </div>
+          <button id="yts-browse-add" class="li-add" type="button">➕</button>
+        </div>
         <div id="yts-msg" class="form-msg"></div>
         <ul id="yts-results" class="parent-list"></ul>
         <button id="yts-more" class="btn btn-small hidden" type="button">עוד תוצאות</button>

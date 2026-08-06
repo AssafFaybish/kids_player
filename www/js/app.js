@@ -700,6 +700,10 @@ function registerViews() {
       // v1.0.26: the bubble is an overlay, not a view — back must close IT first, or the
       // parent is thrown out of the screen they were triaging in.
       if (isPreviewOpen()) { closePreview(); return true; }
+      // v1.0.33: same for a browse-inside-a-result — back returns to the search results
+      // first. Gated on the add panel being VISIBLE: a browse left behind on another tab
+      // must not silently eat a back press.
+      if (!$('panel-add').classList.contains('hidden') && closeYtsBrowse()) return true;
       goGallery();
       return true;
     },
@@ -3481,9 +3485,18 @@ async function parentAdd() {
 // v1.0.32 logoTarget lesson: a late async result must never paint a newer query's
 // screen). `state` maps 'type:id' -> 'added'|'exists' so re-renders keep the ✓s.
 let ytsCtx = { query: '', filter: 'all', items: [], continuation: null, state: new Map() };
+// v1.0.33: browsing INSIDE one channel/playlist result. Non-null = the list area is
+// showing that source's own videos; the search results stay untouched in ytsCtx and
+// closing the browse re-renders them exactly as they were. ONE state map (ytsCtx.state)
+// serves both lists — a video's key is global, so a ✓ earned in the browse view must
+// still show when the parent goes back to the results (and vice versa).
+let ytsBrowse = null;
 let ytsSearchSeq = 0;
 let ytsSuggestSeq = 0;
 let ytsSuggestTimer = 0;
+
+/** Whichever list currently owns the results area. */
+function activeYtsItems() { return ytsBrowse ? ytsBrowse.items : ytsCtx.items; }
 
 function ytsMsg(text, cls = '') {
   const el = $('yts-msg');
@@ -3566,23 +3579,33 @@ function ytsRow(item) {
     d.textContent = item.durationText;
     wrap.appendChild(d);
   }
-  if (item.type === 'video') {
-    // the parentRow preview-thumb pattern, verbatim: role/tabIndex/Enter are what
-    // make a bare <img> reachable from a TV remote (v1.0.29)
-    img.classList.add('li-thumb-play');
-    img.setAttribute('role', 'button');
-    img.title = 'צפייה מהירה';
-    img.tabIndex = 0;
-    const open = (e) => { e.preventDefault(); e.stopPropagation(); openYtsPreview(item); };
-    img.addEventListener('click', open);
-    img.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(e); });
-  }
+  // the parentRow preview-thumb pattern, verbatim: role/tabIndex/Enter are what
+  // make a bare <img> reachable from a TV remote (v1.0.29). A video's tap target is
+  // the preview bubble; a channel/playlist's tap target BROWSES INTO it (v1.0.33).
+  const tapAction = item.type === 'video'
+    ? () => openYtsPreview(item)
+    : () => { openYtsBrowse(item).catch(() => {}); };
+  img.classList.add('li-thumb-play');
+  img.setAttribute('role', 'button');
+  img.title = item.type === 'video' ? 'צפייה מהירה' : 'דפדוף בתוכן';
+  img.tabIndex = 0;
+  const open = (e) => { e.preventDefault(); e.stopPropagation(); tapAction(); };
+  img.addEventListener('click', open);
+  img.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(e); });
 
   const body = document.createElement('div');
   body.className = 'li-body';
   const title = document.createElement('div');
   title.className = 'li-title';
   title.textContent = item.title || '(ללא שם)';
+  if (item.type !== 'video') {
+    // the NAME is a browse trigger too (the user's request: tap the picture or the name)
+    title.setAttribute('role', 'button');
+    title.tabIndex = 0;
+    title.style.cursor = 'pointer';
+    title.addEventListener('click', open);
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(e); });
+  }
   const badge = document.createElement('span');
   badge.className = 'badge-type ' + (item.type === 'video' ? 'badge-yt' : item.type === 'channel' ? 'badge-ch' : 'badge-pl');
   badge.textContent = item.type === 'video' ? 'סרטון' : item.type === 'channel' ? 'ערוץ' : 'פלייליסט';
@@ -3623,7 +3646,7 @@ function ytsRow(item) {
 function ytsRenderResults() {
   const host = $('yts-results');
   host.innerHTML = '';
-  for (const it of ytsCtx.items) host.appendChild(ytsRow(it));
+  for (const it of activeYtsItems()) host.appendChild(ytsRow(it));
 }
 
 /** Flip one rendered row to its decided state (by key — indexes shift, keys don't). */
@@ -3666,6 +3689,9 @@ async function ytsSearch() {
   ytsSuggestSeq++; // a submitted search owns the field — kill any in-flight suggestion
   clearTimeout(ytsSuggestTimer);
   if (!q) return;
+  // a new search always returns the area to RESULTS mode
+  ytsBrowse = null;
+  $('yts-browse-head').classList.add('hidden');
   const seq = ++ytsSearchSeq;
   const yts = await import('./ytsearch.js');
   ytsMsg(yts.searchMessage('searching'));
@@ -3689,8 +3715,95 @@ async function ytsSearch() {
   }
 }
 
+/* ---- browsing inside a channel/playlist result (v1.0.33) ---- */
+
+/** The browse header mirrors the source row: avatar, name, sub, and one ➕/✓. */
+function renderYtsBrowseHead() {
+  const b = ytsBrowse;
+  if (!b) { $('yts-browse-head').classList.add('hidden'); return; }
+  const thumb = $('yts-browse-thumb');
+  thumb.classList.toggle('yts-wide', b.item.type !== 'channel');
+  if (b.item.thumbUrl) thumb.src = b.item.thumbUrl; else thumb.removeAttribute('src');
+  $('yts-browse-title').textContent = b.item.title || '(ללא שם)';
+  $('yts-browse-sub').textContent = b.item.subText || '';
+  const add = $('yts-browse-add');
+  const st = ytsCtx.state.get(b.item.type + ':' + b.item.id);
+  add.disabled = !!st;
+  add.textContent = st ? (st === 'exists' ? '✓ קיים' : '✓ נוסף') : '➕';
+  add.title = b.item.type === 'channel' ? 'הוספת כל הערוץ' : 'הוספת כל הרשימה';
+  $('yts-browse-head').classList.remove('hidden');
+}
+
+/**
+ * Open a channel/playlist result for browsing: the list area shows the source's own
+ * videos (a channel = its Videos tab — exactly what a subscription would import),
+ * the chips give way to the header, and the search results wait untouched in ytsCtx.
+ */
+async function openYtsBrowse(item) {
+  const seq = ++ytsSearchSeq;
+  const yts = await import('./ytsearch.js');
+  ytsBrowse = { target: { kind: item.type, id: item.id }, item, items: [], continuation: null };
+  renderYtsBrowseHead();
+  $('yts-chips').classList.add('hidden');
+  $('yts-results').innerHTML = '';
+  $('yts-more').classList.add('hidden');
+  ytsMsg(yts.searchMessage('browse'));
+  try {
+    const { items, continuation } = await yts.browseYouTube(ytsBrowse.target);
+    if (seq !== ytsSearchSeq || !ytsBrowse || ytsBrowse.item !== item) return;
+    ytsBrowse.items = items;
+    ytsBrowse.continuation = continuation;
+    await ytsMarkExisting(items);
+    if (seq !== ytsSearchSeq || !ytsBrowse || ytsBrowse.item !== item) return;
+    ytsRenderResults();
+    ytsMsg(items.length ? '' : yts.searchMessage('empty', { query: item.title }));
+    $('yts-more').classList.toggle('hidden', !continuation);
+  } catch (e) {
+    if (seq !== ytsSearchSeq) return;
+    ytsMsg(yts.searchMessage(e && e.message === 'parse' ? 'parse' : 'network'), 'err');
+  }
+}
+
+/** Back to the search results, exactly as they were. -> false when nothing was open. */
+function closeYtsBrowse() {
+  if (!ytsBrowse) return false;
+  ytsBrowse = null;
+  ytsSearchSeq++; // a late browse response must not paint over the restored results
+  $('yts-browse-head').classList.add('hidden');
+  ytsMsg('');
+  ytsRenderResults();
+  $('yts-chips').classList.toggle('hidden', !ytsCtx.query);
+  $('yts-more').classList.toggle('hidden', !ytsCtx.continuation);
+  return true;
+}
+
+async function ytsBrowseMore() {
+  const b = ytsBrowse;
+  if (!b || !b.continuation) return;
+  const seq = ++ytsSearchSeq;
+  const yts = await import('./ytsearch.js');
+  ytsMsg(yts.searchMessage('more'));
+  try {
+    const r = await yts.browseYouTube(b.target, { continuation: b.continuation });
+    if (seq !== ytsSearchSeq || ytsBrowse !== b) return;
+    const seen = new Set(b.items.map((i) => i.type + ':' + i.id));
+    const fresh = r.items.filter((i) => !seen.has(i.type + ':' + i.id));
+    b.items = b.items.concat(fresh);
+    b.continuation = r.continuation;
+    await ytsMarkExisting(fresh);
+    if (seq !== ytsSearchSeq || ytsBrowse !== b) return;
+    ytsRenderResults();
+    ytsMsg('');
+    $('yts-more').classList.toggle('hidden', !r.continuation);
+  } catch (e) {
+    if (seq !== ytsSearchSeq) return;
+    ytsMsg(yts.searchMessage(e && e.message === 'parse' ? 'parse' : 'network'), 'err');
+  }
+}
+
 /** The next continuation page, appended without duplicates. */
 async function ytsMore() {
+  if (ytsBrowse) return ytsBrowseMore();
   const { query, filter, continuation } = ytsCtx;
   if (!continuation) return;
   const seq = ++ytsSearchSeq;
@@ -3722,7 +3835,7 @@ async function ytsMore() {
  * back by key through ytsMarkRow, never by index.
  */
 function openYtsPreview(item) {
-  const vids = ytsCtx.items.filter((i) => i.type === 'video');
+  const vids = activeYtsItems().filter((i) => i.type === 'video');
   const idx = Math.max(0, vids.findIndex((i) => i.id === item.id));
   const recs = vids.map((v) => ({ type: 'youtube', id: v.id, title: v.title, srcUrl: v.url, _yts: v }));
   openPreview(recs, idx, 'search');
@@ -4471,6 +4584,15 @@ function wire() {
   // v1.0.33: the YouTube search block above the paste field
   $('yts-go').addEventListener('click', () => { ytsSearch().catch(() => {}); });
   $('yts-more').addEventListener('click', () => { ytsMore().catch(() => {}); });
+  $('yts-browse-back').addEventListener('click', () => { closeYtsBrowse(); });
+  $('yts-browse-add').addEventListener('click', async () => {
+    const b = ytsBrowse;
+    if (!b) return;
+    const btn = $('yts-browse-add');
+    btn.disabled = true; // one tap = one add; the re-render below restores it on failure
+    await ytsAdd(b.item).catch(() => {});
+    renderYtsBrowseHead();
+  });
   $('yts-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); ytsSearch().catch(() => {}); }
     else if (e.key === 'Escape' && !$('yts-suggest').classList.contains('hidden')) {

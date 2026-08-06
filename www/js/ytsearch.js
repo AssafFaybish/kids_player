@@ -30,8 +30,15 @@ import { httpPostJson, httpGetText } from './platform.js';
 
 /* ---------------- the sanctioned endpoints ---------------- */
 
-// The ONE youtubei literal (invariant: exactly one module carries it).
+// The youtubei literals (invariant: exactly one module carries ANY youtubei endpoint).
 export const SEARCH_ENDPOINT = 'https://www.youtube.com/youtubei/v1/search?prettyPrint=false';
+export const BROWSE_ENDPOINT = 'https://www.youtube.com/youtubei/v1/browse?prettyPrint=false';
+
+// The Videos-tab selector for a channel browse — the same protobuf youtube.com sends
+// when the user opens the tab. Videos-tab-only is a POLICY match, not a shortcut:
+// Shorts live in their own tab, so what the parent browses here is exactly what a
+// subscription would import (the UULF rule, in browse form). Verified live.
+const CHANNEL_VIDEOS_TAB = 'EgZ2aWRlb3PyBgQKAjoA';
 
 // A date-stamped client version. YouTube tolerates a stale one; bumping it is always
 // safe. If search ever starts answering 'parse', try bumping this first.
@@ -67,6 +74,21 @@ export function buildSearchBody(query, { filter = 'all', continuation = null } =
   const params = FILTER_PARAMS[filter] || null;
   if (params) body.params = params;
   return body;
+}
+
+/**
+ * The POST body for browsing INSIDE one search result (v1.0.33): a channel's Videos
+ * tab, or a playlist's contents. Same key-free/continuation rules as buildSearchBody
+ * (both pinned). A playlist's browse id is its id behind the `VL` prefix — that is
+ * how youtube.com itself addresses a playlist page.
+ */
+export function buildBrowseBody(target, { continuation = null } = {}) {
+  const context = { client: { clientName: 'WEB', clientVersion: CLIENT_VERSION, hl: 'he', gl: 'IL' } };
+  if (continuation) return { context, continuation };
+  const kind = target && target.kind;
+  const id = String((target && target.id) || '');
+  if (kind === 'channel') return { context, browseId: id, params: CHANNEL_VIDEOS_TAB };
+  return { context, browseId: 'VL' + id };
 }
 
 /* ---------------- pure: response parsing ---------------- */
@@ -207,12 +229,40 @@ function lockupItem(l) {
     const urls = [];
     collectKey(l, 'url', urls);
     if (urls.some((u) => typeof u === 'string' && u.includes('/shorts/'))) return null;
+    // the duration rides the thumbnail's corner badge (thumbnailBadgeViewModel.text,
+    // measured live in browse responses) — the only time-shaped badge text there
+    const badges = [];
+    collectKey(l.contentImage || {}, 'thumbnailBadgeViewModel', badges);
+    const durationText = badges.map((b) => String((b && b.text) || ''))
+      .find((t) => /^\d+:\d\d(?::\d\d)?$/.test(t)) || '';
+    // metadata rows carry views/age for browse lockups ("406K צפיות", "לפני חודשיים")
+    const parts = [];
+    collectKey((meta && meta.metadata) || {}, 'text', parts);
+    const texts = parts.map(textOf).filter(Boolean);
     return {
       type: 'video', id, url: 'https://www.youtube.com/watch?v=' + id, title,
-      channelTitle: '', durationText: '', publishedText: '', viewCountText: '', thumbUrl
+      channelTitle: '', durationText,
+      publishedText: texts.find((t) => /לפני|ago/.test(t)) || '',
+      viewCountText: texts.find((t) => /צפיות|views/.test(t)) || '',
+      thumbUrl
     };
   }
   return null;
+}
+
+/** The LEGACY playlist-contents item shape (playlistVideoRenderer) — kept for older
+    documents; current pages answer lockupViewModel (measured 2026-08-06). */
+function playlistVideoItem(p) {
+  const id = String(p.videoId || '');
+  if (!VIDEO_ID.test(id) || isShortVideo(p)) return null;
+  return {
+    type: 'video', id, url: 'https://www.youtube.com/watch?v=' + id,
+    title: textOf(p.title),
+    channelTitle: textOf(p.shortBylineText),
+    durationText: textOf(p.lengthText),
+    publishedText: '', viewCountText: '',
+    thumbUrl: bestThumb(p.thumbnail && p.thumbnail.thumbnails)
+  };
 }
 
 function playlistRendererItem(p) {
@@ -235,6 +285,16 @@ function collectNode(node, state) {
     for (const it of node.itemSectionRenderer.contents || []) collectNode(it, state);
     return;
   }
+  // browse wrappers (v1.0.33): a channel's Videos tab wraps each lockup in a
+  // richItemRenderer; older playlist documents wrap items in playlistVideoListRenderer
+  if (node.richItemRenderer) {
+    collectNode(node.richItemRenderer.content, state);
+    return;
+  }
+  if (node.playlistVideoListRenderer) {
+    for (const it of node.playlistVideoListRenderer.contents || []) collectNode(it, state);
+    return;
+  }
   if (node.continuationItemRenderer) {
     const tok = node.continuationItemRenderer.continuationEndpoint
       && node.continuationItemRenderer.continuationEndpoint.continuationCommand
@@ -253,6 +313,7 @@ function collectNode(node, state) {
   }
   let item = null;
   if (node.videoRenderer) item = videoItem(node.videoRenderer);
+  else if (node.playlistVideoRenderer) item = playlistVideoItem(node.playlistVideoRenderer);
   else if (node.channelRenderer) item = channelItem(node.channelRenderer);
   else if (node.playlistRenderer) item = playlistRendererItem(node.playlistRenderer);
   else if (node.lockupViewModel) item = lockupItem(node.lockupViewModel);
@@ -272,22 +333,57 @@ function collectNode(node, state) {
  * { items: [] } — a different fact ("no results") that gets a different message.
  * Handles both the first-page shape and the continuation shape.
  */
+/** A continuation page's item list — search answers onResponseReceivedCommands,
+    browse answers onResponseReceivedActions (both measured live). */
+function continuationSections(json) {
+  const groups = [
+    ...((json && json.onResponseReceivedCommands) || []),
+    ...((json && json.onResponseReceivedActions) || [])
+  ];
+  for (const c of groups) {
+    const items = c && c.appendContinuationItemsAction && c.appendContinuationItemsAction.continuationItems;
+    if (Array.isArray(items)) return items;
+  }
+  return null;
+}
+
+function walkSections(sections) {
+  const state = { items: [], continuation: null, seen: new Set() };
+  for (const s of sections) collectNode(s, state);
+  return { items: state.items, continuation: state.continuation };
+}
+
 export function parseSearchResponse(json) {
   const first = json && json.contents && json.contents.twoColumnSearchResultsRenderer
     && json.contents.twoColumnSearchResultsRenderer.primaryContents
     && json.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer
     && json.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents;
-  let sections = Array.isArray(first) ? first : null;
-  if (!sections) {
-    for (const c of (json && json.onResponseReceivedCommands) || []) {
-      const items = c && c.appendContinuationItemsAction && c.appendContinuationItemsAction.continuationItems;
-      if (Array.isArray(items)) { sections = items; break; }
-    }
-  }
+  const sections = Array.isArray(first) ? first : continuationSections(json);
   if (!sections) return null;
-  const state = { items: [], continuation: null, seen: new Set() };
-  for (const s of sections) collectNode(s, state);
-  return { items: state.items, continuation: state.continuation };
+  return walkSections(sections);
+}
+
+/**
+ * -> { items, continuation } | null, same contract as parseSearchResponse.
+ * First-page shapes (both measured live 2026-08-06): a channel answers
+ * tabs[] where ONLY the requested tab carries content — a richGridRenderer of
+ * richItemRenderer-wrapped video lockups; a playlist answers a sectionListRenderer
+ * whose itemSection holds the lockups directly. Continuation pages ride
+ * onResponseReceivedActions.
+ */
+export function parseBrowseResponse(json) {
+  let sections = null;
+  const tabs = json && json.contents && json.contents.twoColumnBrowseResultsRenderer
+    && json.contents.twoColumnBrowseResultsRenderer.tabs;
+  for (const t of tabs || []) {
+    const content = t && t.tabRenderer && t.tabRenderer.content;
+    const list = (content && content.richGridRenderer && content.richGridRenderer.contents)
+      || (content && content.sectionListRenderer && content.sectionListRenderer.contents);
+    if (Array.isArray(list)) { sections = list; break; }
+  }
+  if (!sections) sections = continuationSections(json);
+  if (!sections) return null;
+  return walkSections(sections);
 }
 
 /**
@@ -326,6 +422,7 @@ export function searchMessage(stage, { query = '' } = {}) {
   const q = String(query || '').trim();
   switch (stage) {
     case 'searching': return 'מחפשים ביוטיוב…';
+    case 'browse': return 'טוענים את הסרטונים…';
     case 'more': return 'טוענים עוד תוצאות…';
     case 'empty': return 'לא נמצאו תוצאות עבור "' + q + '"';
     case 'network': return 'החיפוש לא הצליח — בדקו את החיבור לאינטרנט ונסו שוב';
@@ -338,17 +435,36 @@ export function searchMessage(stage, { query = '' } = {}) {
 
 /* ---------------- network (thin; the logic above is what's tested) ---------------- */
 
-/** One search (or continuation page). Throws Error('network') / Error('parse'). */
-export async function searchYouTube(query, opts = {}) {
-  const res = await httpPostJson(SEARCH_ENDPOINT, buildSearchBody(query, opts));
+async function postAndParse(endpoint, body, parse, { endOnUnparsed = false } = {}) {
+  const res = await httpPostJson(endpoint, body);
   if (res.status !== 200 || !res.data) throw new Error('network');
   let data = res.data;
   if (typeof data === 'string') {
     try { data = JSON.parse(data); } catch { throw new Error('parse'); }
   }
-  const parsed = parseSearchResponse(data);
-  if (!parsed) throw new Error('parse');
+  const parsed = parse(data);
+  if (!parsed) {
+    // A CONTINUATION that parses to nothing means "no more pages", never the
+    // shape-changed alarm: measured live — a playlist delivered whole on page one
+    // still carries a token, and asking for it answers a document with nothing but
+    // trackingParams. The FIRST page already proved the shapes are recognized, so
+    // only first-page requests may raise 'parse'.
+    if (endOnUnparsed) return { items: [], continuation: null };
+    throw new Error('parse');
+  }
   return parsed;
+}
+
+/** One search (or continuation page). Throws Error('network') / Error('parse'). */
+export async function searchYouTube(query, opts = {}) {
+  return postAndParse(SEARCH_ENDPOINT, buildSearchBody(query, opts), parseSearchResponse,
+    { endOnUnparsed: !!opts.continuation });
+}
+
+/** One browse page inside a channel/playlist result. Same error contract. */
+export async function browseYouTube(target, opts = {}) {
+  return postAndParse(BROWSE_ENDPOINT, buildBrowseBody(target, opts), parseBrowseResponse,
+    { endOnUnparsed: !!opts.continuation });
 }
 
 /** Best-effort suggestions; never throws (an offline dropdown is just absent). */

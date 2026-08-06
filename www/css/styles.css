@@ -922,6 +922,15 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .badge-ch { background: #e9e3ff; color: #6a4fd0; }
 .badge-pl { background: #fff0d9; color: #b46a00; }
 .pv-add { background: #e7f8ee; color: var(--green); font-weight: 800; }
+/* browsing inside a channel/playlist result: a compact header above the item list */
+.yts-browse-head {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; border-radius: 14px; padding: 8px 10px; margin: 10px 0 2px;
+  box-shadow: 0 2px 8px rgba(45, 42, 74, 0.08);
+}
+.yts-browse-thumb { width: 48px; aspect-ratio: 1 / 1; border-radius: 50%; object-fit: cover; background: #d8d5f0; flex: 0 0 auto; }
+.yts-browse-thumb.yts-wide { width: 84px; aspect-ratio: 16 / 9; border-radius: 10px; }
+.yts-browse-body { flex: 1 1 auto; min-width: 0; }
 
 /* ---------- Toast (v1.0.26) ----------
    The only non-blocking feedback channel. Above everything (a share can land while the

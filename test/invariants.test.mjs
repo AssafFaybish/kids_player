@@ -121,13 +121,14 @@ test('nothing calls the YouTube search endpoint (100 quota units per call)', () 
   }
 });
 
-test('the keyless youtubei search lives in EXACTLY one module and never sees a key', () => {
-  // The endpoint is undocumented — when YouTube changes it, ONE module must be the
-  // whole blast radius. And it never needs a key: sending one would tie the family's
+test('the keyless youtubei endpoints live in EXACTLY one module and never see a key', () => {
+  // The endpoints are undocumented — when YouTube changes them, ONE module must be the
+  // whole blast radius. And they never need a key: sending one would tie the family's
   // shared quota (or the parent's own key) to requests that are free without it.
-  const carriers = [...MODULES].filter(([, b]) => /youtubei\/v1\/search/.test(b)).map(([p]) => p);
+  // v1.0.33 widened this from /v1/search to ANY youtubei path (browse joined search).
+  const carriers = [...MODULES].filter(([, b]) => /youtubei\//.test(b)).map(([p]) => p);
   assert.deepEqual(carriers, ['www/js/ytsearch.js'],
-    'the youtubei endpoint moved or spread: ' + carriers.join(', '));
+    'a youtubei endpoint moved or spread: ' + carriers.join(', '));
 
   const body = MODULES.get('www/js/ytsearch.js') || '';
   // call/import shapes only (the rule this file states for itself): prose naming the
