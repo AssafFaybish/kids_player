@@ -79,7 +79,8 @@ export async function getSetting(scope, name, fallback = null) {
 const SAFE_ON_TIE = {
   exitLock: true,       // stay in kiosk mode
   shareApproval: true,  // keep asking before a shared video reaches the child
-  autoplay: false       // stop at the end of the video
+  autoplay: false,      // stop at the end of the video
+  resume: false         // start from the beginning (v1.0.32 — today's behaviour)
 };
 
 /** PURE: which of two writes of ONE setting survives. Commutative — tests pin that. */

@@ -22,6 +22,15 @@ export const AUTOPLAY_RETRY_MS = 4000;   // one retry of the SAME video before m
 // unplayable videos would flip through black screens indefinitely.
 export const AUTOPLAY_MAX_FAILURES = 5;
 
+/* Resume playback (v1.0.32) — OFF by default, per profile, synced. The POSITION itself is
+   DEVICE-LOCAL and never serialized to Drive: it changes every few seconds of watching,
+   and pushing that churn would rewrite the family document on every pause (the giftRank
+   lesson — see drive.serializeStateEntry). */
+export const RESUME_REWIND_SEC = 3;   // resume this much before the stop point (user-specified)
+export const RESUME_MIN_POS_SEC = 8;  // a stop earlier than this is not worth resuming
+export const RESUME_TAIL_SEC = 12;    // a stop this close to the end = finished → start over
+export const RESUME_SAVE_MS = 5000;   // periodic save while playing (survives a process kill)
+
 /* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
    is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
    Long enough that a parent who changes their mind has a real window; short enough that

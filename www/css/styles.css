@@ -528,6 +528,14 @@ body {
   filter: drop-shadow(0 6px 10px rgba(180, 120, 0, 0.45));
 }
 .tile-gift .play-badge { display: none; }
+/* v1.0.32: watched-progress bar on the tile — LTR like the player's own timeline,
+   whatever the page direction. Inside .thumb (position:relative, overflow:hidden). */
+.tile-progress {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+  background: rgba(0, 0, 0, 0.3); pointer-events: none;
+}
+.tile-progress-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #ff0033; }
+
 .tile-gift .thumb { animation: giftWiggle 2.2s ease-in-out infinite; }
 @keyframes giftWiggle { 0%, 100% { rotate: -1.5deg; } 50% { rotate: 1.5deg; } }
 /* never composite decorations while a video decodes */

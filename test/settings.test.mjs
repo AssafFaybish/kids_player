@@ -93,6 +93,9 @@ test('an exact tie resolves the SAFE way, and never by argument order', () => {
   assert.equal(mergeSettingEntry('shareApproval', e(true, 7), e(false, 7)).v, true);
   assert.equal(mergeSettingEntry('autoplay', e(true, 7), e(false, 7)).v, false, 'stop playing');
   assert.equal(mergeSettingEntry('autoplay', e(false, 7), e(true, 7)).v, false);
+  // v1.0.32: resume playback — the safe tie is today's behaviour, start from the top
+  assert.equal(mergeSettingEntry('resume', e(true, 7), e(false, 7)).v, false, 'start over');
+  assert.equal(mergeSettingEntry('resume', e(false, 7), e(true, 7)).v, false);
   // no safe direction (an opaque PIN hash): deterministic by value, still order-free
   const a = mergeSettingEntry('pin', e('aaa', 7), e('bbb', 7));
   const b = mergeSettingEntry('pin', e('bbb', 7), e('aaa', 7));

@@ -9,17 +9,18 @@ import {
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, putSetting } from './settings.js';
-import { playItem, stop } from './player.js';
+import { playItem, stop, playbackState } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onBackButton, exitApp, prefGet, prefSet, prefRemove } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
-  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS,
+  AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
-import { planAutoplay, nextInOrder, previewEmbedUrl } from './playerlogic.js';
+import { planAutoplay, nextInOrder, previewEmbedUrl,
+  resumeStartAt, resumeSaveDecision, watchedFraction } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -59,7 +60,8 @@ let folders = [];                     // built by buildFolders()
 let folderId = null;                  // open folder in #view-folder
 let folderPage = 0;
 let folderPagerObj = null;
-let giftStates = new Map();           // key -> profileVideoState record (gifts, F9)
+let giftStates = new Map();           // key -> profileVideoState record (gifts F9, resume v1.0.32)
+let resumeEnabled = false;            // the active profile's synced 'resume' setting (v1.0.32)
 // v1.0.12 grouping of loose singles — record arrays built by ONE bulk read in
 // buildFolders and paginated directly (no per-key IDB reads on render).
 let singleGroups = new Map();         // channelId -> records of its grouped singles
@@ -281,7 +283,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'sched-lock-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -666,12 +668,21 @@ function registerViews() {
     // and re-offers a pending update (6h check throttle; asked once per session).
     onEnter: () => { renderHome(); homeEntryRefresh(); }
   });
-  nav.register('folder', {}); // default pop → home
+  // v1.0.32: onEnter fires on BACK-restores too (nav.transition), so returning from a
+  // video re-renders the page the child left — the tile they just watched must show its
+  // fresh progress bar, exactly like the home view's own onEnter re-render. Same page,
+  // same scroll (nav restores it after the double-rAF).
+  nav.register('folder', { onEnter: () => { if (folderId) renderFolderView().catch(() => {}); } });
   nav.register('search', {}); // default pop → home; watch pushed on top returns here
   nav.register('watch', {
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
       resetAutoplayChain(); // a queued next video must never follow the child out
+      // v1.0.32: bank the stop point BEFORE stop() tears the clock down. openWatch's
+      // save-previous covers the video→video path that returned above.
+      saveWatchPosition(currentWatch);
+      clearInterval(posTimer);
+      posTimer = null;
       stop();
       wake.releaseAll();
       currentWatch = null;
@@ -761,6 +772,22 @@ function tileEl(item) {
     if (cap) cap.textContent = 'מתנה! 🎁';
   }
 
+  // v1.0.32: watched-progress bar (red sliver at the thumb's bottom). Gated on the
+  // profile's resume setting — no position is saved while it is off, and a stale one
+  // from an earlier ON period must not draw. A wrapped gift never played, so no bar.
+  if (resumeEnabled && !(st && st.giftRank && !st.unwrappedAt)) {
+    const frac = watchedFraction(st && st.posSec, st && st.durSec);
+    if (frac !== null) {
+      const bar = document.createElement('span');
+      bar.className = 'tile-progress';
+      const fill = document.createElement('span');
+      fill.className = 'tile-progress-fill';
+      fill.style.width = (frac * 100).toFixed(1) + '%';
+      bar.appendChild(fill);
+      thumb.appendChild(bar);
+    }
+  }
+
   btn.addEventListener('click', () => {
     const cur = giftStates.get(item.key);
     if (cur && cur.giftRank && !cur.unwrappedAt) { unwrapTileEl(btn, item); return; }
@@ -786,6 +813,9 @@ async function unwrapTileEl(btn, item) {
 async function loadGiftStates() {
   giftStates = new Map();
   if (!activeProfileId) return;
+  // v1.0.32: the resume flag rides the same load — tileEl is synchronous and needs both.
+  try { resumeEnabled = (await getSetting(activeProfileId, 'resume', false)) === true; }
+  catch { resumeEnabled = false; }
   const dbi = await db.openDb();
   await new Promise((resolve) => {
     const range = IDBKeyRange.bound([activeProfileId, ''], [activeProfileId, '￿']);
@@ -798,6 +828,40 @@ async function loadGiftStates() {
     };
     req.onerror = () => resolve();
   });
+}
+
+/* ---------------- Resume playback (v1.0.32) ----------------
+ * The saving half. The DECISIONS are pure (resumeSaveDecision / resumeStartAt /
+ * watchedFraction in playerlogic.js); this owns the profile, the database and the timer.
+ * Positions are saved only while the profile's synced 'resume' setting is ON, and they
+ * are DEVICE-LOCAL — drive.serializeStateEntry never lets them travel.
+ * giftStates (the in-memory mirror of profileVideoState) is kept in step on every write,
+ * so the tile bars are correct on the very next render without an extra IDB read. */
+let posTimer = null;
+
+/** Forget a video's position: it ended, so the next viewing starts fresh. */
+function clearWatchPosition(item) {
+  if (!item || !activeProfileId) return;
+  const st = giftStates.get(item.key);
+  if (st) {
+    const { posSec, durSec, posAt, ...rest } = st;
+    if (rest.giftRank !== undefined || rest.unwrappedAt) giftStates.set(item.key, rest);
+    else giftStates.delete(item.key);
+  }
+  db.clearPlayPosition(activeProfileId, item.key).catch(() => {});
+}
+
+/** Read the live playhead and persist it for `item`, per the pure decision. */
+function saveWatchPosition(item, state = playbackState()) {
+  if (!resumeEnabled || !item || !activeProfileId || !state) return;
+  const decision = resumeSaveDecision({ pos: state.time, dur: state.duration });
+  if (decision === 'ignore') return;
+  if (decision === 'clear') { clearWatchPosition(item); return; }
+  const pos = Math.floor(state.time);
+  const dur = Math.floor(state.duration);
+  const prev = giftStates.get(item.key) || { profileId: activeProfileId, key: item.key };
+  giftStates.set(item.key, { ...prev, posSec: pos, durSec: dur, posAt: Date.now() });
+  db.savePlayPosition(activeProfileId, item.key, pos, dur).catch(() => {});
 }
 
 /* ---------------- Home: folders (F10) ---------------- */
@@ -1293,8 +1357,7 @@ async function openFolder(fid) {
   } else {
     logoTop.classList.add('hidden');
   }
-  nav.go('folder', { folderId: fid });
-  await renderFolderView();
+  nav.go('folder', { folderId: fid }); // its onEnter renders the grid (v1.0.32)
 }
 
 async function renderFolderView() {
@@ -1413,6 +1476,11 @@ async function onVideoFinished(reason = 'ended') {
   const item = currentWatch;
   if (!item) { leaveWatch(); return; }
 
+  // v1.0.32: a video that ENDED starts fresh next time — its saved position (and the
+  // tile's progress bar) is gone. Player teardown already ran, so playbackState() is
+  // null and no later save can resurrect it. An 'error' exit keeps the position.
+  if (reason === 'ended' && resumeEnabled) clearWatchPosition(item);
+
   let enabled = false;
   try { enabled = (await getSetting(activeProfileId, 'autoplay', false)) === true; } catch {}
   // The child can leave during those awaits; anything after this point would act on a
@@ -1463,6 +1531,9 @@ function enterPlayerFullscreen() {
 }
 
 async function openWatch(item) {
+  // v1.0.32: switching video→video — bank the OLD video's stop point BEFORE playItem
+  // reuses or tears down the player (the clock goes with it).
+  if (currentWatch && currentWatch.key !== item.key) saveWatchPosition(currentWatch);
   currentWatch = item;
   armScheduledLock().catch(() => {}); // v1.0.31: first video arms the screen-time countdown
   // A tap during the continuous-play countdown wins over the queued video. Synchronous
@@ -1497,7 +1568,24 @@ async function openWatch(item) {
   setWatchTitle(item);
   renderWatchGrid(item);
 
+  // v1.0.32: resume — the pure decision; 0 whenever the setting is off, nothing usable
+  // is stored, or the stored stop is inside the tail. giftStates mirrors the whole
+  // profileVideoState store, so this is a sync lookup, not an IDB read.
+  const stored = giftStates.get(item.key);
+  const startAt = resumeStartAt({
+    enabled: resumeEnabled,
+    posSec: stored && stored.posSec,
+    durSec: stored && stored.durSec
+  });
+  // …and while watching, bank the playhead every few seconds: a process killed while the
+  // screen is off must still know where the child stopped.
+  clearInterval(posTimer);
+  posTimer = setInterval(() => {
+    if (nav.isActive('watch') && currentWatch) saveWatchPosition(currentWatch);
+  }, RESUME_SAVE_MS);
+
   await playItem(item, $('player-host'), {
+    startAt,
     onExit: (reason) => { if ($('view-watch').classList.contains('active')) onVideoFinished(reason).catch(() => leaveWatch()); },
     onStatus: (s) => {
       if (!s) { status.classList.add('hidden'); status.textContent = ''; return; }
@@ -2001,6 +2089,7 @@ async function refreshParent() {
   $('share-approval-toggle').checked = await getSetting(activeProfileId, 'shareApproval', true) !== false;
   $('exit-lock-toggle').checked = await exitLockOn();
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
+  $('resume-toggle').checked = (await getSetting(activeProfileId, 'resume', false)) === true;
   // v1.0.31: scheduled lock — load both numbers (0 after = off)
   $('lock-after-min').value = String(Number(await getSetting(activeProfileId, 'lockAfterMin', 0)) || 0);
   $('lock-duration-min').value = String(Number(await getSetting(activeProfileId, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)) || SCHED_LOCK_DEFAULT_DURATION_MIN);
@@ -4186,6 +4275,18 @@ function wire() {
     msg.textContent = e.target.checked
       ? 'ניגון רציף הופעל ✅ — בסוף כל סרטון יתחיל הבא בתור'
       : 'ניגון רציף כובה — בסוף סרטון חוזרים לתיקייה';
+    msg.className = 'form-msg ok';
+  });
+  // v1.0.32: resume playback — per-profile and synced; the position itself never leaves
+  // the device (drive.serializeStateEntry never emits it).
+  $('resume-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'resume', e.target.checked);
+    resumeEnabled = e.target.checked; // tileEl and the save loop read the cached flag
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'המשך צפייה הופעל ✅ — סרטון שנעצר ייפתח מאותה נקודה'
+      : 'המשך צפייה כובה — כל סרטון מתחיל מההתחלה';
     msg.className = 'form-msg ok';
   });
   // v1.0.31: scheduled per-profile lock — two synced numbers. Clamp to sane bounds and
