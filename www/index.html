@@ -145,6 +145,15 @@
         <h1 id="profiles-title" class="profiles-title">מי צופה? 🍿</h1>
         <div id="profiles-grid" class="profiles-grid"></div>
       </div>
+      <!-- v1.0.32 (user request): a visible way out from the picker — hardware back
+           already ran askExit here, this is the same flow with a button. ALWAYS shown
+           (user's decision): confirm → free exit, or the parent code first when the
+           kiosk lock is armed (askExit reads the LAST ACTIVE profile's lock, because
+           at boot no profile is active yet — the launch-arming rule). -->
+      <button id="profiles-exit" class="exit-btn" type="button" aria-label="יציאה מהאפליקציה">
+        <span class="exit-emoji">🚪</span>
+        <span class="exit-label">יציאה</span>
+      </button>
     </section>
 
     <!-- ===================== CREATE PROFILE ===================== -->
