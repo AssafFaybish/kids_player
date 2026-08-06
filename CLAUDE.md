@@ -262,6 +262,14 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE ABOUT TAB LOST THREE BUTTONS** (user request): מדיניות פרטיות, תנאי
+  שימוש, מה חדש בגירסה. The policies LIVE ON THE SITE as sticky nav tabs (all three
+  docs/ pages carry the same `.site-tabs` bar) — **the privacy/terms URLs must stay
+  ALIVE: Google OAuth verification points at them** (`LINKS.site.privacy/terms` remain
+  in links.js as the record even though the app no longer opens them; the 🌐 site button
+  is the in-app path). What's-new shows in the ONE place that matters — the update
+  prompt before an install; `update.notesForInstalledVersion` + the `update.notesAll`
+  store went with the button (dead code).
 - v1.0.32 — **THE SOURCES TAB: subscriptions fold away; an undecided channel surfaces as
   "ערוצים חדשים" for 24h.** The channel list is a CLOSED `<details>` like the library list
   (v1.0.28), sorted newest-first by `addedAt` (every creation path already stamped it;

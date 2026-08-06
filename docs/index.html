@@ -40,9 +40,24 @@
     }
     .note { background: #fff8e6; border-inline-start: 4px solid #f0b429; border-radius: 10px;
             padding: 12px 16px; margin: 14px 0; font-size: 15px; }
+    /* v1.0.32: the policies moved out of the app's About tab, so the site carries them
+       as visible tabs — the same three links on every page. OAuth verification points
+       at privacy.html/terms.html; these tabs are how a human finds them. */
+    .site-tabs { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;
+                 padding: 12px 10px; background: #fff; box-shadow: 0 2px 10px rgba(45,42,74,.06);
+                 position: sticky; top: 0; z-index: 5; }
+    .site-tabs a { text-decoration: none; color: var(--brand); font-weight: 700;
+                   padding: 8px 16px; border-radius: 999px; font-size: 15px; }
+    .site-tabs a[aria-current="page"] { background: #efecff; }
+    .site-tabs a:hover { background: #f4f2ff; }
   </style>
 </head>
 <body>
+  <nav class="site-tabs" aria-label="ניווט האתר">
+    <a href="index.html" aria-current="page">🏠 בית</a>
+    <a href="privacy.html">🔒 מדיניות פרטיות</a>
+    <a href="terms.html">📄 תנאי שימוש</a>
+  </nav>
   <header>
     <div class="logo">🌳</div>
     <h1>הסרטונים שלי</h1>

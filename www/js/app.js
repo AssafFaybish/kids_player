@@ -4507,16 +4507,6 @@ function wire() {
       window.location.href = `mailto:${email}?cc=${encodeURIComponent(cc || '')}&subject=${encodeURIComponent(subject || '')}`;
     } catch {}
   });
-  // v1.0.15: parents can read the privacy policy (the same page Google verification uses)
-  $('privacy-btn').addEventListener('click', async () => {
-    const { LINKS } = await import('./links.js');
-    const { openExternal } = await import('./platform.js');
-    const ok = await openExternal(LINKS.site.privacy);
-    if (!ok) {
-      $('contact-msg').textContent = LINKS.site.privacy;
-      $('contact-msg').className = 'form-msg';
-    }
-  });
   // v1.0.19: the landing page — what the app is, the install walkthrough, and the
   // link a parent forwards to another parent. Same openExternal path as the policy
   // buttons: the WebView blocks external navigation by design, so it must leave
@@ -4530,32 +4520,17 @@ function wire() {
       $('contact-msg').className = 'form-msg';
     }
   });
-  $('terms-btn').addEventListener('click', async () => {
-    const { LINKS } = await import('./links.js');
-    const { openExternal } = await import('./platform.js');
-    const ok = await openExternal(LINKS.site.terms);
-    if (!ok) {
-      $('contact-msg').textContent = LINKS.site.terms;
-      $('contact-msg').className = 'form-msg';
-    }
-  });
+  // v1.0.32: the privacy/terms buttons are gone (user request) — the policies live on
+  // the site as nav tabs, one tap behind site-btn; OAuth verification keeps pointing at
+  // the same URLs (LINKS.site.privacy/terms stay in links.js as the record of them).
   $('tour-replay').addEventListener('click', () => { startTour({ replay: true }); });
   $('guide-add').addEventListener('click', () => { startAddGuide(); });
   // v1.0.20: the same guide from the child's EMPTY home — the one moment a parent is
   // guaranteed to be looking at the app and stuck. Reading it needs no PIN (it adds
   // nothing); back returns to the empty home because startAddGuide uses nav.go.
   $('empty-guide').addEventListener('click', () => { startAddGuide(); });
-  // v1.0.13: re-read what changed, any time (About tab)
-  $('whatsnew-btn').addEventListener('click', async () => {
-    const upd = await import('./update.js');
-    const data = await upd.notesForInstalledVersion();
-    if (!data.versions.length) {
-      await alertKid({ emoji: '🎉', title: 'מה חדש', text: 'אין עדיין מידע על שינויים — נסו "בדיקת עדכון" קודם.', ok: 'סבבה' });
-      return;
-    }
-    await showWhatsNew(data, { installMode: false });
-    if (nav.isActive('whatsnew')) nav.back();
-  });
+  // v1.0.32: the "מה חדש בגירסה" button is gone (user request) — the notes show in the
+  // one place that matters: the update prompt, before every install (showWhatsNew there).
   // v1.0.14: voluntary support — donate + the two free ways to help
   $('donate-btn').addEventListener('click', () => { openDonateFlow().catch(() => {}); });
   $('nudge-donate').addEventListener('click', async () => {
