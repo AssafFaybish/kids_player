@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — module map, data model, and flows
 
-> Testing: [docs/TESTING.md](docs/TESTING.md). Release records: [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md).
+> Testing: [docs/TESTING.md](docs/TESTING.md). Release records: [docs/V1032.md](docs/V1032.md), [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md).
 
 Companion to [CLAUDE.md](CLAUDE.md) (invariants) and [DEVELOPMENT.md](DEVELOPMENT.md)
 (original architecture + overhaul addendum §14-§18). This file answers "where does X
