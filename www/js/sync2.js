@@ -233,6 +233,9 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
         libraryId: lib, channelId,
         autoApprove: row.flag === 'auto' ? true : row.flag === 'manual' ? false : !!src.defaultAutoApprove,
         autoApproveSource: row.flag ? 'sheet' : 'default',
+        // v1.0.32: an explicit auto/manual column IS the sync decision — the row skips
+        // the "ערוצים חדשים" section. A flagless row waits for the parent's answer.
+        decidedAt: row.flag ? Date.now() : null,
         order: knownIds.size, addedAt: Date.now(), hidden: false, sourceRow: true,
         titleOverride: row.title || ''
       });
@@ -248,6 +251,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
       libraryId: lib, channelId: plId, kind: 'playlist',
       autoApprove: row.flag === 'auto' ? true : row.flag === 'manual' ? false : !!src.defaultAutoApprove,
       autoApproveSource: row.flag ? 'sheet' : 'default',
+      decidedAt: row.flag ? Date.now() : null, // v1.0.32 — same rule as channel rows above
       order: knownIds.size, addedAt: Date.now(), hidden: false, sourceRow: true,
       titleOverride: row.title || ''
     });

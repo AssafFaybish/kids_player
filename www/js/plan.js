@@ -1249,3 +1249,44 @@ export function groupSinglesByChannel(singles, subscribedChannelIds = [], min = 
   groups.sort((a, b) => (b.keys.length - a.keys.length) || (a.channelId < b.channelId ? -1 : 1));
   return { groups, absorb, loose };
 }
+
+/* ---------------- The parent's channel list (v1.0.32) ---------------- */
+
+/** A channel awaiting its sync decision surfaces as "new" for this long. */
+export const NEW_CHANNEL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * PURE: split the parent's subscriptions into "ערוצים חדשים" (awaiting a decision) and
+ * the folded regular list, both newest-first.
+ *
+ * A channel is FRESH only while BOTH hold: nobody has made its sync decision yet
+ * (`decidedAt` — stamped by the three-way dialog's real answers, by the auto-approve
+ * toggle, and at creation for a sheet row that carries an explicit auto/manual flag; a
+ * decision made on ANY device travels with the record), and it entered within the
+ * window. The window runs from `addedAt`, so an unhandled channel drains into the
+ * regular list by itself — the section can never silt up. "אחר כך" is deliberately NOT
+ * a decision (that is the whole point of the third button).
+ *
+ * A row with no usable `addedAt` (pre-v1.0.21 rows) is never fresh — surprising an old
+ * subscription into the "new" section would read as a bug — and sorts to the END of the
+ * regular list, where old things belong.
+ */
+export function planChannelSections(channels, { now = Date.now() } = {}) {
+  const fresh = [];
+  const rest = [];
+  for (const c of channels || []) {
+    if (!c || !c.channelId) continue;
+    const added = Number(c.addedAt) || 0;
+    // |now-added| — a peer device's clock may run minutes AHEAD, and its just-added
+    // channel must still read as new here; a wildly future stamp (a broken clock) must
+    // not pin a row into the section for a year.
+    const delta = now - added;
+    const inWindow = added > 0 && delta < NEW_CHANNEL_WINDOW_MS && delta > -NEW_CHANNEL_WINDOW_MS;
+    if (!c.decidedAt && inWindow) fresh.push(c);
+    else rest.push(c);
+  }
+  const newestFirst = (a, b) => (Number(b.addedAt) || 0) - (Number(a.addedAt) || 0);
+  fresh.sort(newestFirst);
+  rest.sort(newestFirst); // missing addedAt ⇒ 0 ⇒ the end, stable among themselves
+  return { fresh, rest };
+}

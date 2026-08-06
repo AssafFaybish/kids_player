@@ -262,6 +262,28 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE SOURCES TAB: subscriptions fold away; an undecided channel surfaces as
+  "ערוצים חדשים" for 24h.** The channel list is a CLOSED `<details>` like the library list
+  (v1.0.28), sorted newest-first by `addedAt` (every creation path already stamped it;
+  a pre-v1.0.21 row without one is never "new" and sorts to the END — surprising an old
+  subscription into the new section would read as a bug). Membership and order are pure
+  `plan.planChannelSections` (undecided + |now−addedAt| < `NEW_CHANNEL_WINDOW_MS`; the
+  absolute delta lets a peer clock minutes ahead still read as new without letting a
+  broken clock pin a row there for a year).
+  - **`decidedAt` is the new field**: stamped by the three-way dialog's REAL answers
+    (אישור הכל, and a SAVED manual pick — backing out of the picker is "אחר כך" and
+    stamps nothing), by the auto-approve toggle in either direction, and at creation for
+    a sheet row carrying an explicit auto/manual flag. It rides the libraryChannels
+    record, so a decision made on any device travels. "אחר כך" is deliberately NOT a
+    decision; 24h drains the row into the regular list by itself, so the section cannot
+    silt up.
+  - A fresh row trades the auto-approve toggle for one real `<button>` (TV remote needs
+    one) that raises the SAME three-way dialog the add flow uses. A fresh channel whose
+    queue is EMPTY (Shorts-only, or auto-approved meanwhile) treats the tap itself as
+    the review — a row that does nothing on tap reads as broken — with a toast saying so.
+  - Browser-verified end-to-end behind the real PIN gate: planted fresh row renders in
+    the section, the folded list shows "ערוצים (N)" closed, the tap stamps `decidedAt`,
+    hides the section and moves the row.
 - v1.0.32 — **THE SCREEN-OFF BUTTON FINALLY PAUSES THE VIDEO** (field report: pressing
   the tablet's physical power button darkened the screen but the soundtrack kept
   playing — kiosk lock on or off alike). Android does NOT pause the WebView, and the app
