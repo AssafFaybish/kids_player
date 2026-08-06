@@ -25,7 +25,7 @@ import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBac
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
-  planChannelSections } from './plan.js';
+  planChannelSections, planLogoCache } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -892,13 +892,75 @@ function noteLogoFailure(channelId) {
 }
 
 /** Show a channel avatar; on failure fall back to the emoji AND report it (see above). */
+/* ---------------- Channel-logo byte cache (v1.0.32) ----------------
+ * The avatar used to be re-fetched from the NETWORK on every render (<img src=url>), so
+ * a flaky connection — or a rebranded channel whose old URL now 404s — showed 📺 even
+ * though the app had the picture moments earlier. The bytes are now cached ONCE in the
+ * thumbs store (`logo:<channelId>`, ~30KB) and rendered from the device from then on,
+ * offline included; the cache refreshes in the background only when the URL changes
+ * (pure plan.planLogoCache — render NEVER waits for the network). A folder whose bytes
+ * are still missing retries on every home entry (user request): every render calls
+ * resolveLogo again, deduped only while a fetch is in flight. */
+const logoObjUrls = new Map();  // channelId -> { objUrl, srcUrl } (session-lifetime)
+const logoFetching = new Set(); // channelId — dedupe of the NETWORK half only
+const logoTarget = new Map();   // channelId -> { img, host } — the LATEST mounted img
+
+/**
+ * Deliver an object-URL into the channel's CURRENT img. The home re-renders freely
+ * (boot alone renders several times), each render replacing the tile — so a fetch that
+ * finishes must paint the LIVE img, not the detached one it started with. The emoji
+ * fallback may have replaced the img entirely (onerror), so re-mount into the host.
+ */
+const showLogo = (channelId, objUrl) => {
+  const t = logoTarget.get(channelId);
+  if (!t || !t.img) return;
+  if (!t.img.isConnected && t.host && t.host.isConnected) { t.host.textContent = ''; t.host.appendChild(t.img); }
+  if (t.img.isConnected) t.img.src = objUrl;
+};
+
+/** Serve cached bytes and/or refresh them. Serving NEVER dedupes — only the fetch does. */
+async function resolveLogo(channelId, url, img, host) {
+  if (!channelId) return;
+  logoTarget.set(channelId, { img, host });
+  let entry = logoObjUrls.get(channelId);
+  if (!entry) {
+    const rec = await db.getThumbRecord('logo:' + channelId);
+    if (rec && rec.blob) {
+      entry = { objUrl: URL.createObjectURL(rec.blob), srcUrl: rec.srcUrl || null };
+      logoObjUrls.set(channelId, entry);
+      db.touchThumbs(['logo:' + channelId]).catch(() => {}); // used logos never LRU out
+    }
+  }
+  const plan = planLogoCache({ hasBlob: !!entry, blobSrcUrl: entry && entry.srcUrl, url });
+  if (plan.render === 'blob') showLogo(channelId, entry.objUrl);
+  // The first version deduped the WHOLE function on the in-flight set: a render that
+  // arrived while a fetch ran got nothing, and the fetch then painted a detached img —
+  // measured in the browser as 📺 tiles sitting on top of a full byte cache.
+  if (!plan.fetch || !url || logoFetching.has(channelId)) return;
+  logoFetching.add(channelId);
+  try {
+    const { httpGetBlob } = await import('./platform.js');
+    const blob = await httpGetBlob(url);
+    if (blob && blob.size > 0) {
+      await db.putThumb('logo:' + channelId, blob, { origin: 'logo', srcUrl: url });
+      const old = logoObjUrls.get(channelId);
+      if (old && old.objUrl) { try { URL.revokeObjectURL(old.objUrl); } catch {} }
+      const objUrl = URL.createObjectURL(blob);
+      logoObjUrls.set(channelId, { objUrl, srcUrl: url });
+      showLogo(channelId, objUrl);
+    }
+  } catch { /* rendering already has its url/emoji fallback */ }
+  finally { logoFetching.delete(channelId); }
+}
+
 function mountChannelLogo(host, url, channelId, emoji) {
-  if (!url) { host.textContent = emoji; return; }
   const img = document.createElement('img');
   img.alt = '';
-  img.onerror = () => { img.remove(); host.textContent = emoji; noteLogoFailure(channelId); };
-  img.src = url;
-  host.appendChild(img);
+  img.onerror = () => { img.remove(); if (!host.firstChild) host.textContent = emoji; noteLogoFailure(channelId); };
+  if (url) { img.src = url; host.appendChild(img); } // first paint from the URL, as before
+  else host.textContent = emoji;                     // until (maybe) cached bytes arrive
+  // v1.0.32: cached bytes outrank the network — swap in when found, fetch+store when not
+  if (channelId) resolveLogo(channelId, url || null, img, host).catch(() => {});
 }
 
 function folderTile(f) {
@@ -909,7 +971,9 @@ function folderTile(f) {
 
   const logo = document.createElement('span');
   logo.className = 'folder-logo';
-  if (f.logoUrl) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
+  // v1.0.32: a channelId alone is enough — cached bytes may exist even when the URL
+  // is gone (rebrand) or was never fetched on this device.
+  if (f.logoUrl || f.channelId) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
   else logo.textContent = f.emoji;
   const nm = document.createElement('span');
   nm.className = 'folder-name';
@@ -1352,7 +1416,7 @@ async function openFolder(fid) {
   // always sees WHICH channel they're inside.
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
-  if (f && f.logoUrl) {
+  if (f && (f.logoUrl || f.channelId)) { // v1.0.32: cached bytes render even URL-less
     mountChannelLogo(logoTop, f.logoUrl, f.channelId, f.emoji || '📺');
     logoTop.classList.remove('hidden');
   } else if (f && f.emoji && !f.isNew) {
@@ -2730,6 +2794,9 @@ async function channelRow(lc, { fresh = false } = {}) {
     logo.src = ch.logoUrl;
     logo.onerror = () => { logo.removeAttribute('src'); noteLogoFailure(lc.channelId); };
   }
+  // v1.0.32: cached bytes swap in (and get fetched when missing) — same cache the
+  // child's folder tiles use, so this list heals the same way.
+  resolveLogo(lc.channelId, ch.logoUrl || null, logo, null).catch(() => {});
   const body = document.createElement('div');
   body.className = 'li-body';
   const title = document.createElement('div');

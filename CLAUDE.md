@@ -262,6 +262,24 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **CHANNEL LOGOS ARE CACHED AS BYTES AND RETRY ON EVERY HOME ENTRY** (user
+  request: the folder picture must always load). The avatar used to be re-fetched from
+  the network on EVERY render (`<img src=url>`) — flaky Wi-Fi or a rebrand (old URL
+  404s) showed 📺 despite the app having had the picture moments earlier. Now the bytes
+  are stored ONCE in the thumbs store (`logo:<channelId>`, ~30KB, `srcUrl` in the meta)
+  and render from the device — offline included; pure `plan.planLogoCache` decides:
+  cached bytes ALWAYS render and the render NEVER waits for the network (a new URL only
+  refreshes in the background; a dead/absent URL keeps the picture — stored BYTES beat
+  the v1.0.24 lesson's stored-URL). `platform.httpGetBlob` fetches (native base64 →
+  Blob; browser: direct → /__proxy → CORS proxies). A folder still missing its bytes
+  retries on each render/home entry, deduped only while a fetch is in flight.
+  **THE SERVE HALF NEVER DEDUPES — only the network half does.** The first version
+  deduped the whole resolver: a render arriving mid-fetch got nothing and the fetch then
+  painted a DETACHED img (the home re-renders several times during boot alone) —
+  measured as 📺 tiles sitting on top of a full byte cache. `logoTarget` tracks the
+  LATEST mounted img per channel; delivery re-mounts into the host when onerror already
+  swapped the emoji in. Used logos get `touchThumbs` so the LRU eviction never takes
+  them. The parent's channel list heals through the same cache.
 - v1.0.32 — **THE PROFILE PICKER HAS AN EXIT BUTTON** (user request): same `.exit-btn`
   as the home's, same `askExit` flow hardware-back there always ran — confirm, then a
   free exit, **or the parent code first when the kiosk lock is armed** (user's decision:

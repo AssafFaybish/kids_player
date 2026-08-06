@@ -1290,3 +1290,17 @@ export function planChannelSections(channels, { now = Date.now() } = {}) {
   rest.sort(newestFirst); // missing addedAt ⇒ 0 ⇒ the end, stable among themselves
   return { fresh, rest };
 }
+
+/* ---------------- Channel-logo byte cache (v1.0.32) ---------------- */
+
+/**
+ * PURE: how to render a channel's avatar, and whether to (re)fetch its bytes.
+ * Cached bytes ALWAYS render — offline, dead URLs and rebrands included — and the
+ * render never waits for the network: a NEW url only refreshes the cache in the
+ * background. No bytes + no url = the emoji fallback, and nothing to fetch.
+ */
+export function planLogoCache({ hasBlob = false, blobSrcUrl = null, url = null } = {}) {
+  const u = typeof url === 'string' && url ? url : null;
+  if (hasBlob) return { render: 'blob', fetch: !!(u && u !== blobSrcUrl) };
+  return u ? { render: 'url', fetch: true } : { render: 'emoji', fetch: false };
+}

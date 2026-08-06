@@ -537,6 +537,11 @@ export async function getThumbBlob(id) {
   const r = await preq(db.transaction('thumbs').objectStore('thumbs').get(id));
   return r ? r.blob : null;
 }
+/** Full record (blob + meta). The logo cache needs `srcUrl` to detect a rebrand (v1.0.32). */
+export async function getThumbRecord(id) {
+  const db = await openDb();
+  return (await preq(db.transaction('thumbs').objectStore('thumbs').get(id))) || null;
+}
 export async function putThumb(id, blob, meta = {}) {
   await tx(['thumbs'], 'readwrite', (t) => {
     t.put({ id, blob, bytes: blob && blob.size || 0, lastUsed: Date.now(), ...meta });
