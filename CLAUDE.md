@@ -262,6 +262,22 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **BACKUP AND LIST MANAGEMENT LEFT THE UI; THE MACHINERY IS UNTOUCHED** (user
+  request: backup is automatic — never let the user run it by hand).
+  - Settings: the status line and "גיבוי עכשיו" are GONE. The `#drive-block` shows ONLY
+    while backup is OFF (the enable path for a family that skipped the first-launch
+    connect — hiding it for them too would leave no door, ever); once enabled the whole
+    block disappears. The automatic pull (entry/resume) + push (every mutation) are
+    exactly as before.
+  - Sources: create / join / disconnect are GONE — list management is not a parent-facing
+    concept any more. **The profile-creation wizard is the ONE remaining place a sheet is
+    attached** (`connectWizardSheet` → `adoptLibraryScope`); `connectSheetUrl` was removed
+    with its last callers — anything re-attaching a sheet from the sources tab must route
+    through that same migration if it ever returns. The copy-link button stays (how a
+    parent opens/shares the sheet), the refresh stays, and BOTH safety surfaces stay: the
+    mirror safety-valve alert and the sheetwrite queue/dropped warnings.
+  - A sheet-less profile keeps working (`lib:p:<id>`); the panel and the copy button now
+    SAY that instead of pointing at buttons that no longer exist.
 - v1.0.32 — **THE ADD FORM LOST ITS NAME/IMAGE FIELDS** (user request): the `אפשרויות`
   details (add-title/add-thumb) is gone — never re-add it. The name and picture come
   from the content itself: YouTube titles/thumbnails were already fetched when the field
