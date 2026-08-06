@@ -81,6 +81,32 @@ export async function httpRequest({ method = 'GET', url, headers = {}, body = nu
 }
 
 /**
+ * v1.0.33 — JSON POST (the parent's keyless YouTube search). Returns { status, data }
+ * and never throws, the httpRequest contract. The body is stringified HERE and the
+ * Content-Type is set HERE, because both halves of the CapacitorHttp trap live at this
+ * seam: a body without an explicit Content-Type is silently discarded (see httpRequest's
+ * doc), and the repo precedent (drive.js) is pre-stringified strings, never raw objects.
+ * Browser preview: a direct fetch will CORS-fail against youtube.com — expected — so the
+ * real browser path is the dev proxy's POST passthrough (dev-server.mjs). No public
+ * CORS-proxy rung: they don't relay POST reliably, and the installed app is native anyway.
+ */
+export async function httpPostJson(url, bodyObj) {
+  const body = JSON.stringify(bodyObj ?? {});
+  const headers = { 'Content-Type': 'application/json' };
+  if (plugin('CapacitorHttp')) {
+    return httpRequest({ method: 'POST', url, headers, body, responseType: 'json' });
+  }
+  for (const u of [url, '/__proxy?url=' + encodeURIComponent(url)]) {
+    try {
+      const r = await fetch(u, { method: 'POST', headers, body });
+      if (!r.ok) continue;
+      return { status: r.status, data: await r.json().catch(() => null) };
+    } catch {}
+  }
+  return { status: 0, data: null };
+}
+
+/**
  * v1.0.32 — small binary GET (channel logos). Returns a Blob or null, never throws.
  * Native: CapacitorHttp answers base64 for responseType 'blob'. Browser preview: direct
  * fetch, then the dev proxy, then the public CORS proxies — same ladder as text.

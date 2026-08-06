@@ -98,13 +98,50 @@ test('nothing calls the YouTube search endpoint (100 quota units per call)', () 
   // The patterns must match how this codebase actually writes a call — params are object
   // literals fed to URLSearchParams and the host is the `API` constant, so the previous
   // `part=` / `youtube/v3/search` patterns could not match ANY real offender.
+  //
+  // v1.0.33: ytsearch.js is the ONE exemption from the URL-literal pattern — the
+  // parent's search uses YouTube's KEYLESS internal endpoint (0 quota, no API key),
+  // which also contains the substring `/search?`. The exemption is by MODULE, never by
+  // weakening the pattern, and inside that module every `/search?` literal must be one
+  // of the two sanctioned keyless endpoints. The Data-API guards stay global.
+  const YTSEARCH = 'www/js/ytsearch.js';
   for (const [p, body] of MODULES) {
     // call shapes only — quota.js states the rule in PROSE, and a doc comment naming
     // the endpoint must not read as a violation
     assert.doesNotMatch(body, /\bapiGet\s*\(\s*['"`]search\b/i, `${p} calls search.list via apiGet`);
-    assert.doesNotMatch(body, /['"`][^'"`\n]*\/search\?/i, `${p} builds a search endpoint URL`);
     assert.doesNotMatch(body, /youtube\/v3\/search/i, `${p} calls youtube/v3/search`);
+    assert.doesNotMatch(body, /googleapis\.com[^'"`\n]*\/search/i, `${p} hand-builds a Data-API search URL`);
+    if (p !== YTSEARCH) {
+      assert.doesNotMatch(body, /['"`][^'"`\n]*\/search\?/i, `${p} builds a search endpoint URL`);
+    }
   }
+  for (const lit of (MODULES.get(YTSEARCH) || '').match(/['"`][^'"`\n]*\/search\?[^'"`\n]*/g) || []) {
+    assert.match(lit, /youtubei\/v1\/search\?prettyPrint=false|\/complete\/search\?/,
+      `ytsearch.js carries an unsanctioned search URL: ${lit}`);
+  }
+});
+
+test('the keyless youtubei search lives in EXACTLY one module and never sees a key', () => {
+  // The endpoint is undocumented — when YouTube changes it, ONE module must be the
+  // whole blast radius. And it never needs a key: sending one would tie the family's
+  // shared quota (or the parent's own key) to requests that are free without it.
+  const carriers = [...MODULES].filter(([, b]) => /youtubei\/v1\/search/.test(b)).map(([p]) => p);
+  assert.deepEqual(carriers, ['www/js/ytsearch.js'],
+    'the youtubei endpoint moved or spread: ' + carriers.join(', '));
+
+  const body = MODULES.get('www/js/ytsearch.js') || '';
+  // call/import shapes only (the rule this file states for itself): prose naming the
+  // getter must not read as a violation — the module's own header documents this ban
+  assert.doesNotMatch(body, /[?&]key=/, 'ytsearch.js puts a key in a URL');
+  assert.doesNotMatch(body, /\bgetApiKey\s*\(/, 'ytsearch.js calls the API-key getter');
+  assert.doesNotMatch(body, /from\s+['"]\.\/keys/, 'ytsearch.js imports the keys module');
+
+  // tier pin: pure parsers + thin transport — nothing above platform/util may enter,
+  // or the no-bundler import order breaks and the parsers stop being node-testable
+  const deps = [...new Set([...importsOf('www/js/ytsearch.js'), ...dynamicImportsOf('www/js/ytsearch.js')])];
+  const allowed = new Set(['www/js/platform.js', 'www/js/util.js']);
+  assert.deepEqual(deps.filter((d) => !allowed.has(d)), [],
+    'ytsearch.js imports above its tier: ' + deps);
 });
 
 test('the sensitive `spreadsheets` OAuth scope is gone for good', () => {
