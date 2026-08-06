@@ -4,7 +4,7 @@
 // changes, the repo moves, or the website moves — you edit THIS file only, and
 // never hunt through the code. Every consumer imports from here:
 //   donate.js  → donate         (the support buttons)
-//   app.js     → contact, site  (mail to the developer, privacy policy)
+//   app.js     → contact, site.home  (mail to the developer, the site button)
 //   update.js  → updateRepo     (where releases and the APK come from)
 //
 // Rules that keep this safe:
@@ -31,8 +31,9 @@ export const LINKS = {
 
   /**
    * The public site (GitHub Pages, served from docs/). Google's OAuth verification
-   * requires a public homepage + privacy policy for the sensitive `spreadsheets`
-   * scope; the About tab also links the privacy policy so parents can read it.
+   * points at the privacy/terms URLs, so they must stay ALIVE even though the app
+   * no longer links them directly (v1.0.32: the About buttons are gone — the site
+   * carries the policies as nav tabs, one tap behind the site button).
    */
   site: {
     home: 'https://devfassaf.github.io/kids_player/',

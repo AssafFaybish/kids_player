@@ -237,9 +237,6 @@ export async function checkForUpdate({ silent = true, force = false } = {}) {
   // same semantics as /releases/latest: newest non-draft, non-prerelease
   const rel = releases.find((r) => r && !r.draft && !r.prerelease) || null;
   if (!rel) return { status: 'no-asset', local };
-  // every version's notes (not just newer ones) — the About tab reads the installed
-  // version's entry from here after the update lands
-  await prefSet('update.notesAll', JSON.stringify(buildWhatsNew(releases, local, { above: false, max: 30 }).versions));
   const tag = rel.tag_name || '';
   const asset = pickApkAsset(rel.assets, tag);
   if (!asset) return { status: 'no-asset', local };
@@ -270,18 +267,9 @@ export async function latestKnownRelease() {
   return latest;
 }
 
-/**
- * v1.0.13: the notes of the version this device is RUNNING — for the About tab's
- * "what's new" button after an update landed. Falls back to the newest known entry.
- */
-export async function notesForInstalledVersion() {
-  const local = await currentVersion();
-  let all = [];
-  try { all = JSON.parse((await prefGet('update.notesAll')) || '[]'); } catch {}
-  if (!Array.isArray(all) || !all.length) return { versions: [], moreCount: 0 };
-  const exact = local ? all.find((v) => compareVersions(v.version, local) === 0) : null;
-  return { versions: exact ? [exact] : all.slice(0, 1), moreCount: 0 };
-}
+// v1.0.32: notesForInstalledVersion (and the 'update.notesAll' store it read) are gone
+// with the About tab's "מה חדש בגירסה" button — the notes' one remaining surface is the
+// update prompt before an install, which reads latest.whatsNew directly.
 
 /** Download (with size verification) and hand the APK to the system installer. */
 export async function downloadAndInstall(latest, { onProgress } = {}) {

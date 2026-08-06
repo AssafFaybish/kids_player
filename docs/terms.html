@@ -12,9 +12,21 @@
     a { color: #6c63ff; } code { background: #efecff; padding: 1px 6px; border-radius: 6px; }
     .updated { color: #6b6890; font-size: 14px; }
     nav { margin-top: 40px; padding-top: 18px; border-top: 1px solid #e2ddf5; font-size: 15px; }
+    /* v1.0.32: the same three tabs on every page of the site */
+    nav.site-tabs { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;
+                    margin: 0 0 24px; padding: 0 0 14px; border-top: none;
+                    border-bottom: 1px solid #e2ddf5; }
+    nav.site-tabs a { text-decoration: none; font-weight: 700; padding: 8px 16px;
+                      border-radius: 999px; }
+    nav.site-tabs a[aria-current="page"] { background: #efecff; }
   </style>
 </head>
 <body>
+  <nav class="site-tabs" aria-label="ניווט האתר">
+    <a href="index.html">🏠 בית</a>
+    <a href="privacy.html">🔒 מדיניות פרטיות</a>
+    <a href="terms.html" aria-current="page">📄 תנאי שימוש</a>
+  </nav>
   <h1>תנאי שימוש — הסרטונים שלי</h1>
   <p class="updated">עודכן לאחרונה: יולי 2026</p>
 
