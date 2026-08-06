@@ -976,3 +976,19 @@ test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists an
   const fn = platform.slice(platform.indexOf('export function onAppPause('));
   assert.match(fn.slice(0, 400), /!s\.isActive/, 'onAppPause no longer keys on isActive:false');
 });
+
+test('the picker exit button cannot walk through an armed kiosk (v1.0.32)', () => {
+  // askExit also serves the BOOT profile picker, where no profile is active yet — but
+  // the kiosk was armed from the LAST ACTIVE one (the launch rule). Reading only the
+  // live global would let the picker's exit button walk straight through an armed lock
+  // (the real case: a cold-start share showing the picker on a locked device).
+  const app = MODULES.get('www/js/app.js');
+  const fn = app.slice(app.indexOf('async function askExit('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'))
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(body, /exitLockOn\(activeProfileId \|\| await prefGet\('activeProfile'\)\)/,
+    'askExit no longer falls back to the stored profile — the boot picker bypasses the kiosk');
+  // and the picker really has the button wired to this flow
+  assert.match(app, /\$\('profiles-exit'\)\.addEventListener\('click', askExit\)/,
+    'the picker exit button is not bound to askExit');
+});

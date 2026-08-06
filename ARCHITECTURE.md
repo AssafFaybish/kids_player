@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — module map, data model, and flows
 
-> Testing: [docs/TESTING.md](docs/TESTING.md). Release records: [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md).
+> Testing: [docs/TESTING.md](docs/TESTING.md). Release records: [docs/V1032.md](docs/V1032.md), [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md).
 
 Companion to [CLAUDE.md](CLAUDE.md) (invariants) and [DEVELOPMENT.md](DEVELOPMENT.md)
 (original architecture + overhaul addendum §14-§18). This file answers "where does X
@@ -59,10 +59,10 @@ Native (android/, canonical copies in native-reference/): `MainActivity.java`
 | Store | keyPath | Notes |
 |---|---|---|
 | `videos` | `[scopeId, key]` | scopeId: `lib:<fnv1a(sheetKey)>` (shared per input sheet) or `prof:<profileId>` (personal). Indexes: by_folder_sort `[scope,folder,sortKey]`, by_state, by_channel_title, by_key. Parked rows live in `'~pending'` / `'~rejected'` (normalize.PARKED) + `homeFolderId`; state is one of live|pending|rejected, and 'rejected' is NOT a deletion (v1.0.23). |
-| `profileVideoState` | `[profileId, key]` | gift state per CHILD: `{giftRank}` XOR `{unwrappedAt}`. by_gift index is SPARSE (deleting giftRank removes from index → the "חדשים" folder is a pure range scan). |
+| `profileVideoState` | `[profileId, key]` | gift state per CHILD: `{giftRank}` XOR `{unwrappedAt}`. by_gift index is SPARSE (deleting giftRank removes from index → the "חדשים" folder is a pure range scan). v1.0.32: also the DEVICE-LOCAL playback position `{posSec,durSec,posAt}` — never serialized to Drive (`drive.serializeStateEntry`), preserved on apply (`mergeAppliedState`). |
 | `channels` | `channelId` | global metadata + backfillCursor/backfillDone/lastRssCheckedAt |
-| `libraryChannels` | `[libraryId, channelId]` | subscription + autoApprove toggle (+ source: sheet flag vs UI) |
-| `thumbs` | `id` | Blob cache (legacy migrated thumbs + captured frames); by_lastUsed for LRU |
+| `libraryChannels` | `[libraryId, channelId]` | subscription + autoApprove toggle (+ source: sheet flag vs UI). v1.0.32: `addedAt` orders the parent's folded list; `decidedAt` (stamped by the three-way dialog's real answers / the toggle / an explicit sheet flag) is what clears a row out of "ערוצים חדשים" (`plan.planChannelSections`). |
+| `thumbs` | `id` | Blob cache (legacy migrated thumbs + captured frames); by_lastUsed for LRU. v1.0.32: also channel-logo BYTES (`logo:<channelId>` + `srcUrl` meta) — folders render offline; `touchThumbs` on use keeps them off the LRU. |
 | `denylist` | `[scopeId, key]` | grow-only tombstones = durable deletion |
 | `sources` | `profileId` | `{sheetUrl, libraryId, sheetHash, shareIntent.requireApproval, defaultAutoApprove, caps…}` |
 | `meta` | `id` | migration flag, sync timestamps, handleMap, quota:<date>, drive:{dbFileId…}, gift baselines, dedupe reports |

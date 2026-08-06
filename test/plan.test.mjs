@@ -10,7 +10,7 @@ import {
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
-  planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache
+  planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery
 } from '../www/js/plan.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
@@ -1349,4 +1349,33 @@ test('planLogoCache: cached bytes always render, and the render never waits for 
   // junk url types never trigger a fetch
   assert.deepEqual(planLogoCache({ hasBlob: false, url: 42 }), { render: 'emoji', fetch: false });
   assert.deepEqual(planLogoCache({ hasBlob: true, blobSrcUrl: 'x', url: '' }), { render: 'blob', fetch: false });
+});
+
+test('logoFirstPaint: warm memory paints the blob — the network <img> never fires', () => {
+  // The unconditional `img.src = url` hit the network on EVERY render even with a full
+  // byte cache (self-review catch) — the exact waste the cache exists to remove.
+  assert.deepEqual(logoFirstPaint({ cachedObjUrl: 'blob:x', url: 'https://yt3/a.jpg' }),
+    { kind: 'blob', src: 'blob:x' });
+  assert.deepEqual(logoFirstPaint({ cachedObjUrl: null, url: 'https://yt3/a.jpg' }),
+    { kind: 'url', src: 'https://yt3/a.jpg' });
+  assert.deepEqual(logoFirstPaint({}), { kind: 'emoji', src: null });
+  // junk never becomes a src
+  assert.deepEqual(logoFirstPaint({ cachedObjUrl: 42, url: '' }), { kind: 'emoji', src: null });
+});
+
+test('planLogoDelivery: a late fetch may NEVER paint into a host that moved on', () => {
+  // #folder-logo-top is ONE element shared by every folder view: channel A's fetch
+  // finishing after the child opened folder B used to re-mount A's logo into B's
+  // header. The hostChannelId comparison is the guard.
+  assert.equal(planLogoDelivery({ imgConnected: true }), 'set', 'mounted img: just point it at the bytes');
+  assert.equal(planLogoDelivery({
+    imgConnected: false, hostConnected: true, hostChannelId: 'UCA', channelId: 'UCA'
+  }), 'remount', 'the emoji fallback replaced the img, host still ours');
+  assert.equal(planLogoDelivery({
+    imgConnected: false, hostConnected: true, hostChannelId: 'UCB', channelId: 'UCA'
+  }), 'skip', "the header belongs to folder B now — channel A's logo must not land there");
+  assert.equal(planLogoDelivery({ imgConnected: false, hostConnected: false, channelId: 'UCA' }), 'skip');
+  // a host that never carried a channel stamp is not ours either (channelRow passes no host)
+  assert.equal(planLogoDelivery({ imgConnected: false, hostConnected: true, hostChannelId: null, channelId: 'UCA' }), 'skip');
+  assert.equal(planLogoDelivery({}), 'skip');
 });

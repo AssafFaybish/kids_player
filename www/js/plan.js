@@ -1304,3 +1304,32 @@ export function planLogoCache({ hasBlob = false, blobSrcUrl = null, url = null }
   if (hasBlob) return { render: 'blob', fetch: !!(u && u !== blobSrcUrl) };
   return u ? { render: 'url', fetch: true } : { render: 'emoji', fetch: false };
 }
+
+/**
+ * PURE (v1.0.32 hardening): what the FIRST PAINT of a channel logo uses. Bytes already
+ * in memory win — the `<img src=url>` form hit the network on EVERY render even when the
+ * cache was full (found in self-review), which is the exact waste the cache exists to
+ * remove. No bytes → the URL; neither → the emoji until (maybe) IDB bytes arrive.
+ */
+export function logoFirstPaint({ cachedObjUrl = null, url = null } = {}) {
+  if (typeof cachedObjUrl === 'string' && cachedObjUrl) return { kind: 'blob', src: cachedObjUrl };
+  if (typeof url === 'string' && url) return { kind: 'url', src: url };
+  return { kind: 'emoji', src: null };
+}
+
+/**
+ * PURE (v1.0.32 hardening): may a finished logo fetch deliver into its target?
+ *  'set'     — the img is still mounted: just point it at the bytes.
+ *  'remount' — the emoji fallback replaced the img (onerror), but the HOST still shows
+ *              THIS channel: put the img back and paint it.
+ *  'skip'    — anything else. The guard is the hostChannelId comparison: the folder
+ *              header (#folder-logo-top) is ONE element shared by every folder view, so
+ *              channel A's late fetch used to re-mount A's logo into the header while it
+ *              already belonged to folder B (real bug, caught in self-review). A host
+ *              that meanwhile serves another channel is not ours to touch.
+ */
+export function planLogoDelivery({ imgConnected = false, hostConnected = false, hostChannelId = null, channelId = null } = {}) {
+  if (imgConnected) return 'set';
+  if (hostConnected && channelId && hostChannelId === channelId) return 'remount';
+  return 'skip';
+}
