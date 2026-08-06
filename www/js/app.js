@@ -2006,82 +2006,29 @@ function setParentTab(name) {
   }
 }
 
-/**
- * v1.0.19 — attaching a sheet is no longer "paste a URL". The app can only write to
- * files it created itself (drive.file), so the two legal sources are a list created
- * now, or one this app already created for another profile on this device. This is
- * the single place that rewrites the library scope.
- */
-async function connectSheetUrl(url, { folderId = null } = {}) {
-  const { libraryIdFor } = await import('./util.js');
-  let src = (await db.getSources(activeProfileId)) || { profileId: activeProfileId, schema: 1 };
-  src = {
-    shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
-    maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
-    // sheetFolderId is only set when the Drive move was VERIFIED — the panel copy
-    // reads it, so an unverified claim would send parents hunting for a folder.
-    ...src, sheetUrl: url || null, sheetFolderId: folderId, updatedAt: Date.now()
-  };
-  const oldLib = src.libraryId || null;
-  if (url) src.libraryId = libraryIdFor(url);
-  src.sheetHash = null; // force a full re-parse of the new sheet
-  await db.putSources(src);
-  libScope = src.libraryId || null;
-  // v1.0.17: carry the existing content into the new scope (see adoptLibraryScope)
-  const moved = await adoptLibraryScope(activeProfileId, oldLib, libScope);
-  await doSyncAndRefresh();
-  // AFTER the sync — doSyncAndRefresh owns this line and would overwrite the note
-  if (moved.videoKeys.length || moved.channelIds.length) {
-    $('remote-status').textContent =
-      `הועברו לרשימה החדשה: ${moved.videoKeys.length} סרטונים${moved.channelIds.length ? ` ו-${moved.channelIds.length} ערוצים` : ''} — הם יירשמו בה אוטומטית.`;
-    $('remote-status').className = 'form-msg ok';
-  }
-  await refreshSourcesPanel();
-}
+// v1.0.19's connectSheetUrl lived here. v1.0.32 removed it with its last callers (the
+// sources tab's create/join buttons — user request): the profile-creation WIZARD is
+// now the only place a sheet is attached, and it has its own connectWizardSheet, which
+// routes through adoptLibraryScope exactly the same way. Re-attaching a sheet from the
+// sources tab must go through that migration too if it ever comes back.
 
 /**
- * The sources panel's sheet section. Replaces the URL input: shows WHICH list is
- * attached, and offers to join a list this app already created for another profile.
+ * The sources panel's sheet section — status only since v1.0.32: create / join /
+ * disconnect are no longer parent-facing (user request); the wizard at profile
+ * creation is the one place a list is chosen.
  */
 async function refreshSourcesPanel() {
   const src = await db.getSources(activeProfileId);
   const cur = $('remote-current');
-  if (cur) {
-    // Only claim the folder when the move actually succeeded (sources.sheetFolderId).
-    // Asserting it unconditionally sent parents hunting for a folder that isn't there.
-    cur.textContent = !(src && src.sheetUrl)
-      ? 'אין רשימה מחוברת. אפשר ליצור אחת — או להצטרף לרשימה של פרופיל אחר.'
-      : src.sheetFolderId
-        ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
-        : 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם.';
-    cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
-  }
-  const join = $('remote-join');
-  if (!join) return;
-  join.innerHTML = '';
-  const seen = new Set([(src && src.sheetUrl) || '']);
-  try {
-    for (const other of await getProfiles()) {
-      if (other.id === activeProfileId) continue;
-      const os = await db.getSources(other.id);
-      if (!os || !os.sheetUrl || seen.has(os.sheetUrl)) continue;
-      seen.add(os.sheetUrl);
-      const b = document.createElement('button');
-      b.className = 'btn';
-      b.type = 'button';
-      b.textContent = `👨‍👩‍👧 להצטרף לרשימה של ${other.name}`;
-      b.addEventListener('click', async () => {
-        const yes = await confirmKid({
-          emoji: '👨‍👩‍👧', title: `להצטרף לרשימה של ${other.name}?`,
-          text: 'שני הפרופילים ישתמשו באותה רשימה, וכל שינוי יופיע אצל שניהם.',
-          ok: 'הצטרפות', cancel: 'ביטול'
-        });
-        if (yes) await connectSheetUrl(os.sheetUrl);
-      });
-      join.appendChild(b);
-    }
-  } catch {}
-  join.classList.toggle('hidden', join.children.length === 0);
+  if (!cur) return;
+  // Only claim the folder when the move actually succeeded (sources.sheetFolderId).
+  // Asserting it unconditionally sent parents hunting for a folder that isn't there.
+  cur.textContent = !(src && src.sheetUrl)
+    ? 'אין רשימת מקורות מחוברת לפרופיל הזה — הסרטונים והערוצים נשמרים באפליקציה.'
+    : src.sheetFolderId
+      ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
+      : 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם.';
+  cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
 }
 
 async function refreshParent() {
@@ -2196,13 +2143,12 @@ async function runUpdateCheck({ manual = false } = {}) {
 }
 
 async function refreshDriveStatus() {
+  // v1.0.32: an ACTIVE backup shows NOTHING (user request — it is automatic, and a
+  // status line + manual button only invited fiddling). The block survives solely as
+  // the enable path for a family that skipped the first-launch Google connect; hiding
+  // it for them too would leave no way to ever turn backup on.
   const meta = (await db.getMeta('drive')) || {};
-  const on = !!meta.enabled;
-  $('drive-status').textContent = on
-    ? `פעיל ✅ — גיבוי אחרון: ${meta.lastPushAt ? new Date(meta.lastPushAt).toLocaleString('he-IL') : 'עדיין לא'}`
-    : 'כבוי — הספרייה שמורה רק במכשיר הזה. ההפעלה דורשת אישור חד-פעמי בחשבון Google.';
-  $('drive-enable').classList.toggle('hidden', on);
-  $('drive-push').classList.toggle('hidden', !on);
+  $('drive-block').classList.toggle('hidden', !!meta.enabled);
 }
 
 /** Push local state to Drive soon — no-op until the parent enabled backup. */
@@ -4250,7 +4196,9 @@ function wire() {
     const src = await db.getSources(activeProfileId);
     const url = src && src.sheetUrl;
     if (!url) {
-      $('remote-status').textContent = 'אין עדיין רשימה — אפשר ליצור אחת עכשיו.';
+      // v1.0.32: the create button is gone, so the old "אפשר ליצור אחת עכשיו" pointed
+      // at nothing — say what is actually true instead.
+      $('remote-status').textContent = 'לפרופיל הזה אין רשימת מקורות — התוכן נשמר באפליקציה ובגיבוי.';
       $('remote-status').className = 'form-msg err';
       return;
     }
@@ -4263,35 +4211,9 @@ function wire() {
     }
   });
 
-  $('remote-create').addEventListener('click', async () => {
-    const yes = await confirmKid({
-      emoji: '✨', title: 'ליצור רשימה חדשה?',
-      text: 'ניצור קובץ חדש בגוגל דרייב שלכם. מה שכבר קיים כאן יעבור אליו אוטומטית.',
-      ok: 'יצירה', cancel: 'ביטול'
-    });
-    if (!yes) return;
-    const msg = $('remote-status');
-    msg.textContent = 'יוצרים את הרשימה…'; msg.className = 'form-msg';
-    loading.show({ title: 'יוצרים רשימה חדשה בגוגל', step: 'מתחברים לחשבון…' });
-    let r;
-    try {
-      const { createSourceSheet, sheetNameFor } = await import('./sheetwrite.js');
-      const p = await getActiveProfile();
-      r = await createSourceSheet(sheetNameFor((p && p.name) || 'הרשימה שלי'));
-    } catch {
-      r = { ok: false, error: 'threw' };
-    } finally {
-      await loading.hide();
-    }
-    if (!r || !r.ok) {
-      const { lastAuthError } = await import('./gauth.js');
-      msg.textContent = r && r.error === 'no-token' ? gauthErrorText(lastAuthError()) : 'יצירת הרשימה נכשלה — אפשר לנסות שוב';
-      msg.className = 'form-msg err';
-      return;
-    }
-    await connectSheetUrl(r.url, { folderId: r.folderId || null });
-  });
-
+  // v1.0.32: the remote-create / remote-join / remote-clear controls are gone (user
+  // request) — list management is no longer parent-facing. connectSheetUrl and
+  // createSourceSheet keep their remaining caller: the profile-creation wizard.
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
   // v1.0.10: safety-valve resolution — the parent decides what a mass row
@@ -4317,16 +4239,6 @@ function wire() {
     await db.putMeta('sheetMirrorAlert:' + libScope, null);
     await refreshSheetWriteStatus().catch(() => {});
   });
-  $('remote-clear').addEventListener('click', async () => {
-    const src = await db.getSources(activeProfileId);
-    if (src) {
-      await db.putSources({ ...src, sheetUrl: null, sheetHash: null, sheetFolderId: null, updatedAt: Date.now() });
-    }
-    await refreshSourcesPanel(); // the panel still said "הרשימה מחוברת ✅" otherwise
-    $('remote-status').textContent = 'הרשימה נותקה. הערוצים והסרטונים הקיימים נשארים.';
-    $('remote-status').className = 'form-msg';
-  });
-
   // v1.0.28: the API-key form is gone from the UI; a stored 'yt:apiKey' override is
   // still honored by yt.getApiKey, so past users lose nothing.
 
@@ -4434,20 +4346,8 @@ function wire() {
       await loading.hide();
     }
   });
-  $('drive-push').addEventListener('click', async () => {
-    const msg = $('drive-msg');
-    msg.textContent = 'מגבים…'; msg.className = 'form-msg';
-    loading.show({ title: 'מגבים לגוגל דרייב', step: 'שולחים את הספרייה…' });
-    try {
-      const { pushDrive } = await import('./drive.js');
-      const r = await pushDrive(profiles);
-      msg.textContent = r.ok ? 'גובה ✅' : 'הגיבוי נכשל — ננסה שוב אוטומטית';
-      msg.className = r.ok ? 'form-msg ok' : 'form-msg err';
-      await refreshDriveStatus();
-    } finally {
-      await loading.hide();
-    }
-  });
+  // v1.0.32: the manual "גיבוי עכשיו" button is gone (user request) — backup is
+  // automatic: a push is scheduled on every mutation and a pull runs on entry/resume.
 
   // v1.0.5: share a download link for the latest release (OS share sheet; the
   // browser preview falls back to Web Share / clipboard).
