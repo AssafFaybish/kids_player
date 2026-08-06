@@ -262,6 +262,20 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.32 — **THE SCREEN-OFF BUTTON FINALLY PAUSES THE VIDEO** (field report: pressing
+  the tablet's physical power button darkened the screen but the soundtrack kept
+  playing — kiosk lock on or off alike). Android does NOT pause the WebView, and the app
+  listened only to `onAppResume`; `platform.onAppPause` (appStateChange `isActive:false`,
+  visibilitychange-hidden in the browser) is the missing half. The handler does exactly
+  two things IN ORDER: `saveWatchPosition(currentWatch)` (reads the live playhead —
+  pausing first would be fine, but a torn-down player would not) then
+  `player.pauseCurrent()` — **pause IN PLACE, never `stop()`**: stop() destroys the
+  player and coming back to a black hole is the "הסרטון נעלם" the user reported. When the
+  screen returns the video waits, PAUSED, at its spot (the HUD heartbeat pins itself on
+  the pause); the child taps play. The power button itself was never blocked — keep-awake
+  only prevents the idle timeout. An invariants guard pins listener + both halves + order
+  + no-stop(), proven against three planted regressions (including a commented-out call —
+  the first guard version passed on that, the exact vacuous-guard trap).
 - v1.0.32 — **RESUME PLAYBACK: a stopped video reopens where it stopped** (per-profile
   setting, OFF by default — a family that never opens the settings screen keeps today's
   start-from-zero exactly). The SETTING syncs (`resume`, safe-on-tie false); **THE

@@ -185,6 +185,22 @@ export function onAppResume(fn) {
 }
 
 /**
+ * v1.0.32 — the other half of the lifecycle, which NOTHING listened to until now.
+ * Fires when the activity loses the foreground: the physical screen-off button, HOME,
+ * the app switcher. Android does NOT pause the WebView, so a playing video kept its
+ * soundtrack running behind a dark screen — the field report this exists for.
+ * Browser fallback: hidden visibility (a background tab), for dev-preview testing.
+ */
+export function onAppPause(fn) {
+  const App = plugin('App');
+  if (App && App.addListener) {
+    App.addListener('appStateChange', (s) => { if (s && !s.isActive) fn(); });
+    return;
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) fn(); });
+}
+
+/**
  * Android hardware back. NOTE: registering this listener disables Capacitor's default
  * back handling entirely — the handler MUST consume every case (nav.handleBack does).
  * Browser fallback: Escape key, for dev-preview testing.

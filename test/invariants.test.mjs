@@ -950,3 +950,29 @@ test('the scheduled-lock screen cannot be escaped by the child (v1.0.31)', () =>
   assert.match(body, /locked-exit'\)\.classList\.toggle\('hidden', kiosk\)/,
     'the exit button is not gated on the kiosk lock (must hide when kiosk is ON)');
 });
+
+test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists and does both halves', () => {
+  // Node cannot press a tablet's power button, so this is a source guard (the kind a
+  // behavioural test cannot express). Android does NOT pause the WebView: before this
+  // listener a playing video kept its soundtrack running behind a dark screen. Proven to
+  // fail on a planted regression (listener removed / a half dropped).
+  const app = MODULES.get('www/js/app.js');
+  const m = app.match(/onAppPause\(\(\) => \{([\s\S]*?)\}\);/);
+  assert.ok(m, 'app.js no longer registers an onAppPause listener — screen-off keeps playing');
+  // comment lines don't count — the first version of this guard passed with the call
+  // commented out, which is exactly the vacuous-guard failure TESTING.md warns about
+  const body = m[1].split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  // save FIRST (it reads the live playhead), then pause. Both halves, this order.
+  const save = body.indexOf('saveWatchPosition(currentWatch)');
+  const pause = body.indexOf('pauseCurrent()');
+  assert.ok(save >= 0, 'the screen-off handler no longer banks the stop point');
+  assert.ok(pause >= 0, 'the screen-off handler no longer pauses the player');
+  assert.ok(save < pause, 'pause runs before the save — the saved playhead may be stale');
+  // and the pause must be IN PLACE — stop() tears the player down, which is the
+  // "הסרטון נעלם" the user reported. The handler must not contain a bare stop() call.
+  assert.doesNotMatch(body, /\bstop\(\)/, 'the screen-off handler tears the player down');
+  // platform.js: the listener really is the INACTIVE half of appStateChange
+  const platform = MODULES.get('www/js/platform.js');
+  const fn = platform.slice(platform.indexOf('export function onAppPause('));
+  assert.match(fn.slice(0, 400), /!s\.isActive/, 'onAppPause no longer keys on isActive:false');
+});

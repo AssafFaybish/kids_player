@@ -9,9 +9,9 @@ import {
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, putSetting } from './settings.js';
-import { playItem, stop, playbackState } from './player.js';
+import { playItem, stop, playbackState, pauseCurrent } from './player.js';
 import { clearCache } from './media.js';
-import { onAppResume, onBackButton, exitApp, prefGet, prefSet, prefRemove } from './platform.js';
+import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove } from './platform.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
@@ -4569,6 +4569,19 @@ async function init() {
     }
     await applyExitLockUi();
   } catch {}
+
+  // v1.0.32 — the physical screen-off button (and HOME / the app switcher): stop the
+  // sound, bank the spot. Android does not pause the WebView, so until this listener a
+  // playing video kept its soundtrack running behind a dark screen — with the kiosk lock
+  // ON and OFF alike. The order is load-bearing: save FIRST (it reads the live playhead),
+  // THEN pause. The player stays mounted at its position, so when the screen comes back
+  // the child finds the video waiting, paused, exactly where it stopped (the HUD's
+  // heartbeat notices the pause and pins itself). saveWatchPosition is a no-op while the
+  // resume setting is off — the in-session position lives in the paused player itself.
+  onAppPause(() => {
+    saveWatchPosition(currentWatch);
+    pauseCurrent();
+  });
 
   onAppResume(async () => {
     // v1.0.31: a scheduled lock may have matured while backgrounded — check before anything.

@@ -84,6 +84,17 @@ export function playbackState() {
   return { time: c.getTime(), duration: c.getDuration(), playing: c.isPlaying() };
 }
 
+/**
+ * v1.0.32 — pause IN PLACE, no teardown: the screen-off / background handler.
+ * The video stays mounted at its position, exactly like the YouTube app — screen back
+ * on, the child taps play and continues. Deliberately NOT stop(): stop() destroys the
+ * player, and coming back to a black hole is the "הסרטון נעלם" the user reported.
+ */
+export function pauseCurrent() {
+  if (!current || !current.ctl || !current.ctl.pause) return;
+  try { current.ctl.pause(); } catch {}
+}
+
 // v1.0.18 — supersession token. playYouTube can only register itself in `current`
 // AFTER `await loadYouTubeApi()`, so a second tap while that script is still loading
 // found current === null, made stop() a no-op, and mounted a SECOND player and HUD.
@@ -295,6 +306,7 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
     getDuration: () => { try { return player.getDuration(); } catch { return 0; } },
     seekTo: (s) => { try { player.seekTo(Math.max(0, s), true); } catch {} },
     isPlaying: () => { try { const st = player.getPlayerState(); return st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING; } catch { return false; } },
+    pause: () => { try { player.pauseVideo(); } catch {} }, // screen-off (v1.0.32)
     togglePlay: () => {
       try {
         const st = player.getPlayerState();
@@ -425,6 +437,7 @@ async function playFile(item, host, opts = {}, seq = 0) {
     getDuration: () => video.duration || 0,
     seekTo: (s) => { try { video.currentTime = Math.max(0, s); } catch {} },
     isPlaying: () => !video.paused,
+    pause: () => { try { video.pause(); } catch {} }, // screen-off (v1.0.32)
     togglePlay: () => { if (video.paused) { const p = video.play(); if (p && p.catch) p.catch(() => {}); } else video.pause(); }
   };
   const onTime = () => { if (hud) hud.renderProgress(); };
