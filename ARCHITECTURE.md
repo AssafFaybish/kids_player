@@ -26,6 +26,7 @@ live and how does data flow".
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
 | `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, playlist-id derivation: `UU` uploads / `UULF` long-form ("Videos" tab) / `UUSH` Shorts | — |
 | `ytrss.js` | pure keyless parsers (never throw): Atom feed (incl. Short/live detection from the entry's alternate-link form) + channel-page logo extractor | — |
+| `ytsearch.js` | **the parent's KEYLESS YouTube search** (v1.0.33): pure parsers over the youtubei search endpoint (0 quota, no API key — guard-pinned to this one module) — videoRenderer/channelRenderer/lockup/officialCard (header-anchored), Shorts + RD-mix filtered, both continuation shapes; suggestion parser (`oe=utf-8` load-bearing for Hebrew); pinned `searchMessage` texts; thin POST via `platform.httpPostJson` | platform |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
 | `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends; `interpretSheetResponse` is the ONE gate for every `values.get` read (reads and flushes alike) | platform, gauth, db, classify, csv |
