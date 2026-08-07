@@ -74,6 +74,21 @@ test('the manual-publish fallback tells the human about BOTH files', () => {
   }
 });
 
+test('an UNPUBLISHED release fails the script — exit 0 is how v1.0.33/34 went missing', () => {
+  // The fallback above prints the manual procedure and used to exit 0 — which reads
+  // as "done". Twice in a row (v1.0.33, v1.0.34) the build ended on one machine,
+  // nothing was published, and every device kept answering "the app is up to date"
+  // while the fix sat in apk_versions/. The instructions stay (they ARE the
+  // procedure), but the script must end in die/Die so an unpublished release can
+  // never look like a finished one.
+  for (const [name, src] of [['release.sh', sh], ['release.ps1', ps1]]) {
+    const fallback = src.indexOf('BOTH files');
+    assert.ok(fallback > 0, `${name}: manual fallback block not found`);
+    assert.match(src.slice(fallback), /\b[dD]ie ["']?NOT PUBLISHED/,
+      `${name}: the manual fallback must end in die "NOT PUBLISHED…" (exit 1)`);
+  }
+});
+
 test('the app SHARES the same stable asset the website serves (v1.0.20)', async () => {
   // Fourth file in the coupling: the parent-to-parent share message. It used to send
   // the versioned asset URL of whatever release the device knew about, so a forwarded

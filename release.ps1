@@ -130,13 +130,17 @@ if (-not $Notes) { $Notes = "שיפורים ותיקונים כלליים" }
 $Body = "## מה חדש`n`n$Notes"
 Say "Publishing GitHub release..."
 $Published = $false
+$PublishOut = ""
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    gh release create $Tag $Apk $ApkLatest --repo $Repo -t $Tag -n $Body 2>$null
+    # 2>&1 is safe here: $ErrorActionPreference is "Continue" (see the top of this file)
+    $PublishOut = (gh release create $Tag $Apk $ApkLatest --repo $Repo -t $Tag -n $Body 2>&1 | Out-String).Trim()
     $Published = ($LASTEXITCODE -eq 0)
 }
 if ($Published) {
     Write-Host "`nOK: Published! Devices will see the update via the `"check for update`" button." -ForegroundColor Green
 } else {
+    # Show WHY (403 no-write / not logged in / network) -- 2>$null used to eat it.
+    if ($PublishOut) { Write-Host "`ngh: $PublishOut" -ForegroundColor Yellow }
     $FullPath = Join-Path (Get-Location) $Apk
     $FullPathLatest = Join-Path (Get-Location) $ApkLatest
     Write-Host @"
@@ -153,4 +157,9 @@ in, or no write access). Publish manually (2 minutes):
 
    (or: gh auth login with the devfassaf account and run again)
 "@
+    # v1.0.34 field lesson: this branch used to exit 0, which reads as "done" -- the
+    # manual step was skipped twice (v1.0.33, v1.0.34), the build sat in apk_versions\
+    # on one machine, and every device kept answering "the app is up to date".
+    # An unpublished release is a FAILED release; the exit code must say so.
+    Die "NOT PUBLISHED: $Tag exists only on this machine -- no device can see it until steps 1-4 above are done"
 }

@@ -90,12 +90,14 @@ BODY="## מה חדש
 
 $NOTES"
 say "Publishing GitHub release…"
-if gh release create "$TAG" "$APK" "$APK_LATEST" --repo "$REPO" -t "$TAG" -n "$BODY" 2>/dev/null; then
+if PUBLISH_OUT="$(gh release create "$TAG" "$APK" "$APK_LATEST" --repo "$REPO" -t "$TAG" -n "$BODY" 2>&1)"; then
   printf '\n\033[1;32m✓ Published! Devices will see the update via the "check for update" button.\033[0m\n'
 else
+  # Show WHY (403 no-write / not logged in / network) — 2>/dev/null used to eat it.
+  printf '\n\033[1;33mgh: %s\033[0m\n' "$PUBLISH_OUT"
   cat <<EOT
 
-⚠  The current gh account has no publish permission. Publish manually (2 minutes):
+⚠  Could not publish with the current gh account. Publish manually (2 minutes):
    1. https://github.com/$REPO/releases/new
    2. Tag: $TAG  <- type it by hand with an ENGLISH keyboard (invisible bidi
       marks from a Hebrew-context copy-paste broke version detection once)
@@ -106,4 +108,9 @@ else
 
    (or: gh auth login with the devfassaf account and run again)
 EOT
+  # v1.0.34 field lesson: this branch used to exit 0, which reads as "done" — the
+  # manual step was skipped twice (v1.0.33, v1.0.34), the build sat in apk_versions/
+  # on one machine, and every device kept answering "the app is up to date".
+  # An unpublished release is a FAILED release; the exit code must say so.
+  die "NOT PUBLISHED: $TAG exists only on this machine — no device can see it until steps 1-4 above are done"
 fi
