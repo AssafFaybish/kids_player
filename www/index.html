@@ -541,10 +541,14 @@
              that already exists on this device. -->
         <div id="remote-current" class="field remote-current"></div>
         <!-- v1.0.32: create / join / disconnect are GONE from here (user request) —
-             list management is no longer a parent-facing concept. The wizard at profile
-             creation remains the one place a list is chosen; the copy button stays (how
-             a parent opens or shares the sheet itself), and so does the refresh. -->
+             list management is no longer a parent-facing concept. The copy button stays
+             (how a parent opens or shares the sheet itself), and so does the refresh.
+             v1.0.34 (user request): a SHEET-LESS profile shows the connect door instead
+             of a dead copy button — it opens the SAME wizard as profile creation, so
+             every attachment still routes through adoptLibraryScope. Exactly one of
+             copy/connect is visible (pure plan.sourcesPanelActions). -->
         <div class="row-btns">
+          <button id="remote-connect" class="btn btn-primary hidden" type="button">📄 חיבור רשימת מקורות</button>
           <button id="remote-copy" class="btn btn-primary" type="button">📋 העתקת הלינק לרשימה</button>
           <button id="remote-refresh" class="btn" type="button">🔄 רענון עכשיו</button>
         </div>

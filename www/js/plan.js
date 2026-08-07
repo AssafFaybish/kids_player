@@ -344,6 +344,18 @@ export function evalScheduledLock({ now = Date.now(), armedAt = 0, lockedUntil =
 }
 
 /**
+ * v1.0.34 — PURE: which primary action the sources tab offers (user request: a
+ * sheet-less profile had a dead copy button wearing the primary color). A profile WITH
+ * a sheet copies its link; one WITHOUT gets the connect door — the SAME wizard as
+ * profile creation, because `adoptLibraryScope` must run on every sheet attachment.
+ * Exactly one of the two, always.
+ */
+export function sourcesPanelActions(src) {
+  const connected = !!(src && src.sheetUrl);
+  return { copy: connected, connect: !connected };
+}
+
+/**
  * v1.0.34 — PURE: the idle screen-off minutes from the profile's raw setting.
  *
  * NEVER-WRITTEN (null/undefined/'') ⇒ the DEFAULT — the user's decision: the feature is

@@ -27,7 +27,7 @@ import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBac
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
-  screenOffMinutes, evalIdleSleep } from './plan.js';
+  screenOffMinutes, evalIdleSleep, sourcesPanelActions } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -728,7 +728,13 @@ function registerViews() {
       return true;
     }
   });
-  nav.register('sheet-setup', { onBack: () => { finishSheetSetup(); return true; } });
+  nav.register('sheet-setup', { onBack: () => {
+    // v1.0.34: opened from the sources tab, back means "return to the parent screen" —
+    // returning false lets nav pop to it (the wizard was PUSHED there, not reset).
+    if (wizardGated) { wizardGated = false; wizardProfile = null; return false; }
+    finishSheetSetup();
+    return true;
+  } });
   // v1.0.13: back on the what's-new screen CANCELS the update (user decision)
   nav.register('whatsnew', { onLeave: () => closeWhatsNew(false) });
   // v1.0.23 — leaving the picker ANY way (back, hardware back, a later navigation) must
@@ -2204,11 +2210,16 @@ async function refreshSourcesPanel() {
   // Only claim the folder when the move actually succeeded (sources.sheetFolderId).
   // Asserting it unconditionally sent parents hunting for a folder that isn't there.
   cur.textContent = !(src && src.sheetUrl)
-    ? 'אין רשימת מקורות מחוברת לפרופיל הזה — הסרטונים והערוצים נשמרים באפליקציה.'
+    ? 'אין רשימת מקורות מחוברת לפרופיל הזה — הסרטונים והערוצים נשמרים באפליקציה. אפשר ליצור רשימה או להתחבר לקיימת עם הכפתור למטה.'
     : src.sheetFolderId
       ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
       : 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם.';
   cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
+  // v1.0.34: exactly one primary action — copy the link of a connected list, or the
+  // connect door for a sheet-less profile (the dead copy button was the user's report).
+  const acts = sourcesPanelActions(src);
+  $('remote-copy').classList.toggle('hidden', !acts.copy);
+  $('remote-connect').classList.toggle('hidden', !acts.connect);
 }
 
 async function refreshParent() {
@@ -4126,6 +4137,11 @@ async function finishTour() {
 
 /* ---------------- Sheet setup wizard (v1.0.8, after profile creation) ---------------- */
 let wizardProfile = null; // the freshly-created profile awaiting activation
+// v1.0.34: true while the wizard was opened FROM THE PARENT SCREEN (sources tab) — the
+// parent already crossed the PIN gate seconds ago, so the wizard's own PIN is skipped,
+// and backing out returns to the parent screen instead of activating the profile.
+// Set on every openSheetSetup call (never sticky), cleared on every exit path.
+let wizardGated = false;
 
 /**
  * v1.0.12 — the wizard ALWAYS asks (it used to silently adopt the family file):
@@ -4133,23 +4149,26 @@ let wizardProfile = null; // the freshly-created profile awaiting activation
  * Restored profiles still bypass it — they arrive with their sheet already wired
  * through the Drive doc's profileSources.
  */
-async function openSheetSetup(p) {
+async function openSheetSetup(p, { fromParent = false } = {}) {
   wizardProfile = p;
+  wizardGated = fromParent;
   $('sheetsetup-name').textContent = p.name;
   $('sheetsetup-msg').textContent = '';
   $('sheetsetup-msg').className = 'form-msg';
 
   // one "join <name>'s file" button per OTHER profile that already has one,
-  // deduped by URL so two siblings on the same file show a single choice
+  // deduped by CANONICAL sheet key (util.canonicalSheetKey) so two siblings on the
+  // same file — and the same file found again in Drive below — show a single choice
   const join = $('sheetsetup-join');
   join.innerHTML = '';
   const seen = new Set();
   try {
+    const { canonicalSheetKey } = await import('./util.js');
     for (const other of await getProfiles()) {
       if (other.id === p.id) continue;
       const src = await db.getSources(other.id);
-      if (!src || !src.sheetUrl || seen.has(src.sheetUrl)) continue;
-      seen.add(src.sheetUrl);
+      if (!src || !src.sheetUrl || seen.has(canonicalSheetKey(src.sheetUrl))) continue;
+      seen.add(canonicalSheetKey(src.sheetUrl));
       const b = document.createElement('button');
       b.className = 'btn btn-primary';
       b.type = 'button';
@@ -4159,27 +4178,85 @@ async function openSheetSetup(p) {
     }
   } catch {}
   join.classList.toggle('hidden', join.children.length === 0);
-  nav.reset('sheet-setup');
+  // v1.0.34: from the sources tab the wizard is PUSHED so back returns to the parent
+  // screen; at profile creation it stays a reset (there is nothing to go back to).
+  if (fromParent) nav.go('sheet-setup'); else nav.reset('sheet-setup');
+  // enrichment, deliberately after the view is up: lists this app created in Drive
+  // (covers a reinstall / second device, which the profile buttons cannot see)
+  populateWizardDriveLists(p, seen).catch(() => {});
 }
 
-/** Join a sibling's sheet — same library scope, so the whole family shares one list. */
-async function joinExistingSheet(url, ownerName) {
+/**
+ * v1.0.34 — add a join button per app-created sheet found in DRIVE (silent auth: a
+ * family that skipped the Google connect must not get a sign-in dialog out of opening
+ * the wizard — for them this quietly finds nothing). A stale answer may not paint:
+ * the view may have moved on while we listed (the logoTarget lesson).
+ */
+async function populateWizardDriveLists(p, seenKeys) {
+  let r = null;
+  try {
+    const { listAppSheets } = await import('./sheetwrite.js');
+    r = await listAppSheets();
+  } catch { r = { ok: false, error: 'threw' }; }
+  if (!nav.isActive('sheet-setup') || wizardProfile !== p) return;
+  const join = $('sheetsetup-join');
+  if (!r.ok) {
+    // FAILED ≠ EMPTY: with a connected account we must not pretend "no lists" — say we
+    // could not look. `no-token` = no Google here, where silence is the honest answer.
+    if (r.error !== 'no-token') {
+      $('sheetsetup-msg').textContent = 'לא הצלחנו לבדוק אילו רשימות קיימות בדרייב — אפשר ליצור חדשה או לנסות שוב';
+      $('sheetsetup-msg').className = 'form-msg err';
+    }
+    return;
+  }
+  const { canonicalSheetKey } = await import('./util.js');
+  for (const f of r.files.slice(0, 8)) {
+    const key = canonicalSheetKey(f.url);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    const b = document.createElement('button');
+    b.className = 'btn btn-primary';
+    b.type = 'button';
+    b.textContent = `📄 להתחבר לרשימה "${f.name}"`;
+    b.addEventListener('click', () => joinExistingSheet(f.url, null, { fileName: f.name }));
+    join.appendChild(b);
+  }
+  join.classList.toggle('hidden', join.children.length === 0);
+}
+
+/**
+ * The wizard's PIN gate. From the SOURCES TAB the parent crossed the real gate seconds
+ * ago (`wizardGated`), so asking again would read as broken; every other entry — profile
+ * creation, where no gate was crossed — keeps the v1.0.8 user-specified PIN.
+ */
+async function wizardPinGate(title, run) {
+  if (wizardGated) { run(); return; }
   startPin((await hasPin()) ? 'verify' : 'setup', {
-    title: 'קוד הורים לחיבור הקובץ',
-    onSuccess: async () => {
-      if (!nav.back()) nav.reset('sheet-setup');
-      try {
-        await connectWizardSheet(url);
-        await alertKid({
-          emoji: '👨‍👩‍👧', title: 'הצטרפנו לקובץ המשפחתי ✅',
-          text: `${wizardProfile ? wizardProfile.name : 'הפרופיל'} יראה את אותה רשימה של ${ownerName}.`,
-          ok: 'מעולה'
-        });
-        await finishSheetSetup();
-      } catch {
-        $('sheetsetup-msg').textContent = 'החיבור נכשל — אפשר לנסות שוב או לדלג';
-        $('sheetsetup-msg').className = 'form-msg err';
-      }
+    title,
+    onSuccess: () => { if (!nav.back()) nav.reset('sheet-setup'); run(); }
+  });
+}
+
+/** Join an existing sheet — same library scope, so the whole family shares one list. */
+async function joinExistingSheet(url, ownerName, { fileName = '' } = {}) {
+  await wizardPinGate('קוד הורים לחיבור הקובץ', async () => {
+    try {
+      await connectWizardSheet(url);
+      await alertKid(ownerName
+        ? {
+            emoji: '👨‍👩‍👧', title: 'הצטרפנו לקובץ המשפחתי ✅',
+            text: `${wizardProfile ? wizardProfile.name : 'הפרופיל'} יראה את אותה רשימה של ${ownerName}.`,
+            ok: 'מעולה'
+          }
+        : {
+            emoji: '📄', title: 'הרשימה חוברה ✅',
+            text: `"${fileName || 'הרשימה'}" היא עכשיו רשימת המקורות של ${wizardProfile ? wizardProfile.name : 'הפרופיל'}.`,
+            ok: 'מעולה'
+          });
+      await finishSheetSetup();
+    } catch {
+      $('sheetsetup-msg').textContent = 'החיבור נכשל — אפשר לנסות שוב או לדלג';
+      $('sheetsetup-msg').className = 'form-msg err';
     }
   });
 }
@@ -4187,6 +4264,7 @@ async function joinExistingSheet(url, ownerName) {
 async function finishSheetSetup() {
   const p = wizardProfile;
   wizardProfile = null;
+  wizardGated = false;
   if (p) await activateProfile(p.id); // activation syncs + shows the loading screen
 }
 
@@ -4630,13 +4708,16 @@ function wire() {
     renderTourSlide();
   });
 
-  // v1.0.8: sheet setup wizard (PIN required for create/paste — user-specified)
-  $('sheetsetup-skip').addEventListener('click', finishSheetSetup);
-  $('sheetsetup-create').addEventListener('click', async () => {
-    startPin((await hasPin()) ? 'verify' : 'setup', {
-      title: 'קוד הורים ליצירת הקובץ',
-      onSuccess: () => { if (!nav.back()) nav.reset('sheet-setup'); wizardCreateSheet(); }
-    });
+  // v1.0.8: sheet setup wizard (PIN required for create/join — user-specified; the
+  // v1.0.34 sources-tab entry skips it because the parent gate was just crossed)
+  $('sheetsetup-skip').addEventListener('click', () => {
+    // from the sources tab, skipping returns to the parent screen — activating the
+    // profile here would kick the parent to the child's home for changing nothing
+    if (wizardGated) { wizardGated = false; wizardProfile = null; nav.back(); return; }
+    finishSheetSetup();
+  });
+  $('sheetsetup-create').addEventListener('click', () => {
+    wizardPinGate('קוד הורים ליצירת הקובץ', wizardCreateSheet).catch(() => {});
   });
 
   $('connect-google').addEventListener('click', connectGoogleFirstLaunch);
@@ -4930,6 +5011,15 @@ function wire() {
   // v1.0.32: the remote-create / remote-join / remote-clear controls are gone (user
   // request) — list management is no longer parent-facing. connectSheetUrl and
   // createSourceSheet keep their remaining caller: the profile-creation wizard.
+  // v1.0.34 (user request): a SHEET-LESS profile gets its door back — the SAME wizard
+  // as profile creation (create / join a sibling's / pick from Drive), which routes
+  // every attachment through connectWizardSheet → adoptLibraryScope, the mandated
+  // migration. We are behind the parent gate here, so the wizard skips its own PIN.
+  $('remote-connect').addEventListener('click', async () => {
+    const p = await getActiveProfile();
+    if (!p) return;
+    await openSheetSetup(p, { fromParent: true });
+  });
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
   // v1.0.10: safety-valve resolution — the parent decides what a mass row

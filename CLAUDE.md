@@ -266,6 +266,34 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.34 — **A SHEET-LESS PROFILE GOT ITS DOOR BACK** (user request: the sources tab
+  showed a DEAD copy-link button over "אין רשימת מקורות"). When the active profile has no
+  sheet, `#remote-copy` is replaced by `#remote-connect` (exactly one of the two, pure
+  `plan.sourcesPanelActions`) which opens **the SAME wizard as profile creation**
+  (`openSheetSetup(p, { fromParent: true })`) — create a new list / join a sibling's /
+  **pick from the app-created lists found in Drive** (`sheetwrite.listAppSheets`, new).
+  Invariants guard pins the routing, proven against a hand-rolled-putSources plant.
+  - **PASTING AN EXTERNAL SHEET STAYED OUT, deliberately** (user decision 2026-08-07,
+    after the v1.0.19 wall was explained): under `drive.file` a hand-made sheet cannot
+    even be READ, and re-adding the `spreadsheets` scope brings Google's unverified-app
+    scare screen back for every family. The Drive picker covers the honest cases —
+    reinstall / second device of the same account — which the join-by-profile buttons
+    cannot see.
+  - **A FAILED LISTING IS NEVER AN EMPTY ONE** (`sheetwrite.interpretFileList`, the
+    interpretSheetResponse/interpretDriveList doctrine): pretending emptiness would push
+    a parent into creating a DUPLICATE family list. `ok:false` with a token shows "לא
+    הצלחנו לבדוק"; `no-token` stays silent — the listing runs as SILENT enrichment when
+    the wizard opens, and a family that skipped the Google connect must not get an
+    uninvited sign-in dialog. A stale answer may not paint into a wizard that moved on
+    (the logoTarget lesson), and dedupe is by `util.canonicalSheetKey`, never the raw
+    URL — the same file joined via two URL forms must land in ONE `lib:` scope.
+  - **FROM THE SOURCES TAB THE WIZARD IS PUSHED, NOT RESET, AND SKIPS ITS OWN PIN**
+    (`wizardGated`): the parent crossed the real gate seconds ago, and a second code
+    reads as broken. Back/skip return to the PARENT SCREEN (`onBack` returns false → nav
+    pops; activating the profile there would kick the parent to the child's home for
+    changing nothing); a successful connect still runs `finishSheetSetup` →
+    `activateProfile` (the adoption sync needs its loading screen). At profile creation
+    everything behaves exactly as before (reset + PIN).
 - v1.0.34 — **THE SCREEN GOES DARK WHEN NOBODY IS THERE** (user request: a child falls
   asleep mid-video and the panel burns all night). After `screenOffAfterMin` minutes
   (per-profile, SYNCED; **default ON at 10** — an explicit 0 = never, the old behavior;

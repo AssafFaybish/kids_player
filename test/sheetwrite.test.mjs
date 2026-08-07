@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractSpreadsheetId, extractGid, buildSheetRow, remainingAfterFlush, reconcileOps, SHEETS_FOLDER_NAME,
   starterRows, matchRowsForDeletion, sheetErrorMessage, interpretSheetResponse, interpretWriteResponse,
-  planQueue, flushSheetQueue, sheetWriteState } from '../www/js/sheetwrite.js';
+  planQueue, flushSheetQueue, sheetWriteState, interpretFileList } from '../www/js/sheetwrite.js';
 import { classifySourceRow, parseRemovalRow } from '../www/js/classify.js';
 import { parseSourceRows } from '../www/js/sync2.js';
 
@@ -765,4 +765,24 @@ test('flushSheetQueue: REAL Google success shapes still flush and clear the queu
   const st = await sheetWriteState('lib:wok');
   assert.equal(st.error, null);
   assert.equal(st.pending, 0);
+});
+
+/* ---------------- the Drive files.list gate (v1.0.34) ---------------- */
+
+test('interpretFileList: a failed listing is NEVER an empty one', () => {
+  // emptiness may come from exactly one shape — a 200 whose `files` is a real array
+  assert.deepEqual(interpretFileList(200, { files: [] }), []);
+  const files = [{ id: 'a', name: 'רשימה של נועם' }];
+  assert.deepEqual(interpretFileList(200, { files }), files);
+  // a string body parses when it is real JSON…
+  assert.deepEqual(interpretFileList(200, '{"files":[]}'), []);
+  // …and everything else throws: the caller must say "couldn't look", never "no lists" —
+  // pretending emptiness would push a parent into creating a DUPLICATE family list
+  assert.throws(() => interpretFileList(403, { files: [] }), /list-http-403/);
+  assert.throws(() => interpretFileList(0, null), /list-http-0/);
+  assert.throws(() => interpretFileList(200, '<html>sign in</html>'), undefined,
+    'a lost grant answering 200+HTML must throw, not read as no lists');
+  assert.throws(() => interpretFileList(200, { error: { code: 403 } }), /list-not-json/);
+  assert.throws(() => interpretFileList(200, { files: 'x' }), /list-not-json/);
+  assert.throws(() => interpretFileList(200, null), /list-not-json/);
 });

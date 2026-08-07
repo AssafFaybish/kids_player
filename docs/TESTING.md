@@ -184,6 +184,16 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Sources-tab sheet connect (v1.0.34 — needs a real Google account)
+- [ ] Sheet-less profile → מקורות shows **חיבור רשימת מקורות** (no dead copy button);
+      the wizard opens with NO second PIN; דילוג and hardware back both return to the
+      parent screen, not the child's home.
+- [ ] With the account connected, the wizard lists the app's existing sheets from Drive
+      ("להתחבר לרשימה …") — including after a reinstall. Connecting one runs the
+      adoption sync and the profile's content lands in the sheet's shared scope
+      (`adoptLibraryScope` — content added before the connect must survive as rows).
+- [ ] A connected profile shows the copy button again, no connect button.
+
 ---
 
 ## 5. Verifying each v1.0.25 / v1.0.26 / v1.0.32 feature
