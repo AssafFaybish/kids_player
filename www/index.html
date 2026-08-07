@@ -355,6 +355,7 @@
         <button id="pv-approve" class="btn btn-small pv-approve hidden" type="button">✅ אישור</button>
         <button id="pv-reject" class="btn btn-small pv-reject hidden" type="button">🗑️ דחייה</button>
         <button id="pv-delete" class="btn btn-small pv-delete hidden" type="button">🗑️ מחיקה</button>
+        <button id="pv-add" class="btn btn-small pv-add hidden" type="button">➕ הוספה</button>
         <button id="pv-open" class="text-btn pv-open" type="button">פתח ביוטיוב ↗</button>
       </div>
     </div>
@@ -456,8 +457,44 @@
 
       <!-- Add a single video / a whole channel -->
       <div id="panel-add" class="panel hidden">
+        <!-- v1.0.33: YouTube search — the parent types like on youtube.com, previews a
+             result in the bubble, adds it through the SAME pipeline pasting uses
+             (addClassifiedRow → classifySourceRow, the safety boundary). Keyless
+             (ytsearch.js), Shorts and mixes filtered in the pure parser. ids are
+             yts-* — search-* belongs to the child's home search. -->
+        <div class="field yts-field">
+          <label for="yts-input">חיפוש ביוטיוב</label>
+          <div class="yts-inputrow">
+            <input id="yts-input" class="input" type="search" dir="auto" autocomplete="off"
+                   enterkeyhint="search" maxlength="80" placeholder="מה מחפשים?" />
+            <button id="yts-go" class="btn btn-primary" type="button" aria-label="חיפוש">🔍</button>
+          </div>
+          <div id="yts-suggest" class="yts-suggest hidden"></div>
+        </div>
+        <div id="yts-chips" class="yts-chips hidden">
+          <button class="yts-chip chip-on" data-f="all" type="button">הכל</button>
+          <button class="yts-chip" data-f="video" type="button">סרטונים</button>
+          <button class="yts-chip" data-f="channel" type="button">ערוצים</button>
+          <button class="yts-chip" data-f="playlist" type="button">פלייליסטים</button>
+        </div>
+        <!-- v1.0.33: browsing INSIDE a channel/playlist result — the header replaces the
+             chips while the list below shows the source's own videos; back restores the
+             search results exactly as they were. -->
+        <div id="yts-browse-head" class="yts-browse-head hidden">
+          <button id="yts-browse-back" class="btn btn-small" type="button">→ חזרה לתוצאות</button>
+          <img id="yts-browse-thumb" class="yts-browse-thumb" alt="" />
+          <div class="yts-browse-body">
+            <div id="yts-browse-title" class="li-title"></div>
+            <div id="yts-browse-sub" class="li-note"></div>
+          </div>
+          <button id="yts-browse-add" class="li-add" type="button">➕</button>
+        </div>
+        <div id="yts-msg" class="form-msg"></div>
+        <ul id="yts-results" class="parent-list"></ul>
+        <button id="yts-more" class="btn btn-small hidden" type="button">עוד תוצאות</button>
+
         <div class="field">
-          <label for="add-url">הדביקו לינק — סרטון YouTube, ערוץ שלם (@ערוץ), או קובץ mp4</label>
+          <label for="add-url">או הדביקו לינק — סרטון YouTube, ערוץ שלם (@ערוץ), או קובץ mp4</label>
           <input id="add-url" class="input" type="url" inputmode="url" dir="ltr"
                  placeholder="https://www.youtube.com/watch?v=... או youtube.com/@channel" />
         </div>

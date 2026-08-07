@@ -174,6 +174,25 @@ export function previewEmbedUrl(rec) {
     + '?rel=0&modestbranding=1&playsinline=1&autoplay=1&mute=1&controls=1&iv_load_policy=3';
 }
 
+/**
+ * PURE (v1.0.33): which action buttons the preview bubble shows per mode. The truth
+ * used to live in hand-ordered classList toggles inside renderPreview — exactly where
+ * the "live 🗑️ over a search result" bug was hand-avoided once already: a 'search'
+ * item has NO stored record, so a delete button there points at nothing, and
+ * approve/reject belong only to the pending queue's triage. Every wrong cell in this
+ * table is a button that either does nothing or destroys the wrong thing, so the
+ * whole matrix is node-tested.
+ */
+export function previewBubbleButtons(mode) {
+  const pending = mode === 'pending';
+  return {
+    approve: pending,
+    reject: pending,
+    del: mode === 'library', // the ONE mode whose items are stored records — an unknown
+    add: mode === 'search'   // mode fails safe: nothing destructive, nothing additive
+  };
+}
+
 /* ---------------- Resume playback (v1.0.32) ----------------
  * The parent's per-profile setting decides WHETHER; these decide WHERE. The saved
  * position is device-local (drive.js never serializes it) and rides the same

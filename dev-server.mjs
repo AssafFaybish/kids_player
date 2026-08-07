@@ -40,14 +40,41 @@ const server = createServer(async (req, res) => {
   try {
     const u = new URL(req.url, 'http://localhost');
 
-    // Same-origin proxy for remote lists (dev only).
+    // Same-origin proxy for remote lists (dev only). GET passes through as before;
+    // POST (v1.0.33, the keyless YouTube search) forwards the JSON body and ONLY the
+    // Content-Type header — never cookies or authorization, so this stays a dumb
+    // fetcher and can't become a credential relay. Body capped at 1MB.
     if (u.pathname === '/__proxy') {
       const target = u.searchParams.get('url');
       if (!target || !/^https?:\/\//i.test(target)) { res.writeHead(400); return res.end('bad url'); }
       let host = '';
       try { host = new URL(target).hostname; } catch { res.writeHead(400); return res.end('bad url'); }
       if (isBlockedHost(host)) { res.writeHead(403); return res.end('blocked host'); }
-      const upstream = await fetch(target, { redirect: 'follow' });
+      // NOTE (accepted limitation, dev-only): `redirect:'follow'` re-checks nothing,
+      // so an upstream redirect could point back at a private host. The server binds
+      // 127.0.0.1 and exists only for `npm run serve`; legit flows (Google exports)
+      // NEED redirects, so we keep follow rather than hand-rolling a re-check loop.
+      const init = { redirect: 'follow' };
+      if (req.method === 'POST') {
+        const chunks = [];
+        let size = 0;
+        // Drain-and-discard past the cap instead of req.destroy(): destroying the
+        // socket kills the RESPONSE too, so the 413 below never reached the client
+        // (review-caught — the branch was dead code as written).
+        const tooBig = await new Promise((resolve, reject) => {
+          req.on('data', (c) => {
+            size += c.length;
+            if (size <= 1024 * 1024) chunks.push(c);
+          });
+          req.on('end', () => resolve(size > 1024 * 1024));
+          req.on('error', reject);
+        });
+        if (tooBig) { res.writeHead(413); return res.end('body too large'); }
+        init.method = 'POST';
+        init.headers = { 'content-type': req.headers['content-type'] || 'application/json' };
+        init.body = Buffer.concat(chunks);
+      }
+      const upstream = await fetch(target, init);
       const body = Buffer.from(await upstream.arrayBuffer());
       res.writeHead(upstream.status, {
         'Content-Type': upstream.headers.get('content-type') || 'text/plain; charset=utf-8',

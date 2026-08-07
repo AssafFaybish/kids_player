@@ -878,6 +878,60 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 /* v1.0.26: per-row countdown in the rejected archive — informational, not alarming */
 .li-ttl { color: var(--muted); font-size: 12px; font-weight: 700; margin-top: 2px; }
 
+/* ---------- v1.0.33: YouTube search in the add tab ----------
+   Rows reuse .parent-list so the styling and the D-pad conventions come free; the
+   only new pieces are the suggestion dropdown, the filter chips, the duration badge
+   and the ➕/✓ add button (a green mirror of .li-ok). */
+.yts-field { position: relative; }
+.yts-inputrow { display: flex; gap: 8px; }
+.yts-inputrow .input { flex: 1 1 auto; min-width: 0; }
+.yts-inputrow .btn { flex: 0 0 auto; }
+.yts-suggest {
+  position: absolute; z-index: 40; inset-inline: 0; top: 100%;
+  background: #fff; border-radius: 12px; box-shadow: 0 10px 30px rgba(45, 42, 74, 0.25);
+  max-height: 320px; overflow-y: auto;
+}
+.yts-suggest button {
+  display: block; width: 100%; border: none; background: none; cursor: pointer;
+  padding: 10px 14px; font-size: 16px; font-weight: 600; text-align: start; color: var(--ink);
+}
+.yts-suggest button:hover, .yts-suggest button:focus { background: #eceaff; }
+.yts-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
+.yts-chip {
+  border: 2px solid #d8d5f0; background: #fff; color: var(--muted);
+  border-radius: 999px; padding: 6px 14px; font-size: 14px; font-weight: 800; cursor: pointer;
+}
+.yts-chip.chip-on { border-color: var(--brand); background: #eaf3ff; color: var(--brand-2); }
+/* the duration badge sits on the thumb's corner; digits stay LTR inside the RTL row */
+.yts-thumbwrap { position: relative; flex: 0 0 auto; }
+.yts-thumbwrap .li-thumb { display: block; }
+.yts-dur {
+  position: absolute; bottom: 4px; inset-inline-end: 4px; direction: ltr;
+  background: rgba(0, 0, 0, 0.8); color: #fff; font-size: 11px; font-weight: 800;
+  border-radius: 6px; padding: 1px 5px; pointer-events: none;
+}
+/* a channel result draws its avatar round, like channel logos everywhere in the app */
+.parent-list .yts-round { width: 56px; aspect-ratio: 1 / 1; border-radius: 50%; }
+.parent-list .li-add {
+  border: none; background: #e7f8ee; color: var(--green);
+  border-radius: 12px; min-width: 46px; height: 46px; font-size: 20px; cursor: pointer;
+  flex: 0 0 auto; font-weight: 800;
+}
+/* ✓ נוסף / ✓ קיים — decided rows keep a quiet, obviously-inert button */
+.parent-list .li-add[disabled] { background: #efeef8; color: var(--muted); cursor: default; font-size: 13px; padding: 0 8px; }
+.badge-ch { background: #e9e3ff; color: #6a4fd0; }
+.badge-pl { background: #fff0d9; color: #b46a00; }
+.pv-add { background: #e7f8ee; color: var(--green); font-weight: 800; }
+/* browsing inside a channel/playlist result: a compact header above the item list */
+.yts-browse-head {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; border-radius: 14px; padding: 8px 10px; margin: 10px 0 2px;
+  box-shadow: 0 2px 8px rgba(45, 42, 74, 0.08);
+}
+.yts-browse-thumb { width: 48px; aspect-ratio: 1 / 1; border-radius: 50%; object-fit: cover; background: #d8d5f0; flex: 0 0 auto; }
+.yts-browse-thumb.yts-wide { width: 84px; aspect-ratio: 16 / 9; border-radius: 10px; }
+.yts-browse-body { flex: 1 1 auto; min-width: 0; }
+
 /* ---------- Toast (v1.0.26) ----------
    The only non-blocking feedback channel. Above everything (a share can land while the
    PIN screen or a confirm dialog is up) but never interactive — it must not swallow a tap

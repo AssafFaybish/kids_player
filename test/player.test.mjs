@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clampSeek, fractionFromX, formatTime, progressPct, shouldFinishNearEnd, tvKeyIntent,
-  planAutoplay, nextInOrder, previewEmbedUrl,
+  planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY,
   AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS,
@@ -210,6 +210,21 @@ test('the preview embed is MUTED, scrubbable, and never shows related videos', (
   assert.match(url, /(^|[?&])autoplay=1(&|$)/);
   // the privacy host, like the kid player uses
   assert.ok(!url.includes('//www.youtube.com/'), 'the preview left the nocookie host');
+});
+
+test('previewBubbleButtons: the whole per-mode matrix, every cell load-bearing', () => {
+  // v1.0.33 (review): the truth used to live in hand-ordered classList toggles inside
+  // renderPreview — where the "live 🗑️ over a search result" bug was hand-avoided once
+  // already. A wrong cell is a button that does nothing or destroys the wrong thing:
+  //  - 'search' items have NO stored record → del there points at nothing;
+  //  - approve/reject outside 'pending' would act on a record in the wrong state;
+  //  - add outside 'search' would re-add something already stored.
+  assert.deepEqual(previewBubbleButtons('pending'), { approve: true, reject: true, del: false, add: false });
+  assert.deepEqual(previewBubbleButtons('library'), { approve: false, reject: false, del: true, add: false });
+  assert.deepEqual(previewBubbleButtons('search'), { approve: false, reject: false, del: false, add: true });
+  // an unknown mode must fail SAFE: nothing destructive, nothing additive
+  assert.deepEqual(previewBubbleButtons('nonsense'), { approve: false, reject: false, del: false, add: false });
+  assert.deepEqual(previewBubbleButtons(undefined), { approve: false, reject: false, del: false, add: false });
 });
 
 test('previewEmbedUrl refuses anything that is not a YouTube video', () => {

@@ -147,6 +147,19 @@ for anything destructive, and purge it afterwards.
       **Any scrape-parsing fix must be probed against the mobile page variant.**
 - [ ] Add a **playlist** link, `m.youtube.com` form (v1.0.26).
 - [ ] Add a channel **and** a playlist of that same channel → one folder, no duplicates.
+- [ ] **YouTube search on the device** (v1.0.33): a Hebrew query in the add tab returns
+      results through the NATIVE CapacitorHttp POST (Dalvik UA — the live probes say the
+      API is UA-safe, but the @BARDAK613 lesson makes device verification mandatory; a
+      silently-dropped POST body would surface here as the network/parse message over
+      working Wi-Fi). Suggestions appear in HEBREW (not ����), the chips filter, a video
+      adds from the bubble ➕ and advances, a channel add reaches the three-way dialog,
+      'עוד תוצאות' appends, and airplane mode shows the network message while the
+      existing results stay.
+- [ ] **Browsing inside a result** (v1.0.33): tap a CHANNEL result's picture/name → its
+      Videos-tab list appears with a back header; add one video from inside (✓ נוסף);
+      hardware back returns to the intact search results (never out of the screen);
+      same for a PLAYLIST result; 'עוד תוצאות' inside a big channel appends pages, and
+      on a small playlist the button simply disappears at the end (no error).
 
 ### Playback
 - [ ] **Continuous play** (v1.0.25): enable it for one child, let a video end → the countdown

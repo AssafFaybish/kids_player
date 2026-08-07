@@ -108,6 +108,21 @@ export const ADD_GUIDE_SLIDES = [
     title: 'ערוץ שלם בלינק אחד',
     text: 'מדביקים לינק של ערוץ (למשל youtube.com/@SuperSimpleSongs) — והאפליקציה מביאה את הסרטונים שלו ופותחת לו תיקייה עם הלוגו במסך של הילד. מכאן זה אוטומטי: בכל פתיחה של האפליקציה היא בודקת מה חדש בערוץ ומושכת אותו לבד, ולא צריך לעשות שוב כלום. נמשכים רק סרטונים מלשוניות "סרטונים" ו"פלייליסטים" — בלי Shorts ובלי שידורים חיים. כל סרטון חדש יחכה לאישור שלכם.'
   },
+  /* v1.0.33 — the YouTube search inside the add tab. Two slides, appended at the END
+     of this chapter (chapters must stay contiguous, tour.test.mjs), and they bring the
+     deck to EXACTLY the 20-slide cap — the next slide anyone adds must raise the cap
+     and re-justify "finishable in one sitting". Both are REAL screenshots (the test
+     rejects drawn app screens). */
+  {
+    img: 'assets/guide/app-12-search.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'או מחפשים ישר מתוך האפליקציה',
+    text: 'בראש לשונית ההוספה יש שורת חיפוש של יוטיוב: מקלידים כמו ביוטיוב — מופיעות הצעות השלמה תוך כדי הקלדה — ולוחצים 🔍. לא צריך לצאת לאפליקציית יוטיוב ולהעתיק לינקים.'
+  },
+  {
+    img: 'assets/guide/app-13-search-results.jpg', chapter: 'דרך 2 · במסך ההורים',
+    title: 'מוסיפים מהתוצאות בלחיצה אחת',
+    text: 'התוצאות הן בדיוק מה שיוטיוב מציג — סרטונים, ערוצים ופלייליסטים (בלי Shorts), עם כפתורי סינון לפי סוג. לחיצה על תמונת סרטון פותחת צפייה מקדימה, ולחיצה על תמונה או שם של ערוץ או פלייליסט פותחת את התוכן שלו — מדפדפים בסרטונים, צופים, ומוסיפים מהם סרטונים בודדים או את כל הערוץ בכפתור שבראש. ➕ מוסיף לספרייה: סרטון נכנס מיד, ערוץ או פלייליסט עוברים את אותו מסך אישור מוכר.'
+  },
 
   /* ---- דרך 3: קובץ הרשימה ---- */
   {

@@ -229,6 +229,10 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - OAuth = Play Services AuthorizationClient (`drive.file` only): NO refresh token exists, no client
   secret; one Android OAuth client per signing SHA-1 (see GOOGLE_CLOUD_SETUP.md).
 - YouTube quota: NEVER call `search.list` (100 units). RSS is free. Batch by 50.
+  The parent's search (v1.0.33) is NOT an exception: it uses the KEYLESS youtubei
+  endpoint (0 quota, no API key), sanctioned in `www/js/ytsearch.js` ONLY — the
+  invariants suite pins the one-module rule, bans `key=`/`getApiKey()` there, and
+  still fails any Data-API search shape anywhere.
 - The API key ships via GITIGNORED [www/js/keys.local.js](www/js/keys.local.js) (repo is PUBLIC —
   never commit it; never serialize it into the Drive DB/Sheet). Restrict it by API only — an
   Android-app restriction breaks CapacitorHttp requests.
@@ -262,6 +266,115 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.33 — **THE ADD TAB SEARCHES YOUTUBE** (user request: type like on youtube.com,
+  see YouTube's own results, preview, add). The mechanism is the KEYLESS youtubei
+  endpoint — `search.list` stayed banned (100 units on the shared key ≈ 80 searches/day
+  for ALL families combined) — verified live incl. the Dalvik UA, so the v1.0.32
+  mobile-page trap does not apply (an API, not a redirecting page). Invariants, all
+  guard-pinned and proven against planted regressions:
+  - **The youtubei literal lives in [ytsearch.js](www/js/ytsearch.js) ONLY** (one-module
+    blast radius for an undocumented endpoint), it never sees a key (`key=`, a
+    `getApiKey()` call and a keys import all fail the suite), and its imports are
+    ⊆ {platform, util}. The `/search?` URL-literal guard now exempts exactly that
+    module and, inside it, allows exactly the two sanctioned endpoints — the
+    suggestions URL (`/complete/search?`) trips the same regex, so an exemption
+    written only for youtubei leaves the suite red.
+  - **Shorts and RD-mixes are filtered IN THE PURE PARSER** (the user's decision: no
+    Shorts anywhere): reel shelves dropped wholesale, a videoRenderer with the SHORTS
+    overlay or a /shorts/ navigation dropped, `RD…` lockup playlists dropped. Planted
+    fixtures pin each (the forbidden item sits between two survivors). Unknown signal
+    = include, per the standing rule.
+  - **The officialCard is HEADER-ANCHORED**: Cocomelon-class channels appear in mixed
+    results only as `officialCardViewModel`, whose `contents` subtree carries FOREIGN
+    related-channel ids (measured) — identity is read from the header alone and only
+    when every UC id there agrees; an ambiguous card is skipped (the ערוצים chip still
+    finds the real channelRenderer). The @RabbiRosenblum decoy class, pre-empted.
+  - **A CHANNEL/PLAYLIST RESULT OPENS FOR BROWSING** (user request, same release):
+    tapping its thumbnail OR its name swaps the list area for the source's own videos —
+    a channel shows its VIDEOS TAB only (`youtubei/v1/browse` + the tab's own protobuf
+    params; Shorts have a separate tab, so this is by construction what a subscription
+    would import), a playlist shows its contents (`VL`-prefixed browseId). The header
+    carries back / avatar / name / one ➕ for adding the whole source; every video row
+    behaves exactly like a search result (bubble preview, single-add, ✓ precompute).
+    Back (button AND hardware back, before goGallery — gated on the add panel being
+    visible) restores the search results untouched; a new search closes the browse.
+    ONE state map serves both lists (a ✓ earned inside the browse must show on the
+    results row and vice versa — a video key is global). Browse continuations ride
+    `onResponseReceivedActions` (search uses ...Commands; the reader takes both), and
+    **an unparsable CONTINUATION is END-OF-LIST, never the 'parse' alarm** — measured:
+    a playlist delivered whole on page one still carries a token whose continuation
+    answers nothing but trackingParams; only a FIRST page may raise 'parse'. The
+    one-module invariant widened from `youtubei/v1/search` to ANY `youtubei/` literal.
+  - **Adding routes through the SAME pipeline as pasting**: results are normalized to
+    canonical URLs and re-classified (`classifySourceRow` — classifyLink stays THE
+    boundary; a kind mismatch is refused), then `addClassifiedRow` — the helper
+    extracted from `parentAdd`, one path for both callers (the v1.0.25 lesson).
+    share.js deliberately NOT unified (pending-first is a different curation policy).
+    A search add carries the result's title so the record needs no oEmbed fetch.
+  - **The preview bubble gained mode `'search'`**: `#pv-add` adds-and-advances via
+    `previewDecide` (added AND already-exists count as decided); `pv-delete` is hidden
+    there too — the old `toggle('hidden', pending)` would have shown a live 🗑️ over an
+    item with no stored record. The bubble gets COPIES (previewDecide splices); row
+    state syncs back by key, never index.
+  - **Two monotonic seq counters** (search vs suggestions — one counter would let a
+    keystroke's suggest fetch invalidate an in-flight search); a late response never
+    paints a newer query's list (the logoTarget lesson). Continuation additionally
+    re-checks query+filter, and appends dedupe by `type:id`.
+  - **`oe=utf-8` on the suggestions URL is LOAD-BEARING**: without it a Hebrew query
+    is answered in windows-1255 (measured live — the dropdown rendered ����).
+    Suggestion taps bind on **pointerdown** (click loses the race against the input's
+    blur); Escape closes only the dropdown (stopPropagation — browser Escape doubles
+    as hardware-back).
+  - **Messages are the feature** (v1.0.27 rule), pinned distinct in `searchMessage`:
+    'network' (try again; the shown results stay) vs 'parse' (= "YouTube changed
+    something", the update-the-app alarm — `parseSearchResponse` answers null only
+    when NO top-level shape is recognized; recognized-but-empty is `{items:[]}`).
+  - **"✓ קיים" is precomputed against BOTH scopes** (lib + prof) before render — the
+    row must agree with what the add would answer, and `addClassifiedRow` dedupes
+    against both.
+  - Transport: `platform.httpPostJson` — body stringified + explicit Content-Type at
+    the seam (the CapacitorHttp silent-body-drop trap); browser dev rides `/__proxy`,
+    which now forwards POST (1MB cap, Content-Type only, never cookies/auth — dev
+    server only, same SSRF guard). No public-CORS-proxy POST rung on purpose.
+  - The guide gained 2 slides at the end of 'דרך 2 · במסך ההורים' — the deck is now
+    EXACTLY at the 20-slide test cap; the next slide must raise the cap deliberately.
+  - **THE REVIEW PASS IS PART OF THE RELEASE** ([docs/V1033.md](docs/V1033.md) §4 has
+    the full list; every fix is pinned). The rules it minted:
+    - **The parsers are TOTAL** — innertube's array→keyed-object churn answers
+      "unrecognized", never a throw. A throw used to read as 'network' ("בדקו את
+      החיבור" over working Wi-Fi) and the shape-changed alarm never fired; a totality
+      test feeds truthy-malformed docs to both parsers. A 200-with-HTML interstitial
+      is 'network' on BOTH transports (device and browser used to disagree).
+    - **Browse teardown has ONE path** (`closeYtsBrowse`) — a hand-rolled two-line
+      teardown in ytsSearch left the old browse rows rendered and tappable while the
+      fetch ran (and forever when it failed), so a thumbnail tap previewed the WRONG
+      video via `activeYtsItems()`'s fallback. The HIGH finding of the pass.
+    - **`previewDecide` is re-entrancy-latched**: the `previewCtx !== ctx` check
+      cannot catch a double-tap because splice MUTATES the shared object — the second
+      splice removed the NEXT video, which the parent never saw.
+    - **The bubble's button matrix is pure** (`playerlogic.previewBubbleButtons`,
+      per-mode node tests, unknown mode = nothing destructive); renderPreview's
+      delegation is guard-pinned.
+    - **Hiding the suggest dropdown invalidates its in-flight fetch** (seq bump inside
+      `ytsHideSuggest`), suggestion taps bind pointerdown AND click (a TV remote's OK
+      produces no pointerdown), and blur skips the hide when focus moved INTO the
+      dropdown. Hardware back closes dropdown → browse → screen, in that order,
+      guard-pinned with the panel-add visibility gate.
+    - **`resetYtsUi()` on profile activation** — the search area is per profile; the
+      previous child's "✓ קיים" marks were computed against the other child's scopes
+      (the buildFolders profile-identity rule, applied here).
+    - **One `libraryHasVideo` helper** for the row precompute AND addClassifiedRow's
+      dedupe (the row must agree with what the add answers), and one transient
+      `'adding'` state (⏳) latches the same source across surfaces — the browse-head ➕
+      and the result row could run two concurrent imports.
+    - `addClassifiedRow` has EXACTLY two callers (parentAdd + ytsAdd, the
+      importChannelAndAsk-style pin); ytsAdd's kind-mismatch refusal is pinned by its
+      FULL conditional shape — the bare-substring version stayed green under a
+      `false &&` plant, caught by its own red-check.
+    - Playlist ids are validated (`PLAYLIST_ID`) like every other id class; the
+      youtubei endpoint constants are NOT exported (an import plus a hand-appended
+      key parameter would have tripped no guard); dead `searchMessage` stages deleted
+      — the add outcome speaks in `addClassifiedRow`'s voice only.
 - v1.0.32 — **CHANNEL LOGOS ARE CACHED AS BYTES AND RETRY ON EVERY HOME ENTRY** (user
   request: the folder picture must always load). The avatar used to be re-fetched from
   the network on EVERY render (`<img src=url>`) — flaky Wi-Fi or a rebrand (old URL
@@ -804,10 +917,10 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **Release records: [docs/V1032.md](docs/V1032.md), [docs/V1026.md](docs/V1026.md),
-  [docs/V1025.md](docs/V1025.md)** — what changed in each and why, including which features
-  ALREADY EXISTED and were broken. The per-feature invariants stay below; those files are
-  the map.
+- **Release records: [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
+  [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what changed in each
+  and why, including which features ALREADY EXISTED and were broken. The per-feature
+  invariants stay below; those files are the map.
 - **[docs/TESTING.md](docs/TESTING.md) — read before trusting a green run.** What the suite
   covers, what it structurally CANNOT see (no DOM, no IndexedDB, no network), the four bugs
   that shipped past it, and the device checklist for everything a browser cannot prove
