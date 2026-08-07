@@ -134,8 +134,17 @@ async function applyExitLockUi() {
 async function applyExitLock() {
   const on = await exitLockOn();
   try {
-    const { lockTask, unlockTask } = await import('./platform.js');
-    if (on) await lockTask(); else await unlockTask();
+    const { lockTask } = await import('./platform.js');
+    // v1.0.36: PIN ONLY, NEVER UNPIN, on profile activation. stopLockTask() makes many
+    // devices raise the DEVICE keyguard ("lock device when unpinning" — a system setting
+    // we can neither read nor change), so switching from a locked child to an unlocked
+    // sibling locked the whole TABLET mid-switch (field report). The pin is released only
+    // where leaving the app is the point: askExit, the settings toggle, and the native
+    // installer (installApk unpins itself). Until then an unlocked profile on a
+    // still-pinned session keeps the exit button as its way out — containment may err
+    // STRICT, never loose, and the security direction (unlocked→locked must pin NOW)
+    // still applies immediately.
+    if (on) await lockTask();
   } catch { /* browser preview / plugin absent — the UI half still applies */ }
   await applyExitLockUi();
 }
@@ -5357,6 +5366,11 @@ async function init() {
   onAppResume(async () => {
     // v1.0.31: a scheduled lock may have matured while backgrounded — check before anything.
     await tickScheduledLock().catch(() => {});
+    // v1.0.36: re-arm the exit lock. The update flow unpins natively (installApk), and a
+    // CANCELLED install resumes right back here — still unpinned, on a locked profile.
+    // Safe on every resume: applyExitLock never unpins, and the native lockTask is a
+    // no-op when already pinned.
+    applyExitLock().catch(() => {});
     // v1.0.22 — pull the family's shared state FIRST: the parent very often approves on
     // the phone and then hands the tablet to the child, and resume does not re-fire the
     // gallery's onEnter. Same guards as the resync below (never mid-video, home only),

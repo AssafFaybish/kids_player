@@ -559,7 +559,9 @@ test('the exit lock is per-profile, and leaving a locked profile is gated', () =
   const helper = app.slice(helperAt);
   const helperBody = helper.slice(0, helper.indexOf('\n}\n') + 1);
   assert.match(helperBody, /await lockTask\(\)/, 'the helper no longer pins — the import alone is not a call');
-  assert.match(helperBody, /await unlockTask\(\)/, 'the helper never releases — a sibling stays pinned');
+  // v1.0.36 SUPERSEDES the old "helper must release" half: releasing on activation is
+  // exactly what raised the device keyguard mid-profile-switch. The never-unpin rule
+  // (and the release points that replace it) is pinned by its own test below.
 });
 
 test('the settings channel travels, but the API key never does', () => {
@@ -1160,4 +1162,44 @@ test('the picker exit button cannot walk through an armed kiosk (v1.0.32)', () =
   // and the picker really has the button wired to this flow
   assert.match(app, /\$\('profiles-exit'\)\.addEventListener\('click', askExit\)/,
     'the picker exit button is not bound to askExit');
+});
+
+/* ---------------- kiosk pin/unpin discipline (v1.0.36) ---------------- */
+
+test('profile activation NEVER unpins, and resume re-arms the lock (v1.0.36)', () => {
+  // stopLockTask() raises the DEVICE keyguard on many devices ("lock device when
+  // unpinning" is a system setting the app can neither read nor change) — so
+  // applyExitLock's old else-branch locked the whole TABLET when switching from a
+  // locked child to an unlocked sibling (field report). The activation path may only
+  // PIN; the unpin belongs to askExit, the settings toggle and the native installer.
+  const app = MODULES.get('www/js/app.js');
+  const start = app.indexOf('async function applyExitLock()');
+  assert.ok(start > 0, 'applyExitLock not found');
+  const body = app.slice(start, app.indexOf('\n}', start));
+  assert.ok(!body.includes('unlockTask'),
+    'applyExitLock unpins again — profile switches will raise the device keyguard');
+  assert.ok(body.includes('lockTask'), 'applyExitLock no longer pins at all');
+  // The installer unpins natively; a CANCELLED install resumes back into the app still
+  // unpinned on a locked profile — resume must re-arm or the kiosk is silently off.
+  const resumeStart = app.indexOf('onAppResume(async () => {');
+  assert.ok(resumeStart > 0, 'onAppResume block not found');
+  const resumeBody = app.slice(resumeStart, app.indexOf('\n  });', resumeStart));
+  assert.ok(resumeBody.includes('applyExitLock'),
+    'resume no longer re-arms the exit lock — a cancelled update leaves the kiosk off');
+});
+
+test('native pin/unpin are gated on lock-task state and the installer unpins — BOTH java copies (v1.0.36)', () => {
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                   'native-reference/KidsNativePlugin.java']) {
+    const java = readFileSync(join(ROOT, p), 'utf8');
+    assert.ok(java.includes('private boolean inLockTask()'), `${p}: the inLockTask gate is gone`);
+    const lock = java.slice(java.indexOf('public void lockTask'), java.indexOf('public void isTaskLocked'));
+    assert.ok(lock.includes('if (inLockTask())') && lock.includes('if (!inLockTask())'),
+      `${p}: lockTask/unlockTask no longer gate on the current state — redundant unpins keyguard the tablet`);
+    // A PINNED task cannot start the system installer (Android refuses new tasks over
+    // lock-task mode), so with the kiosk ON the update button did nothing.
+    const inst = java.slice(java.indexOf('public void installApk'), java.indexOf('private void startInstaller'));
+    assert.ok(inst.includes('stopLockTask'),
+      `${p}: installApk no longer unpins first — updates are dead under the kiosk lock`);
+  }
 });

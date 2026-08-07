@@ -266,6 +266,25 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.36 — **THE KIOSK PIN NEVER RELEASES MID-SESSION, AND THE UPDATER RUNS UNDER IT**
+  (two field reports, same root: `stopLockTask()` raises the DEVICE keyguard on many
+  devices — "lock device when unpinning" is a system setting the app can neither read
+  nor change).
+  - `applyExitLock` (profile activation, and now the resume re-arm) only ever PINS.
+    Switching from a locked child to an unlocked sibling used to lock the whole TABLET
+    mid-switch; now the session stays pinned and the unlocked profile keeps the exit
+    button as its way out — containment errs STRICT, never loose, and unlocked→locked
+    still pins immediately. The release points are exactly: `askExit`, the settings
+    toggle, and the native installer.
+  - Native `lockTask`/`unlockTask` are GATED on `getLockTaskModeState` (one
+    `inLockTask()` gate): a redundant unpin keyguards the tablet; a redundant re-pin
+    re-runs the pinning ceremony on some OEMs. `isTaskLocked` reads the same gate.
+  - `installApk` unpins DEFENSIVELY on the SAME UI-thread hop that starts the installer
+    — Android silently refuses new tasks over lock-task mode, so with the kiosk ON the
+    update button did nothing. A cancelled install resumes into the `onAppResume`
+    re-arm (safe on every resume precisely because `applyExitLock` never unpins).
+  - Both java copies (android/ + native-reference/) carry the change; `invariants.test.mjs`
+    pins all four halves, each proven red on a planted regression.
 - v1.0.34 — **A SHEET-LESS PROFILE GOT ITS DOOR BACK** (user request: the sources tab
   showed a DEAD copy-link button over "אין רשימת מקורות"). When the active profile has no
   sheet, `#remote-copy` is replaced by `#remote-connect` (exactly one of the two, pure

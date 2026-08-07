@@ -107,10 +107,27 @@ public class KidsNativePlugin extends Plugin {
     // one-time system confirmation; our own stopLockTask() (parent-PIN gated in JS)
     // exits it without device credentials.
 
+    /**
+     * v1.0.36: pin/unpin are NOT idempotent at the OS level, so every caller must check
+     * first. stopLockTask() on many devices shows the DEVICE keyguard ("lock device when
+     * unpinning" is a system setting we cannot read or change) — a redundant unpin locked
+     * the whole TABLET mid-profile-switch (field report). startLockTask() while already
+     * pinned re-runs the pinning ceremony on some OEMs. This is the one gate for both.
+     */
+    private boolean inLockTask() {
+        try {
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) getContext().getSystemService(Context.ACTIVITY_SERVICE);
+            return am != null
+                    && am.getLockTaskModeState() != android.app.ActivityManager.LOCK_TASK_MODE_NONE;
+        } catch (Exception ignored) { return false; }
+    }
+
     @PluginMethod
     public void lockTask(PluginCall call) {
         Activity a = getActivity();
         if (a == null) { call.reject("no-activity"); return; }
+        if (inLockTask()) { call.resolve(); return; } // already pinned — never re-pin
         a.runOnUiThread(() -> {
             try { a.startLockTask(); call.resolve(); }
             catch (Exception e) { call.reject("lock-failed: " + e.getMessage()); }
@@ -121,6 +138,7 @@ public class KidsNativePlugin extends Plugin {
     public void unlockTask(PluginCall call) {
         Activity a = getActivity();
         if (a == null) { call.reject("no-activity"); return; }
+        if (!inLockTask()) { call.resolve(); return; } // not pinned — never poke the keyguard
         a.runOnUiThread(() -> {
             try { a.stopLockTask(); } catch (Exception ignored) {}
             call.resolve();
@@ -129,15 +147,8 @@ public class KidsNativePlugin extends Plugin {
 
     @PluginMethod
     public void isTaskLocked(PluginCall call) {
-        boolean locked = false;
-        try {
-            android.app.ActivityManager am =
-                    (android.app.ActivityManager) getContext().getSystemService(Context.ACTIVITY_SERVICE);
-            locked = am != null
-                    && am.getLockTaskModeState() != android.app.ActivityManager.LOCK_TASK_MODE_NONE;
-        } catch (Exception ignored) {}
         JSObject ret = new JSObject();
-        ret.put("value", locked);
+        ret.put("value", inLockTask());
         call.resolve(ret);
     }
 
@@ -245,6 +256,24 @@ public class KidsNativePlugin extends Plugin {
     public void installApk(PluginCall call) {
         String path = call.getString("path");
         if (path == null || path.isEmpty()) { call.reject("no-path"); return; }
+        // v1.0.36: a PINNED task cannot start the system installer — Android silently
+        // refuses new tasks over lock-task mode, so with the kiosk lock ON the update
+        // button did nothing (field report). Unpin first, defensively, exactly like
+        // exitApp() below: the flow is parent-PIN-gated in JS, and the JS side re-arms
+        // the pin on resume when the install is cancelled. The unpin and the installer
+        // launch ride ONE UI-thread hop, or the intent could race ahead of the unpin.
+        Activity a = getActivity();
+        if (a != null && inLockTask()) {
+            a.runOnUiThread(() -> {
+                try { a.stopLockTask(); } catch (Exception ignored) {}
+                startInstaller(call, path);
+            });
+            return;
+        }
+        startInstaller(call, path);
+    }
+
+    private void startInstaller(PluginCall call, String path) {
         Context ctx = getContext();
         try {
             File apk = new File(path);
