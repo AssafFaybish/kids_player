@@ -503,7 +503,39 @@ export async function putLibraryChannel(rec, { preserveTimestamp = false } = {})
   const out = preserveTimestamp && rec.updatedAt ? rec : { ...rec, updatedAt: Date.now() };
   await tx(['libraryChannels'], 'readwrite', (s) => { s.put(out); });
 }
-export async function deleteLibraryChannel(libraryId, channelId) {
+/* v1.0.36 — CHANNEL-DELETION TOMBSTONES. Deleting a subscription used to be pure row
+   ABSENCE, and absence carries no information: every Drive merge is a union, so any
+   peer (or any stale doc) still holding the row silently re-subscribed the family to
+   the exact channel the parent threw out (field report — "the channel comes back").
+   Same disease `deletedProfiles` and the video deny-list already cured; channels never
+   got the treatment. Shape: one meta key per library → { channelId: deletedAt }. The
+   LATEST deletion wins the map merge (drive.mergeDeletedChannels — unlike profiles'
+   min-merge, because a channel CAN be legitimately re-added and deleted again), and a
+   row outlives the tombstone only when its own `updatedAt` is STRICTLY newer — a
+   deliberate re-add (sheet row, in-app add, snapshot import) stamps a fresh updatedAt
+   and wins; a tie is a deletion (resurrecting a deleted channel is the betrayal,
+   re-hiding a re-added one is a complaint). */
+const chDelKey = (libraryId) => 'chDel:' + libraryId;
+export async function getDeletedChannels(libraryId) {
+  const raw = await getMeta(chDelKey(libraryId));
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+export async function putDeletedChannels(libraryId, map) {
+  await putMeta(chDelKey(libraryId), map && typeof map === 'object' ? map : {});
+}
+
+export async function deleteLibraryChannel(libraryId, channelId, { tombstone = true, tombstoneAt } = {}) {
+  // TOMBSTONE FIRST (the moveScope deny-list lesson): a crash between the two writes
+  // must leave the intent recorded, or the interrupted deletion resurrects silently.
+  // `tombstone: false` is for the two callers that are NOT a parental deletion —
+  // moveScope (a move) and drive.applyRemoteDoc (applying a peer's tombstone, whose
+  // own `at` must be preserved or the two devices restamp each other forever).
+  if (tombstone) {
+    const map = await getDeletedChannels(libraryId);
+    const at = tombstoneAt || Date.now();
+    map[channelId] = Math.max(Number(map[channelId]) || 0, at);
+    await putDeletedChannels(libraryId, map);
+  }
   await tx(['libraryChannels'], 'readwrite', (s) => { s.delete([libraryId, channelId]); });
   // v1.0.18 — REARM THE BACKFILL. Unsubscribing removes the libraryChannels row,
   // but the GLOBAL channels record survives with `backfillDone: true`, so on a
@@ -682,10 +714,14 @@ export async function moveScope(fromScope, toScope) {
   const targetChannels = new Set((await listLibraryChannels(toScope)).map((c) => c.channelId));
   for (const lc of await listLibraryChannels(fromScope)) {
     if (!targetChannels.has(lc.channelId)) {
+      // no preserveTimestamp: the fresh stamp is load-bearing — it outranks any old
+      // deletion tombstone waiting in the TARGET scope (re-attaching a sheet is a
+      // deliberate parental act, v1.0.36).
       await putLibraryChannel({ ...lc, libraryId: toScope });
       movedChannels.push(lc.channelId);
     }
-    await deleteLibraryChannel(fromScope, lc.channelId);
+    // a MOVE is not a parental deletion — no tombstone in the abandoned scope
+    await deleteLibraryChannel(fromScope, lc.channelId, { tombstone: false });
   }
   return { videoKeys: puts.map((r) => r.key), channelIds: movedChannels };
 }
@@ -761,7 +797,7 @@ export async function purgeProfile(profileId, scopes = null) {
   for (const s of list) {
     if (!String(s).startsWith('lib:')) continue;
     metaKeys.push('sync:' + s + ':lastFullSyncAt', 'sheetMirrorAlert:' + s,
-      'sheetMirrorIgnoredSig:' + s, 'dedupe:' + s);
+      'sheetMirrorIgnoredSig:' + s, 'dedupe:' + s, chDelKey(s));
   }
   await tx(['videos', 'denylist', 'libraryChannels', 'profileVideoState', 'sources', 'meta', 'opLog'], 'readwrite',
     (videos, deny, libCh, pvs, sources, meta, ops) => {

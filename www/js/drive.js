@@ -19,7 +19,8 @@ import { looksLikeHtml } from './csv.js'; // a 200 + sign-in page is a FAILURE, 
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
-  listLibraryChannels, putLibraryChannel, getChannel, putChannel,
+  listLibraryChannels, putLibraryChannel, getChannel, putChannel, deleteLibraryChannel,
+  getDeletedChannels, putDeletedChannels,
   loadDenyRecords, denyActive, tx, profScope, putVideoStates, getVideoState, purgeProfile
 } from './db.js';
 import { getAllSettings, putAllSettings, mergeSettings } from './settings.js';
@@ -190,7 +191,11 @@ export function serializeDb({ profiles, libraries, profileState, profileSources,
       // "paging state never travels" cannot drift. They did: this used to omit
       // `backfillDone` and `lastRssCheckedAt`.
       channels: (lib.channels || []).map(stripPerDeviceChannel),
-      libraryChannels: lib.libraryChannels || []
+      libraryChannels: lib.libraryChannels || [],
+      // v1.0.36: channel-deletion tombstones — additive, an older app ignores the key.
+      // Without them a deletion is pure ABSENCE, the union below can only re-add, and
+      // every peer resurrected the subscription the parent threw out (field report).
+      deletedChannels: lib.deletedChannels || {}
     };
   }
   return JSON.stringify({
@@ -247,6 +252,52 @@ export function mergeLibraryChannel(a, b) {
   return a;
 }
 
+/**
+ * v1.0.36 — PURE: union of two channel-deletion tombstone maps ({channelId: deletedAt}).
+ * The LATEST deletion wins — deliberately unlike deletedProfiles' min-merge: a profile
+ * id is random and never reused, but a channel CAN be legitimately re-added and then
+ * deleted AGAIN, and the newest event must be the one every device converges on.
+ * Commutative + idempotent (tested).
+ */
+export function mergeDeletedChannels(a, b) {
+  const out = {};
+  for (const src of [a, b]) {
+    for (const [id, at] of Object.entries(src || {})) {
+      const t = Number(at) || 0;
+      out[id] = id in out ? Math.max(out[id], t) : t;
+    }
+  }
+  return out;
+}
+
+/**
+ * v1.0.36 — PURE: does a subscription row outlive a deletion tombstone?
+ * STRICTLY newer wins: a deliberate re-add (sheet row, in-app add, snapshot import)
+ * stamps a fresh `updatedAt` inside putLibraryChannel and beats the tombstone; a tie
+ * is a deletion — resurrecting a channel the parent threw out is the betrayal,
+ * re-hiding a re-added one is only a complaint (the resolveCuration tie rule).
+ */
+export function channelOutlivesTombstone(row, at) {
+  return ((row && row.updatedAt) || 0) > (Number(at) || 0);
+}
+
+/**
+ * v1.0.36 — PURE: the libraryChannels half of applying a remote doc. Absence must
+ * finally PROPAGATE: adopt the union of both tombstone maps, refuse to put a remote
+ * row that loses to it (a STALE doc still carrying the deleted subscription was the
+ * resurrection — pullDrive applies the raw remote doc, unmerged), and delete the
+ * local rows that lose (the device that never heard about the deletion).
+ */
+export function planChannelApply({ localRows, remoteRows, localTombs, remoteTombs }) {
+  const tombs = mergeDeletedChannels(localTombs, remoteTombs);
+  const survives = (lc) => !(lc.channelId in tombs) || channelOutlivesTombstone(lc, tombs[lc.channelId]);
+  return {
+    tombs,
+    puts: (remoteRows || []).filter((lc) => lc && lc.channelId && survives(lc)),
+    deletes: (localRows || []).filter((lc) => lc && lc.channelId && !survives(lc)).map((lc) => lc.channelId)
+  };
+}
+
 /** Commutative + idempotent (tested): merge(a,b) ≡ merge(b,a); merge(a,a) ≡ a. */
 export function mergeDbFiles(a, b) {
   if (!a) return b;
@@ -290,13 +341,24 @@ export function mergeDbFiles(a, b) {
     for (const c of [...(la.libraryChannels || []), ...(lb.libraryChannels || [])]) {
       libCh.set(c.channelId, mergeLibraryChannel(libCh.get(c.channelId), c));
     }
+    // v1.0.36 — deletion tombstones filter the union (the deletedProfiles pattern):
+    // without this the union can only ever ADD, so one peer that had not pulled yet
+    // re-injected every deleted subscription on its next push. A row with a NEWER
+    // updatedAt (deliberate re-add) outlives the tombstone; a doc from an older app
+    // carries no deletedChannels key and filters nothing.
+    const chDel = mergeDeletedChannels(la.deletedChannels, lb.deletedChannels);
+    for (const [chId, at] of Object.entries(chDel)) {
+      const row = libCh.get(chId);
+      if (row && !channelOutlivesTombstone(row, at)) libCh.delete(chId);
+    }
 
     out.libraries[id] = {
       sheetUrl: la.sheetUrl || lb.sheetUrl || null,
       videos: [...vids.values()],
       denylist: [...deny.values()],
       channels: [...chans.values()],
-      libraryChannels: [...libCh.values()]
+      libraryChannels: [...libCh.values()],
+      deletedChannels: chDel
     };
   }
 
@@ -409,7 +471,9 @@ async function buildLocalDoc(profiles) {
         // FULL deny rows (v1.0.10) incl. revoked ones — real timestamps, so the
         // LWW merge is meaningful (the old code stamped Date.now() on every push)
         denylist: await loadDenyRecords(lib),
-        channels: chans, libraryChannels: libCh
+        channels: chans, libraryChannels: libCh,
+        // v1.0.36: the deletion tombstones travel with the library they guard
+        deletedChannels: await getDeletedChannels(lib)
       };
     }
     // profile-scope manual items ride inside a pseudo-library keyed by the prof scope
@@ -485,10 +549,28 @@ async function applyRemoteDoc(doc) {
       // may still carry it).
       await putChannel(mergeChannelForApply(prev, c));
     }
+    // v1.0.36 — the libraryChannels half goes through pure planChannelApply: adopt the
+    // union of deletion tombstones FIRST (so an interrupted apply still remembers),
+    // delete the local rows that lose to it, and put only the remote rows that outlive
+    // it — pullDrive applies the RAW remote doc, so a stale doc still carrying a
+    // deleted subscription used to resurrect it right here.
+    const chPlan = planChannelApply({
+      localRows: await listLibraryChannels(libId),
+      remoteRows: lib.libraryChannels || [],
+      localTombs: await getDeletedChannels(libId),
+      remoteTombs: lib.deletedChannels
+    });
+    await putDeletedChannels(libId, chPlan.tombs);
+    for (const chId of chPlan.deletes) {
+      // tombstone:false — the merged map above already carries the peer's own `at`;
+      // restamping it here would make this device's copy instantly newer and the two
+      // sides would bump each other forever (the preserveTimestamp lesson).
+      await deleteLibraryChannel(libId, chId, { tombstone: false });
+    }
     // preserveTimestamp: the merged record's `updatedAt` is the winner's, and restamping
     // it here would make it instantly newer than the peer's — the two devices would then
     // overwrite each other forever instead of converging.
-    for (const lc of lib.libraryChannels || []) {
+    for (const lc of chPlan.puts) {
       await putLibraryChannel({ ...lc, libraryId: libId }, { preserveTimestamp: true });
     }
   }

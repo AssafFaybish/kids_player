@@ -2,7 +2,7 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply } from '../www/js/drive.js';
 import { mergeSettings } from '../www/js/settings.js';
 import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
@@ -506,4 +506,102 @@ test('applying a remote unwrap PRESERVES the local playback position', () => {
   assert.equal(mergeAppliedState({ posSec: 61 }, {}), null);
   // a fresh device (no local record) simply adopts the unwrap
   assert.deepEqual(mergeAppliedState(null, { unwrappedAt: 9 }), { unwrappedAt: 9 });
+});
+
+/* ---------------- channel-deletion tombstones (v1.0.36) ---------------- */
+// Deleting a subscription used to be pure row ABSENCE, and a union can only ever ADD —
+// so any peer (or stale doc) still holding the row re-subscribed the family to the
+// exact channel the parent threw out (field report: "the channel comes back").
+
+const chRow = (channelId, over = {}) => ({
+  libraryId: 'lib:x', channelId, autoApprove: false, addedAt: 100, updatedAt: 100, ...over
+});
+const chDoc = (libraryChannels, deletedChannels) => ({
+  kind: 'kids-player-db', schema: 1, exportedAt: 1000, profiles: [],
+  libraries: {
+    'lib:x': {
+      sheetUrl: null, videos: [], denylist: [], channels: [], libraryChannels,
+      ...(deletedChannels !== undefined ? { deletedChannels } : {})
+    }
+  },
+  profileState: {}, profileSources: {}
+});
+
+test('a deleted channel stays deleted through the union — both merge orders (v1.0.36)', () => {
+  const a = chDoc([], { UC1: 200 });                    // this device deleted it at 200
+  const b = chDoc([chRow('UC1', { updatedAt: 150 })]);  // stale peer (OLDER APP: no deletedChannels key at all)
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const m = mergeDbFiles(x, y);
+    assert.equal(m.libraries['lib:x'].libraryChannels.length, 0,
+      'the stale row survived the union — the deletion undoes itself on the next pull');
+    assert.equal(m.libraries['lib:x'].deletedChannels.UC1, 200,
+      'the tombstone must travel in the merged doc, or the THIRD device resurrects');
+  }
+});
+
+test('a deliberate RE-ADD outlives the tombstone; a TIE deletes (v1.0.36)', () => {
+  const del = chDoc([], { UC1: 200 });
+  const readd = chDoc([chRow('UC1', { updatedAt: 300 })], {});
+  for (const [x, y] of [[del, readd], [readd, del]]) {
+    assert.equal(mergeDbFiles(x, y).libraries['lib:x'].libraryChannels.length, 1,
+      'a re-add (fresh putLibraryChannel stamp) was eaten by an older tombstone');
+  }
+  // tie → deleted: resurrecting a deleted channel is the betrayal, re-hiding a
+  // re-added one is a complaint (the resolveCuration tie rule).
+  assert.equal(channelOutlivesTombstone({ updatedAt: 200 }, 200), false);
+  assert.equal(channelOutlivesTombstone({ updatedAt: 201 }, 200), true);
+  assert.equal(channelOutlivesTombstone({}, 0), false, 'a timeless row must lose to any real event');
+});
+
+test('docs from an OLDER APP (no deletedChannels key) merge exactly as before (v1.0.36)', () => {
+  const m = mergeDbFiles(chDoc([chRow('UC1')]), chDoc([chRow('UC2')]));
+  assert.equal(m.libraries['lib:x'].libraryChannels.length, 2,
+    'a missing tombstone map must never read as "everything was deleted"');
+  assert.deepEqual(m.libraries['lib:x'].deletedChannels, {});
+});
+
+test('tombstone map merge: LATEST deletion wins, commutative, idempotent, garbage-safe (v1.0.36)', () => {
+  // Unlike deletedProfiles (min-merge, ids never reused): a channel can be re-added and
+  // deleted AGAIN, so the newest event must win everywhere.
+  assert.deepEqual(mergeDeletedChannels({ UC1: 100 }, { UC1: 300, UC2: 50 }), { UC1: 300, UC2: 50 });
+  assert.deepEqual(mergeDeletedChannels({ UC1: 300, UC2: 50 }, { UC1: 100 }), { UC1: 300, UC2: 50 });
+  assert.deepEqual(mergeDeletedChannels({ UC1: 100 }, { UC1: 100 }), { UC1: 100 });
+  assert.deepEqual(mergeDeletedChannels(null, undefined), {});
+  assert.deepEqual(mergeDeletedChannels({ UC1: 'garbage' }, null), { UC1: 0 },
+    'a timeless tombstone must lose to any real re-add, never explode');
+});
+
+test('the whole-doc merge stays idempotent with tombstones: merge(m, m) ≡ m (v1.0.36)', () => {
+  const m = mergeDbFiles(chDoc([], { UC1: 200 }), chDoc([chRow('UC1', { updatedAt: 150 })]));
+  const again = mergeDbFiles(m, m);
+  assert.deepEqual(again.libraries['lib:x'].libraryChannels, m.libraries['lib:x'].libraryChannels);
+  assert.deepEqual(again.libraries['lib:x'].deletedChannels, m.libraries['lib:x'].deletedChannels);
+});
+
+test('planChannelApply: a STALE remote doc cannot resurrect, and local losers go (v1.0.36)', () => {
+  // pullDrive applies the RAW remote doc (never pre-merged) — this is the pull half.
+  const plan = planChannelApply({
+    localRows: [chRow('UC2', { updatedAt: 100 })],  // the peer deleted this at 250
+    remoteRows: [chRow('UC1', { updatedAt: 150 })], // deleted HERE at 200, doc predates it
+    localTombs: { UC1: 200 },
+    remoteTombs: { UC2: 250 }
+  });
+  assert.deepEqual(plan.tombs, { UC1: 200, UC2: 250 });
+  assert.equal(plan.puts.length, 0, 'a stale remote row was re-put — the pull path resurrects again');
+  assert.deepEqual(plan.deletes, ['UC2'], 'the peer\'s deletion never landed locally');
+  // the re-add direction: a remote row NEWER than the tombstone is applied
+  const readd = planChannelApply({
+    localRows: [], remoteRows: [chRow('UC1', { updatedAt: 300 })],
+    localTombs: { UC1: 200 }, remoteTombs: {}
+  });
+  assert.equal(readd.puts.length, 1);
+  assert.equal(readd.deletes.length, 0);
+});
+
+test('serializeDb carries the per-library deletedChannels map (v1.0.36)', () => {
+  const doc = JSON.parse(serializeDb({
+    profiles: [], profileState: {}, profileSources: {},
+    libraries: { 'lib:x': { videos: [], denylist: [], channels: [], libraryChannels: [], deletedChannels: { UC1: 200 } } }
+  }));
+  assert.deepEqual(doc.libraries['lib:x'].deletedChannels, { UC1: 200 });
 });

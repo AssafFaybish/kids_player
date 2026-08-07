@@ -266,6 +266,38 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.36 — **A DELETED CHANNEL FINALLY STAYS DELETED** (field report: "אני מסיר ערוץ
+  והוא חוזר אחרי זמן מה", multi-device account). `libraryChannels` deletion was pure row
+  ABSENCE — no tombstone anywhere — and every Drive merge is a UNION, so any peer (or any
+  stale doc, including this device's own inside the 60s push-debounce window) silently
+  re-subscribed the family to the channel the parent threw out. The exact disease
+  `deletedProfiles` and the video deny-list already cured; channels never got the
+  treatment.
+  - **`deletedChannels` tombstones** ({channelId: deletedAt}, meta key `chDel:<lib>`),
+    written INSIDE `db.deleteLibraryChannel` BEFORE the row delete (a crash in between
+    must keep the intent). LATEST deletion wins the map merge (`drive.mergeDeletedChannels`
+    — deliberately unlike profiles' min-merge: a channel CAN be re-added and deleted
+    again). A row outlives the tombstone only when its own `updatedAt` is STRICTLY newer
+    (`channelOutlivesTombstone`): a deliberate re-add (sheet row / in-app add / snapshot
+    import / moveScope re-attach — all stamp fresh) wins; a TIE deletes (resurrection is
+    the betrayal, re-hiding a re-add is a complaint — the resolveCuration rule).
+  - The tombstones ride each library in the Drive doc (additive — an older app ignores
+    them, and a doc WITHOUT the key filters nothing), `mergeDbFiles` filters the union
+    against them, and `applyRemoteDoc` routes libraryChannels through pure
+    `planChannelApply`: adopt the merged map FIRST, delete local losers WITHOUT
+    restamping (the preserveTimestamp lesson — apply-side passes `tombstone:false`),
+    and refuse to put a stale doc's rows. The pull path (`pullDrive`) applies the RAW
+    remote doc, so the apply-side filter is load-bearing, not belt-and-braces.
+  - `moveScope` passes `tombstone:false` (a move is not a parental deletion) and its
+    re-put deliberately stamps fresh so re-attaching a sheet outranks old tombstones;
+    `purgeProfile` deletes the `chDel:` meta key with the other per-library bookkeeping.
+  - The sheet layer is unchanged: the queued-delete guard (v1.0.10) still blocks
+    re-subscribe while the row-removal op is in flight, and a row STILL PRESENT in the
+    sheet legitimately re-adds (presence is truth) — with a fresh stamp that beats the
+    tombstone by design.
+  - 8 behavior tests in gdrive.test.mjs (both merge orders, re-add, tie, older-app docs,
+    idempotence, apply plan, serialization) + 2 wiring invariants, every guard proven
+    red on a planted regression.
 - v1.0.36 — **THE KIOSK PIN NEVER RELEASES MID-SESSION, AND THE UPDATER RUNS UNDER IT**
   (two field reports, same root: `stopLockTask()` raises the DEVICE keyguard on many
   devices — "lock device when unpinning" is a system setting the app can neither read
