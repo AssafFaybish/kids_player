@@ -1203,3 +1203,41 @@ test('native pin/unpin are gated on lock-task state and the installer unpins —
       `${p}: installApk no longer unpins first — updates are dead under the kiosk lock`);
   }
 });
+
+/* ---------------- channel-deletion tombstones (v1.0.36) ---------------- */
+
+test('a channel deletion writes its tombstone FIRST, and a move never writes one (v1.0.36)', () => {
+  // The pure halves (merge filter, apply plan) are behavior-tested in gdrive.test.mjs;
+  // this pins the IDB wiring the node suite cannot execute.
+  const db = MODULES.get('www/js/db.js');
+  const fnAt = db.indexOf('export async function deleteLibraryChannel(');
+  assert.ok(fnAt > 0, 'deleteLibraryChannel not found');
+  const body = db.slice(fnAt, db.indexOf('\n}\n', fnAt));
+  const tombAt = body.indexOf('putDeletedChannels');
+  const rowDelAt = body.indexOf('s.delete([libraryId, channelId])');
+  assert.ok(tombAt > 0, 'deleteLibraryChannel no longer writes a tombstone — deletions resurrect on the next pull');
+  assert.ok(rowDelAt > tombAt,
+    'the tombstone must be written BEFORE the row delete (a crash in between must keep the intent)');
+  // moveScope is a MOVE, not a parental deletion — and its re-put must stamp fresh
+  // (no preserveTimestamp) so the moved row outranks any old tombstone in the target.
+  const mv = db.slice(db.indexOf('export async function moveScope('));
+  const mvBody = mv.slice(0, mv.indexOf('\n}\n'));
+  assert.match(mvBody, /deleteLibraryChannel\(fromScope, lc\.channelId, \{ tombstone: false \}\)/,
+    'moveScope now tombstones the scope it abandons — re-attaching a sheet starts fighting itself');
+});
+
+test('applyRemoteDoc routes libraryChannels through planChannelApply (v1.0.36)', () => {
+  // pullDrive applies the RAW remote doc, so without this a stale doc still carrying a
+  // deleted subscription re-puts it — the exact field report ("the channel comes back").
+  const drive = MODULES.get('www/js/drive.js');
+  const at = drive.indexOf('async function applyRemoteDoc(');
+  assert.ok(at > 0, 'applyRemoteDoc not found');
+  const body = drive.slice(at, drive.indexOf('\n}\n', at));
+  assert.match(body, /planChannelApply\(/, 'applyRemoteDoc no longer consults the tombstone plan');
+  assert.match(body, /putDeletedChannels\(/, 'the merged tombstones are not persisted — an interrupted apply forgets');
+  assert.match(body, /for \(const lc of chPlan\.puts\)/,
+    'libraryChannels are applied straight from the doc again, bypassing the tombstone filter');
+  // the deletions must NOT restamp: the peer's own `at` is what converges
+  assert.match(body, /deleteLibraryChannel\(libId, chId, \{ tombstone: false \}\)/,
+    'apply-side deletions restamp the tombstone — the two devices will bump each other forever');
+});
