@@ -73,7 +73,54 @@ export async function ensureSheetsFolder(token) {
   } catch { return null; }
 }
 
+/**
+ * v1.0.34 — every source list this app created on this account, for the sources tab's
+ * connect flow (a sheet-less profile attaching a list later). Under `drive.file` a
+ * files.list returns ONLY files this app created, so the answer is exactly "the
+ * family's lists" — including after a reinstall or on a second device of the same
+ * account, which the join-by-profile buttons cannot see.
+ *
+ * SILENT auth by default: this runs as enrichment when the wizard opens, and a family
+ * that skipped the Google connect must not get an uninvited sign-in dialog out of it.
+ * -> { ok:true, files:[{id,name,url}] } | { ok:false, error }
+ * `ok:false` is "could not look", NEVER "no lists" — the interpretFileList doctrine.
+ */
+export async function listAppSheets({ interactive = false } = {}) {
+  try {
+    const token = await getAccessToken({ interactive });
+    if (!token) return { ok: false, error: 'no-token' };
+    const q = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+    const res = await httpRequest({
+      url: `${DRIVE}/files?q=${q}&spaces=drive&fields=files(id,name)&pageSize=50&orderBy=modifiedTime%20desc`,
+      headers: { Authorization: 'Bearer ' + token }, responseType: 'json'
+    });
+    const files = interpretFileList(res.status, res.data);
+    return {
+      ok: true,
+      files: files.filter((f) => f && f.id).map((f) => ({
+        id: f.id, name: String(f.name || 'רשימה'),
+        url: `https://docs.google.com/spreadsheets/d/${f.id}/edit`
+      }))
+    };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}
+
 /* ---------------- pure (node-tested) ---------------- */
+
+/**
+ * v1.0.34 — PURE: the files.list gate, same doctrine as `interpretSheetResponse` below
+ * and `drive.interpretDriveList`: A FAILED LISTING IS NEVER AN EMPTY ONE. Emptiness may
+ * come from exactly one shape — a 200 whose `files` is a real array. A non-200, a
+ * markup body wearing a 200 (a lost grant's sign-in page), an error envelope and an
+ * unparsable body all THROW, and the caller must say "couldn't look", never "no lists".
+ */
+export function interpretFileList(status, data) {
+  if (status !== 200) throw new Error('list-http-' + (status || 0));
+  const d = typeof data === 'string' ? JSON.parse(data) : data; // junk/HTML throws here
+  const files = d && d.files;
+  if (!Array.isArray(files)) throw new Error('list-not-json');
+  return files;
+}
 
 /** Spreadsheet id from a normal Sheets link; null for published /d/e/ links & garbage. */
 export function extractSpreadsheetId(url) {

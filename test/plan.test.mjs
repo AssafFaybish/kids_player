@@ -1282,6 +1282,20 @@ test('lockCountdownLabel: mm:ss, never negative, never blank', async () => {
   for (const z of [0, -1, NaN, null, undefined]) assert.equal(lockCountdownLabel(z), '0:00', String(z));
 });
 
+/* ---------------- the sources tab's primary action (v1.0.34) ---------------- */
+
+test('sourcesPanelActions: exactly one primary action, always', async () => {
+  const { sourcesPanelActions } = await import('../www/js/plan.js');
+  // no sheet (or no sources record at all) ⇒ the connect door, never the dead copy button
+  for (const src of [null, undefined, {}, { sheetUrl: '' }, { sheetUrl: null }]) {
+    assert.deepEqual(sourcesPanelActions(src), { copy: false, connect: true }, JSON.stringify(src));
+  }
+  // a connected sheet ⇒ copy its link, no connect door
+  assert.deepEqual(
+    sourcesPanelActions({ sheetUrl: 'https://docs.google.com/spreadsheets/d/x/edit' }),
+    { copy: true, connect: false });
+});
+
 /* ---------------- idle screen-off (v1.0.34) ---------------- */
 
 test('screenOffMinutes: never-written = the DEFAULT, explicit 0 = off, nonsense = the default', async () => {

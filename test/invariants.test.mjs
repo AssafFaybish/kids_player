@@ -1120,6 +1120,32 @@ test('idle screen-off (v1.0.34): the sleep branch does both halves IN ORDER, in 
     'the "עדיין צופים?" overlay left #player-wrap — invisible in fullscreen');
 });
 
+test('the sources-tab connect door routes through the WIZARD, and Drive listings are gated (v1.0.34)', () => {
+  const app = MODULES.get('www/js/app.js');
+  // CLAUDE.md (v1.0.32): anything re-attaching a sheet from the sources tab must route
+  // through the same migration as the wizard — the handler must open the wizard, never
+  // putSources by hand (skipping adoptLibraryScope silently orphans everything, v1.0.17).
+  const start = app.indexOf("$('remote-connect').addEventListener('click'");
+  assert.ok(start >= 0, 'the sources tab lost its connect handler');
+  const seg = app.slice(start, app.indexOf("$('remote-refresh')", start));
+  assert.match(seg, /openSheetSetup\(p, \{ fromParent: true \}\)/,
+    'the connect door no longer opens the wizard — adoptLibraryScope would be skipped');
+  // the wizard's connection routine still runs the mandated migration
+  const cw = app.slice(app.indexOf('async function connectWizardSheet('));
+  assert.match(cw.slice(0, cw.indexOf('\n}\n')), /adoptLibraryScope\(/,
+    'connectWizardSheet no longer routes through adoptLibraryScope — a scope change would orphan content');
+  // index.html carries the button (exactly one of copy/connect shows — pure
+  // plan.sourcesPanelActions decides, unit-pinned)
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  assert.ok(html.includes('id="remote-connect"'), 'index.html lost the connect button');
+  // sheetwrite: the Drive listing must pass its gate — a FAILED listing read as an
+  // EMPTY one pushes a parent into creating a duplicate family list
+  const sw = MODULES.get('www/js/sheetwrite.js');
+  const las = sw.slice(sw.indexOf('export async function listAppSheets('));
+  assert.match(las.slice(0, las.indexOf('\n}\n')), /interpretFileList\(/,
+    'listAppSheets no longer routes the response through interpretFileList');
+});
+
 test('the picker exit button cannot walk through an armed kiosk (v1.0.32)', () => {
   // askExit also serves the BOOT profile picker, where no profile is active yet — but
   // the kiosk was armed from the LAST ACTIVE one (the launch rule). Reading only the
