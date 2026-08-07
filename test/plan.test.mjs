@@ -1282,6 +1282,64 @@ test('lockCountdownLabel: mm:ss, never negative, never blank', async () => {
   for (const z of [0, -1, NaN, null, undefined]) assert.equal(lockCountdownLabel(z), '0:00', String(z));
 });
 
+/* ---------------- idle screen-off (v1.0.34) ---------------- */
+
+test('screenOffMinutes: never-written = the DEFAULT, explicit 0 = off, nonsense = the default', async () => {
+  const { screenOffMinutes } = await import('../www/js/plan.js');
+  // never written (getSetting fallback) ⇒ the feature is ON out of the box.
+  // Number(null) === 0, so a coerce-first implementation reads these as "off" — the bug
+  // this function exists to prevent.
+  for (const unset of [null, undefined, '']) {
+    assert.equal(screenOffMinutes(unset, 10), 10, `unset=${String(unset)}`);
+  }
+  // an explicit 0 is a real parental answer: never turn off (today's behavior)
+  assert.equal(screenOffMinutes(0, 10), 0);
+  assert.equal(screenOffMinutes('0', 10), 0);
+  // nonsense falls back to the DEFAULT, never to a short window (the planRejectedPurge rule)
+  for (const bad of [-1, -99, NaN, 'abc', Infinity, -Infinity]) {
+    assert.equal(screenOffMinutes(bad, 10), 10, `bad=${String(bad)}`);
+  }
+  // real values pass through, floored and capped at the input's own bound (600)
+  assert.equal(screenOffMinutes(25, 10), 25);
+  assert.equal(screenOffMinutes(7.9, 10), 7);
+  assert.equal(screenOffMinutes(9999, 10), 600);
+  // a nonsense default itself falls back to 10
+  assert.equal(screenOffMinutes(null, -1), 10);
+  assert.equal(screenOffMinutes(null, 'x'), 10);
+});
+
+test('evalIdleSleep: off while nothing plays or the feature is disabled — wake is not held there', async () => {
+  const { evalIdleSleep } = await import('../www/js/plan.js');
+  const M = 60000;
+  // disabled (0) or nonsense minutes ⇒ off, whatever else says
+  for (const a of [0, -5, NaN, null, undefined, 'x']) {
+    assert.equal(evalIdleSleep({ afterMin: a, playing: true, lastInputAt: 1, now: 9e9 }), 'off', `after=${a}`);
+  }
+  // not playing ⇒ off even mid-prompt: something else paused the video, the question
+  // no longer applies (and the OS already owns the screen while nothing plays)
+  assert.equal(evalIdleSleep({ afterMin: 10, playing: false, lastInputAt: 1, now: 1 + 60 * M }), 'off');
+  assert.equal(evalIdleSleep({ afterMin: 10, playing: false, promptAt: 1, now: 9e9 }), 'off');
+});
+
+test('evalIdleSleep: counting → prompt at N minutes → sleep after the unanswered window', async () => {
+  const { evalIdleSleep } = await import('../www/js/plan.js');
+  const M = 60000;
+  const base = { afterMin: 10, playing: true, promptSec: 45 };
+  // input fresh ⇒ counting
+  assert.equal(evalIdleSleep({ ...base, lastInputAt: 1000, now: 1000 + 9 * M }), 'counting');
+  // N minutes of silence ⇒ prompt (the caller shows the overlay and stamps promptAt)
+  assert.equal(evalIdleSleep({ ...base, lastInputAt: 1000, now: 1000 + 10 * M }), 'prompt');
+  // prompt up, window not over ⇒ still prompt
+  assert.equal(evalIdleSleep({ ...base, lastInputAt: 1000, promptAt: 5000, now: 5000 + 44000 }), 'prompt');
+  // window over ⇒ sleep: save position, THEN pause in place — never stop()
+  assert.equal(evalIdleSleep({ ...base, lastInputAt: 1000, promptAt: 5000, now: 5000 + 45000 }), 'sleep');
+  // an answered prompt (caller reset promptAt and stamped fresh input) ⇒ counting again
+  assert.equal(evalIdleSleep({ ...base, lastInputAt: 5000 + 46000, promptAt: 0, now: 5000 + 47000 }), 'counting');
+  // no input observed yet ⇒ counting, never an instant prompt
+  assert.equal(evalIdleSleep({ ...base, lastInputAt: 0, now: 9e9 }), 'counting');
+  assert.equal(evalIdleSleep(), 'off');
+});
+
 /* ---------------- the parent's channel list sections (v1.0.32) ---------------- */
 
 test('planChannelSections: fresh = undecided AND inside the 24h window, newest first', () => {

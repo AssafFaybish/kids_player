@@ -315,6 +315,17 @@
           </div>
           <button id="autoplay-stop" class="btn autoplay-stop" type="button">✋ עצור</button>
         </div>
+        <!-- v1.0.34 idle screen-off. INSIDE player-wrap for the same reason as
+             autoplay-next: that is the element that goes fullscreen, and anything
+             outside it is invisible while a video plays. ANY touch or remote key
+             answers it (the global input listener consumes that one event), so the
+             button is an affordance, not the only target. -->
+        <div id="idle-prompt" class="idle-prompt hidden">
+          <div class="idle-prompt-card">
+            <div class="idle-prompt-label">עדיין צופים? 👀</div>
+            <button id="idle-yes" class="btn idle-yes" type="button">כן! ממשיכים ▶</button>
+          </div>
+        </div>
         <div class="player-hud">
           <div class="player-controls">
             <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
@@ -625,6 +636,19 @@
               דקות</label>
           </div>
           <p class="hint sched-lock-hint">0 = ללא נעילה. הזמן מתחיל כשהילד מתחיל לצפות, ורץ ברציפות.</p>
+        </div>
+        <!-- v1.0.34: idle screen-off. Per-profile + SYNCED, default ON at 10 minutes
+             (user's decision) — 0 = never, the pre-v1.0.34 behavior. The app only stops
+             KEEPING the screen awake; the device's own display timeout does the turning
+             off, which is why the hint says so instead of promising an instant. -->
+        <div class="sched-lock-row">
+          <span class="sched-lock-label">🌙 כיבוי מסך כשאין שימוש<b id="screen-off-owner" class="setting-owner"></b></span>
+          <div class="sched-lock-fields">
+            <label>אחרי
+              <input id="screen-off-min" class="input sched-num" type="number" min="0" max="600" step="1" inputmode="numeric" value="10" />
+              דקות בלי מגע</label>
+          </div>
+          <p class="hint sched-lock-hint">בזמן ניגון תופיע שאלת "עדיין צופים?" — בלי תשובה הסרטון יושהה והמסך יכבה לפי הגדרת הזמן של המכשיר. 0 = המסך נשאר דולק תמיד (כמו עד היום).</p>
         </div>
         <div id="settings-msg" class="form-msg"></div>
 

@@ -344,6 +344,51 @@ export function evalScheduledLock({ now = Date.now(), armedAt = 0, lockedUntil =
 }
 
 /**
+ * v1.0.34 — PURE: the idle screen-off minutes from the profile's raw setting.
+ *
+ * NEVER-WRITTEN (null/undefined/'') ⇒ the DEFAULT — the user's decision: the feature is
+ * ON out of the box, because the family it protects (a child asleep in front of a lit
+ * panel all night) is exactly the family that never opens the settings screen.
+ * An EXPLICIT 0 ⇒ OFF (today's behavior: the screen stays awake while a video plays).
+ * NONSENSE (NaN/negative/Infinity) ⇒ the default, never a short window — the
+ * `planRejectedPurge` rule. Beware `Number(null) === 0`: the never-written check must
+ * run BEFORE coercion, or the default would silently read as "off".
+ */
+export function screenOffMinutes(raw, defMin = 10) {
+  const def = Number.isFinite(+defMin) && +defMin > 0 ? Math.min(600, +defMin) : 10;
+  if (raw === null || raw === undefined || raw === '') return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return def;
+  return Math.min(600, Math.floor(n));
+}
+
+/**
+ * v1.0.34 — PURE: the idle screen-off state machine (user decisions 2026-08-07).
+ * After `afterMin` minutes with NO user input while a video PLAYS: show "עדיין צופים?"
+ * for `promptSec` seconds; silence means the caller must save the position, THEN pause
+ * IN PLACE (the v1.0.32 screen-off order — never stop()), and keep-awake follows the
+ * pause down by itself (the player heartbeat holds it only while playing). The DEVICE's
+ * own display timeout is what actually turns the screen off — an app cannot do that
+ * without device-admin, which is the wrong tool for a kids player.
+ *
+ * `playing:false` is 'off' by design: wake is not held while paused or outside the
+ * player, so the OS already handles those — there is nothing for the app to do.
+ *
+ * @param lastInputAt  ms of the last touch/remote key (0 = none observed yet)
+ * @param promptAt     ms the prompt was shown (0 = not showing) — the caller stamps it
+ * @returns 'off' | 'counting' | 'prompt' | 'sleep'
+ */
+export function evalIdleSleep({ now = Date.now(), lastInputAt = 0, promptAt = 0, afterMin = 0, playing = false, promptSec = 45 } = {}) {
+  const after = Number(afterMin);
+  if (!Number.isFinite(after) || after <= 0 || !playing) return 'off';
+  const shown = Number(promptAt) || 0;
+  if (shown > 0) return now - shown >= (Number(promptSec) || 45) * 1000 ? 'sleep' : 'prompt';
+  const last = Number(lastInputAt) || 0;
+  if (last <= 0) return 'counting';
+  return now - last >= after * 60000 ? 'prompt' : 'counting';
+}
+
+/**
  * v1.0.31 — PURE: how long the current lock should last, from the profile's setting.
  * A nonsense value falls back to the default (never 0 — that would unlock on the spot),
  * the `planRejectedPurge` rule.

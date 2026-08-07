@@ -1076,6 +1076,50 @@ test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists an
   assert.match(fn.slice(0, 400), /!s\.isActive/, 'onAppPause no longer keys on isActive:false');
 });
 
+test('idle screen-off (v1.0.34): the sleep branch does both halves IN ORDER, in place, and the plumbing is wired', () => {
+  // Node cannot wait ten minutes in front of a tablet, so this is a source guard for
+  // what the pure tests cannot see: the app-side plumbing. Same discipline as the
+  // v1.0.32 screen-off guard above — comment lines don't count, and each clause was
+  // proven to fail on a planted regression before landing.
+  const app = MODULES.get('www/js/app.js');
+  const fn = app.slice(app.indexOf('async function tickIdleSleep('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'))
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  // the decision is the PURE helper's, fed through the sanitizer that knows
+  // never-written ≠ explicit 0 (Number(null) is 0 — the wrong kind of "off")
+  assert.match(body, /screenOffMinutes\(/, 'the minutes no longer pass the never-written/0 sanitizer');
+  assert.match(body, /evalIdleSleep\(/, 'the tick no longer delegates to the pure decision');
+  // the sleep half: save FIRST (reads the live playhead), THEN pause — IN PLACE.
+  const save = body.indexOf('saveWatchPosition(currentWatch)');
+  const pause = body.indexOf('pauseCurrent()');
+  assert.ok(save >= 0, 'the idle sleep no longer banks the stop point');
+  assert.ok(pause >= 0, 'the idle sleep no longer pauses the player');
+  assert.ok(save < pause, 'pause runs before the save — the saved playhead may be stale');
+  // stop() here is the "הסרטון נעלם" bug: the child comes back to a black hole
+  assert.doesNotMatch(body, /\bstop\(\)/, 'the idle sleep tears the player down');
+  // input is observed at the WINDOW in CAPTURE phase for both touch and remote keys —
+  // a handler that stops propagation must not be able to starve the timer
+  assert.match(app, /addEventListener\('pointerdown', onUserInput, true\)/,
+    'touch no longer counts as user input (capture listener gone)');
+  assert.match(app, /addEventListener\('keydown', onUserInput, true\)/,
+    'remote keys no longer count as user input — a TV child would be paused mid-episode');
+  // the answer tap must consume its WHOLE gesture: hiding the overlay on pointerdown
+  // puts the tap-shield under the finger, and the shield acts on the END of a tap —
+  // without these the "I'm here" tap PAUSED the video (measured in the browser)
+  for (const tail of ['pointerup', 'click', 'pointercancel']) {
+    assert.match(app, new RegExp(`addEventListener\\('${tail}', swallowIdleGestureTail, true\\)`),
+      `the answer tap's ${tail} is no longer consumed — answering the prompt pauses/toggles the video`);
+  }
+  // the prompt overlay lives INSIDE #player-wrap — that is the element that goes
+  // fullscreen; outside it the question is invisible while a video plays
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  const wrap = html.indexOf('id="player-wrap"');
+  const prompt = html.indexOf('id="idle-prompt"');
+  const hudEnd = html.indexOf('class="player-hud"');
+  assert.ok(wrap >= 0 && prompt > wrap && hudEnd > prompt,
+    'the "עדיין צופים?" overlay left #player-wrap — invisible in fullscreen');
+});
+
 test('the picker exit button cannot walk through an armed kiosk (v1.0.32)', () => {
   // askExit also serves the BOOT profile picker, where no profile is active yet — but
   // the kiosk was armed from the LAST ACTIVE one (the launch rule). Reading only the
