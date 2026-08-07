@@ -174,6 +174,15 @@ for anything destructive, and purge it afterwards.
       *(CapacitorHttp's `responseType:'blob'` base64 answer is assumed from its docs — the
       first device run of the logo fetch is what proves it.)*
 - [ ] TV: D-pad through the parent screens, OK toggles checkboxes.
+- [ ] **Idle screen-off** (v1.0.34): set the profile to 1 minute, play a video, don't
+      touch anything → after ~1 min the "עדיין צופים?" overlay shows (also in native
+      fullscreen — it lives inside `#player-wrap`); ~45s later the video pauses, and the
+      TABLET's own display timeout then turns the screen off. Answering (any tap or
+      remote key) must ONLY dismiss the prompt — the video must not pause/seek from that
+      key. With 0 the screen stays on through a whole long video. **Only a device proves
+      the screen actually darkens** — the browser cannot.
+- [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
+      TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
 ---
 

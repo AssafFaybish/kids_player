@@ -266,6 +266,34 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.34 — **THE SCREEN GOES DARK WHEN NOBODY IS THERE** (user request: a child falls
+  asleep mid-video and the panel burns all night). After `screenOffAfterMin` minutes
+  (per-profile, SYNCED; **default ON at 10** — an explicit 0 = never, the old behavior;
+  ⚠️ the default changes every existing install and MUST ride the release notes) with no
+  touch/remote key WHILE A VIDEO PLAYS: the "עדיין צופים? 👀" overlay shows for
+  `SCREEN_OFF_PROMPT_SEC` (45s); unanswered → save position, pause IN PLACE (the v1.0.32
+  order: save FIRST, never `stop()`), and keep-awake follows the pause down by itself
+  (wake.js holds it only while playing). **The DEVICE's own display timeout is what turns
+  the screen off** — an app cannot do that (device-admin is the wrong tool for a kids
+  player) nor change the system timeout (WRITE_SETTINGS), so a tablet set to "never
+  sleep" stays lit and the settings hint says so honestly.
+  - Pure decisions, unit-pinned: `plan.screenOffMinutes` — never-written ⇒ DEFAULT
+    (`Number(null) === 0` is the trap: the unset check must precede coercion or the
+    default silently reads as "off"), explicit 0 ⇒ off, nonsense ⇒ default (the
+    planRejectedPurge rule); `plan.evalIdleSleep` → 'off'|'counting'|'prompt'|'sleep',
+    where `playing:false` is 'off' BY DESIGN — wake is not held while paused/outside the
+    player, the OS already owns those, so "count only while playing" is the whole feature.
+  - **THE ANSWERING TAP/KEY IS CONSUMED** (`onUserInput` stops propagation only while the
+    prompt is up): on TV, OK would otherwise toggle pause and ←/→ would seek ±10s — "I'm
+    here" must never scrub the video. Input = window-CAPTURE `pointerdown`+`keydown`, so
+    no handler's stopPropagation can starve the timer; the prompt itself needs no handler
+    of its own (any input anywhere answers it — the button is an affordance).
+  - The overlay lives INSIDE `#player-wrap`, above the tap-shield (the autoplay-next
+    rule: that is the element that goes fullscreen). Same behavior on TV (user decision
+    2026-08-07): the pause lets the TV's own screensaver/sleep take over. A profile
+    switch stamps fresh input so a sibling never inherits idle time. The invariants
+    guard was proven against five planted regressions (order swap, dropped save,
+    `stop()`, dropped keydown listener, overlay outside the wrap).
 - v1.0.33 — **THE ADD TAB SEARCHES YOUTUBE** (user request: type like on youtube.com,
   see YouTube's own results, preview, add). The mechanism is the KEYLESS youtubei
   endpoint — `search.list` stayed banned (100 units on the shared key ≈ 80 searches/day

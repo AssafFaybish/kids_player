@@ -49,6 +49,14 @@ export const PIN_RECOVERY_DELAY_HOURS = 24;
 // DURATION falls back to this default rather than to 0 (a 0 would unlock instantly).
 export const SCHED_LOCK_DEFAULT_DURATION_MIN = 20;
 
+// v1.0.34 — idle screen-off. After this many minutes with NO touch/key while a video
+// plays, the "עדיין צופים?" prompt shows; unanswered, the video pauses and keep-awake is
+// released so the DEVICE's own display timeout can turn the screen off (an app cannot do
+// that itself). DEFAULT IS ON at 10 (the user's decision — protects the panel and the
+// battery when a child falls asleep mid-video); an explicit 0 = never, today's behavior.
+export const SCREEN_OFF_DEFAULT_MIN = 10;
+export const SCREEN_OFF_PROMPT_SEC = 45;
+
 
 /* Sync */
 export const MAX_ITEMS_PER_CHANNEL = 500;

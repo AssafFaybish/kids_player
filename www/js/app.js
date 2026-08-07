@@ -15,7 +15,8 @@ import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefR
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
-  PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN } from './config.js';
+  PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
+  SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -25,7 +26,8 @@ import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBac
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
-  planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery } from './plan.js';
+  planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
+  screenOffMinutes, evalIdleSleep } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -248,6 +250,91 @@ function startLockTicker() {
   lockTicker = setInterval(() => { tickScheduledLock().catch(() => {}); }, 5000);
 }
 
+/* ---------------- Idle screen-off (v1.0.34) ---------------- */
+// After N minutes with no touch/remote key WHILE A VIDEO PLAYS: ask "עדיין צופים?",
+// and if nobody answers — save the position, pause IN PLACE (never stop()), and let
+// keep-awake go (the player heartbeat holds it only while playing). The DEVICE's own
+// display timeout then turns the screen off; the app cannot and does not do that itself.
+// Same on TV: remote keys count as input, and the pause lets the TV's own screensaver
+// take over. The SETTING (`screenOffAfterMin`) is per-profile and synced — default ON at
+// 10 minutes, explicit 0 = off; the live timer is in-memory, per device, per session.
+// The pure decisions live in plan.screenOffMinutes / plan.evalIdleSleep.
+let idleLastInputAt = Date.now();
+let idlePromptAt = 0;
+let idleTicker = null;
+
+function hideIdlePrompt() {
+  idlePromptAt = 0;
+  $('idle-prompt').classList.add('hidden');
+}
+
+/**
+ * Every touch and every key lands here first (window CAPTURE listeners, registered in
+ * init). While the prompt is up, the answering tap/key is CONSUMED — otherwise a TV
+ * remote's OK would also toggle pause and ←/→ would seek ±10s, so "I'm here" would
+ * scrub the very video the child is watching.
+ *
+ * THE WHOLE GESTURE IS CONSUMED, NOT JUST THE POINTERDOWN. Hiding the overlay on
+ * pointerdown puts the tap-shield under the finger for the rest of the gesture, and the
+ * shield's tap model acts on the END of a tap — so an answer tap paused the very video
+ * it meant to keep playing (measured in the browser: prompt gone AND the clock frozen).
+ * `idleSwallowGesture` therefore eats the matching pointerup/click; pointercancel clears
+ * it too (Android steals gestures near the edges — the v1.0.22 pointercancel lesson —
+ * and a stale flag would swallow the tail of the NEXT, innocent tap).
+ */
+let idleSwallowGesture = false;
+
+function onUserInput(e) {
+  const answeredPrompt = idlePromptAt > 0;
+  idleLastInputAt = Date.now();
+  if (!answeredPrompt) {
+    if (e && e.type === 'pointerdown') idleSwallowGesture = false;
+    return;
+  }
+  hideIdlePrompt();
+  try { e.stopPropagation(); } catch {}
+  if (e && e.type === 'pointerdown') idleSwallowGesture = true;
+}
+
+function swallowIdleGestureTail(e) {
+  if (!idleSwallowGesture) return;
+  try { e.stopPropagation(); } catch {}
+  if (e && (e.type === 'click' || e.type === 'pointercancel')) idleSwallowGesture = false;
+}
+
+async function tickIdleSleep() {
+  const pid = activeProfileId;
+  if (!pid) return;
+  const afterMin = screenOffMinutes(
+    await getSetting(pid, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN);
+  const st = playbackState();
+  const phase = evalIdleSleep({
+    lastInputAt: idleLastInputAt, promptAt: idlePromptAt, afterMin,
+    playing: !!(st && st.playing), promptSec: SCREEN_OFF_PROMPT_SEC
+  });
+  if (phase === 'prompt') {
+    if (!idlePromptAt) { idlePromptAt = Date.now(); $('idle-prompt').classList.remove('hidden'); }
+    return;
+  }
+  if (phase === 'sleep') {
+    // The v1.0.32 screen-off order, load-bearing: save FIRST (it reads the live
+    // playhead), THEN pause. The player stays mounted at its spot — when the screen
+    // comes back the child finds the video waiting, paused, exactly where it stopped.
+    saveWatchPosition(currentWatch);
+    pauseCurrent();
+    hideIdlePrompt();
+    return;
+  }
+  // 'off'/'counting' with a stale prompt: something else paused or stopped the video —
+  // the question no longer applies.
+  if (idlePromptAt) hideIdlePrompt();
+}
+
+function startIdleTicker() {
+  if (idleTicker) return;
+  idleTicker = setInterval(() => { tickIdleSleep().catch(() => {}); }, 5000);
+}
+
 /**
  * v1.0.25 — THE HOLE A PER-PROFILE LOCK OPENS, closed in the same release.
  *
@@ -284,7 +371,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner', 'screen-off-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -2134,6 +2221,10 @@ async function refreshParent() {
   // v1.0.31: scheduled lock — load both numbers (0 after = off)
   $('lock-after-min').value = String(Number(await getSetting(activeProfileId, 'lockAfterMin', 0)) || 0);
   $('lock-duration-min').value = String(Number(await getSetting(activeProfileId, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)) || SCHED_LOCK_DEFAULT_DURATION_MIN);
+  // v1.0.34: never-written reads as the DEFAULT (10), explicit 0 shows as 0 — the
+  // distinction is screenOffMinutes' whole job (Number(null) is 0, the wrong answer).
+  $('screen-off-min').value = String(screenOffMinutes(
+    await getSetting(activeProfileId, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN));
   await labelProfileSettings();
   // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
   // cannot be blocked retroactively, and merging or renaming it silently would be worse —
@@ -4439,6 +4530,10 @@ async function activateProfile(id) {
   // now (it overrides the gallery), and keep the ticker running for this session.
   startLockTicker();
   await tickScheduledLock();
+  // v1.0.34: the idle screen-off timer runs for the whole session; a profile switch is
+  // itself user input, so the fresh child never inherits the previous child's idle time.
+  idleLastInputAt = Date.now();
+  startIdleTicker();
 
   const hasContent = folders.length > 0;
   if (!hasContent) {
@@ -4909,6 +5004,20 @@ function wire() {
   };
   $('lock-after-min').addEventListener('change', () => saveSchedLock().catch(() => {}));
   $('lock-duration-min').addEventListener('change', () => saveSchedLock().catch(() => {}));
+  // v1.0.34: idle screen-off minutes — per-profile, synced. A nonsense entry falls back
+  // to the DEFAULT (never to a short window); an explicit 0 is a real answer: never off.
+  $('screen-off-min').addEventListener('change', async () => {
+    const raw = parseInt($('screen-off-min').value, 10);
+    const v = Number.isFinite(raw) ? Math.max(0, Math.min(600, raw)) : SCREEN_OFF_DEFAULT_MIN;
+    $('screen-off-min').value = String(v);
+    await putSetting(activeProfileId, 'screenOffAfterMin', v);
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = v > 0
+      ? `כיבוי מסך: אחרי ${v} דקות בלי שימוש הסרטון יושהה והמסך יכבה לפי הגדרת המכשיר ✅`
+      : 'כיבוי המסך בוטל — המסך יישאר דולק כל עוד סרטון מתנגן';
+    msg.className = 'form-msg ok';
+  });
   $('exit-lock-toggle').addEventListener('change', async (e) => {
     const on = e.target.checked;
     await putSetting(activeProfileId, 'exitLock', on);
@@ -5142,6 +5251,18 @@ async function init() {
     saveWatchPosition(currentWatch);
     pauseCurrent();
   });
+
+  // v1.0.34 idle screen-off: every touch and every remote key is "someone is here".
+  // CAPTURE phase, so a handler that stops propagation cannot hide input from the
+  // timer — and so the prompt-answering tap is consumed before the HUD/TV handlers
+  // can act on it (onUserInput stops propagation only while the prompt is up).
+  window.addEventListener('pointerdown', onUserInput, true);
+  window.addEventListener('keydown', onUserInput, true);
+  // the answering tap's TAIL: the shield acts on the end of a tap, so the up/click of
+  // the gesture that answered the prompt must be eaten too, or "I'm here" pauses the video
+  window.addEventListener('pointerup', swallowIdleGestureTail, true);
+  window.addEventListener('click', swallowIdleGestureTail, true);
+  window.addEventListener('pointercancel', swallowIdleGestureTail, true);
 
   onAppResume(async () => {
     // v1.0.31: a scheduled lock may have matured while backgrounded — check before anything.
