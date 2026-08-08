@@ -23,7 +23,7 @@ import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge,
-  planOrphanGC } from './plan.js';
+  planOrphanGC, effectiveCaps } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
@@ -736,7 +736,10 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
 
   const plan = planMutations({
     candidates, existing, denySet,
-    caps: { maxPerChannel: src.maxItemsPerChannel, maxTotal: src.maxItemsTotal }
+    // v1.0.37 — the caps come from config through effectiveCaps, NOT from `src` directly.
+    // The stored fields froze at creation (5000), nothing could raise them, and a library
+    // that reached the ceiling silently imported nothing from every new channel forever.
+    caps: effectiveCaps(src)
   });
   await putVideos(plan.puts);
   for (const mv of legacyMoves) {
@@ -826,7 +829,11 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   // read, and the parent has to be told or they will never know it stopped syncing.
   return {
     ok: true, added: plan.newLiveKeys.length, pending: plan.pendingKeys.length,
-    merged: plan.mergeReport.length, sheetError
+    merged: plan.mergeReport.length, sheetError,
+    // v1.0.37: the run's DROPS, attributed per source. Computed since the overhaul and
+    // discarded here, which is why an import that dropped everything still reported a
+    // bare success and the parent was told the channel was empty.
+    drops: plan.drops
   };
 }
 
