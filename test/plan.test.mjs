@@ -10,8 +10,11 @@ import {
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
-  planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery
+  planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
+  effectiveCaps, sourceDrops
 } from '../www/js/plan.js';
+
+import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
 
 const CH = 'UCabcdefghijklmnopqrstuv';
 const cand = (over = {}) => ({
@@ -1450,4 +1453,95 @@ test('planLogoDelivery: a late fetch may NEVER paint into a host that moved on',
   // a host that never carried a channel stamp is not ours either (channelRow passes no host)
   assert.equal(planLogoDelivery({ imgConnected: false, hostConnected: true, hostChannelId: null, channelId: 'UCA' }), 'skip');
   assert.equal(planLogoDelivery({}), 'skip');
+});
+
+/* ---------------- the silent import ceiling (v1.0.37) ---------------- */
+// FIELD BUG, reported across four releases as "הערוץ נוסף אבל אין בו סרטונים"
+// (@BARDAK613 — a channel with 97 long-form videos). Resolution was never at fault: the
+// caps were literals frozen into each profile's sources row at creation, config.js carried
+// the same two names with ZERO consumers, and a library at the ceiling dropped every
+// candidate of every new channel SILENTLY — measured, 98 real candidates in, 0 out.
+
+test('effectiveCaps: config is the FLOOR, so a row frozen at the old 5000 is healed', () => {
+  const frozen = { maxItemsPerChannel: 500, maxItemsTotal: 5000 }; // what every profile carries
+  const caps = effectiveCaps(frozen);
+  assert.equal(caps.maxTotal, MAX_ITEMS_TOTAL);
+  assert.ok(caps.maxTotal > 5000, 'the stored literal still wins — every existing profile stays capped');
+  assert.equal(caps.maxPerChannel, MAX_ITEMS_PER_CHANNEL);
+  // a HIGHER stored value is honoured (never shrink a family's library from a stale row)
+  assert.equal(effectiveCaps({ maxItemsTotal: 99999 }).maxTotal, 99999);
+  // …and garbage falls back to the config value rather than to 0, which would import NOTHING
+  for (const bad of [null, undefined, {}, { maxItemsTotal: 0 }, { maxItemsTotal: -5 }, { maxItemsTotal: 'x' }]) {
+    assert.equal(effectiveCaps(bad).maxTotal, MAX_ITEMS_TOTAL, JSON.stringify(bad));
+    assert.equal(effectiveCaps(bad).maxPerChannel, MAX_ITEMS_PER_CHANNEL, JSON.stringify(bad));
+  }
+});
+
+test('a capped drop is ATTRIBUTED to its source, not just counted (v1.0.37)', () => {
+  // A library already at the ceiling: every candidate of the new channel is dropped.
+  const existing = new Map();
+  for (let i = 0; i < 20; i++) existing.set('yt:old' + i, { key: 'yt:old' + i, channelId: 'UCold', normTitle: 'old' + i });
+  const cands = [];
+  for (let i = 0; i < 4; i++) cands.push(cand({ id: 'new' + i, autoApprove: false }));
+  const p = planMutations({ candidates: cands, existing, denySet: new Set(), caps: { maxPerChannel: 500, maxTotal: 20 } });
+  assert.equal(p.puts.length, 0, 'the ceiling let something through');
+  assert.equal(p.counts.capped, 4);
+  assert.equal(p.drops.capped, 4);
+  assert.equal(p.drops.byChannel[CH].capped, 4, 'without attribution a zero cannot name its cause');
+  assert.equal(p.drops.byChannel[CH].denied, 0);
+});
+
+test('drop attribution counts UNIQUE keys, not drop events (v1.0.37)', () => {
+  // One sync offers the same video several times over (the RSS window, the UULF backfill
+  // and the playlists pass all cover it). Counting events reported "250 מהסרטונים שלו
+  // הוסרו" for a 98-video channel — measured against the live channel.
+  const deny = new Set(['yt:dup']);
+  const cands = [cand({ id: 'dup' }), cand({ id: 'dup' }), cand({ id: 'dup' })];
+  const p = planMutations({ candidates: cands, existing: new Map(), denySet: deny });
+  assert.equal(p.counts.denied, 3, 'the raw event count is unchanged');
+  assert.equal(p.drops.byChannel[CH].denied, 1, 'the number shown to the parent must be the video count');
+  assert.deepEqual(p.drops.byChannel[CH].deniedKeys, ['yt:dup']);
+});
+
+test('a PLAYLIST video is attributed to the playlist too (the pendingKeysOfChannel trap)', () => {
+  // A playlist video keeps its OWNER in channelId (v1.0.26), so matching on channelId
+  // alone finds ZERO for a playlist — the exact shape of the v1.0.22/v1.0.26 bug.
+  const PL = 'PLabcdefghijklmnopqrst';
+  const c = cand({ id: 'plv', channelId: 'UCowner1234567890123456', folderId: 'pl:' + PL });
+  const p = planMutations({ candidates: [c], existing: new Map(), denySet: new Set(['yt:plv']) });
+  assert.equal(p.drops.byChannel[PL].denied, 1, 'the playlist itself was not attributed — its zero stays mute');
+  assert.equal(p.drops.byChannel['UCowner1234567890123456'].denied, 1, 'the owner channel is attributed as well');
+});
+
+test('sourceDrops: a caller with no drop info degrades to "no drops", never to a wrong claim', () => {
+  assert.deepEqual(sourceDrops(null, 'UCx'), { capped: 0, denied: 0, deniedKeys: [] });
+  assert.deepEqual(sourceDrops({ byChannel: {} }, 'UCx'), { capped: 0, denied: 0, deniedKeys: [] });
+  assert.deepEqual(sourceDrops({ byChannel: { UCx: { capped: 2, denied: 3, deniedKeys: ['a'] } } }, 'UCx'),
+    { capped: 2, denied: 3, deniedKeys: ['a'] });
+  assert.deepEqual(sourceDrops({ byChannel: { UCx: {} } }, null), { capped: 0, denied: 0, deniedKeys: [] });
+});
+
+test('channelAddOutcome: a ZERO names ITS OWN cause — library full vs removed-before (v1.0.37)', () => {
+  // These two, and a channel that genuinely has nothing, produced the IDENTICAL sentence
+  // "אבל לא נמצאו בו סרטונים". Both are facts about the LIBRARY, which is why the parent
+  // (and four releases of fixes) kept investigating the channel.
+  const full = channelAddOutcome(false, 0, { capped: 98, hasLive: false });
+  const gone = channelAddOutcome(false, 0, { denied: 98, hasLive: false });
+  const empty = channelAddOutcome(false, 0, { hasLive: false });
+  assert.match(full, /מגבל/, 'the ceiling is not named');
+  assert.match(full, /98/, 'the parent is not told how many were lost');
+  assert.match(full, /מחקו/, 'the ceiling message offers no way out');
+  assert.match(gone, /הוסרו בעבר/, 'a previously-removed backlog is not named');
+  assert.match(gone, /98/);
+  assert.notEqual(full, empty, 'a full library still reads as an empty channel');
+  assert.notEqual(gone, empty, 'a removed backlog still reads as an empty channel');
+  assert.notEqual(full, gone, 'the two causes are indistinguishable');
+  // a PARTIAL cap is the same lie in miniature: 12 of 98 must not read as the whole channel
+  const partial = channelAddOutcome(false, 12, { capped: 86 });
+  assert.match(partial, /12/);
+  assert.match(partial, /86/, 'the videos that never arrived are unmentioned');
+  // and none of this may disturb the messages that were already right
+  assert.equal(channelAddOutcome(false, 0, { hasLive: true }), 'הערוץ סונכרן ✅');
+  assert.match(channelAddOutcome(false, 0, { noLongForm: true, capped: 0 }), /Shorts/);
+  assert.equal(channelAddOutcome(false, 98, {}), 'הערוץ נוסף. 98 סרטונים ממתינים לאישור ברשימת "ממתינים" 👀');
 });

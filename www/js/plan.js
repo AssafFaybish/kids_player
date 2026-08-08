@@ -6,6 +6,32 @@
 
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
+import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL } from './config.js';
+
+/**
+ * v1.0.37 — PURE: the caps a sync actually enforces.
+ *
+ * FIELD BUG this fixes ("הערוץ נוסף אבל אין בו סרטונים", @BARDAK613, reported across
+ * four releases). `maxItemsPerChannel: 500, maxItemsTotal: 5000` were LITERALS written
+ * into a profile's `sources` row the day it was created — six copies across app.js,
+ * drive.js, share.js, sync2.js and migrate.js — while `config.js` carried the same two
+ * names with NOT ONE consumer. So the ceiling was frozen per profile, invisible, and
+ * unraisable by anybody: a parent with 16 channels sat at 5000 records and EVERY new
+ * channel imported exactly nothing, silently, forever (measured: 98 real candidates in,
+ * 98 `capped`, 0 puts).
+ *
+ * The config value is therefore the FLOOR, not a default: that is what heals the rows
+ * already frozen at 5000 without a migration. A stored value is only honoured when it
+ * is HIGHER (nothing writes one today, and shrinking a family's library from a stale
+ * row would be the same class of silent loss).
+ */
+export function effectiveCaps(src) {
+  const stored = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 0);
+  return {
+    maxPerChannel: Math.max(MAX_ITEMS_PER_CHANNEL, stored(src && src.maxItemsPerChannel)),
+    maxTotal: Math.max(MAX_ITEMS_TOTAL, stored(src && src.maxItemsTotal))
+  };
+}
 
 /** Fields that constitute "the record changed" (put emitted only when one differs). */
 const DIFF_FIELDS = [
@@ -566,10 +592,45 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
 
   let total = existing.size;
 
+  /* v1.0.37 — WHY A DROP IS ATTRIBUTED TO A SOURCE, not just counted.
+   * `counts.capped`/`counts.denied` existed and were thrown away by every caller, so a
+   * channel that resolved perfectly and delivered 98 candidates could have all 98 dropped
+   * and the parent was told "אין בו סרטונים" — a statement about the CHANNEL when the
+   * truth was about the LIBRARY. Attribution is by BOTH the candidate's channelId and its
+   * folder's source id, because a PLAYLIST video keeps its OWNER in channelId (v1.0.26)
+   * and matching on channelId alone finds ZERO for a playlist — the exact shape of the
+   * pendingKeysOfChannel bug. deniedKeys ride along so the parent can be OFFERED the
+   * restore: for a channel video there is otherwise no way back at all (no sheet row to
+   * re-add, v1.0.26), which is what made this dead end permanent.
+   */
+  const byChannel = new Map();
+  const sourceIdsOf = (c) => {
+    const ids = [];
+    if (c.channelId) ids.push(c.channelId);
+    const m = /^(?:ch|pl):(.+)$/.exec(String(c.folderId || ''));
+    if (m && m[1] && m[1] !== c.channelId) ids.push(m[1]);
+    return ids;
+  };
+  // ATTRIBUTION COUNTS UNIQUE KEYS, not drop events. One run offers the same video
+  // several times (the RSS window, the UULF backfill and the playlists pass all cover
+  // it), so counting events told the parent "250 מהסרטונים שלו הוסרו" about a channel
+  // with 98 videos — measured. A number that overstates by 2.5× is the same class of
+  // small lie the message exists to remove.
+  const noteDrop = (c, kind, key) => {
+    for (const id of sourceIdsOf(c)) {
+      if (!byChannel.has(id)) byChannel.set(id, { capped: new Set(), denied: new Set() });
+      byChannel.get(id)[kind].add(key || c.key);
+    }
+  };
+
   for (const c of candidates) {
     if (!c || !c.key) continue;
     const key = mergedFromIndex.get(c.key) || c.key;
-    if (denySet.has(key) || denySet.has(c.key)) { dropsDenied += 1; continue; }
+    if (denySet.has(key) || denySet.has(c.key)) {
+      dropsDenied += 1;
+      noteDrop(c, 'denied', key);
+      continue;
+    }
 
     const normTitle = normalizeTitle(c.title);
     const base = {
@@ -647,8 +708,8 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
 
     // Brand-new record: caps, then the approval bookkeeping for the routing above.
     const chCount = (perChannel.get(c.channelId) || 0);
-    if (c.channelId && chCount >= maxPerChannel) { dropsCapped += 1; continue; }
-    if (total >= maxTotal) { dropsCapped += 1; continue; }
+    if (c.channelId && chCount >= maxPerChannel) { dropsCapped += 1; noteDrop(c, 'capped'); continue; }
+    if (total >= maxTotal) { dropsCapped += 1; noteDrop(c, 'capped'); continue; }
 
     if (needsApproval) pendingKeys.push(key);
     else { base.approvedAt = now; newLiveKeys.push(key); }
@@ -664,7 +725,32 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
   return {
     puts: [...puts.values()],
     newLiveKeys, pendingKeys, mergeReport,
-    counts: { candidates: candidates.length, puts: puts.size, denied: dropsDenied, capped: dropsCapped }
+    counts: { candidates: candidates.length, puts: puts.size, denied: dropsDenied, capped: dropsCapped },
+    // v1.0.37: the same numbers, attributed — this is what lets a zero name its cause.
+    drops: {
+      capped: dropsCapped,
+      denied: dropsDenied,
+      byChannel: Object.fromEntries([...byChannel.entries()].map(([id, e]) => [id, {
+        capped: e.capped.size, denied: e.denied.size, deniedKeys: [...e.denied]
+      }]))
+    }
+  };
+}
+
+/**
+ * v1.0.37 — PURE: what a source's zero MEANS, from the sync's own drop attribution.
+ * -> { capped, denied, deniedKeys }
+ *
+ * Kept separate from the message so both the wording and the restore offer read the same
+ * fact, and so a caller with no drop information (an older sync result, a share path)
+ * degrades to "no drops" rather than to a wrong claim.
+ */
+export function sourceDrops(drops, sourceId) {
+  const e = drops && drops.byChannel && sourceId ? drops.byChannel[sourceId] : null;
+  return {
+    capped: Math.max(0, (e && e.capped) | 0),
+    denied: Math.max(0, (e && e.denied) | 0),
+    deniedKeys: (e && Array.isArray(e.deniedKeys)) ? e.deniedKeys : []
   };
 }
 
@@ -1215,6 +1301,14 @@ export function pendingBulkAction(selected = 0, total = 0) {
 export function channelAddOutcome(approved, count = 0, empty = {}, picked = null) {
   const n = Math.max(0, count | 0);
   const { noLongForm = false, hasLive = true, isPlaylist = false } = empty || {};
+  // v1.0.37 — A DROPPED IMPORT MUST NAME ITSELF. Both of these produced the identical
+  // "אבל לא נמצאו בו סרטונים" as a channel that genuinely has none, and both are states
+  // of the LIBRARY, not of the channel — which is why the parent (and four releases of
+  // fixes) kept looking at the channel. Measured with 98 real candidates: a library at
+  // the ceiling drops all 98 as `capped`; a channel whose videos were removed before
+  // drops all 98 as `denied`.
+  const capped = Math.max(0, (empty && empty.capped) | 0);
+  const denied = Math.max(0, (empty && empty.denied) | 0);
   // v1.0.26: a playlist is a source too, and calling it "הערוץ" is the kind of small lie
   // that makes a parent wonder whether the app understood what they pasted.
   // Hebrew gender agrees with the noun: ערוץ is masculine, רשימה feminine.
@@ -1231,7 +1325,19 @@ export function channelAddOutcome(approved, count = 0, empty = {}, picked = null
     if (kept) return `${what} ו-${kept} סרטונים אושרו ✅`;
     return `${what}, וכל ${rej} הסרטונים נדחו`;
   }
-  if (n) return `${what}. ${n} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`;
+  // A PARTIAL cap is the same lie in miniature: "12 ממתינים לאישור" over a 98-video
+  // channel reads as "that is the whole channel". The clause is appended rather than
+  // replacing the branch, so every message keeps naming what DID arrive.
+  if (n) {
+    const base = `${what}. ${n} סרטונים ממתינים לאישור ברשימת "ממתינים" 👀`;
+    return capped ? `${base} (${capped} סרטונים לא נוספו — הספרייה הגיעה למגבלה)` : base;
+  }
+  // The ceiling first: it is the one a parent can act on immediately, and it blocks
+  // every source in the library rather than just this one.
+  if (capped) return `${what}, אבל הספרייה הגיעה למגבלת הסרטונים — ${capped} סרטונים לא נוספו. מחקו ערוץ או תוכן שאינו בשימוש ונסו שוב`;
+  // Previously removed: irreversible until now (a channel video has no sheet row to
+  // re-add, so no tombstone could ever be revoked). The caller offers the restore.
+  if (denied) return `${what}, אבל ${denied} מהסרטונים שלו הוסרו בעבר ולכן לא נוספו`;
   if (noLongForm) return 'הערוץ נוסף, אבל הוא מפרסם רק Shorts — לא נמשכו ממנו סרטונים';
   if (!hasLive) return `${what}, אבל לא נמצאו ${inIt} סרטונים`;
   return isPlaylist ? 'רשימת ההשמעה סונכרנה ✅' : 'הערוץ סונכרן ✅';

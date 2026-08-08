@@ -1241,3 +1241,80 @@ test('applyRemoteDoc routes libraryChannels through planChannelApply (v1.0.36)',
   assert.match(body, /deleteLibraryChannel\(libId, chId, \{ tombstone: false \}\)/,
     'apply-side deletions restamp the tombstone — the two devices will bump each other forever');
 });
+
+/* ---------------- the silent import ceiling (v1.0.37) ---------------- */
+
+test('the import caps have a LIVE consumer — config.js is not decoration (v1.0.37)', () => {
+  // THE TRAP THAT MADE THIS BUG SURVIVE FOUR RELEASES: config.js exported
+  // MAX_ITEMS_PER_CHANNEL / MAX_ITEMS_TOTAL and NOTHING imported them, while the binding
+  // values were literals frozen into every profile's `sources` row at creation. Editing
+  // config.js changed nothing, no parent could raise the ceiling, and a library at 5000
+  // silently imported zero from every new channel. A constant nobody reads is a lie.
+  const consumers = [...MODULES.entries()]
+    .filter(([p, s]) => p !== 'www/js/config.js' && /MAX_ITEMS_TOTAL/.test(s))
+    .map(([p]) => p);
+  assert.ok(consumers.length > 0, 'MAX_ITEMS_TOTAL is dead again — the caps are frozen per profile');
+  assert.ok(consumers.includes('www/js/plan.js'), 'effectiveCaps must be the one place the caps come from');
+});
+
+test('the sync enforces effectiveCaps, never the frozen sources row (v1.0.37)', () => {
+  const sync = MODULES.get('www/js/sync2.js');
+  const at = sync.indexOf('planMutations({');
+  assert.ok(at > 0, 'planMutations call not found');
+  const call = sync.slice(at, sync.indexOf('});', at));
+  assert.match(call, /caps: effectiveCaps\(src\)/,
+    'the caps come from the stored row again — existing profiles stay frozen at their creation-day ceiling');
+  assert.doesNotMatch(call, /src\.maxItemsTotal|src\.maxItemsPerChannel/,
+    'the stored literals are back in the cap path');
+});
+
+test('a dropped import reaches the parent: sync → diagnose → message (v1.0.37)', () => {
+  // The counts were computed since the overhaul and thrown away at every hop, which is
+  // why an import that dropped 98 of 98 candidates still reported "the channel is empty".
+  const sync = MODULES.get('www/js/sync2.js');
+  const app = MODULES.get('www/js/app.js');
+  const ret = sync.slice(sync.lastIndexOf('ok: true, added:'));
+  assert.match(ret.slice(0, ret.indexOf('};')), /drops: plan\.drops/,
+    'syncLibrary no longer returns the run\'s drops — the information dies in the sync again');
+
+  const impAt = app.indexOf('async function importChannelAndAsk(');
+  const imp = app.slice(impAt, app.indexOf('\n}\n', impAt));
+  assert.match(imp, /await syncLibrary\([^)]*\)/, 'the forced sync call moved');
+  assert.match(imp, /drops = res && res\.drops/, 'importChannelAndAsk discards the sync result again');
+  assert.match(imp, /diagnoseEmptyChannel\(channelId, count, drops\)/,
+    'the drops never reach the diagnosis, so a zero cannot name its cause');
+
+  const diagAt = app.indexOf('async function diagnoseEmptyChannel(');
+  const diag = app.slice(diagAt, app.indexOf('\n}\n', diagAt));
+  assert.match(diag, /sourceDrops\(drops, channelId\)/, 'the diagnosis no longer reads the attribution');
+  // BOTH return paths must carry them. The early `if (count)` return is the PARTIAL cap —
+  // "12 waiting" out of 98 reads as the whole channel — and is the easy one to lose.
+  const returns = diag.split('return ').slice(1);
+  assert.equal(returns.length, 2, 'diagnoseEmptyChannel changed shape — re-anchor this guard');
+  for (const [i, r] of returns.entries()) {
+    assert.match(r, /capped/, `return #${i + 1} of diagnoseEmptyChannel no longer reports the cap`);
+    assert.match(r, /denied/, `return #${i + 1} of diagnoseEmptyChannel no longer reports the tombstones`);
+  }
+});
+
+test('a previously-removed backlog has a way back, and it is the PARENT who says yes (v1.0.37)', () => {
+  // A deny tombstone is revoked by exactly one thing: the sheet re-adding the key
+  // (v1.0.10). A channel video has no sheet row, so a single in-place delete — or the
+  // 30-day purge of a rejected record (v1.0.26) — made the channel unimportable forever.
+  // It must NOT be automatic: a parent who removed three bad videos must not get them
+  // back for re-subscribing (the v1.0.23 rule).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function offerDeniedRestore(');
+  assert.ok(at > 0, 'the restore offer is gone — a removed backlog is a permanent dead end again');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /confirmKid\(/, 'the restore no longer ASKS — it must never revoke tombstones silently');
+  assert.match(body, /if \(!yes\) return false/, 'a declined restore must change nothing');
+  assert.match(body, /unDeny\(/, 'the restore does not actually revoke the tombstones');
+  const askAt = body.indexOf('confirmKid(');
+  assert.ok(body.indexOf('unDeny(') > askAt, 'the tombstones are revoked BEFORE the parent answers');
+  // wired into both add paths, and only when nothing arrived
+  assert.equal((app.match(/offerDeniedRestore\(/g) || []).length, 3,
+    'the restore must be offered by the channel AND the playlist add path (plus its definition)');
+  assert.match(app, /if \(!count && await offerDeniedRestore\(channelId, empty\)\)/,
+    'the channel path offers the restore unconditionally or not at all');
+});

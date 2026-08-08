@@ -266,6 +266,53 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.37 — **"הערוץ נוסף אבל אין בו סרטונים" WAS NEVER ABOUT THE CHANNEL** (@BARDAK613,
+  the FIFTH report of this sentence; v1.0.28/29/31/32 each fixed a real resolution bug and
+  none of them was this). **RESOLUTION IS FINE** — measured live on the reported channel:
+  `channels.list?forHandle` → the right id, the DESKTOP scrape (`externalId`) → the right
+  id, the MOBILE scrape (the RSS `href`, v1.0.32) → the right id, UULF → 97 long-form
+  videos, RSS → 13. The zero came from `planMutations`, and it came out SILENT:
+  - **THE CAPS WERE DEAD CONSTANTS.** `config.js` has exported `MAX_ITEMS_PER_CHANNEL` /
+    `MAX_ITEMS_TOTAL` since the overhaul with **ZERO consumers** (proven by a sweep, now a
+    test). The binding values were the literals `500`/`5000` written into each profile's
+    `sources` row the day it was created — six copies across app.js, drive.js, share.js,
+    sync2.js, migrate.js — so editing config.js changed nothing, no parent could raise the
+    ceiling, and a library at 5000 dropped **every candidate of every new channel, forever**
+    (measured: 98 real candidates in, `capped: 98`, 0 puts). A parent with 16 channels is
+    plausibly there, which is why it "kept coming back and was never solved".
+  - `plan.effectiveCaps(src)` is now the ONE source: **config is the FLOOR**, which is what
+    heals the rows already frozen at 5000 without a migration; a stored value wins only when
+    HIGHER (shrinking a family's library from a stale row is the same silent loss).
+    `MAX_ITEMS_TOTAL` 5000 → **12000, on a measurement** (browser, real records:
+    `loadMergeIndex` 114ms @5000 / 229ms @10000 / 468ms @20000, paid once per
+    write-generation thanks to the v1.0.20 buildFolders cache; paging stayed FLAT at
+    2.8→7.2ms because it is index-ranged).
+  - **A DROP IS NOW ATTRIBUTED, AND A ZERO NAMES ITS OWN CAUSE.** `counts.capped`/`denied`
+    were computed since the overhaul and thrown away by every caller, so "the library is
+    full", "these videos were removed before" and "this channel genuinely has none"
+    produced the IDENTICAL sentence. `planMutations` returns `drops.byChannel`,
+    `syncLibrary` returns it, `importChannelAndAsk` passes it to `diagnoseEmptyChannel`,
+    and `channelAddOutcome` names the ceiling (with the count and the way out) or the
+    tombstones. A **PARTIAL** cap is reported too — "12 ממתינים" out of 98 is the same lie
+    in miniature.
+  - **ATTRIBUTION COUNTS UNIQUE KEYS, NOT DROP EVENTS**: one run offers the same video via
+    the RSS window, the UULF backfill AND the playlists pass, so the first version told the
+    parent "250 מהסרטונים שלו הוסרו" about a 98-video channel (measured). Attribution is
+    keyed by BOTH `channelId` and the folder's source id — a playlist video keeps its OWNER
+    in `channelId` (v1.0.26), so matching on channelId alone finds ZERO for a playlist,
+    the exact shape of the pendingKeysOfChannel bug.
+  - **A REMOVED BACKLOG HAS A WAY BACK** (`app.offerDeniedRestore`). A deny tombstone is
+    revoked by exactly one thing — the SHEET re-adding the key (v1.0.10) — and a channel
+    video has no sheet row, so one in-place delete or the 30-day purge of a rejected record
+    (v1.0.26) made that channel unimportable FOREVER, on every device. It is never revoked
+    automatically (a parent who removed three bad videos must not get them back for
+    re-subscribing — the v1.0.23 rule): the parent is ASKED, with the count, while standing
+    right there, which is the same explicit act the sheet re-add stands in for.
+  - **LESSON, now a test**: a constant with no consumer is a lie. Both `MAX_ITEMS_*` are
+    pinned to having a live importer, and the cap path is pinned against reading
+    `src.maxItems*` again. 7 behavior tests + 4 wiring invariants; every guard proven red on
+    a planted regression (the unique-key guard's first plant did not even apply — caught by
+    re-checking, the vacuous-guard trap).
 - v1.0.36 — **A DELETED CHANNEL FINALLY STAYS DELETED** (field report: "אני מסיר ערוץ
   והוא חוזר אחרי זמן מה", multi-device account). `libraryChannels` deletion was pure row
   ABSENCE — no tombstone anywhere — and every Drive merge is a UNION, so any peer (or any

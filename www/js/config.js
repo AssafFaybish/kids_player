@@ -59,8 +59,20 @@ export const SCREEN_OFF_PROMPT_SEC = 45;
 
 
 /* Sync */
+// v1.0.37 — THESE ARE THE LIVE CAPS NOW. They existed here since the overhaul with
+// ZERO consumers: the binding values were literals frozen into each profile's `sources`
+// row at creation, so editing this file changed nothing and no parent could ever raise
+// them. `plan.effectiveCaps` reads them as the FLOOR, which is what heals the profiles
+// already carrying the old 5000.
 export const MAX_ITEMS_PER_CHANNEL = 500;
-export const MAX_ITEMS_TOTAL = 5000;
+// Raised 5000 → 12000 on a MEASUREMENT (2026-08-08, browser, real records): the only
+// cost that grows with library size is `loadMergeIndex` — 114ms @5000, 229ms @10000,
+// 468ms @20000 — and it is paid once per write-generation, not per render (the
+// buildFolders cache, v1.0.20). Paging stayed FLAT (2.8ms → 7.2ms) because it is
+// index-ranged. 12000 holds ~24 channels at the per-channel cap with headroom, and
+// stays near a second even on a tablet several times slower than the measuring machine.
+// The parent had 16 channels and a silent ceiling; that is the bug this number fixes.
+export const MAX_ITEMS_TOTAL = 12000;
 export const QUOTA_DAILY_SOFT_CAP = 8000; // pause backfill before a hard 403
 
 /*

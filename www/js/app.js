@@ -27,7 +27,7 @@ import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBac
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
-  screenOffMinutes, evalIdleSleep, sourcesPanelActions } from './plan.js';
+  screenOffMinutes, evalIdleSleep, sourcesPanelActions, sourceDrops } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -3271,8 +3271,10 @@ async function importChannelAndAsk(channelId) {
   // triggers by hand, and it used to run behind a one-line message (v1.0.18).
   loading.show({ title: 'מושכים את הסרטונים של הערוץ', step: 'מתחילים…', pct: 0 });
   let synced = false;
+  let drops = null; // v1.0.37: the run's per-source drop attribution — see diagnoseEmptyChannel
   try {
-    await syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) });
+    const res = await syncLibrary(activeProfileId, { force: true, onProgress: (p) => loading.progress(p) });
+    drops = res && res.drops;
     synced = true;
   } catch { /* reported by the caller */ } finally {
     await loading.hide();
@@ -3297,7 +3299,7 @@ async function importChannelAndAsk(channelId) {
   });
   return {
     synced: true, approved, count, backgrounded, picked,
-    empty: await diagnoseEmptyChannel(channelId, count)
+    empty: await diagnoseEmptyChannel(channelId, count, drops)
   };
 }
 
@@ -3313,16 +3315,61 @@ async function importChannelAndAsk(channelId) {
  *
  * Only read when there is nothing to report — two IDB reads that the common path skips.
  */
-async function diagnoseEmptyChannel(channelId, count) {
+async function diagnoseEmptyChannel(channelId, count, drops = null) {
+  // v1.0.37 — the SYNC's own drop attribution is the missing fact. Read whatever the
+  // count is: a PARTIAL cap ("12 waiting" out of 98) is the same misreport in miniature.
+  const { capped, denied, deniedKeys } = sourceDrops(drops, channelId);
   const ch0 = count ? await db.getChannel(channelId).catch(() => null) : null;
   // `isPlaylist` is needed for the WORDING whatever the count is — returning {} on the
   // common path made a successful playlist import announce itself as "הערוץ נוסף".
-  if (count) return { isPlaylist: !!(ch0 && ch0.kind === 'playlist') };
+  if (count) return { isPlaylist: !!(ch0 && ch0.kind === 'playlist'), capped, denied, deniedKeys };
   const ch = await db.getChannel(channelId).catch(() => null);
   const scope = await currentLibScope();
   const prefix = ch && ch.kind === 'playlist' ? 'pl:' : 'ch:';
   const live = await db.countFolder(scope, prefix + channelId).catch(() => 0);
-  return { noLongForm: !!(ch && ch.noLongForm), hasLive: live > 0, isPlaylist: prefix === 'pl:' };
+  return {
+    noLongForm: !!(ch && ch.noLongForm), hasLive: live > 0, isPlaylist: prefix === 'pl:',
+    capped, denied, deniedKeys
+  };
+}
+
+/**
+ * v1.0.37 — the way back for a source whose videos were all removed before.
+ *
+ * A deny tombstone is revoked by exactly one thing: the SHEET re-adding the key
+ * (v1.0.10). A video inside a channel has no sheet row of its own, so once its key was
+ * denied — a single in-place delete, or the 30-day purge of a rejected record (v1.0.26) —
+ * re-adding the channel imported it never again, on any device, forever. That is a
+ * permanent dead end reached by ordinary parental actions, and it reports as
+ * "אין בו סרטונים".
+ *
+ * It is NOT revoked automatically: a parent who removed three bad videos from a channel
+ * must not get them back for re-subscribing (the v1.0.23 rule — showing rejected content
+ * is the betrayal, hiding wanted content is a complaint). So the parent is ASKED, with
+ * the count, while they are standing right here — an explicit answer, exactly like the
+ * sheet re-add it stands in for.
+ */
+async function offerDeniedRestore(sourceId, empty) {
+  const keys = (empty && empty.deniedKeys) || [];
+  if (!keys.length) return false;
+  const what = empty.isPlaylist ? 'רשימת ההשמעה' : 'הערוץ';
+  const yes = await confirmKid({
+    emoji: '♻️', title: `לשחזר ${keys.length} סרטונים שהוסרו?`,
+    text: `${keys.length} מהסרטונים של ${what} הוסרו בעבר, ולכן לא נוספו שוב. אפשר לשחזר אותם עכשיו — הם יחזרו לרשימת ההמתנה לאישור.`,
+    ok: 'שחזרו', cancel: 'לא, להשאיר מוסר'
+  });
+  if (!yes) return false;
+  const scope = await currentLibScope();
+  await withChannelWait('finishing', {}, async () => {
+    for (const key of keys) await db.unDeny(scope, key).catch(() => {});
+    // the un-denied keys only become records on the next pass over the source
+    await syncLibrary(activeProfileId, { force: true }).catch(() => {});
+    await loadGiftStates();
+    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+    renderHome();
+    maybeSchedulePush();
+  });
+  return true;
 }
 
 
@@ -3549,6 +3596,10 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(channelId);
     if (!synced) return { status: 'error', message: 'שגיאה במשיכת הערוץ', subscribed: true };
+    // v1.0.37: nothing arrived because it was all removed before → offer the way back
+    if (!count && await offerDeniedRestore(channelId, empty)) {
+      return { status: 'added', message: 'שוחזרו! הסרטונים ממתינים לאישור ברשימת "ממתינים" 👀', subscribed: true };
+    }
     return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
   }
 
@@ -3573,6 +3624,9 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(plId);
     if (!synced) return { status: 'error', message: 'שגיאה במשיכת רשימת ההשמעה', subscribed: true };
+    if (!count && await offerDeniedRestore(plId, empty)) { // v1.0.37, same as the channel path
+      return { status: 'added', message: 'שוחזרו! הסרטונים ממתינים לאישור ברשימת "ממתינים" 👀', subscribed: true };
+    }
     return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
   }
 
