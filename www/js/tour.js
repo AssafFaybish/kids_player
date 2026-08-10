@@ -35,7 +35,7 @@ export const TOUR_SLIDES = [
   },
   {
     img: 'assets/tour/04-parent.jpg', title: 'מסך ההורים 🔒',
-    text: 'נכנסים עם קוד. מוסיפים סרטון בודד או ערוץ שלם, מחברים קובץ מקורות בגוגל — וכל הוספה נרשמת בקובץ אוטומטית.'
+    text: 'נכנסים עם קוד. מדביקים לינק לסרטון או לערוץ שלם, מחפשים ביוטיוב בלי לצאת מהאפליקציה — או מייבאים רשימת לינקים מקובץ.'
   },
   {
     img: 'assets/tour/05-approve.jpg', title: 'הכול באישור שלכם',
@@ -44,20 +44,21 @@ export const TOUR_SLIDES = [
 ];
 
 /**
- * The detailed add-content guide (v1.0.20). 18 slides, grouped into CHAPTERS via the
+ * The detailed add-content guide (v1.0.20). 19 slides, grouped into CHAPTERS via the
  * optional `chapter` field — a deck this long shows a chapter chip and a
  * "שלב N מתוך M" counter instead of 18 unreadable dots (see deckChrome).
  *
  * Images: every APP screen is a real 1280x800 screenshot (assets/guide/app-*.jpg,
  * share-04/05) staged through the real UI; only what is NOT ours — YouTube's share
- * button, Android's app chooser, the spreadsheet, the Drive folder — is a drawing.
- * That mix is deliberate: a parent hunting for a real button needs to recognise it.
+ * button, Android's app chooser — and the LINKS FILE itself (a text document, not a
+ * screen we render) is a drawing. That mix is deliberate: a parent hunting for a real
+ * button needs to recognise it.
  */
 export const ADD_GUIDE_SLIDES = [
   {
     img: 'assets/guide/map-00-three-ways.svg', chapter: 'לפני שמתחילים',
     title: 'שלוש דרכים להוסיף תוכן',
-    text: 'אפשר לשתף סרטון מיוטיוב, להדביק לינק במסך ההורים, או לכתוב אותו בקובץ הרשימה בגוגל דרייב. שלושתן מגיעות לאותו מקום — מסך הבית של הילד. נעבור עליהן אחת-אחת.'
+    text: 'אפשר לשתף סרטון מיוטיוב, להדביק לינק (או לחפש) במסך ההורים, או לייבא רשימת לינקים מקובץ טקסט. שלושתן מגיעות לאותו מקום — מסך הבית של הילד. נעבור עליהן אחת-אחת.'
   },
 
   /* ---- דרך 1: שיתוף מיוטיוב ---- */
@@ -109,10 +110,10 @@ export const ADD_GUIDE_SLIDES = [
     text: 'מדביקים לינק של ערוץ (למשל youtube.com/@SuperSimpleSongs) — והאפליקציה מביאה את הסרטונים שלו ופותחת לו תיקייה עם הלוגו במסך של הילד. מכאן זה אוטומטי: בכל פתיחה של האפליקציה היא בודקת מה חדש בערוץ ומושכת אותו לבד, ולא צריך לעשות שוב כלום. נמשכים רק סרטונים מלשוניות "סרטונים" ו"פלייליסטים" — בלי Shorts ובלי שידורים חיים. כל סרטון חדש יחכה לאישור שלכם.'
   },
   /* v1.0.33 — the YouTube search inside the add tab. Two slides, appended at the END
-     of this chapter (chapters must stay contiguous, tour.test.mjs), and they bring the
-     deck to EXACTLY the 20-slide cap — the next slide anyone adds must raise the cap
-     and re-justify "finishable in one sitting". Both are REAL screenshots (the test
-     rejects drawn app screens). */
+     of this chapter (chapters must stay contiguous, tour.test.mjs). Both are REAL
+     screenshots (the test rejects drawn app screens). v1.0.38 traded the four
+     Google-Sheets slides for three links-file ones, so the deck sits at 19 — one slot
+     under the 20-slide cap, which the next addition must re-justify. */
   {
     img: 'assets/guide/app-12-search.jpg', chapter: 'דרך 2 · במסך ההורים',
     title: 'או מחפשים ישר מתוך האפליקציה',
@@ -124,26 +125,21 @@ export const ADD_GUIDE_SLIDES = [
     text: 'התוצאות הן בדיוק מה שיוטיוב מציג — סרטונים, ערוצים ופלייליסטים (בלי Shorts), עם כפתורי סינון לפי סוג. לחיצה על תמונת סרטון פותחת צפייה מקדימה, ולחיצה על תמונה או שם של ערוץ או פלייליסט פותחת את התוכן שלו — מדפדפים בסרטונים, צופים, ומוסיפים מהם סרטונים בודדים או את כל הערוץ בכפתור שבראש. ➕ מוסיף לספרייה: סרטון נכנס מיד, ערוץ או פלייליסט עוברים את אותו מסך אישור מוכר.'
   },
 
-  /* ---- דרך 3: קובץ הרשימה ---- */
+  /* ---- דרך 3: קובץ הלינקים ---- */
   {
-    img: 'assets/guide/app-07-sources-create.jpg', chapter: 'דרך 3 · קובץ הרשימה',
-    title: 'יוצרים קובץ רשימה בדרייב',
-    text: 'לשונית "מקורות" ← "✨ יצירת רשימה חדשה", והאפליקציה יוצרת בשבילכם גיליון בגוגל דרייב שלכם. הדרך הזו נוחה כשרוצים להוסיף הרבה סרטונים בבת אחת מהמחשב.'
+    img: 'assets/guide/file-01-what.svg', chapter: 'דרך 3 · קובץ הלינקים',
+    title: 'שורה אחת = לינק אחד',
+    text: 'הדרך להוסיף הרבה בבת אחת. זה קובץ טקסט פשוט שנפתח בכל עורך: בכל שורה לינק אחד — לסרטון, לערוץ או לרשימת השמעה. אפשר להוסיף אחרי פסיק שם להצגה, ולערוץ גם את המילה auto כדי שסרטונים חדשים ממנו ייכנסו בלי אישור. שורה שמתחילה ב-# היא הערה והאפליקציה מדלגת עליה.'
   },
   {
-    img: 'assets/guide/app-08-sources-connected.jpg', chapter: 'דרך 3 · קובץ הרשימה',
-    title: 'מעתיקים את הלינק לקובץ',
-    text: '"📋 העתקת הלינק לרשימה" מעתיק את כתובת הקובץ — שולחים אותה לעצמכם ופותחים במחשב. "🔄 רענון עכשיו" מביא מיד את מה שהוספתם, בלי לחכות לסנכרון.'
+    img: 'assets/guide/file-02-export.svg', chapter: 'דרך 3 · קובץ הלינקים',
+    title: 'ייצוא: הקובץ נשמר ונפתחת חלונית שיתוף',
+    text: 'לשונית "מקורות" ← "📤 ייצוא רשימת לינקים". האפליקציה שומרת קובץ במכשיר (ומראה לכם בדיוק איפה) וגם פותחת את חלונית השיתוף של אנדרואיד, כדי שתוכלו לשלוח אותו לעצמכם בהודעה, במייל או לדרייב. שום דבר לא מועלה לשום מקום מעצמו.'
   },
   {
-    img: 'assets/guide/sheet-03-columns.svg', chapter: 'דרך 3 · קובץ הרשימה',
-    title: 'שורה אחת = סרטון אחד',
-    text: 'בעמודה A מדביקים את הלינק, וזה כל מה שחייבים. בעמודה B אפשר לכתוב שם שיוצג לילד, ובעמודה C לרשום auto כדי שסרטונים חדשים מערוץ ייכנסו בלי אישור. שורה שמתחילה ב-# היא הערה שהאפליקציה מדלגת עליה.'
-  },
-  {
-    img: 'assets/guide/sheet-04-drive-folder.svg', chapter: 'דרך 3 · קובץ הרשימה',
-    title: 'הקובץ פרטי — והסנכרון דו-כיווני',
-    text: 'הקובץ יושב בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי" בדרייב שלכם, ורק אתם רואים אותו. מה שתוסיפו בקובץ יופיע באפליקציה, ומה שתוסיפו באפליקציה יירשם בקובץ — וגם מחיקות עוברות בשני הכיוונים.'
+    img: 'assets/guide/file-03-transfer.svg', chapter: 'דרך 3 · קובץ הלינקים',
+    title: 'ייבוא: כל הספרייה עוברת למכשיר אחר',
+    text: 'בטאבלט השני: "📥 ייבוא מקובץ" (או להדביק את הרשימה כטקסט — נוח בטלוויזיה, שאין בה בורר קבצים). לפני שמשהו נכנס מוצג לכם מה יש בקובץ, ואפשר לבחור לייבא לפרופיל שפתוח או ליצור פרופיל חדש בשם שכתוב בקובץ. עובד גם בין חשבונות גוגל שונים.'
   },
 
   /* ---- אישור ומחיקה ---- */

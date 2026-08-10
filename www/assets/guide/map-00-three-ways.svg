@@ -91,43 +91,37 @@
   <circle cx="383" cy="138" r="27" fill="#6c63ff"/>
   <text x="383" y="148" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="28" font-weight="700" fill="#ffffff">3</text>
 
-  <!-- mini spreadsheet -->
-  <rect x="181" y="164" width="126" height="126" rx="10" fill="#ffffff" stroke="#d5cfee" stroke-width="2.5"/>
-  <g clip-path="url(#mini)">
-    <rect x="181" y="164" width="126" height="26" fill="#efecfb"/>
-    <rect x="181" y="190" width="24" height="100" fill="#f6f4fd"/>
-    <rect x="205" y="214" width="102" height="24" fill="#0f9d58" opacity="0.10"/>
-    <rect x="205" y="262" width="102" height="24" fill="#6c63ff" opacity="0.10"/>
+  <!-- v1.0.38: a plain TEXT file, not a spreadsheet, and no Google green anywhere —
+       the drawing used to say "Sheets" in colour as well as in words. -->
+  <rect x="181" y="158" width="126" height="140" rx="10" fill="#ffffff" stroke="#d5cfee" stroke-width="2"/>
+  <path d="M289 158 L307 176 L289 176 Z" fill="#efecfb"/>
+  <g stroke="#cfc9ea" stroke-width="6" stroke-linecap="round">
+    <line x1="194" y1="182" x2="272" y2="182"/>
   </g>
-  <g stroke="#e4dff5" stroke-width="2">
-    <line x1="181" y1="190" x2="307" y2="190"/>
-    <line x1="181" y1="214" x2="307" y2="214"/>
-    <line x1="181" y1="238" x2="307" y2="238"/>
-    <line x1="181" y1="262" x2="307" y2="262"/>
-    <line x1="205" y1="164" x2="205" y2="290"/>
-    <line x1="265" y1="164" x2="265" y2="290"/>
+  <g stroke="#6c63ff" stroke-width="6" stroke-linecap="round" opacity="0.75">
+    <line x1="194" y1="206" x2="288" y2="206"/>
+    <line x1="194" y1="230" x2="266" y2="230"/>
+    <line x1="194" y1="254" x2="292" y2="254"/>
+    <line x1="194" y1="278" x2="252" y2="278"/>
   </g>
-  <g>
-    <rect x="211" y="198" width="46" height="7" rx="3.5" fill="#cfc9ea"/>
-    <rect x="211" y="222" width="46" height="7" rx="3.5" fill="#0f9d58" opacity="0.55"/>
-    <rect x="211" y="246" width="46" height="7" rx="3.5" fill="#cfc9ea"/>
-    <rect x="211" y="270" width="46" height="7" rx="3.5" fill="#6c63ff" opacity="0.5"/>
-    <rect x="271" y="198" width="28" height="7" rx="3.5" fill="#e3dff5"/>
-    <rect x="271" y="222" width="28" height="7" rx="3.5" fill="#e3dff5"/>
-    <rect x="271" y="246" width="28" height="7" rx="3.5" fill="#e3dff5"/>
+  <!-- one line carries the optional extra fields, after a comma -->
+  <g stroke="#0aa06e" stroke-width="6" stroke-linecap="round" opacity="0.8">
+    <line x1="272" y1="230" x2="292" y2="230"/>
   </g>
-  <!-- Google Sheets badge -->
+
+  <!-- a neutral document badge in the app's own colour -->
   <g filter="url(#softsm)">
     <circle cx="175" cy="278" r="30" fill="#ffffff" stroke="#e0dbf3" stroke-width="2"/>
   </g>
-  <rect x="163" y="264" width="24" height="28" rx="5" fill="#0f9d58"/>
-  <rect x="168" y="270" width="14" height="16" rx="2" fill="#ffffff"/>
-  <g stroke="#0f9d58" stroke-width="2">
-    <line x1="175" y1="270" x2="175" y2="286"/>
-    <line x1="168" y1="278" x2="182" y2="278"/>
+  <rect x="164" y="264" width="22" height="28" rx="4" fill="#ffffff" stroke="#6c63ff" stroke-width="2.5"/>
+  <path d="M181 264 L186 269 L181 269 Z" fill="#6c63ff"/>
+  <g stroke="#6c63ff" stroke-width="2.5" stroke-linecap="round">
+    <line x1="169" y1="274" x2="181" y2="274"/>
+    <line x1="169" y1="280" x2="181" y2="280"/>
+    <line x1="169" y1="286" x2="176" y2="286"/>
   </g>
 
-  <text x="244" y="330" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#2d2a4a">קובץ הרשימה בגוגל דרייב</text>
+  <text x="244" y="330" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="26" font-weight="700" fill="#2d2a4a">קובץ לינקים</text>
   <text x="244" y="364" direction="rtl" text-anchor="middle" font-family="-apple-system, Segoe UI, Noto Sans Hebrew, Arial, sans-serif" font-size="20" fill="#6b6890">שורה לכל סרטון או ערוץ</text>
 
   <!-- ============ the three routes converge ============ -->

@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="t2">
+  <title id="t2">ייצוא רשימת לינקים — הקובץ נשמר במכשיר ונפתחת חלונית שיתוף</title>
+  <defs>
+    <filter id="sh2" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#6c63ff" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="800" fill="#fdf6e6"/>
+
+  <!-- step 1: the two buttons in the sources tab (drawn schematically, not a screenshot) -->
+  <text x="150" y="112" font-family="system-ui, sans-serif" font-size="24" font-weight="800" fill="#6c63ff">מסך ההורים ← מקורות</text>
+  <g filter="url(#sh2)">
+    <rect x="96" y="140" width="440" height="220" rx="22" fill="#ffffff" stroke="#e3e0f5" stroke-width="3"/>
+  </g>
+  <text x="128" y="188" font-family="system-ui, sans-serif" font-size="23" font-weight="800" fill="#2f2a52">📄 קובץ לינקים</text>
+  <g font-family="system-ui, sans-serif" font-size="21" font-weight="700">
+    <rect x="128" y="212" width="180" height="58" rx="16" fill="#6c63ff"/>
+    <text x="218" y="249" text-anchor="middle" fill="#ffffff">📤 ייצוא</text>
+    <rect x="322" y="212" width="180" height="58" rx="16" fill="#eceaff" stroke="#c9c2ff" stroke-width="2"/>
+    <text x="412" y="249" text-anchor="middle" fill="#4b3fd6">📥 ייבוא</text>
+  </g>
+  <text x="128" y="316" font-family="system-ui, sans-serif" font-size="18" fill="#7b74a8">לוחצים ייצוא — והקובץ נשמר במכשיר</text>
+
+  <!-- arrow down -->
+  <g stroke="#6c63ff" stroke-width="7" fill="none" stroke-linecap="round">
+    <path d="M316 386 V 470"/>
+    <path d="M294 450 L 316 472 L 338 450"/>
+  </g>
+
+  <!-- step 2: where the file lives, named plainly -->
+  <g filter="url(#sh2)">
+    <rect x="96" y="500" width="440" height="180" rx="22" fill="#ffffff" stroke="#e3e0f5" stroke-width="3"/>
+  </g>
+  <text x="128" y="548" font-family="system-ui, sans-serif" font-size="21" font-weight="800" fill="#2f2a52">📄 הקובץ במכשיר</text>
+  <text x="128" y="586" font-family="ui-monospace, Menlo, monospace" font-size="16" fill="#4a4470" direction="ltr">Android/data/…/files/exports/</text>
+  <text x="128" y="616" font-family="ui-monospace, Menlo, monospace" font-size="16" fill="#4a4470" direction="ltr">kids-player-links-נועם.txt</text>
+  <text x="128" y="654" font-family="system-ui, sans-serif" font-size="17" fill="#7b74a8">האפליקציה מציגה לכם את הנתיב המדויק</text>
+
+  <!-- Android's own share sheet: NOT ours, so drawing it is the honest choice -->
+  <g stroke="#6c63ff" stroke-width="7" fill="none" stroke-linecap="round">
+    <path d="M576 400 H 692"/>
+    <path d="M672 378 L 694 400 L 672 422"/>
+  </g>
+  <g filter="url(#sh2)">
+    <rect x="720" y="150" width="470" height="500" rx="28" fill="#ffffff" stroke="#e3e0f5" stroke-width="3"/>
+  </g>
+  <rect x="720" y="150" width="470" height="76" rx="28" fill="#f2f0ff"/>
+  <rect x="720" y="196" width="470" height="30" fill="#f2f0ff"/>
+  <text x="955" y="198" text-anchor="middle" font-family="system-ui, sans-serif" font-size="22" font-weight="700" fill="#4a4470">שיתוף הקובץ</text>
+  <g font-family="system-ui, sans-serif" font-size="17" fill="#4a4470" text-anchor="middle">
+    <g>
+      <circle cx="800" cy="300" r="38" fill="#e8f5e9"/><text x="800" y="314" font-size="34">💬</text>
+      <text x="800" y="366">הודעות</text>
+    </g>
+    <g>
+      <circle cx="905" cy="300" r="38" fill="#e3f2fd"/><text x="905" y="314" font-size="34">✉️</text>
+      <text x="905" y="366">מייל</text>
+    </g>
+    <g>
+      <circle cx="1010" cy="300" r="38" fill="#fff8e1"/><text x="1010" y="314" font-size="34">☁️</text>
+      <text x="1010" y="366">דרייב</text>
+    </g>
+    <g>
+      <circle cx="1115" cy="300" r="38" fill="#f3e5f5"/><text x="1115" y="314" font-size="34">📁</text>
+      <text x="1115" y="366">קבצים</text>
+    </g>
+  </g>
+  <line x1="756" y1="416" x2="1154" y2="416" stroke="#eceaff" stroke-width="3"/>
+  <text x="955" y="470" text-anchor="middle" font-family="system-ui, sans-serif" font-size="21" font-weight="700" fill="#2f2a52">שולחים את הקובץ לעצמכם</text>
+  <text x="955" y="508" text-anchor="middle" font-family="system-ui, sans-serif" font-size="19" fill="#7b74a8">ומייבאים אותו בטאבלט השני</text>
+  <text x="955" y="576" text-anchor="middle" font-size="42">📄 ➡️ 📲</text>
+
+  <text x="640" y="742" text-anchor="middle" font-family="system-ui, sans-serif" font-size="25" font-weight="700" fill="#4a4470">
+    הקובץ נשמר במכשיר · השיתוף הוא בחירה שלכם
+  </text>
+</svg>
