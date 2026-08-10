@@ -23,7 +23,7 @@ import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge,
-  planOrphanGC, effectiveCaps } from './plan.js';
+  planOrphanGC, effectiveCaps, orphanSweepValve } from './plan.js';
 import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
@@ -295,6 +295,15 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   const allSubs = await listLibraryChannels(lib);
   const libChannels = allSubs.filter((c) => c.kind !== 'playlist');
   const libPlaylists = allSubs.filter((c) => c.kind === 'playlist');
+
+  /* ---------- stage: orphan GC (v1.0.38 — UNCONDITIONAL) ---------- */
+  // Sweeps content whose channel nobody subscribes to any more. It used to run only inside
+  // the sheet mirror, i.e. only for a profile WITH a readable sheet — so a subscription
+  // deleted on another device left its videos on this one forever (see gcOrphans). Placed
+  // here, after the subscription list is known and before any fetch, so the stages below
+  // never spend network on a channel that is about to be swept.
+  report('gc', 10, 'מנקים תוכן של ערוצים שהוסרו…');
+  try { await gcOrphans(lib); } catch { /* housekeeping must never take the sync down */ }
 
   // Channel metadata (title/logo/uploads) — one batched call for the missing ones.
   const needMeta = [];
@@ -822,13 +831,56 @@ export async function applySheetMirror(lib, { deleteVideoKeys = [], deleteChanne
   }
   for (const id of deleteChannelIds) await deleteLibraryChannel(lib, id);
 
-  // orphan GC — one pass covers both the just-deleted channels and doc-resurrected dregs.
-  // THE DECISION IS PURE (plan.planOrphanGC) because the inline one-liner it replaces
-  // deleted every standalone-playlist video on every pass: a playlist video keeps its
-  // OWNER in channelId, so membership must be judged by the FOLDER too. See the helper.
-  const orphans = planOrphanGC(
-    (await loadMergeIndex(lib)).values(), await listLibraryChannels(lib));
+  await gcOrphans(lib);
+}
+
+/**
+ * v1.0.38 — the orphan sweep, now its own function and a STAGE of every sync rather than a
+ * consequence of a successful sheet parse.
+ *
+ * THE BUG THIS FIXES. `planOrphanGC` only ever ran inside `applySheetMirror`, gated on
+ * `if (sheetParsed)` — so a profile with NO sheet never swept at all (the normal case since
+ * v1.0.32, and the ONLY case after this release). When a peer deletes a subscription, the
+ * v1.0.36 `deletedChannels` tombstone arrives over the Drive doc, `applyRemoteDoc` deletes
+ * the row, and NOTHING deleted the videos: the child kept a folder full of a channel nobody
+ * subscribes to, forever. `plan.groupLibraryByFolder` even has a branch for it ("an
+ * unsubscribed leftover — group it, never lose it"), which is why nobody noticed.
+ *
+ * THE DECISION IS PURE (plan.planOrphanGC) because the inline one-liner it replaced deleted
+ * every standalone-playlist video on every pass: a playlist video keeps its OWNER in
+ * channelId, so membership must be judged by the FOLDER too.
+ *
+ * ONE sweep site (the v1.0.33 "one teardown path" rule) — do NOT add a second call inside
+ * drive.js: the pull is followed by the sync in the same entryRefresh pipeline.
+ * -> number swept (0 when the valve parked it)
+ */
+export async function gcOrphans(lib) {
+  const index = await loadMergeIndex(lib);
+  const records = [...index.values()];
+  const orphans = planOrphanGC(records, await listLibraryChannels(lib));
+  const live = records.filter((r) => r && r.state === 'live').length;
+  const valve = orphanSweepValve({ orphanCount: orphans.length, liveTotal: live });
+  if (!valve.sweep) {
+    // Parked: record it for the sources tab and do nothing. Failing toward the old behaviour
+    // is safe here in a way it is not for the sheet mirror — nobody but the parent's folder
+    // list can tell the difference.
+    if (valve.parked) await putMeta('gcAlert:' + lib, { count: valve.count, at: Date.now() });
+    return 0;
+  }
+  await putMeta('gcAlert:' + lib, null);
   for (const key of orphans) await deleteVideoRaw(lib, key);
+  return orphans.length;
+}
+
+/**
+ * v1.0.38 — the parent removed a subscription (the channel half of applySheetMirror, which
+ * is going away with the sheet). Unsubscribe — `db.deleteLibraryChannel` writes the v1.0.36
+ * deletedChannels tombstone, which is what carries the removal to every device — then sweep
+ * what it just orphaned.
+ */
+export async function removeSubscription(lib, channelId) {
+  await deleteLibraryChannel(lib, channelId);
+  return gcOrphans(lib);
 }
 
 /** Baseline (newest 12) on a profile's first sync of this library; incremental after. */

@@ -2229,6 +2229,17 @@ async function refreshSourcesPanel() {
   const acts = sourcesPanelActions(src);
   $('remote-copy').classList.toggle('hidden', !acts.copy);
   $('remote-connect').classList.toggle('hidden', !acts.connect);
+  // v1.0.38: a PARKED orphan sweep. The valve holds an unusually large sweep back (the first
+  // unconditional pass on an old install can find months of accumulated orphans, and
+  // deleteVideoRaw writes no tombstone), and it must not be a meta key nobody reads — the
+  // v1.0.37 lesson. Nothing to decide: it says what is being kept and why.
+  const gc = libScope ? await db.getMeta('gcAlert:' + libScope) : null;
+  const st = $('remote-status');
+  if (gc && gc.count && st) {
+    st.textContent = `${gc.count} סרטונים שייכים לערוצים שאינם מנויים יותר. הם נשמרו ולא נמחקו — `
+      + 'הסירו את הערוץ מהרשימה למטה כדי למחוק אותם, או התעלמו.';
+    st.className = 'form-msg';
+  }
   // v1.0.38: on Android TV there is NO file picker, so the paste door is the only import
   // door — open it by default there instead of leaving the parent to discover it.
   const box = $('links-paste-box');
@@ -3012,10 +3023,11 @@ async function channelRow(lc, { fresh = false } = {}) {
       ok: 'הסרה', cancel: 'ביטול', danger: true
     });
     if (!yes) return;
-    // v1.0.10: full cleanup — the subscription, its imported videos, AND the
-    // sheet row (so the channel doesn't resurrect on the next sync, anywhere)
-    const { applySheetMirror } = await import('./sync2.js');
-    await applySheetMirror(libScope, { deleteChannelIds: [lc.channelId] });
+    // v1.0.38: the subscription + everything it orphans. `removeSubscription` replaces the
+    // channel half of applySheetMirror (which goes away with the sheet); the tombstone that
+    // carries the removal to every device is written inside db.deleteLibraryChannel (v1.0.36).
+    const { removeSubscription } = await import('./sync2.js');
+    await removeSubscription(libScope, lc.channelId);
     enqueueSheetDeleteChannel(lc.channelId, lc.kind || 'channel');
     await loadGiftStates();
     await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);

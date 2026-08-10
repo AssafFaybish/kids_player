@@ -925,12 +925,20 @@ test('the orphan GC delegates to planOrphanGC, and the playlist stages are gated
 
   // (a) the GC: the inline predicate deleted every standalone-playlist video on every
   //     mirror pass (their channelId is the OWNER, not the subscribed playlist id).
-  const gcAt = sync.indexOf('orphan GC');
-  assert.ok(gcAt > 0, 'the orphan GC comment anchor moved — re-anchor this guard');
-  const gc = sync.slice(gcAt, gcAt + 600);
+  //     v1.0.38: the sweep moved into its own `gcOrphans`, so the anchor is that function.
+  const gcAt = sync.indexOf('export async function gcOrphans(');
+  assert.ok(gcAt > 0, 'gcOrphans is gone — the orphan sweep has no home');
+  const gc = sync.slice(gcAt, sync.indexOf('\n}\n', gcAt));
   assert.match(gc, /planOrphanGC\(/, 'the orphan GC no longer delegates to planOrphanGC');
-  assert.doesNotMatch(gc, /!subscribed\.has\(rec\.channelId\)/,
+  assert.doesNotMatch(sync, /!subscribed\.has\(rec\.channelId\)/,
     'the inline orphan predicate is back — it deletes playlist videos');
+  // ONE sweep site: a second renderer-style private copy is how this bug class returns.
+  assert.equal((sync.match(/planOrphanGC\(/g) || []).length, 1,
+    'planOrphanGC gained a second caller — the sweep must have exactly one site');
+  for (const p of [...MODULES.keys()]) {
+    if (p === 'www/js/sync2.js' || p === 'www/js/plan.js') continue;
+    assert.doesNotMatch(MODULES.get(p), /planOrphanGC\(/, `${p} sweeps orphans on its own`);
+  }
 
   // (b) the standalone playlist stage must gate items like the channel stage does:
   //     a MISSING owner is a private/deleted entry (an untappable "Private video" tile).
@@ -1524,4 +1532,43 @@ test('the library SCOPE travels with each profile in the Drive doc (v1.0.38)', (
   // scope from garbage.
   assert.match(build, /sheetUrl: src\.sheetUrl \|\| null,/,
     'buildLocalDoc no longer writes a NULL sheetUrl for a migrated profile — an older app would read the sentinel as a real sheet');
+});
+
+test('the orphan sweep is an UNCONDITIONAL STAGE of every sync (v1.0.38)', () => {
+  // THE BUG: planOrphanGC only ever ran inside applySheetMirror, gated on `if (sheetParsed)`
+  // — so a profile with NO sheet never swept, which is the normal case since v1.0.32 and the
+  // ONLY case after this release. A peer deleting a subscription sends the v1.0.36 tombstone,
+  // applyRemoteDoc deletes the row, and nothing deleted the videos: the child kept a folder
+  // full of a channel nobody subscribes to, forever.
+  const sync = MODULES.get('www/js/sync2.js');
+  const dsAt = sync.indexOf('async function doSync(');
+  assert.ok(dsAt > 0, 'doSync is gone');
+  const body = sync.slice(dsAt);
+  const subsAt = body.indexOf('const allSubs = await listLibraryChannels(lib)');
+  const gcAt = body.indexOf('gcOrphans(lib)');
+  const rssAt = body.indexOf("report('rss'");
+  assert.ok(subsAt > 0 && gcAt > 0 && rssAt > 0, 'one of the stage anchors moved');
+  assert.ok(gcAt > subsAt, 'the sweep runs before the subscription list is known');
+  assert.ok(gcAt < rssAt,
+    'the sweep runs AFTER the fetch stages — the sync would spend network on channels it is about to sweep');
+  // and it must not be gated on a sheet parse ever again
+  const stage = body.slice(subsAt, rssAt);
+  assert.doesNotMatch(stage, /if \(sheetParsed\)/,
+    'the sweep is gated on a sheet parse again — that is the bug this stage fixes');
+  // the valve is what makes an unconditional sweep safe on an old install
+  assert.match(sync, /orphanSweepValve\(/, 'the sweep lost its valve — a first pass can churn against the Drive doc');
+  const gcFn = sync.slice(sync.indexOf('export async function gcOrphans('));
+  assert.match(gcFn.slice(0, 1200), /if \(!valve\.sweep\)/, 'gcOrphans ignores the valve');
+
+  // the channel-remove button goes through removeSubscription, not the mirror
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /removeSubscription\(libScope, lc\.channelId\)/,
+    'the channel 🗑️ no longer routes through removeSubscription');
+  const rs = sync.slice(sync.indexOf('export async function removeSubscription('));
+  assert.match(rs.slice(0, 400), /deleteLibraryChannel\(/,
+    'removeSubscription does not unsubscribe — the v1.0.36 tombstone is written inside it');
+  assert.match(rs.slice(0, 400), /gcOrphans\(/, 'removeSubscription leaves the videos orphaned');
+
+  // a parked sweep must be SAID, not just recorded: a meta key nobody reads is a lie (v1.0.37)
+  assert.match(app, /gcAlert:/, 'nothing surfaces a parked sweep to the parent');
 });

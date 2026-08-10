@@ -246,3 +246,44 @@ test('planSheetMirror: a playlist\'s queued-but-unflushed append protects it too
   });
   assert.deepEqual(m.deleteChannelIds, [], 'a queued add is LAG, not absence — for both kinds');
 });
+
+/* ---------------- the orphan sweep's valve (v1.0.38) ---------------- */
+
+test('orphanSweepValve: a routine cleanup sweeps, an implausible one is PARKED', async () => {
+  const { orphanSweepValve } = await import('../www/js/plan.js');
+  // WHY THIS EXISTS: planOrphanGC only ever ran inside the sheet mirror, so a sheet-less
+  // profile never swept at all. Making it unconditional is a bug fix, but the FIRST pass on
+  // an old install can find months of accumulated orphans, and deleteVideoRaw writes no
+  // tombstone — a mass sweep churns against the Drive doc (deleted here, re-unioned there).
+  assert.deepEqual(orphanSweepValve({ orphanCount: 3, liveTotal: 500 }), { sweep: true, parked: false, count: 3 });
+  assert.deepEqual(orphanSweepValve({ orphanCount: 0, liveTotal: 500 }), { sweep: false, parked: false, count: 0 });
+  // above max(10, 5%) -> parked
+  assert.equal(orphanSweepValve({ orphanCount: 30, liveTotal: 500 }).parked, true);
+  assert.equal(orphanSweepValve({ orphanCount: 25, liveTotal: 500 }).sweep, true, '5% of 500 is 25 — at the ceiling, not above it');
+  // the 10-item floor: a small library's routine cleanup must not ask
+  assert.equal(orphanSweepValve({ orphanCount: 8, liveTotal: 40 }).sweep, true);
+  assert.equal(orphanSweepValve({ orphanCount: 11, liveTotal: 40 }).parked, true);
+});
+
+test('orphanSweepValve: taking EVERYTHING is parked whatever the percentage says', async () => {
+  const { orphanSweepValve } = await import('../www/js/plan.js');
+  // The v1.0.18 rule, ported: the percentage floor alone silently wiped a child who owned
+  // ≤10 things. A sweep that leaves nothing is never routine.
+  assert.equal(orphanSweepValve({ orphanCount: 4, liveTotal: 4 }).parked, true);
+  assert.equal(orphanSweepValve({ orphanCount: 1, liveTotal: 1 }).parked, true);
+  assert.equal(orphanSweepValve({ orphanCount: 5, liveTotal: 4 }).parked, true, 'more orphans than live records is still everything');
+  // a fresh install has nothing to lose and must not alarm
+  assert.deepEqual(orphanSweepValve({ orphanCount: 0, liveTotal: 0 }), { sweep: false, parked: false, count: 0 });
+  // unknown total (0 live but orphans exist — parked rows only) falls back to the floor
+  assert.equal(orphanSweepValve({ orphanCount: 3, liveTotal: 0 }).sweep, true);
+});
+
+test('orphanSweepValve never throws on junk', async () => {
+  const { orphanSweepValve } = await import('../www/js/plan.js');
+  for (const bad of [undefined, {}, null, { orphanCount: 'x', liveTotal: 'y' }, { orphanCount: -5, liveTotal: -1 },
+    { orphanCount: NaN, liveTotal: NaN }]) {
+    const r = orphanSweepValve(bad);
+    assert.equal(typeof r.sweep, 'boolean');
+    assert.equal(typeof r.parked, 'boolean');
+  }
+});

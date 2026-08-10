@@ -255,6 +255,37 @@ export function planOrphanGC(records, subscriptions) {
 }
 
 /**
+ * v1.0.38 — PURE: may this orphan sweep proceed, or is it too big to be routine?
+ *
+ * WHY IT NEEDS A VALVE NOW. `planOrphanGC` only ever ran inside `applySheetMirror`, which
+ * only ran under `if (sheetParsed)` — so a profile with NO sheet never ran it at all, and
+ * after this release that is every profile. Making it an unconditional stage is a bug fix
+ * (a subscription deleted by a peer leaves its videos behind forever), but the first pass on
+ * an existing install may find months of accumulated orphans, and `deleteVideoRaw` writes no
+ * tombstone — so a mass sweep can churn against the Drive doc: deleted here, re-unioned by
+ * the document, swept again.
+ *
+ * The rule is planSheetMirror's one genuinely good idea, reused for the one deletion path
+ * that survives: anything above max(valveMin, valvePct) is parked, and so is a sweep that
+ * would take EVERYTHING (the v1.0.18 total-disappearance rule — a child owning ≤10 things
+ * was silently wiped by the percentage floor alone).
+ *
+ * A parked sweep FAILS TOWARD THE OLD BEHAVIOUR: the orphans simply stay, which is exactly
+ * what happened for every sheet-less profile until now.
+ */
+export function orphanSweepValve(opts) {
+  // `(opts || {})`, not a `= {}` default parameter — that only fires for `undefined`, and an
+  // explicit null from a caller reading an absent record would throw (the Number(null) trap).
+  const { orphanCount = 0, liveTotal = 0, valveMin = 10, valvePct = 0.05 } = opts || {};
+  const n = Math.max(0, Number(orphanCount) | 0);
+  const total = Math.max(0, Number(liveTotal) | 0);
+  if (!n) return { sweep: false, parked: false, count: 0 };
+  if (total && n >= total) return { sweep: false, parked: true, count: n };
+  const ceiling = Math.max(valveMin, Math.floor(total * valvePct));
+  return n > ceiling ? { sweep: false, parked: true, count: n } : { sweep: true, parked: false, count: n };
+}
+
+/**
  * v1.0.26 — PURE: which rejected records have run out of their recovery window?
  *
  * A rejection is PARKED, not deleted (v1.0.23), so the parent can pull it back. That makes
