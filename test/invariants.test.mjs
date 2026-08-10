@@ -1487,3 +1487,41 @@ test('a links import cannot mint a duplicate profile name (v1.0.38)', () => {
   const cn = app.slice(app.indexOf('async function createNewProfile('), app.indexOf('async function activateProfile('));
   assert.match(cn, /profileNameClash\(/, 'createNewProfile grew a private copy of the gate again');
 });
+
+test('the library SCOPE travels with each profile in the Drive doc (v1.0.38)', () => {
+  // Without this a fresh device restoring a MIGRATED family gets the profiles and every
+  // libraries[…] blob but no sources row — ensureSources then mints lib:p:<id> while the
+  // content sits under the old lib:<hash>. Empty home, full database, no tool to fix it
+  // (moveScope is gone in this release).
+  const drive = MODULES.get('www/js/drive.js');
+  const at = drive.indexOf('async function buildLocalDoc(');
+  assert.ok(at > 0, 'buildLocalDoc is gone');
+  // Bounded to the profileSources block. The first version ended the slice at `\n  return {`,
+  // which does not occur after buildLocalDoc at all — indexOf answered -1, slice(at, -1) took
+  // the REST OF THE FILE, and the libraries[] `sheetUrl: src.sheetUrl || null` two lines
+  // below satisfied every assertion. A slice that silently widens to the whole file is a
+  // guard that pins nothing; caught by re-checking the plant.
+  const end = drive.indexOf('const lib = src && src.libraryId;', at);
+  assert.ok(end > at, 'the buildLocalDoc slice lost its end boundary');
+  const build = drive.slice(at, end);
+  assert.match(build, /profileSources\[p\.id\] = \{[\s\S]{0,200}libraryId:/,
+    'profileSources no longer carries libraryId — a restored profile cannot find its scope');
+  assert.ok(!/if \(src && src\.sheetUrl\) \{\s*\n\s*profileSources/.test(build),
+    'profileSources is written only for sheet-backed profiles again — the map empties after the migration');
+  // the restore side must not reinstate the guard that skipped sheet-less entries
+  assert.ok(!/if \(!ps \|\| !ps\.sheetUrl\) continue/.test(drive),
+    'the restore branch skips sheet-less entries again — that IS the empty-home bug');
+  assert.match(drive, /libraryId: resolveRestoredLibraryId\(/,
+    'the restore no longer routes through the pure resolver');
+
+  // A migrated entry's sheetUrl must be NULL, and this has to be checked HERE rather than in
+  // a unit test: a gdrive.test.mjs case hands serializeDb a hand-built profileSources, so it
+  // pins the FIXTURE and not the production expression — the same trap that made
+  // libraryChannels.updatedAt provably order-dependent while the suite stayed green
+  // (v1.0.22). buildLocalDoc reads IndexedDB and cannot be unit-tested at all.
+  // WHY IT MATTERS: a v1.0.37 device's own `if (!ps.sheetUrl) continue` is the entire reason
+  // the new document is harmless to it. A truthy sentinel there and the old app derives a
+  // scope from garbage.
+  assert.match(build, /sheetUrl: src\.sheetUrl \|\| null,/,
+    'buildLocalDoc no longer writes a NULL sheetUrl for a migrated profile — an older app would read the sentinel as a real sheet');
+});

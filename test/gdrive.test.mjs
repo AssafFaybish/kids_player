@@ -2,7 +2,7 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply, resolveRestoredLibraryId } from '../www/js/drive.js';
 import { mergeSettings } from '../www/js/settings.js';
 import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
@@ -604,4 +604,60 @@ test('serializeDb carries the per-library deletedChannels map (v1.0.36)', () => 
     libraries: { 'lib:x': { videos: [], denylist: [], channels: [], libraryChannels: [], deletedChannels: { UC1: 200 } } }
   }));
   assert.deepEqual(doc.libraries['lib:x'].deletedChannels, { UC1: 200 });
+});
+
+/* ---------------- the scope travels with the profile (v1.0.38) ---------------- */
+
+test('resolveRestoredLibraryId: the compatibility ladder, and NEVER null', () => {
+  // A new document says the scope outright.
+  assert.equal(resolveRestoredLibraryId({ ps: { libraryId: 'lib:abc123', sheetUrl: null }, profileId: 'p1' }), 'lib:abc123');
+  // An OLD document (no libraryId) must reproduce the pre-v1.0.38 answer bit for bit, or a
+  // restore from a pre-upgrade backup lands on a scope that disagrees with the doc.
+  const url = 'https://docs.google.com/spreadsheets/d/SHEETID/edit';
+  const fromSheet = resolveRestoredLibraryId({ ps: { sheetUrl: url }, profileId: 'p1' });
+  assert.match(fromSheet, /^lib:[0-9a-f]+$/, `expected a hashed scope, got ${fromSheet}`);
+  assert.equal(resolveRestoredLibraryId({ ps: { sheetUrl: url, libraryId: 'lib:wins' }, profileId: 'p1' }), 'lib:wins',
+    'an explicit libraryId must outrank the derived one');
+  // Neither: the same answer ensureSources gives. Returning null would let the caller mint a
+  // scope the document does not describe.
+  assert.equal(resolveRestoredLibraryId({ ps: {}, profileId: 'p9' }), 'lib:p:p9');
+  assert.equal(resolveRestoredLibraryId({ ps: null, profileId: 'p9' }), 'lib:p:p9');
+  assert.equal(resolveRestoredLibraryId({}), 'lib:p:');
+  assert.equal(resolveRestoredLibraryId(), 'lib:p:');
+});
+
+test('profileSources carries the SCOPE, and a migrated entry keeps sheetUrl falsy', () => {
+  // THE COMPATIBILITY HINGE: a v1.0.37 device's own `if (!ps.sheetUrl) continue` guard is what
+  // makes the new document harmless to it. That only holds while a migrated entry's sheetUrl
+  // is NULL — an '' would still be falsy, but a 'none'/'-' sentinel would not, and the old
+  // app would then derive a scope from garbage. This test exists to stop that "improvement".
+  const json = serializeDb({
+    profiles: [], libraries: {}, profileState: {},
+    profileSources: { p1: { libraryId: 'lib:abc', sheetUrl: null, updatedAt: 7 } }
+  });
+  const back = parseDb(json).profileSources.p1;
+  assert.equal(back.libraryId, 'lib:abc');
+  assert.ok(!back.sheetUrl, 'a migrated entry must present a FALSY sheetUrl to older readers');
+  assert.equal(back.sheetUrl, null, 'and specifically null — never a sentinel an old app reads as truthy');
+});
+
+test('the forget CONVERGES against a peer still on the old app, in both orders', () => {
+  // The un-migrated phone keeps pushing {sheetUrl, updatedAt:<old>}; the migrated tablet
+  // pushes {libraryId, sheetUrl:null, updatedAt:<fresh>}. Whole-object LWW must land on
+  // "no sheet" whichever document is read first, or the two devices ping-pong forever.
+  const oldPeer = { kind: 'kids-player-db', libraries: {},
+    profileSources: { p1: { sheetUrl: 'https://docs.google.com/spreadsheets/d/S/edit', updatedAt: 100 } } };
+  const migrated = { kind: 'kids-player-db', libraries: {},
+    profileSources: { p1: { libraryId: 'lib:abc', sheetUrl: null, updatedAt: 900 } } };
+  for (const [a, b] of [[oldPeer, migrated], [migrated, oldPeer]]) {
+    const m = mergeDbFiles(a, b);
+    assert.equal(m.profileSources.p1.libraryId, 'lib:abc');
+    assert.ok(!m.profileSources.p1.sheetUrl, 'the sheet came back from the old peer');
+  }
+  // idempotent, like every other merge here
+  const once = mergeDbFiles(oldPeer, migrated);
+  assert.deepEqual(mergeDbFiles(once, once).profileSources, once.profileSources);
+  // …and the scope survives the round trip through the document
+  assert.equal(parseDb(serializeDb({ profiles: [], libraries: {}, profileState: {},
+    profileSources: once.profileSources })).profileSources.p1.libraryId, 'lib:abc');
 });

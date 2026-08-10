@@ -90,6 +90,30 @@ export function interpretDriveList(status, data) {
  * @param remoteRead { ok: boolean, doc: object|null } — `ok:false` means the read FAILED,
  *        `ok:true, doc:null` means the file is genuinely absent (a 404)
  */
+/**
+ * v1.0.38 — PURE: which library scope does a RESTORED profile read?
+ *
+ * A fresh device gets the profiles and every `libraries[…]` blob out of the document, but
+ * the scope a profile reads is derivable from NEITHER. It used to be derived from the sheet
+ * URL, which is exactly why forgetting the sheet would strand a restored family:
+ * `ensureSources` mints `lib:p:<id>` while the content sits under the old `lib:<hash>` —
+ * present in IndexedDB and reachable by nothing. Empty home, full database.
+ *
+ * The three branches are a compatibility ladder:
+ *   1. `ps.libraryId` — a v1.0.38+ document says so outright.
+ *   2. `ps.sheetUrl`  — an OLDER document. Reproduces the pre-v1.0.38 answer bit for bit, so
+ *                       a restore from a pre-upgrade backup lands on the right `lib:<hash>`
+ *                       and its migration then proceeds normally.
+ *   3. neither        — the same answer `ensureSources` gives. Never null: that would let
+ *                       the caller mint a scope that disagrees with the document.
+ */
+export function resolveRestoredLibraryId({ ps = null, profileId = '' } = {}) {
+  const s = ps || {};
+  if (s.libraryId) return String(s.libraryId);
+  if (s.sheetUrl) return libraryIdFor(s.sheetUrl);
+  return 'lib:p:' + profileId;
+}
+
 export function decidePush({ fileId = null, remoteVersion = null, lastRemoteVersion = '', remoteRead = null } = {}) {
   if (!fileId) return { action: 'create', useRemote: false, reason: 'no-file' };
   if (String(remoteVersion ?? '') === String(lastRemoteVersion || '')) {
@@ -457,8 +481,19 @@ async function buildLocalDoc(profiles) {
   const profileSources = {};
   for (const p of profiles) {
     const src = await getSources(p.id);
-    if (src && src.sheetUrl) {
-      profileSources[p.id] = { sheetUrl: src.sheetUrl, updatedAt: src.updatedAt || 0 };
+    // v1.0.38: an entry for EVERY profile with a sources row, carrying the SCOPE. It used to
+    // be written only when a sheetUrl existed, which made the whole map empty the moment
+    // profiles forgot their sheets — see the restore branch in applyRemoteDoc.
+    // `libraryId` and `sheetUrl` are ONE fact and must travel together, which the
+    // whole-object LWW in mergeDbFiles already guarantees.
+    // ⚠ `sheetUrl` must stay NULL (never '' or a sentinel) for a migrated profile: an older
+    // app's own `if (!ps.sheetUrl) continue` guard is what keeps the new doc harmless there.
+    if (src) {
+      profileSources[p.id] = {
+        libraryId: src.libraryId || null,
+        sheetUrl: src.sheetUrl || null,
+        updatedAt: src.updatedAt || 0
+      };
     }
     const lib = src && src.libraryId;
     if (lib && !libraries[lib]) {
@@ -574,15 +609,23 @@ async function applyRemoteDoc(doc) {
       await putLibraryChannel({ ...lc, libraryId: libId }, { preserveTimestamp: true });
     }
   }
-  // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the
-  // library data but not WHICH sheet each profile follows. Local records win —
-  // this only fills the gap for profiles that have none.
+  // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the library data
+  // but not WHICH SCOPE each profile reads. Local records win — this only fills the gap for
+  // profiles that have none.
+  //
+  // v1.0.38 — the guard used to be `if (!ps.sheetUrl) continue`, which was fine only while
+  // every scope was DERIVED from a sheet URL. Once a profile forgets its sheet, that guard
+  // skips it entirely: a fresh device would restore the profiles and every `libraries[…]`
+  // blob and then mint `lib:p:<id>` from ensureSources, while the content sits under the old
+  // `lib:<hash>` — present in IndexedDB and pointed at by nothing. Empty home, full
+  // database. The scope now travels explicitly and resolveRestoredLibraryId decides.
   for (const [pid, ps] of Object.entries(doc.profileSources || {})) {
-    if (!ps || !ps.sheetUrl) continue;
+    if (!ps) continue;
     if (await getSources(pid)) continue;
     await putSources({
-      profileId: pid, schema: 1, sheetUrl: ps.sheetUrl, libraryId: libraryIdFor(ps.sheetUrl),
-      sheetHash: null, // force a full parse on the first sync
+      profileId: pid, schema: 1, sheetUrl: ps.sheetUrl || null,
+      libraryId: resolveRestoredLibraryId({ ps, profileId: pid }),
+      sheetHash: null, // force a full parse on the first sync (while a sheet still exists)
       shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
       maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: true }, updatedAt: Date.now()
     });
