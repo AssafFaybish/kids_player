@@ -26,6 +26,11 @@ const FILES = walk(JS_DIR);
 const src = (p) => readFileSync(p, 'utf8');
 const rel = (p) => relative(ROOT, p).replace(/\\/g, '/');
 const MODULES = new Map(FILES.map((p) => [rel(p), src(p)]));
+/** Same modules with comments stripped. Deletion guards must judge CODE: a tombstone
+ *  comment naming what was removed ("planScopeAdoption (v1.0.20) died…") is documentation,
+ *  and a guard that trips on it would force us to stop explaining our own history. */
+const stripComments = (b) => b.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+const CODE = new Map([...MODULES].map(([k, v]) => [k, stripComments(v)]));
 
 /** Static `import … from './x.js'` targets of one module, resolved repo-relative. */
 function importsOf(relPath) {
@@ -241,34 +246,35 @@ test('the API key file is gitignored and never referenced from a committed const
     'keys.js must load the local key lazily, so a fresh clone runs keyless');
 });
 
-test('the dead sheet-parsing path has no production caller', () => {
-  // parseSourceSheet + sync.js are kept only for the tokenizer tests. Wiring either
-  // back to a fetch would reintroduce the unauthenticated CSV read that v1.0.19 removed
-  // (and with it the "unshared sheet returns HTML 200" library-wipe).
-  //
-  // ONE pattern for every import shape: `import x from`, `import { a as b } from`,
-  // the bare side-effect `import './sync.js';`, dynamic `import('./sync.js')`, and any
-  // relative prefix (`./`, `../`). The first version required `from './sync.js'`
-  // VERBATIM, so a side-effect import and a `../sync.js` alias both dodged it.
-  const deadImport = /(?:\bfrom|\bimport)\s*\(?\s*['"](?:[^'"]*\/)?sync\.js['"]/;
-  // prove the pattern can fire on the exact shapes it exists to catch (TESTING.md rule 2)
-  for (const bad of ["import './sync.js';", "import { x as y } from '../sync.js';",
-    "await import('./sync.js')", "export { z } from './sync.js';"]) {
-    assert.match(bad, deadImport, 'the dead-import pattern went vacuous');
+test('NO module reads or writes a Google Sheet any more (v1.0.38)', () => {
+  // The whole sheet layer is gone: sheetwrite.js (the write queue, the create path, the
+  // listing), sync.js (the unauthenticated CSV reader), the sheet stage and the presence
+  // mirror. Only the one-time MIGRATION may still read one, and only to fold it in once.
+  // Wiring any of it back would restore the two-sources-of-truth design this release ended.
+  const sheetApi = /sheets\.googleapis\.com|\/values\/|:append|spreadsheets\/d\//;
+  // prove the pattern fires on the exact literals the deleted code used (TESTING.md rule 2)
+  for (const bad of ["'https://sheets.googleapis.com/v4/spreadsheets'",
+    '`${SHEETS}/${id}/values/${range}`', "url + ':append'",
+    "'https://docs.google.com/spreadsheets/d/' + id"]) {
+    assert.match(bad, sheetApi, 'the sheet-API pattern went vacuous');
   }
   for (const [p, body] of MODULES) {
-    if (p === 'www/js/sync.js') continue;
-    assert.doesNotMatch(body, deadImport, `${p} imports the dead sync.js`);
-    // belt and braces: the resolver-based sweep also covers odd whitespace shapes
-    assert.ok(!dynamicImportsOf(p).some((d) => d === 'www/js/sync.js'),
-      `${p} dynamically imports the dead sync.js`);
-    if (p === 'www/js/sync2.js') {
-      // its own definition is the ONLY mention allowed — one more means a caller
-      const hits = (body.match(/\bparseSourceSheet\s*\(/g) || []).length;
-      assert.equal(hits, 1, 'sync2.js gained a parseSourceSheet caller');
-      continue;
+    if (p === 'www/js/sunset.js') continue; // the migration, deleted after 2026-09-10
+    assert.doesNotMatch(body, sheetApi, `${p} talks to the Sheets API again`);
+  }
+  // the deleted modules must stay deleted
+  for (const gone of ['www/js/sheetwrite.js', 'www/js/sync.js']) {
+    assert.ok(!MODULES.has(gone), `${gone} is back`);
+    for (const [p, body] of MODULES) {
+      const name = gone.split('/').pop();
+      assert.doesNotMatch(body, new RegExp("(?:\\bfrom|\\bimport)\\s*\\(?\\s*['\"](?:[^'\"]*/)?" + name.replace('.', '\\.') + "['\"]"),
+        `${p} imports the deleted ${name}`);
     }
-    assert.doesNotMatch(body, /\bparseSourceSheet\s*\(/, `${p} calls parseSourceSheet`);
+  }
+  // and nothing may re-grow a sheet write queue (CODE, not comments — see stripComments)
+  for (const [p, body] of CODE) {
+    assert.doesNotMatch(body, /enqueueSheetRow|flushSheetQueue|planSheetMirror|applySheetMirror\s*\(/,
+      `${p} references the deleted sheet write-back layer`);
   }
 });
 
@@ -1134,30 +1140,30 @@ test('idle screen-off (v1.0.34): the sleep branch does both halves IN ORDER, in 
     'the "עדיין צופים?" overlay left #player-wrap — invisible in fullscreen');
 });
 
-test('the sources-tab connect door routes through the WIZARD, and Drive listings are gated (v1.0.34)', () => {
+test('NOTHING can attach a sources sheet any more (v1.0.38)', () => {
+  // The migration DELETES the family's sheet files, so a re-attached URL would point at a
+  // file nothing maintains — and it would undo the migration on the next launch. The wizard,
+  // its view, the connect door and the copy button are all gone.
   const app = MODULES.get('www/js/app.js');
-  // CLAUDE.md (v1.0.32): anything re-attaching a sheet from the sources tab must route
-  // through the same migration as the wizard — the handler must open the wizard, never
-  // putSources by hand (skipping adoptLibraryScope silently orphans everything, v1.0.17).
-  const start = app.indexOf("$('remote-connect').addEventListener('click'");
-  assert.ok(start >= 0, 'the sources tab lost its connect handler');
-  const seg = app.slice(start, app.indexOf("$('remote-refresh')", start));
-  assert.match(seg, /openSheetSetup\(p, \{ fromParent: true \}\)/,
-    'the connect door no longer opens the wizard — adoptLibraryScope would be skipped');
-  // the wizard's connection routine still runs the mandated migration
-  const cw = app.slice(app.indexOf('async function connectWizardSheet('));
-  assert.match(cw.slice(0, cw.indexOf('\n}\n')), /adoptLibraryScope\(/,
-    'connectWizardSheet no longer routes through adoptLibraryScope — a scope change would orphan content');
-  // index.html carries the button (exactly one of copy/connect shows — pure
-  // plan.sourcesPanelActions decides, unit-pinned)
-  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
-  assert.ok(html.includes('id="remote-connect"'), 'index.html lost the connect button');
-  // sheetwrite: the Drive listing must pass its gate — a FAILED listing read as an
-  // EMPTY one pushes a parent into creating a duplicate family list
-  const sw = MODULES.get('www/js/sheetwrite.js');
-  const las = sw.slice(sw.indexOf('export async function listAppSheets('));
-  assert.match(las.slice(0, las.indexOf('\n}\n')), /interpretFileList\(/,
-    'listAppSheets no longer routes the response through interpretFileList');
+  const html = readFileSync(join(ROOT, 'www/index.html'), 'utf8');
+  for (const gone of ['openSheetSetup', 'connectWizardSheet', 'wizardGated', 'wizardCreateSheet',
+    'joinExistingSheet', 'createSourceSheet', 'listAppSheets', 'sheetsetup']) {
+    assert.ok(!app.includes(gone), `app.js still references ${gone}`);
+  }
+  for (const gone of ['view-sheet-setup', 'sheetsetup-', 'remote-connect', 'remote-copy']) {
+    assert.ok(!html.includes(gone), `index.html still has ${gone}`);
+  }
+  // a nav registration for a view that no longer exists is a silent back-handling hole
+  assert.doesNotMatch(app, /nav\.register\('sheet-setup'/, 'the wizard nav registration survived its view');
+  // creating a profile must land IN the app, not in a deleted screen
+  const cn = app.slice(app.indexOf('async function createNewProfile('));
+  const body = cn.slice(0, cn.indexOf('\n}\n'));
+  assert.match(body, /activateProfile\(p\.id\)/, 'profile creation no longer enters the app');
+  // and no scope can change any more — that is what makes the sunset's libraryId rule real
+  for (const [p, b2] of CODE) {
+    assert.doesNotMatch(b2, /moveScope\s*\(|planScopeAdoption\s*\(|adoptLibraryScope\s*\(/,
+      `${p} can still move a library scope`);
+  }
 });
 
 test('the picker exit button cannot walk through an armed kiosk (v1.0.32)', () => {
@@ -1230,12 +1236,17 @@ test('a channel deletion writes its tombstone FIRST, and a move never writes one
   assert.ok(tombAt > 0, 'deleteLibraryChannel no longer writes a tombstone — deletions resurrect on the next pull');
   assert.ok(rowDelAt > tombAt,
     'the tombstone must be written BEFORE the row delete (a crash in between must keep the intent)');
-  // moveScope is a MOVE, not a parental deletion — and its re-put must stamp fresh
-  // (no preserveTimestamp) so the moved row outranks any old tombstone in the target.
-  const mv = db.slice(db.indexOf('export async function moveScope('));
-  const mvBody = mv.slice(0, mv.indexOf('\n}\n'));
-  assert.match(mvBody, /deleteLibraryChannel\(fromScope, lc\.channelId, \{ tombstone: false \}\)/,
-    'moveScope now tombstones the scope it abandons — re-attaching a sheet starts fighting itself');
+  // v1.0.38: moveScope was the other `tombstone: false` caller and is gone. The ONLY
+  // remaining one is drive.applyRemoteDoc, applying a peer's tombstone whose own `at` must
+  // be preserved — a parental deletion must never reach that branch.
+  const drive = MODULES.get('www/js/drive.js');
+  // CALLERS only: db.js is where the parameter is DECLARED (`{ tombstone = true }`) and
+  // documented, which is not a call site.
+  const falseCallers = [...CODE.entries()]
+    .filter(([k, b2]) => k !== 'www/js/db.js' && /tombstone: false/.test(b2)).map(([k]) => k);
+  assert.deepEqual(falseCallers.sort(), ['www/js/drive.js'],
+    `tombstone:false must have exactly one caller (drive.applyRemoteDoc), found: ${falseCallers.join(', ')}`);
+  assert.match(drive, /tombstone: false/, 'the apply path no longer preserves a peer tombstone');
 });
 
 test('applyRemoteDoc routes libraryChannels through planChannelApply (v1.0.36)', () => {

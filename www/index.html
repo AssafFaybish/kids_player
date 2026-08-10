@@ -116,27 +116,8 @@
       </div>
     </section>
 
-    <!-- ===================== SHEET SETUP WIZARD (v1.0.8, after profile creation) ===================== -->
-    <section id="view-sheet-setup" class="view">
-      <div class="connect-wrap">
-        <div class="connect-emoji">📄</div>
-        <h1 class="connect-title">מאיפה יגיעו הסרטונים של <span id="sheetsetup-name"></span>?</h1>
-        <p class="connect-text">
-          קובץ מקורות בגוגל (Google Sheets) הוא הרשימה הראשית: כל שורה בו היא
-          סרטון או ערוץ שההורים בחרו. אפשר לערוך אותו מכל מקום — והאפליקציה מתעדכנת.
-        </p>
-        <!-- v1.0.12: joining an existing family file is now an explicit CHOICE
-             (one button per profile that already has a file), not automatic -->
-        <div id="sheetsetup-join" class="sheetsetup-join hidden"></div>
-        <!-- v1.0.19: pasting a link to an EXTERNAL sheet is gone. The app can only
-             write to files it created itself (drive.file), so a pasted sheet would
-             be read-only and every add would silently fail to reach it. -->
-        <button id="sheetsetup-create" class="btn btn-primary connect-btn" type="button">✨ צרו לי רשימה חדשה</button>
-        <button id="sheetsetup-skip" class="text-btn connect-skip" type="button">דילוג — אגדיר אחר-כך</button>
-        <p class="connect-hint">אפשר תמיד לחבר קובץ דרך מסך ההורים ← מקורות</p>
-        <div id="sheetsetup-msg" class="form-msg"></div>
-      </div>
-    </section>
+    <!-- v1.0.38: the sheet-setup wizard view lived here (v1.0.8–v1.0.37). Gone with the
+         Google-Sheets sources list — a new profile goes straight into the app. -->
 
     <!-- ===================== PROFILE PICKER ===================== -->
     <section id="view-profiles" class="view active">
@@ -533,41 +514,18 @@
         </details>
       </div>
 
-      <!-- Sources: the input sheet + subscribed channels + API key -->
+      <!-- Sources: subscribed channels + the links file. v1.0.38 removed the Google-Sheets
+           section (the "connected list" status, copy link, connect door, write-queue
+           status, and the mirror safety valve) with the sheet itself — content lives in
+           the database and travels in the Drive backup. -->
       <div id="panel-sources" class="panel hidden">
-        <!-- v1.0.19: no link input. The app writes only to sheets it created
-             itself, so the parent picks between creating a list and joining one
-             that already exists on this device. -->
-        <div id="remote-current" class="field remote-current"></div>
-        <!-- v1.0.32: create / join / disconnect are GONE from here (user request) —
-             list management is no longer a parent-facing concept. The copy button stays
-             (how a parent opens or shares the sheet itself), and so does the refresh.
-             v1.0.34 (user request): a SHEET-LESS profile shows the connect door instead
-             of a dead copy button — it opens the SAME wizard as profile creation, so
-             every attachment still routes through adoptLibraryScope. Exactly one of
-             copy/connect is visible (pure plan.sourcesPanelActions). -->
+        <p class="hint">הסרטונים והערוצים של הפרופיל נשמרים באפליקציה, ומגובים אוטומטית
+          לגוגל דרייב כשהחשבון מחובר. מוסיפים בלשונית "הוספה", בשיתוף מיוטיוב — או
+          בקובץ לינקים, כאן למטה.</p>
         <div class="row-btns">
-          <button id="remote-connect" class="btn btn-primary hidden" type="button">📄 חיבור רשימת מקורות</button>
-          <button id="remote-copy" class="btn btn-primary" type="button">📋 העתקת הלינק לרשימה</button>
           <button id="remote-refresh" class="btn" type="button">🔄 רענון עכשיו</button>
         </div>
         <div id="remote-status" class="form-msg"></div>
-        <!-- v1.0.6: sheet write-back state (queued rows / permission problems) -->
-        <div id="sheetwrite-status" class="form-msg"></div>
-        <!-- v1.0.10: safety-valve — mass row disappearance waits for the parent -->
-        <div id="mirror-alert" class="hidden">
-          <div id="mirror-alert-text" class="form-msg err"></div>
-          <div class="row-btns">
-            <button id="mirror-apply" class="btn btn-small btn-danger" type="button">מחקו אצלי בהתאם לקובץ</button>
-            <button id="mirror-ignore" class="btn btn-small" type="button">השאירו הכול (זו הייתה תקלה)</button>
-          </div>
-        </div>
-        <p class="hint">
-          שורה בגיליון יכולה להיות <b>סרטון</b> (לינק YouTube / mp4) או <b>ערוץ שלם</b>
-          (לינק לערוץ או ‎@שם). לערוץ אפשר להוסיף בעמודה C את המילה <code>auto</code>
-          (סרטונים חדשים נכנסים ישר) או <code>manual</code> (ממתינים לאישור).
-          שורת <code>#</code> תדולג. <b>לא</b> קובץ Excel/xlsx — גיליון Google משותף בלבד.
-        </p>
 
         <!-- v1.0.38 — THE LINKS FILE. One plain-text file, one link per line: the way to add
              a lot at once, and the way a whole library moves to another tablet or another

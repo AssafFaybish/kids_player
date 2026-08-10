@@ -3,17 +3,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCsv, looksLikeHtml } from '../www/js/csv.js';
-import { parseList } from '../www/js/sync.js';
-import { parseSourceRows } from '../www/js/sync2.js';
+import { parseSourceRows, parseLinksFile } from '../www/js/linksfile.js';
 
 test('quoted field with a comma survives (Hebrew title regression)', () => {
   const rows = parseCsv('https://x,"פרפרים, חלק 2",');
   assert.deepEqual(rows, [['https://x', 'פרפרים, חלק 2', '']]);
 });
 
-test('parseList end-to-end keeps the quoted Hebrew title', () => {
-  const rows = parseList('https://www.youtube.com/watch?v=dQw4w9WgXcQ,"פרפרים, חלק 2",');
-  assert.equal(rows[0].title, 'פרפרים, חלק 2');
+// v1.0.38: this regression used to run through sync.js's parseList (deleted with the CSV
+// reader). It is re-pointed at the LIVE path — parseLinksFile → parseCsv → parseSourceRows —
+// so the bug it commemorates (a quoted Hebrew title with a comma losing everything after it)
+// stays covered where a parent can actually hit it: importing a links file.
+test('a quoted Hebrew title with a comma survives the real import path', () => {
+  const out = parseLinksFile('https://www.youtube.com/watch?v=dQw4w9WgXcQ,"פרפרים, חלק 2",');
+  assert.equal(out.counts.videos, 1);
+  assert.equal(out.videos[0].title, 'פרפרים, חלק 2');
 });
 
 test('doubled quotes escape a quote', () => {

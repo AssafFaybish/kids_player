@@ -150,19 +150,12 @@ async function routeShare(o, { alreadyRouted = false } = {}) {
     addedAt: now, approvedAt: requireApproval ? null : now,
     thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
   }]);
-  if (!requireApproval && lib) {
-    // straight-to-live share = part of the master list now; pending ones enqueue at approval
-    try {
-      const { enqueueSheetRow } = await import('./sheetwrite.js');
-      await enqueueSheetRow(pid, { key: c.key, srcUrl: c.srcUrl, title: c.title || '' });
-    } catch {}
-  }
   try { onAdded({ key: c.key, title: c.title, pending: requireApproval }); } catch {}
   return requireApproval ? 'pending' : 'added';
 }
 
 /**
- * A shared CHANNEL or PLAYLIST. PIN + confirm, subscribe, register a sheet row, then let
+ * A shared CHANNEL or PLAYLIST. PIN + confirm, subscribe, then let
  * `onAdded` import it and ask what to do with the back catalogue (app.js owns the loading
  * screen and the dialog; this layer may not import ui/*).
  *
@@ -187,10 +180,9 @@ async function handleSourceShare(pid, c) {
     // done this (ensureSources); the share path just returned, so a channel shared before
     // the first sync vanished with no explanation.
     try {
-      const { libraryIdFor } = await import('./util.js');
       src = {
-        profileId: pid, schema: 1, sheetUrl: (src && src.sheetUrl) || null,
-        libraryId: (src && src.sheetUrl) ? libraryIdFor(src.sheetUrl) : 'lib:p:' + pid,
+        profileId: pid, schema: 1,
+        libraryId: 'lib:p:' + pid,
         defaultAutoApprove: false, maxItemsPerChannel: 500, maxItemsTotal: 5000,
         drive: (src && src.drive) || { enabled: false }, updatedAt: Date.now()
       };
@@ -208,25 +200,12 @@ async function handleSourceShare(pid, c) {
     }
     if (!sourceId) { try { onAdded({ channelFailed: true }); } catch {} return 'resolve-failed'; }
 
-    const known = (await db.listLibraryChannels(lib)).some((x) => x.channelId === sourceId);
     await db.putLibraryChannel({
       libraryId: lib, channelId: sourceId, ...(isPlaylist ? { kind: 'playlist' } : {}),
       autoApprove: false, autoApproveSource: 'ui',
       order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false,
       titleOverride: c.title || ''
     });
-    if (!known) {
-      try {
-        const { enqueueSheetRow } = await import('./sheetwrite.js');
-        await enqueueSheetRow(pid, {
-          key: (isPlaylist ? 'pl:' : 'ch:') + sourceId,
-          srcUrl: isPlaylist
-            ? 'https://www.youtube.com/playlist?list=' + sourceId
-            : 'https://www.youtube.com/channel/' + sourceId,
-          flag: 'manual'
-        });
-      } catch {}
-    }
     // No sync here: `onAdded` awaits one behind the loading screen and then raises the
     // approval dialog. Firing one here too would just make the parent wait twice.
     try { await onAdded({ channelAdded: sourceId, title: c.title, isPlaylist }); } catch {}

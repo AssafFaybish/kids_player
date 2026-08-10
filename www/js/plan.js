@@ -409,18 +409,6 @@ export function evalScheduledLock({ now = Date.now(), armedAt = 0, lockedUntil =
 }
 
 /**
- * v1.0.34 — PURE: which primary action the sources tab offers (user request: a
- * sheet-less profile had a dead copy button wearing the primary color). A profile WITH
- * a sheet copies its link; one WITHOUT gets the connect door — the SAME wizard as
- * profile creation, because `adoptLibraryScope` must run on every sheet attachment.
- * Exactly one of the two, always.
- */
-export function sourcesPanelActions(src) {
-  const connected = !!(src && src.sheetUrl);
-  return { copy: connected, connect: !connected };
-}
-
-/**
  * v1.0.34 — PURE: the idle screen-off minutes from the profile's raw setting.
  *
  * NEVER-WRITTEN (null/undefined/'') ⇒ the DEFAULT — the user's decision: the feature is
@@ -860,113 +848,39 @@ export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates,
 }
 
 
-/**
- * v1.0.10 — PURE mirror planner, PRESENCE-based: the sheet is the single source of
- * truth in BOTH directions, judged fresh on EVERY successful parse (not as a diff
- * against a remembered baseline — a diff forgets, and content resurrected later by
- * a stale Drive-doc merge would silently stay forever).
- *
- *  - sheet-backed local videos missing from the sheet → delete (WITH tombstone: a
- *    stale Drive doc must not re-import them; the tombstone is revoked the moment
- *    the sheet lists the key again — self-healing both ways);
- *  - locally-denied keys PRESENT in the sheet → unDeny (a deliberate re-add wins),
- *    unless our own row-removal for that key is still queued (lag, not intent);
- *  - subscribed channels missing from the sheet → unsubscribe + purge;
- *  - SAFETY VALVE: too many deletions at once (truncated read / accidental range
- *    delete) parks everything behind a parent decision. Deliberately LOW pct:
- *    a parent's routine cleanup (≤10 rows) never asks.
- *
- * @param sheetBackedKeys   keys of LOCAL records that live in the shared 'sheet'
- *                          folder (rows are their only representation)
- * @param localChannelIds   currently subscribed channel ids (all of them)
- * @param currentVideoKeys  video keys parsed from the sheet NOW
- * @param currentChannelIds resolved channel ids in the sheet NOW
- * @param pendingAppendKeys queued-but-unflushed adds ('yt:…' / 'ch:<id>') — absence is lag
- * @param pendingDeleteKeys queued-but-unflushed removals — presence is lag
- * @param deniedKeys        locally ACTIVE denies (Set) — for re-add revival
- */
-export function planSheetMirror({
-  sheetBackedKeys = [], localChannelIds = [],
-  currentVideoKeys = [], currentChannelIds = [],
-  pendingAppendKeys = [], pendingDeleteKeys = [],
-  deniedKeys = new Set(),
-  valveMin = 10, valvePct = 0.05
-} = {}) {
-  const curV = new Set(currentVideoKeys);
-  const curC = new Set(currentChannelIds);
-  const pendingAdd = new Set(pendingAppendKeys);
-  const pendingDel = new Set(pendingDeleteKeys);
-  const denied = deniedKeys instanceof Set ? deniedKeys : new Set(deniedKeys || []);
+/* planSheetMirror (v1.0.10) lived here until v1.0.38 — the presence mirror that made the
+ * sheet the truth in BOTH directions, plus its mass-deletion safety valve. Both are gone
+ * with the sheet. Its one genuinely good idea, the valve, survives as orphanSweepValve
+ * above; its unDenyKeys — the ONLY path that ever revoked a deletion tombstone — is
+ * replaced by an explicit parental answer (deniedReAddPrompt), which is the whole reason
+ * that dialog exists. */
 
-  const deleteVideoKeys = sheetBackedKeys.filter((k) => !curV.has(k) && !pendingAdd.has(k));
-  // v1.0.27: a playlist's queued append travels as 'pl:<id>' (app.js enqueues it that
-  // way), so checking only 'ch:' meant a playlist whose row had not flushed yet was
-  // unsubscribed by the very next mirror pass — permanently, on a read-only joined
-  // sheet where the append can never land.
-  const deleteChannelIds = localChannelIds.filter((id) =>
-    !curC.has(id) && !pendingAdd.has('ch:' + id) && !pendingAdd.has('pl:' + id));
-  const unDenyKeys = [...denied].filter((k) => curV.has(k) && !pendingDel.has(k));
-
-  const localTotal = sheetBackedKeys.length + localChannelIds.length;
-  const disappeared = deleteVideoKeys.length + deleteChannelIds.length;
-  // v1.0.18: a TOTAL disappearance always asks, however small the library. The
-  // >max(10, 5%) rule meant a child with ≤10 items — the common case for a
-  // five-year-old — had their whole library wiped without the parent ever being
-  // asked. Losing everything is exactly the case a safety valve exists for.
-  const valve = localTotal > 0 &&
-    (disappeared === localTotal || disappeared > Math.max(valveMin, Math.ceil(localTotal * valvePct)));
-
-  return { deleteVideoKeys, deleteChannelIds, unDenyKeys, valve, disappeared, localTotal };
-}
 
 /**
- * PURE (extracted v1.0.20): which of a library's records does the SHEET account for?
+ * PURE: does this record live in the shared ⭐ "סרטונים נוספים" bucket — a single the parent
+ * added by hand, by share or from a links file — rather than content a channel brought in?
  *
- * The presence-mirror deletes sheet-backed records the sheet no longer lists, so this
- * filter is a safety boundary, not a convenience:
- *  - `state === 'live'` — a PENDING share is parked with `homeFolderId:'sheet'` but gets
- *    its row only at APPROVAL. Including it tombstones the share before the parent has
- *    even seen the request (a real bug, caught in the v1.0.10 audit).
+ * v1.0.38 renamed it from `isSheetBacked` (and dropped its list-form twin, which only the
+ * presence-mirror used). It never described a spreadsheet: it is the home screen's
+ * loose-list boundary, and the old name kept telling readers otherwise. NOTE `'sheet'` is
+ * still the FOLDER ID — renaming that would be a folderId migration of every record in
+ * every library for zero benefit, and it would break pageAnyFolder / nextAfter /
+ * db.approvePending / snapshot / share all at once.
+ *
+ *  - `state === 'live'`: a PENDING share is parked with `homeFolderId:'sheet'` and is not
+ *    part of the child's list yet.
  *  - the folder test reads `homeFolderId` FIRST, because a parked record's `folderId` is
- *    '~pending' and its real home is the field behind it.
- * Channel videos are deliberately absent: they have no row of their own (the channel row
- * represents them), so the sheet can never "not list" them.
+ *    '~pending'/'~rejected' and its real home is the field behind it.
  */
-export function isSheetBacked(r) {
+export function isLooseRecord(r) {
   if (!r || r.state !== 'live') return false;
   return (r.homeFolderId || r.folderId) === 'sheet';
 }
 
-/** Keys of the sheet-backed records in `records`. Same boundary, list form. */
-export function sheetBackedKeysOf(records) {
-  const out = [];
-  for (const r of records || []) if (isSheetBacked(r)) out.push(r.key);
-  return out;
-}
-
-/**
- * PURE (extracted v1.0.20): what should connecting/changing a sheet do to the old scope?
- *
- * `lib:<fnv1a(sheet)>` is SHARED by every profile reading that sheet, and `moveScope`
- * MOVES — it deletes the source. So migrating one child's library while a sibling still
- * points at the old scope carried the whole family library away: a blank home for the
- * sibling and their pending shares surfacing in this child's approval list.
- *
- * @param others [{ profileId, libraryId }] — the OTHER profiles' sources
- * @returns { action: 'none'|'move', sharedWith: string[] }
- */
-export function planScopeAdoption(profileId, oldLib, newLib, others = []) {
-  if (!oldLib || !newLib || oldLib === newLib) return { action: 'none', sharedWith: [] };
-  const sharedWith = [];
-  for (const o of others || []) {
-    if (!o || o.profileId === profileId) continue;
-    if (o.libraryId && o.libraryId === oldLib) sharedWith.push(o.profileId);
-  }
-  // Someone else still lives there: the content is sheet-derived from the OLD sheet and
-  // stays with the profiles still reading it. This profile just starts from its new one.
-  if (sharedWith.length) return { action: 'none', sharedWith };
-  return { action: 'move', sharedWith: [] };
-}
+/* planScopeAdoption (v1.0.20) died in v1.0.38 with moveScope and the sheet wizard: no
+ * code path can change a profile's libraryId any more, so there is no scope move left to
+ * gate. Its sibling question — "may a profile PURGE erase this scope?" — lives on below
+ * in planProfilePurge, which is not sheet-coupled. */
 
 /**
  * v1.0.25 — PURE: deleting a profile. Which scopes may actually be erased?

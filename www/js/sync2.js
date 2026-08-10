@@ -1,30 +1,29 @@
-// sync2.js — the staged sync pipeline (replaces the old mirror-everything sync).
+// sync2.js — the staged sync pipeline. It DERIVES content from the subscriptions the
+// parent's own actions wrote; it is not a mirror of anything.
 // RULE: the UI hydrates from IndexedDB instantly; this whole pipeline runs in the
 // background and reports progress — it must NEVER block rendering, and a network
 // failure at any stage leaves the cached library intact.
 //
-// Stages: sheet(+hash skip) → resolveChannels → rss (incremental, keyless) →
+// Stages: orphan GC (unconditional) → channel meta + logos → rss (incremental, keyless) →
 // backfill (budgeted, resumable, API) → playlists tab (budgeted, resumable, API) →
 // planMutations (pure) → persist → titles (batched; persist twice) →
 // gifts (per profile) → [pushDrive hook].
+//
+// v1.0.38 removed the SHEET stage and the presence MIRROR from the head of this pipeline.
+// Sources live in the database, so there is nothing to fetch and nothing to reconcile
+// against; the one-time migration (sunset.js) does the final read, before this runs.
 //
 // A channel contributes its "Videos" tab and its "playlists" tab, and NOTHING else:
 // Shorts and live streams are excluded (v1.0.21). See quota.longFormPlaylistIdFor.
 
 import { prefGet } from './platform.js';
-// v1.0.19: reads moved to the authenticated Sheets API, so the CSV-export fetch
-// (httpGetText + resolveListUrl) and its HTML-error-page guard are gone from this
-// path. parseCsv still backs parseSourceSheet, which is TEST-ONLY (no production
-// caller) — see the note on that function.
-import { parseCsv } from './csv.js';
 import { parseSourceRows } from './linksfile.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
-  planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
+  planMutations, planGifts, shouldRecordGiftBaseline,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge,
   planOrphanGC, effectiveCaps, orphanSweepValve } from './plan.js';
-import { pendingChannelDeletes, pendingAppendKeys, pendingDeleteKeys } from './sheetwrite.js';
 import { normalizeTitle } from './normalize.js';
 import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
 import { QUOTA_DAILY_SOFT_CAP, REJECTED_TTL_DAYS } from './config.js';
@@ -33,7 +32,7 @@ import {
   getSources, putSources, getChannel, putChannel,
   listLibraryChannels, putLibraryChannel, deleteLibraryChannel,
   loadDenySet, loadMergeIndex, putVideos, setVideoFields, deleteVideoRaw, deleteVideo,
-  getVideo, unDeny,
+  getVideo,
   putVideoStates, getMeta, putMeta, profScope, countFolder, pageFolder,
   getLogoFailedAt, setLogoFailedAt, pageRejected
 } from './db.js';
@@ -50,25 +49,10 @@ const PLAYLIST_LIST_PAGES = 2;  // ≤100 playlists per channel is plenty
 const SHORTS_PAGE_CAP = 6;      // ≤300 known Shorts per channel, for filtering playlists
 
 /**
- * PURE: typed rows from raw CSV TEXT.
- *
- * ⚠️ v1.0.19: this has NO production caller. Reads go through the authenticated
- * Sheets API and land in `parseSourceRows` below; nothing in the app fetches CSV
- * any more. It is retained only because the tests use it to exercise the tokenizer
- * and the row classifier together. Do NOT wire it back to a network fetch — a CSV
- * export URL only works on a publicly shared sheet, which is exactly the property
- * v1.0.19 removed.
- */
-export function parseSourceSheet(text) {
-  return parseSourceRows(parseCsv(text));
-}
-
-/**
- * v1.0.38 — the row grammar MOVED to linksfile.js and is re-exported here so its existing
- * importers keep working. It had to move: this module's sheet stage and the whole sunset
- * migration are scheduled for deletion, and the grammar is not — the links file uses it.
- * A local import, not `export … from`: `parseSourceSheet` above calls it, and a bare
- * re-export creates no local binding.
+ * v1.0.38 — the row grammar lives in linksfile.js (the links file uses it, and this
+ * module's sheet stage is gone). Re-exported because tests and the migration import it
+ * from here; `parseSourceSheet` — the CSV front door with no production caller — went
+ * with the sheet reader.
  */
 export { parseSourceRows };
 
@@ -143,155 +127,14 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   const lib = src.libraryId;
   const key = await yt.getApiKey();
 
-  /* ---------- stage: sheet ---------- */
-  let videoRows = [];
-  let channelRows = [];
-  let playlistRows = [];
-  let removedKeys = [];
-  let sheetChanged = false;
-  let sheetParsed = false; // v1.0.10: mirroring may run ONLY on a successful fetch
-  let sheetError = null;   // v1.0.19: WHY it failed — the caller must be able to say so
-  if (src.sheetUrl) {
-    report('sheet', 5, 'מביאים את הרשימה…');
-    try {
-      // v1.0.19: AUTHENTICATED read. The sheet is the app's own file (drive.file)
-      // and is no longer shared publicly, so it is fetched with the parent's token.
-      // readSourceSheet THROWS on any non-200 — which is what we want: a failure
-      // must leave sheetParsed false so the presence-mirror never reads "unreadable"
-      // as "the parent emptied the sheet" and deletes the library.
-      const { readSourceSheet } = await import('./sheetwrite.js');
-      const rows = await readSourceSheet(src.sheetUrl);
-      const hash = fnv1a(JSON.stringify(rows));
-      sheetChanged = force || hash !== src.sheetHash;
-      const parsed = parseSourceRows(rows);
-      videoRows = parsed.videoRows;
-      channelRows = parsed.channelRows;
-      playlistRows = parsed.playlistRows || [];
-      removedKeys = parsed.removedKeys || [];
-      sheetParsed = true;
-      if (sheetChanged) await putSources({ ...src, sheetHash: hash, sheetFetchedAt: Date.now() });
-    } catch (e) {
-      // v1.0.19 — REPORT IT. Keeping the cached library is right, but swallowing the
-      // reason was not: reads now need a token where the old CSV read needed none, so
-      // a revoked grant or a dead refresh freezes the library FOREVER — and the
-      // sources tab used to answer every 🔄 with "עודכן ✅" while nothing synced.
-      sheetError = (e && e.message) || 'sheet-failed';
-      report('sheet', 5, ''); // offline: proceed with known channels
-    }
-  }
-  if (aborted()) return { ok: false, error: 'aborted' };
+  /* v1.0.38: the SHEET STAGE and the MIRROR STAGE lived here.
+     Sources live in the database now — subscriptions are rows the parent's own actions
+     write (parent screen, share, links import), so there is nothing to resolve from a
+     sheet and nothing to mirror against. The one-time migration (sunset.js) does the
+     final read, and it runs BEFORE this pipeline in app.entryRefresh.
+     What the mirror also did — sweeping content whose channel is gone — survives as the
+     unconditional orphan-GC stage below (it never ran for a sheet-less profile). */
 
-  /* ---------- stage: resolve channels ---------- */
-  report('channels', 12, 'מזהים ערוצים…');
-  const known = await listLibraryChannels(lib);
-  const knownIds = new Set(known.map((c) => c.channelId));
-  // v1.0.10: a channel whose sheet-row deletion is still queued must not be
-  // re-subscribed from the still-present row (deleted channels used to resurrect)
-  const pendingDel = await pendingChannelDeletes(lib);
-  const sheetChannelIds = new Set(); // every RESOLVED channel the sheet contains now
-  for (const row of channelRows) {
-    if (aborted()) return { ok: false, error: 'aborted' };
-    try {
-      const channelId = await yt.resolveChannelRef(row.ref, key);
-      if (!channelId) continue;
-      sheetChannelIds.add(channelId);
-      if (knownIds.has(channelId) || pendingDel.has(channelId)) continue;
-      knownIds.add(channelId);
-      await putLibraryChannel({
-        libraryId: lib, channelId,
-        autoApprove: row.flag === 'auto' ? true : row.flag === 'manual' ? false : !!src.defaultAutoApprove,
-        autoApproveSource: row.flag ? 'sheet' : 'default',
-        // v1.0.32: an explicit auto/manual column IS the sync decision — the row skips
-        // the "ערוצים חדשים" section. A flagless row waits for the parent's answer.
-        decidedAt: row.flag ? Date.now() : null,
-        order: knownIds.size, addedAt: Date.now(), hidden: false, sourceRow: true,
-        titleOverride: row.title || ''
-      });
-    } catch { /* one bad ref must not kill sync */ }
-  }
-  // v1.0.26 — playlist rows need no resolution: the id IS in the link.
-  for (const row of playlistRows) {
-    const plId = row.playlistId;
-    if (!plId || knownIds.has(plId) || pendingDel.has(plId)) { sheetChannelIds.add(plId); continue; }
-    sheetChannelIds.add(plId);
-    knownIds.add(plId);
-    await putLibraryChannel({
-      libraryId: lib, channelId: plId, kind: 'playlist',
-      autoApprove: row.flag === 'auto' ? true : row.flag === 'manual' ? false : !!src.defaultAutoApprove,
-      autoApproveSource: row.flag ? 'sheet' : 'default',
-      decidedAt: row.flag ? Date.now() : null, // v1.0.32 — same rule as channel rows above
-      order: knownIds.size, addedAt: Date.now(), hidden: false, sourceRow: true,
-      titleOverride: row.title || ''
-    });
-  }
-
-  /* ---------- stage: mirror (v1.0.10 — the sheet is the truth BOTH ways) ---------- */
-  // PRESENCE-based on every successful parse (never diff-vs-baseline: a baseline
-  // forgets, and content resurrected by a stale Drive-doc merge would stay forever).
-  if (sheetParsed) {
-    report('mirror', 8, 'משווים מול הגיליון…');
-    try {
-      // v1.0.12: '# הוסר' rows deny their key for EVERY participant — that is how a
-      // deletion of a video INSIDE a channel travels (it has no row of its own).
-      // The deny set is read ONCE, not per key: it is a full getAll over the scope's
-      // tombstones, it only grows as parents delete things, and the branch below is
-      // taken exactly for keys that are already gone (v1.0.20 — it was quadratic).
-      // Read once and keep it CURRENT: the loop below writes tombstones, so a snapshot
-      // goes stale against its own work. Two devices can each append a '# הוסר' row for
-      // the same video (and youtu.be/X and watch?v=X are the same key), and removedKeys
-      // is not deduplicated — without the add() the duplicate re-ran deleteVideo,
-      // restamping the tombstone's `at` (the LWW tiebreaker) and pushing a second opLog
-      // row to Drive. Reused below for planSheetMirror instead of a second full getAll.
-      const denied = await loadDenySet(lib);
-      for (const key of removedKeys) {
-        if (denied.has(key) && !(await getVideo(lib, key))) continue;
-        await deleteVideo(lib, key, 'sheet-removed');
-        denied.add(key);
-      }
-      const libIndex = await loadMergeIndex(lib);
-      // LIVE records only — see sheetBackedKeysOf: a PENDING share is parked with
-      // homeFolderId 'sheet' but gets its row at APPROVAL time, and mirroring it
-      // would tombstone the share before the parent ever saw the request.
-      const sheetBackedKeys = sheetBackedKeysOf(libIndex.values());
-      const mirror = planSheetMirror({
-        sheetBackedKeys,
-        localChannelIds: (await listLibraryChannels(lib)).map((c) => c.channelId),
-        currentVideoKeys: videoRows.map((r) => r.key),
-        currentChannelIds: [...sheetChannelIds],
-        pendingAppendKeys: await pendingAppendKeys(lib),
-        // a key with a '# הוסר' row must never be un-denied by presence, and neither
-        // must one whose own row-removal is still queued
-        pendingDeleteKeys: [...(await pendingDeleteKeys(lib)), ...removedKeys],
-        deniedKeys: denied // kept current by the loop above — a second getAll read the same set
-      });
-      // a denied key the sheet LISTS = deliberate re-add → the tombstone yields
-      for (const k of mirror.unDenyKeys) await unDeny(lib, k);
-      if (mirror.valve) {
-        // SAFETY VALVE: too many deletions at once (truncated read / accidental range
-        // delete). Nothing is deleted; the parent decides in the sources tab. The
-        // signature keeps an "ignore" answer from re-alerting on the SAME divergence.
-        const sig = fnv1a(JSON.stringify([mirror.deleteVideoKeys.slice().sort(), mirror.deleteChannelIds.slice().sort()]));
-        if ((await getMeta('sheetMirrorIgnoredSig:' + lib)) !== sig) {
-          await putMeta('sheetMirrorAlert:' + lib, {
-            deleteVideoKeys: mirror.deleteVideoKeys, deleteChannelIds: mirror.deleteChannelIds,
-            disappeared: mirror.disappeared, sig, at: Date.now()
-          });
-        }
-      } else {
-        await putMeta('sheetMirrorAlert:' + lib, null);
-        await putMeta('sheetMirrorIgnoredSig:' + lib, null);
-        await applySheetMirror(lib, mirror);
-      }
-    } catch { /* mirroring must never kill the sync */ }
-  }
-
-  // v1.0.26 — a standalone PLAYLIST is a subscription too, stored in the SAME table with
-  // `kind:'playlist'` (no schema change, so it inherits Drive sync, deletion, the parent's
-  // list and the auto-approve flag for free). Split them here so every channel stage below
-  // — channels.list, the logo scrape, RSS, the UULF backfill — keeps seeing only real
-  // channels. Those stages derive ids with `'UU' + id.slice(2)`, which is meaningless for
-  // a PL id; quota.js already guards with /^UC/ and answers null, so the split is belt and
-  // braces rather than the only line of defence.
   const allSubs = await listLibraryChannels(lib);
   const libChannels = allSubs.filter((c) => c.kind !== 'playlist');
   const libPlaylists = allSubs.filter((c) => c.kind === 'playlist');
@@ -365,17 +208,7 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
 
   /* ---------- stages: rss + backfill → candidates ---------- */
   const candidates = [];
-  const scope = lib; // library scope: shared across profiles/devices on this sheet
-
-  for (const row of videoRows) {
-    candidates.push({
-      scopeId: scope, key: row.key, type: row.type, id: row.id ?? null,
-      url: row.url ?? null, srcUrl: row.srcUrl, driveId: row.driveId ?? null,
-      title: row.title, titleSource: row.title ? 'sheet' : null, thumbUrl: row.thumbUrl || null,
-      channelId: null, folderId: 'sheet', origin: 'sheet-row', rowIndex: row.rowIndex,
-      publishedAt: null, autoApprove: true // individually curated by the parent
-    });
-  }
+  const scope = lib; // library scope: shared by every profile that reads this library
 
   report('rss', 30, 'בודקים סרטונים חדשים…');
   const rssResults = await mapWithConcurrency(libChannels, 4, async (lc) => {
@@ -794,19 +627,13 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   // v1.0.6: opportunistic sheet write-back — quiet no-op without a queue/token.
   // Reported BEFORE 'done': this is real network work, and announcing 100% while
   // it still runs is precisely what made the app look hung at the finish line.
-  report('write', 95, 'רושמים בגיליון…');
-  try {
-    const { flushSheetQueue } = await import('./sheetwrite.js');
-    await flushSheetQueue(profileId);
-  } catch {}
   report('done', 100, '');
 
-  // `ok` still means "the pipeline ran" — the cached library is intact either way.
-  // `sheetError` is separate on purpose: the sync succeeded, but the SHEET was not
-  // read, and the parent has to be told or they will never know it stopped syncing.
+  // `ok` means "the pipeline ran" — the cached library is intact either way. v1.0.38
+  // dropped `sheetError` from this contract with the sheet read itself.
   return {
     ok: true, added: plan.newLiveKeys.length, pending: plan.pendingKeys.length,
-    merged: plan.mergeReport.length, sheetError,
+    merged: plan.mergeReport.length,
     // v1.0.37: the run's DROPS, attributed per source. Computed since the overhaul and
     // discarded here, which is why an import that dropped everything still reported a
     // bare success and the parent was told the channel was empty.
@@ -814,25 +641,12 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
   };
 }
 
-/**
- * v1.0.10: apply mirror deletions.
- * Videos: delete WITH a tombstone ('sheet-mirror') — a stale Drive doc from a
- * not-yet-synced device must not resurrect them; the tombstone is revoked the
- * moment the sheet lists the key again (unDenyKeys), so wrong reads self-heal.
- * Channels: unsubscribe + purge imported videos (raw — presence re-purges), then
- * ORPHAN GC: any leftover channel-content record whose channel is no longer
- * subscribed (e.g. resurrected by a Drive merge) is swept on every mirror pass.
- * Also used by the safety-valve "apply" button and the UI channel-remove flow.
- */
-export async function applySheetMirror(lib, { deleteVideoKeys = [], deleteChannelIds = [] } = {}) {
-  for (const key of deleteVideoKeys) {
-    const rec = await getVideo(lib, key);
-    if (rec && rec.channelId == null) await deleteVideo(lib, key, 'sheet-mirror');
-  }
-  for (const id of deleteChannelIds) await deleteLibraryChannel(lib, id);
-
-  await gcOrphans(lib);
-}
+/* applySheetMirror (v1.0.10) lived here until v1.0.38. It deleted LIVE records the sheet
+ * no longer listed — the presence mirror — and unsubscribed channels it no longer named.
+ * Both halves are gone with the sheet. The complete list of things that may now delete a
+ * video record: the parent's explicit 🗑️, db.purgeRejected, the 30-day rejected expiry,
+ * the migration's '# הוסר' rows, db.purgeProfile, and the orphan sweep below. That list
+ * shrinking is the largest safety win of the release. */
 
 /**
  * v1.0.38 — the orphan sweep, now its own function and a STAGE of every sync rather than a

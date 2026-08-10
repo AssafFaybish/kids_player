@@ -3,6 +3,7 @@
 // logic.test.mjs; here we only assert the NEW entry points keep funneling through it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { parseLinksFile } from '../www/js/linksfile.js';
 import {
   parseChannelRef, classifySourceRow, stripTimeHints, classifyFromSharedText, classifyLink,
   classifyShared, titleFromFileUrl
@@ -170,27 +171,19 @@ test('ordinary comments stay comments; a bare link stays a video', async () => {
   assert.equal(classifySourceRow('https://youtu.be/dQw4w9WgXcQ').kind, 'video');
 });
 
-test('parseSourceSheet: removal rows are collected AND win over a video row of the same key', async () => {
-  const { parseSourceSheet } = await import('../www/js/sync2.js');
-  const sheet = [
-    'https://youtu.be/aaaaaaaaaaa,שיר א',
-    'https://youtu.be/bbbbbbbbbbb,שיר ב',
-    '# הוסר: https://youtu.be/bbbbbbbbbbb — שיר ב',
-    'https://www.youtube.com/@somechannel,ערוץ,manual'
+test('a removal row is collected AND wins over a video row of the same key', () => {
+  // v1.0.38: this used to run through sync2.parseSourceSheet (the CSV front door, deleted
+  // with the sheet reader). Same grammar, same rule, now against the LIVE links-file path.
+  const file = [
+    'https://www.youtube.com/watch?v=dQw4w9WgXcQ,שיר',
+    'https://www.youtube.com/watch?v=sFU5TdYp8u8,אחר',
+    '# הוסר: https://youtu.be/dQw4w9WgXcQ — נמחק'
   ].join('\n');
-  const p = parseSourceSheet(sheet);
-  assert.deepEqual(p.removedKeys, ['yt:bbbbbbbbbbb']);
-  assert.deepEqual(p.videoRows.map((r) => r.key), ['yt:aaaaaaaaaaa']); // b filtered out
-  assert.equal(p.channelRows.length, 1);
+  const p = parseLinksFile(file);
+  assert.deepEqual(p.removedKeys, ['yt:dQw4w9WgXcQ']);
+  // the removal wins: safety-first, so bringing it back means deleting the removal line
+  assert.deepEqual(p.videos.map((v) => v.key), ['yt:sFU5TdYp8u8']);
 });
-
-/* ---------------- playlists are a SUPPORTED source (v1.0.26) ----------------
- * Reported repeatedly from the field as "the link is not supported". The classifier was
- * never the problem — it has recognised playlists since v1.0.12 and the app then dropped
- * them: parentAdd handled only 'video' and 'channel', and parseSourceRows pushed playlist
- * rows into `invalid` as 'playlist-unsupported-yet'. A missing feature wearing the costume
- * of a parse error. These pin the shapes a parent actually pastes.
- */
 
 test('every shape of playlist link a parent can paste is recognised', async () => {
   const { classifySourceRow } = await import('../www/js/classify.js');
