@@ -116,27 +116,8 @@
       </div>
     </section>
 
-    <!-- ===================== SHEET SETUP WIZARD (v1.0.8, after profile creation) ===================== -->
-    <section id="view-sheet-setup" class="view">
-      <div class="connect-wrap">
-        <div class="connect-emoji">📄</div>
-        <h1 class="connect-title">מאיפה יגיעו הסרטונים של <span id="sheetsetup-name"></span>?</h1>
-        <p class="connect-text">
-          קובץ מקורות בגוגל (Google Sheets) הוא הרשימה הראשית: כל שורה בו היא
-          סרטון או ערוץ שההורים בחרו. אפשר לערוך אותו מכל מקום — והאפליקציה מתעדכנת.
-        </p>
-        <!-- v1.0.12: joining an existing family file is now an explicit CHOICE
-             (one button per profile that already has a file), not automatic -->
-        <div id="sheetsetup-join" class="sheetsetup-join hidden"></div>
-        <!-- v1.0.19: pasting a link to an EXTERNAL sheet is gone. The app can only
-             write to files it created itself (drive.file), so a pasted sheet would
-             be read-only and every add would silently fail to reach it. -->
-        <button id="sheetsetup-create" class="btn btn-primary connect-btn" type="button">✨ צרו לי רשימה חדשה</button>
-        <button id="sheetsetup-skip" class="text-btn connect-skip" type="button">דילוג — אגדיר אחר-כך</button>
-        <p class="connect-hint">אפשר תמיד לחבר קובץ דרך מסך ההורים ← מקורות</p>
-        <div id="sheetsetup-msg" class="form-msg"></div>
-      </div>
-    </section>
+    <!-- v1.0.38: the sheet-setup wizard view lived here (v1.0.8–v1.0.37). Gone with the
+         Google-Sheets sources list — a new profile goes straight into the app. -->
 
     <!-- ===================== PROFILE PICKER ===================== -->
     <section id="view-profiles" class="view active">
@@ -521,54 +502,57 @@
              form is the tab's job; hundreds of already-approved rows were noise the
              parent scrolled past every visit. Everything CLOSED by default, and inside,
              one sub-section per folder the child actually sees. -->
+        <!-- v1.0.38: the JSON-snapshot ייצוא/ייבוא pair MOVED to the settings tab. It is a
+             full backup (gifts, deletions, everything), and standing next to the new links
+             file it produced two similar-looking exports the parent had to tell apart. -->
         <details id="library-box" class="library-box">
           <summary class="list-head library-summary">
             <span id="list-count" class="list-count">0 סרטונים</span>
-            <div class="list-actions">
-              <button id="export-btn" class="btn btn-small" type="button">ייצוא</button>
-              <button id="import-btn" class="btn btn-small" type="button">ייבוא</button>
-            </div>
           </summary>
           <div id="parent-groups"></div>
           <ul id="parent-list" class="parent-list hidden"></ul>
         </details>
       </div>
 
-      <!-- Sources: the input sheet + subscribed channels + API key -->
+      <!-- Sources: subscribed channels + the links file. v1.0.38 removed the Google-Sheets
+           section (the "connected list" status, copy link, connect door, write-queue
+           status, and the mirror safety valve) with the sheet itself — content lives in
+           the database and travels in the Drive backup. -->
       <div id="panel-sources" class="panel hidden">
-        <!-- v1.0.19: no link input. The app writes only to sheets it created
-             itself, so the parent picks between creating a list and joining one
-             that already exists on this device. -->
-        <div id="remote-current" class="field remote-current"></div>
-        <!-- v1.0.32: create / join / disconnect are GONE from here (user request) —
-             list management is no longer a parent-facing concept. The copy button stays
-             (how a parent opens or shares the sheet itself), and so does the refresh.
-             v1.0.34 (user request): a SHEET-LESS profile shows the connect door instead
-             of a dead copy button — it opens the SAME wizard as profile creation, so
-             every attachment still routes through adoptLibraryScope. Exactly one of
-             copy/connect is visible (pure plan.sourcesPanelActions). -->
+        <p class="hint">הסרטונים והערוצים של הפרופיל נשמרים באפליקציה, ומגובים אוטומטית
+          לגוגל דרייב כשהחשבון מחובר. מוסיפים בלשונית "הוספה", בשיתוף מיוטיוב — או
+          בקובץ לינקים, כאן למטה.</p>
         <div class="row-btns">
-          <button id="remote-connect" class="btn btn-primary hidden" type="button">📄 חיבור רשימת מקורות</button>
-          <button id="remote-copy" class="btn btn-primary" type="button">📋 העתקת הלינק לרשימה</button>
           <button id="remote-refresh" class="btn" type="button">🔄 רענון עכשיו</button>
         </div>
         <div id="remote-status" class="form-msg"></div>
-        <!-- v1.0.6: sheet write-back state (queued rows / permission problems) -->
-        <div id="sheetwrite-status" class="form-msg"></div>
-        <!-- v1.0.10: safety-valve — mass row disappearance waits for the parent -->
-        <div id="mirror-alert" class="hidden">
-          <div id="mirror-alert-text" class="form-msg err"></div>
-          <div class="row-btns">
-            <button id="mirror-apply" class="btn btn-small btn-danger" type="button">מחקו אצלי בהתאם לקובץ</button>
-            <button id="mirror-ignore" class="btn btn-small" type="button">השאירו הכול (זו הייתה תקלה)</button>
-          </div>
+
+        <!-- v1.0.38 — THE LINKS FILE. One plain-text file, one link per line: the way to add
+             a lot at once, and the way a whole library moves to another tablet or another
+             Google account. It replaced the Google-Sheets sources list. -->
+        <div class="list-head" style="margin-top:18px"><span class="list-count">📄 קובץ לינקים</span></div>
+        <p class="hint">קובץ טקסט פשוט: <b>שורה אחת = לינק אחד</b> (ערוץ, רשימת השמעה או
+          סרטון). אפשר להוסיף באותה שורה, אחרי פסיק, שם להצגה — ולערוץ גם
+          <code>auto</code> כדי שסרטונים חדשים ממנו ייכנסו בלי אישור. שורה שמתחילה ב-#
+          היא הערה. הייצוא שומר קובץ במכשיר ופותח חלונית שיתוף, כך שאפשר לשלוח אותו
+          לעצמכם ולייבא בטאבלט אחר.</p>
+        <div class="row-btns">
+          <button id="links-export" class="btn btn-small" type="button">📤 ייצוא רשימת לינקים</button>
+          <button id="links-import" class="btn btn-small" type="button">📥 ייבוא מקובץ</button>
+          <button id="links-share-text" class="btn btn-small hidden" type="button">📨 שליחה כטקסט</button>
         </div>
-        <p class="hint">
-          שורה בגיליון יכולה להיות <b>סרטון</b> (לינק YouTube / mp4) או <b>ערוץ שלם</b>
-          (לינק לערוץ או ‎@שם). לערוץ אפשר להוסיף בעמודה C את המילה <code>auto</code>
-          (סרטונים חדשים נכנסים ישר) או <code>manual</code> (ממתינים לאישור).
-          שורת <code>#</code> תדולג. <b>לא</b> קובץ Excel/xlsx — גיליון Google משותף בלבד.
-        </p>
+        <!-- The paste door is NOT a fallback shown after a failure: Android TV has no file
+             picker at all, and the WebView's picker is unverified on some devices. It is
+             opened by default on TV (refreshSourcesPanel). -->
+        <details id="links-paste-box">
+          <summary class="list-head library-summary"><span class="list-count">או להדביק את הרשימה כטקסט</span></summary>
+          <textarea id="links-paste" class="input links-paste" rows="6" dir="ltr"
+            placeholder="https://www.youtube.com/@ChannelName&#10;https://youtu.be/VIDEO_ID"></textarea>
+          <div class="row-btns">
+            <button id="links-paste-go" class="btn btn-small" type="button">ייבוא מהטקסט</button>
+          </div>
+        </details>
+        <div id="links-msg" class="form-msg"></div>
 
         <!-- v1.0.32: a channel awaiting its sync decision surfaces HERE for 24h (pure
              plan.planChannelSections). Hidden whenever the section is empty. -->
@@ -664,6 +648,20 @@
           <button id="share-app" class="btn btn-small" type="button">📤 שיתוף האפליקציה</button>
         </div>
         <div id="share-msg" class="form-msg"></div>
+
+        <!-- v1.0.38: the FULL backup moved here from the add tab. It is the only backup that
+             works with no Google account at all, and the hard prerequisite for the one-time
+             debug→release signing switchover — so it stays, just out of the way. It is NOT
+             the links file: this one carries gifts, deletions and every setting. -->
+        <div class="list-head"><span class="list-count">💾 גיבוי מלא (קובץ)</span></div>
+        <p class="hint">מעתיק את כל מצב הפרופיל — כולל מתנות, מחיקות והיסטוריה — כדי לשמור
+          בקובץ. שימושי לפני החלפת מכשיר. להעברת רשימת הסרטונים בלבד השתמשו ב"קובץ
+          לינקים" שבלשונית מקורות.</p>
+        <div class="row-btns">
+          <button id="export-btn" class="btn btn-small" type="button">ייצוא גיבוי מלא</button>
+          <button id="import-btn" class="btn btn-small" type="button">ייבוא גיבוי מלא</button>
+        </div>
+        <div id="backup-msg" class="form-msg"></div>
 
         <!-- v1.0.32: backup is AUTOMATIC and silent (user request) — an ACTIVE backup
              shows nothing here, and the manual "גיבוי עכשיו" is gone. The block remains
@@ -779,6 +777,9 @@
 
   <!-- hidden file input for import -->
   <input id="import-file" type="file" accept="application/json,.json" class="hidden" />
+  <!-- v1.0.38: the links file. `.txt,.csv` plus text/plain — a file the parent may have
+       saved out of a spreadsheet arrives as CSV, and the importer reads both. -->
+  <input id="links-file" type="file" accept=".txt,.csv,text/plain,text/csv" class="hidden" />
 
   <script type="module" src="js/app.js"></script>
     <!-- v1.0.26: the app's only non-blocking feedback channel — see ui/toast.js -->

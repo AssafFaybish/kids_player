@@ -26,6 +26,11 @@ const FILES = walk(JS_DIR);
 const src = (p) => readFileSync(p, 'utf8');
 const rel = (p) => relative(ROOT, p).replace(/\\/g, '/');
 const MODULES = new Map(FILES.map((p) => [rel(p), src(p)]));
+/** Same modules with comments stripped. Deletion guards must judge CODE: a tombstone
+ *  comment naming what was removed ("planScopeAdoption (v1.0.20) died…") is documentation,
+ *  and a guard that trips on it would force us to stop explaining our own history. */
+const stripComments = (b) => b.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+const CODE = new Map([...MODULES].map(([k, v]) => [k, stripComments(v)]));
 
 /** Static `import … from './x.js'` targets of one module, resolved repo-relative. */
 function importsOf(relPath) {
@@ -241,34 +246,35 @@ test('the API key file is gitignored and never referenced from a committed const
     'keys.js must load the local key lazily, so a fresh clone runs keyless');
 });
 
-test('the dead sheet-parsing path has no production caller', () => {
-  // parseSourceSheet + sync.js are kept only for the tokenizer tests. Wiring either
-  // back to a fetch would reintroduce the unauthenticated CSV read that v1.0.19 removed
-  // (and with it the "unshared sheet returns HTML 200" library-wipe).
-  //
-  // ONE pattern for every import shape: `import x from`, `import { a as b } from`,
-  // the bare side-effect `import './sync.js';`, dynamic `import('./sync.js')`, and any
-  // relative prefix (`./`, `../`). The first version required `from './sync.js'`
-  // VERBATIM, so a side-effect import and a `../sync.js` alias both dodged it.
-  const deadImport = /(?:\bfrom|\bimport)\s*\(?\s*['"](?:[^'"]*\/)?sync\.js['"]/;
-  // prove the pattern can fire on the exact shapes it exists to catch (TESTING.md rule 2)
-  for (const bad of ["import './sync.js';", "import { x as y } from '../sync.js';",
-    "await import('./sync.js')", "export { z } from './sync.js';"]) {
-    assert.match(bad, deadImport, 'the dead-import pattern went vacuous');
+test('NO module reads or writes a Google Sheet any more (v1.0.38)', () => {
+  // The whole sheet layer is gone: sheetwrite.js (the write queue, the create path, the
+  // listing), sync.js (the unauthenticated CSV reader), the sheet stage and the presence
+  // mirror. Only the one-time MIGRATION may still read one, and only to fold it in once.
+  // Wiring any of it back would restore the two-sources-of-truth design this release ended.
+  const sheetApi = /sheets\.googleapis\.com|\/values\/|:append|spreadsheets\/d\//;
+  // prove the pattern fires on the exact literals the deleted code used (TESTING.md rule 2)
+  for (const bad of ["'https://sheets.googleapis.com/v4/spreadsheets'",
+    '`${SHEETS}/${id}/values/${range}`', "url + ':append'",
+    "'https://docs.google.com/spreadsheets/d/' + id"]) {
+    assert.match(bad, sheetApi, 'the sheet-API pattern went vacuous');
   }
   for (const [p, body] of MODULES) {
-    if (p === 'www/js/sync.js') continue;
-    assert.doesNotMatch(body, deadImport, `${p} imports the dead sync.js`);
-    // belt and braces: the resolver-based sweep also covers odd whitespace shapes
-    assert.ok(!dynamicImportsOf(p).some((d) => d === 'www/js/sync.js'),
-      `${p} dynamically imports the dead sync.js`);
-    if (p === 'www/js/sync2.js') {
-      // its own definition is the ONLY mention allowed — one more means a caller
-      const hits = (body.match(/\bparseSourceSheet\s*\(/g) || []).length;
-      assert.equal(hits, 1, 'sync2.js gained a parseSourceSheet caller');
-      continue;
+    if (p === 'www/js/sunset.js') continue; // the migration, deleted after 2026-09-10
+    assert.doesNotMatch(body, sheetApi, `${p} talks to the Sheets API again`);
+  }
+  // the deleted modules must stay deleted
+  for (const gone of ['www/js/sheetwrite.js', 'www/js/sync.js']) {
+    assert.ok(!MODULES.has(gone), `${gone} is back`);
+    for (const [p, body] of MODULES) {
+      const name = gone.split('/').pop();
+      assert.doesNotMatch(body, new RegExp("(?:\\bfrom|\\bimport)\\s*\\(?\\s*['\"](?:[^'\"]*/)?" + name.replace('.', '\\.') + "['\"]"),
+        `${p} imports the deleted ${name}`);
     }
-    assert.doesNotMatch(body, /\bparseSourceSheet\s*\(/, `${p} calls parseSourceSheet`);
+  }
+  // and nothing may re-grow a sheet write queue (CODE, not comments — see stripComments)
+  for (const [p, body] of CODE) {
+    assert.doesNotMatch(body, /enqueueSheetRow|flushSheetQueue|planSheetMirror|applySheetMirror\s*\(/,
+      `${p} references the deleted sheet write-back layer`);
   }
 });
 
@@ -352,9 +358,13 @@ test('every path that makes a record LIVE forces a refresh', () => {
   // answers, which is the waiting-screens feature's whole point on that branch (the
   // "no step is silent" test pins that path). A new add/approve path adds one HERE,
   // and a removal must explain where its refresh went.
+  // v1.0.38 DELIBERATE change 7→8: linksImportFromText. ONE call for the whole file
+  // (behind the 'finishing' wait), never one per row — a 300-line file must not fire 300
+  // forced syncs, which is exactly why the importer does not route through
+  // addClassifiedRow. The count is what would catch that regression.
   const sites = (app.match(/refreshAfterAdd\(/g) || []).length - 1;
-  assert.equal(sites, 7,
-    `expected exactly 7 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
+  assert.equal(sites, 8,
+    `expected exactly 8 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
   // it must FORCE: the 3-min shouldSync throttle is what made the bug invisible
   const fn = app.slice(app.indexOf('function refreshAfterAdd('));
   // `[^}]*` rather than an immediate `}`: v1.0.26 added an `onProgress` option for the one
@@ -921,12 +931,20 @@ test('the orphan GC delegates to planOrphanGC, and the playlist stages are gated
 
   // (a) the GC: the inline predicate deleted every standalone-playlist video on every
   //     mirror pass (their channelId is the OWNER, not the subscribed playlist id).
-  const gcAt = sync.indexOf('orphan GC');
-  assert.ok(gcAt > 0, 'the orphan GC comment anchor moved — re-anchor this guard');
-  const gc = sync.slice(gcAt, gcAt + 600);
+  //     v1.0.38: the sweep moved into its own `gcOrphans`, so the anchor is that function.
+  const gcAt = sync.indexOf('export async function gcOrphans(');
+  assert.ok(gcAt > 0, 'gcOrphans is gone — the orphan sweep has no home');
+  const gc = sync.slice(gcAt, sync.indexOf('\n}\n', gcAt));
   assert.match(gc, /planOrphanGC\(/, 'the orphan GC no longer delegates to planOrphanGC');
-  assert.doesNotMatch(gc, /!subscribed\.has\(rec\.channelId\)/,
+  assert.doesNotMatch(sync, /!subscribed\.has\(rec\.channelId\)/,
     'the inline orphan predicate is back — it deletes playlist videos');
+  // ONE sweep site: a second renderer-style private copy is how this bug class returns.
+  assert.equal((sync.match(/planOrphanGC\(/g) || []).length, 1,
+    'planOrphanGC gained a second caller — the sweep must have exactly one site');
+  for (const p of [...MODULES.keys()]) {
+    if (p === 'www/js/sync2.js' || p === 'www/js/plan.js') continue;
+    assert.doesNotMatch(MODULES.get(p), /planOrphanGC\(/, `${p} sweeps orphans on its own`);
+  }
 
   // (b) the standalone playlist stage must gate items like the channel stage does:
   //     a MISSING owner is a private/deleted entry (an untappable "Private video" tile).
@@ -1122,30 +1140,30 @@ test('idle screen-off (v1.0.34): the sleep branch does both halves IN ORDER, in 
     'the "עדיין צופים?" overlay left #player-wrap — invisible in fullscreen');
 });
 
-test('the sources-tab connect door routes through the WIZARD, and Drive listings are gated (v1.0.34)', () => {
+test('NOTHING can attach a sources sheet any more (v1.0.38)', () => {
+  // The migration DELETES the family's sheet files, so a re-attached URL would point at a
+  // file nothing maintains — and it would undo the migration on the next launch. The wizard,
+  // its view, the connect door and the copy button are all gone.
   const app = MODULES.get('www/js/app.js');
-  // CLAUDE.md (v1.0.32): anything re-attaching a sheet from the sources tab must route
-  // through the same migration as the wizard — the handler must open the wizard, never
-  // putSources by hand (skipping adoptLibraryScope silently orphans everything, v1.0.17).
-  const start = app.indexOf("$('remote-connect').addEventListener('click'");
-  assert.ok(start >= 0, 'the sources tab lost its connect handler');
-  const seg = app.slice(start, app.indexOf("$('remote-refresh')", start));
-  assert.match(seg, /openSheetSetup\(p, \{ fromParent: true \}\)/,
-    'the connect door no longer opens the wizard — adoptLibraryScope would be skipped');
-  // the wizard's connection routine still runs the mandated migration
-  const cw = app.slice(app.indexOf('async function connectWizardSheet('));
-  assert.match(cw.slice(0, cw.indexOf('\n}\n')), /adoptLibraryScope\(/,
-    'connectWizardSheet no longer routes through adoptLibraryScope — a scope change would orphan content');
-  // index.html carries the button (exactly one of copy/connect shows — pure
-  // plan.sourcesPanelActions decides, unit-pinned)
-  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
-  assert.ok(html.includes('id="remote-connect"'), 'index.html lost the connect button');
-  // sheetwrite: the Drive listing must pass its gate — a FAILED listing read as an
-  // EMPTY one pushes a parent into creating a duplicate family list
-  const sw = MODULES.get('www/js/sheetwrite.js');
-  const las = sw.slice(sw.indexOf('export async function listAppSheets('));
-  assert.match(las.slice(0, las.indexOf('\n}\n')), /interpretFileList\(/,
-    'listAppSheets no longer routes the response through interpretFileList');
+  const html = readFileSync(join(ROOT, 'www/index.html'), 'utf8');
+  for (const gone of ['openSheetSetup', 'connectWizardSheet', 'wizardGated', 'wizardCreateSheet',
+    'joinExistingSheet', 'createSourceSheet', 'listAppSheets', 'sheetsetup']) {
+    assert.ok(!app.includes(gone), `app.js still references ${gone}`);
+  }
+  for (const gone of ['view-sheet-setup', 'sheetsetup-', 'remote-connect', 'remote-copy']) {
+    assert.ok(!html.includes(gone), `index.html still has ${gone}`);
+  }
+  // a nav registration for a view that no longer exists is a silent back-handling hole
+  assert.doesNotMatch(app, /nav\.register\('sheet-setup'/, 'the wizard nav registration survived its view');
+  // creating a profile must land IN the app, not in a deleted screen
+  const cn = app.slice(app.indexOf('async function createNewProfile('));
+  const body = cn.slice(0, cn.indexOf('\n}\n'));
+  assert.match(body, /activateProfile\(p\.id\)/, 'profile creation no longer enters the app');
+  // and no scope can change any more — that is what makes the sunset's libraryId rule real
+  for (const [p, b2] of CODE) {
+    assert.doesNotMatch(b2, /moveScope\s*\(|planScopeAdoption\s*\(|adoptLibraryScope\s*\(/,
+      `${p} can still move a library scope`);
+  }
 });
 
 test('the picker exit button cannot walk through an armed kiosk (v1.0.32)', () => {
@@ -1218,12 +1236,17 @@ test('a channel deletion writes its tombstone FIRST, and a move never writes one
   assert.ok(tombAt > 0, 'deleteLibraryChannel no longer writes a tombstone — deletions resurrect on the next pull');
   assert.ok(rowDelAt > tombAt,
     'the tombstone must be written BEFORE the row delete (a crash in between must keep the intent)');
-  // moveScope is a MOVE, not a parental deletion — and its re-put must stamp fresh
-  // (no preserveTimestamp) so the moved row outranks any old tombstone in the target.
-  const mv = db.slice(db.indexOf('export async function moveScope('));
-  const mvBody = mv.slice(0, mv.indexOf('\n}\n'));
-  assert.match(mvBody, /deleteLibraryChannel\(fromScope, lc\.channelId, \{ tombstone: false \}\)/,
-    'moveScope now tombstones the scope it abandons — re-attaching a sheet starts fighting itself');
+  // v1.0.38: moveScope was the other `tombstone: false` caller and is gone. The ONLY
+  // remaining one is drive.applyRemoteDoc, applying a peer's tombstone whose own `at` must
+  // be preserved — a parental deletion must never reach that branch.
+  const drive = MODULES.get('www/js/drive.js');
+  // CALLERS only: db.js is where the parameter is DECLARED (`{ tombstone = true }`) and
+  // documented, which is not a call site.
+  const falseCallers = [...CODE.entries()]
+    .filter(([k, b2]) => k !== 'www/js/db.js' && /tombstone: false/.test(b2)).map(([k]) => k);
+  assert.deepEqual(falseCallers.sort(), ['www/js/drive.js'],
+    `tombstone:false must have exactly one caller (drive.applyRemoteDoc), found: ${falseCallers.join(', ')}`);
+  assert.match(drive, /tombstone: false/, 'the apply path no longer preserves a peer tombstone');
 });
 
 test('applyRemoteDoc routes libraryChannels through planChannelApply (v1.0.36)', () => {
@@ -1317,4 +1340,372 @@ test('a previously-removed backlog has a way back, and it is the PARENT who says
     'the restore must be offered by the channel AND the playlist add path (plus its definition)');
   assert.match(app, /if \(!count && await offerDeniedRestore\(channelId, empty\)\)/,
     'the channel path offers the restore unconditionally or not at all');
+});
+
+/* ---------------- the links file (v1.0.38) ---------------- */
+
+test('the links import goes through classifySourceRow, never a raw line', () => {
+  // classifyLink/classifySourceRow is THE safety boundary — every link that enters the
+  // library passes through it. A bulk importer that split lines itself would be the one
+  // door that skips it, on input the parent got from someone else.
+  const lf = MODULES.get('www/js/linksfile.js');
+  assert.ok(lf, 'linksfile.js is gone');
+  const at = lf.indexOf('export function parseLinksFile(');
+  assert.ok(at > 0, 'parseLinksFile is gone');
+  const body = lf.slice(at, lf.indexOf('\n}\n', at));
+  assert.match(body, /parseSourceRows\(parseCsv\(/,
+    'parseLinksFile no longer tokenizes with parseCsv + parseSourceRows — the grammar was re-implemented');
+  // and it must refuse an unreadable body BEFORE it can read as empty
+  const htmlAt = body.indexOf('looksLikeHtml(');
+  const parseAt = body.indexOf('parseSourceRows(');
+  assert.ok(htmlAt > 0 && htmlAt < parseAt,
+    'looksLikeHtml must run BEFORE parsing, or a saved permission page reads as "0 links"');
+  assert.doesNotMatch(lf, /split\(\s*\/\[\\t,\]/, 'a hand-rolled delimiter split is back');
+  // The module BUILDS canonical URLs (that is canonicalLinkFor's whole job) but must never
+  // PARSE one — parsing is classify.js's. So every youtube.com literal must live inside
+  // canonicalLinkFor, and none of them may be fed to .match()/.test().
+  // Comments are stripped first: this is a rule about CODE, and the doc comment on
+  // canonicalLinkFor explains at length why a stored youtu.be srcUrl is not used.
+  const code = lf.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const buildAt = code.indexOf('export function canonicalLinkFor(');
+  const buildEnd = code.indexOf('\n}\n', buildAt);
+  const outside = code.slice(0, buildAt) + code.slice(buildEnd);
+  assert.ok(!/youtube\.com|youtu\.be/.test(outside),
+    'a YouTube URL literal escaped canonicalLinkFor — link building must stay in one place');
+  assert.ok(!/\/[^\n/]*youtu[^\n/]*\/[gimsuy]*\s*\.(test|exec)|\.match\(\s*\/[^\n/]*youtu/.test(lf),
+    'linksfile.js parses a YouTube link with its own regex — classifySourceRow owns that');
+});
+
+test('the links importer does NOT route through the per-item add paths', () => {
+  // addClassifiedRow's channel branch raises importChannelAndAsk (loading screen + the
+  // three-way approval dialog + a 90s finishing wait) PER CHANNEL, and its video branch
+  // fires refreshAfterAdd + renderHome + a push PER VIDEO. A 16-channel file would raise
+  // 16 dialogs; a 300-line file, 300 forced syncs.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function linksImportFromText(');
+  assert.ok(at > 0, 'the links importer is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.ok(!body.includes('importChannelAndAsk('),
+    'the importer calls importChannelAndAsk — that is one dialog per channel');
+  assert.ok(!body.includes('addClassifiedRow('),
+    'the importer calls addClassifiedRow — that is one forced sync per video');
+  // ONE forced sync, and it must be forced: a non-forced call can JOIN a launch run that
+  // already read the library (planSyncDispatch, the v1.0.25 field bug).
+  assert.equal((body.match(/refreshAfterAdd\(/g) || []).length, 1,
+    'the import must refresh exactly ONCE for the whole file');
+  assert.match(body, /wait: true/, 'the import refresh must be the awaited one — it owns a waiting screen');
+  // the denied question is asked ONCE, outside any loop over rows
+  assert.equal((body.match(/deniedReAddPrompt\(/g) || []).length, 1,
+    'the denied question must be asked once for the whole file, not per row');
+  assert.match(body, /source: 'import', count: hits\.length/,
+    'the denied question must carry the real count — that is the whole point of asking once');
+});
+
+test('a re-added deleted video is ANSWERED for, never silently destroyed (v1.0.38)', () => {
+  // THE HOLE THIS CLOSES. A deny tombstone was revocable by exactly one thing — the SHEET
+  // re-adding the key (planSheetMirror.unDenyKeys) — and drive.mergeDbFiles DELETES any
+  // video whose tombstone is active from the merged document. addClassifiedRow never
+  // consulted the deny set at all, so a re-pasted deleted video was written, shown to the
+  // child, and destroyed by the next pull on every device.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function addClassifiedRow(');
+  assert.ok(at > 0, 'addClassifiedRow is gone');
+  const body = app.slice(at, app.indexOf("\n  if (row && row.kind === 'channel')", at));
+  const gate = body.indexOf('offerDeniedReAdd(');
+  const write = body.indexOf('db.putVideos(');
+  assert.ok(gate > 0, 'the video add path no longer checks the deny list — the v1.0.38 hole is back open');
+  assert.ok(write > 0 && gate < write, 'the deny check must run BEFORE the record is written');
+
+  // the helper itself: it must ASK, and only un-deny on a yes
+  const hAt = app.indexOf('async function offerDeniedReAdd(');
+  assert.ok(hAt > 0, 'offerDeniedReAdd is gone');
+  const helper = app.slice(hAt, app.indexOf('\n}\n', hAt));
+  assert.match(helper, /confirmKid\(/, 'the re-add must ASK — never revoke a tombstone silently');
+  assert.match(helper, /if \(!yes\) return false/, 'a declined re-add must not add the video');
+  assert.ok(helper.indexOf('unDeny(') > helper.indexOf('confirmKid('),
+    'the tombstone is revoked BEFORE the parent answers');
+  // BOTH scopes: a key can carry a tombstone in the shared library and in the personal one
+  assert.match(helper, /profScope\(activeProfileId\)/,
+    'only one scope is un-denied — the other tombstone survives and re-deletes the video');
+});
+
+test('both revive dialogs get their words from ONE place (v1.0.38)', () => {
+  // There are exactly two acts that revoke a deletion tombstone — re-adding one key
+  // (deniedReAddPrompt) and restoring a channel's backlog (deniedRestorePrompt) — and their
+  // wording must not drift into describing the same act differently. It already had: for one
+  // commit `offerDeniedRestore` kept an inline copy while the pure helper sat unused, which is
+  // also the "a helper with no consumer is a lie" smell (v1.0.37).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function offerDeniedRestore(');
+  assert.ok(at > 0, 'offerDeniedRestore is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /deniedRestorePrompt\(/, 'offerDeniedRestore grew its own dialog text again');
+  // no Hebrew dialog literal may live in either revive path — plan.js owns them
+  for (const frag of ['לשחזר', 'שחזרו', 'להשאיר מוסר']) {
+    assert.ok(!body.includes(frag), `offerDeniedRestore hard-codes "${frag}" — it belongs in plan.js`);
+  }
+  const plan = MODULES.get('www/js/plan.js');
+  for (const fn of ['deniedReAddPrompt', 'deniedRestorePrompt']) {
+    assert.match(plan, new RegExp('export function ' + fn + '\\('), `plan.${fn} is gone`);
+  }
+});
+
+test('a snapshot import never re-introduces a forgotten sheet (v1.0.38)', () => {
+  // An OLD snapshot still carries sheetUrl/sheetHash/sheetFolderId. Adopting one wholesale
+  // put a sheetUrl back on a profile that had already migrated — inert today, but able to
+  // outlive sunset.js itself, which is exactly what its deadline branch exists to prevent.
+  // libraryId must SURVIVE: it is what puts the imported records where the profile looks.
+  const snap = MODULES.get('www/js/snapshot.js');
+  const at = snap.indexOf('const mySrc = await getSources(profileId);');
+  assert.ok(at > 0, 'the snapshot sources adoption moved — re-anchor this guard');
+  const body = snap.slice(at, at + 600);
+  assert.match(body, /sheetUrl, sheetHash, sheetFolderId/, 'the sheet fields are adopted again');
+  assert.ok(!/putSources\(\{ \.\.\.snap\.sources/.test(snap),
+    'snap.sources is adopted wholesale again — that carries the sheet fields back in');
+  assert.ok(!/libraryId[^\n]*\.\.\.rest|libraryId,/.test(body),
+    'libraryId must NOT be stripped — the imported records would be unreachable');
+});
+
+test('EVERY unDeny in the UI layer sits next to a question (v1.0.38)', () => {
+  // With the sheet gone there are exactly two sanctioned revocation paths, and both are an
+  // explicit parental answer: offerDeniedReAdd (one key) and offerDeniedRestore (a
+  // channel's backlog). A third, unconditional one would make deletion meaningless.
+  for (const p of ['www/js/app.js', 'www/js/share.js', 'www/js/linksfile.js']) {
+    const body = MODULES.get(p) || '';
+    const re = /unDeny\(/g;
+    let m;
+    while ((m = re.exec(body))) {
+      const around = body.slice(Math.max(0, m.index - 1400), m.index + 400);
+      assert.ok(/deniedReAddPrompt|offerDeniedRestore|offerDeniedReAdd|reviveKeys/.test(around),
+        `${p}: an unDeny at index ${m.index} is not guarded by a parental answer`);
+    }
+  }
+});
+
+test('the export WRITES the file before it shares it, and shares the FILE first (v1.0.38)', () => {
+  // The write is the artifact a device transfer needs and the only thing that survives a
+  // cancelled share; the share is how it leaves the tablet at all, because Android 11+
+  // hides Android/data from the Files app. Sharing the list as TEXT is the last rung —
+  // EXTRA_TEXT is a Binder payload receivers truncate, and a 400-link message is not a
+  // file the other device can import.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function linksExport(');
+  assert.ok(at > 0, 'linksExport is gone');
+  const body = app.slice(at, app.indexOf('\nlet lastLinksExportText', at));
+  const write = body.indexOf('fsWriteTextExternal(');
+  const shareF = body.indexOf('shareFile(');
+  assert.ok(write > 0, 'the export no longer writes a file');
+  assert.ok(shareF > write, 'the share must come AFTER the write — a cancelled share must leave the file');
+  assert.ok(!body.includes('shareText('), 'shareText must not be a rung of the export itself');
+  // the empty library must be refused, not exported as a blank file
+  assert.match(body, /delivery: 'nothing'/, 'an empty library must be named, not exported as an empty file');
+});
+
+test('the native shareFile exists in BOTH java copies and its FileProvider path is declared', () => {
+  // ARCHITECTURE.md calls native-reference/ the canonical rebuild copy; a method that lives
+  // in only one of them is a rebuild that silently loses the feature.
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                   'native-reference/KidsNativePlugin.java']) {
+    const java = readFileSync(join(ROOT, p), 'utf8');
+    const at = java.indexOf('public void shareFile(PluginCall call)');
+    assert.ok(at > 0, `${p}: shareFile is missing — the links export cannot leave the device`);
+    const body = java.slice(at, java.indexOf('\n    }\n', java.indexOf('try {', at)));
+    assert.match(body, /FileProvider\.getUriForFile/,
+      `${p}: a raw file:// URI throws FileUriExposedException on API 24+`);
+    assert.match(body, /EXTRA_STREAM/, `${p}: shareFile attaches no file`);
+    assert.match(body, /FLAG_GRANT_READ_URI_PERMISSION/,
+      `${p}: without the grant flag the receiving app opens an empty document`);
+  }
+  // …and the path must be whitelisted, in both copies, or getUriForFile throws
+  for (const p of ['android/app/src/main/res/xml/file_paths.xml', 'native-reference/file_paths.xml']) {
+    const xml = readFileSync(join(ROOT, p), 'utf8');
+    assert.match(xml, /<external-files-path[^>]*path="exports\/"/,
+      `${p}: exports/ is not declared — FileProvider.getUriForFile throws for the export path`);
+  }
+});
+
+test('a links import cannot mint a duplicate profile name (v1.0.38)', () => {
+  // A PROFILE NAME IS UNIQUE PER GOOGLE ACCOUNT, NOT PER DEVICE (v1.0.22): two devices each
+  // creating "נועם" splits that child's gift progress and personal videos while the parent
+  // sees two identical avatars. The import's "create a new profile from this file" branch is
+  // a NEW way to mint one and must not be the path that skips the check.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /async function profileNameClash\(/, 'the shared name gate is gone');
+  const gate = app.slice(app.indexOf('async function profileNameClash('));
+  assert.match(gate.slice(0, 900), /profileNameConflict\(/, 'the gate no longer uses the pure conflict rule');
+  assert.match(gate.slice(0, 900), /pullDrive\(/, 'the gate no longer pulls first — a peer name would be invisible');
+  const at = app.indexOf('async function linksImportFromText(');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /profileNameClash\(/, 'the create-a-profile branch skips the uniqueness gate');
+  assert.ok(body.indexOf('profileNameClash(') < body.indexOf('createProfile('),
+    'the name is checked AFTER the profile is created');
+  // and createNewProfile must share it rather than keep a private copy
+  const cn = app.slice(app.indexOf('async function createNewProfile('), app.indexOf('async function activateProfile('));
+  assert.match(cn, /profileNameClash\(/, 'createNewProfile grew a private copy of the gate again');
+});
+
+test('the library SCOPE travels with each profile in the Drive doc (v1.0.38)', () => {
+  // Without this a fresh device restoring a MIGRATED family gets the profiles and every
+  // libraries[…] blob but no sources row — ensureSources then mints lib:p:<id> while the
+  // content sits under the old lib:<hash>. Empty home, full database, no tool to fix it
+  // (moveScope is gone in this release).
+  const drive = MODULES.get('www/js/drive.js');
+  const at = drive.indexOf('async function buildLocalDoc(');
+  assert.ok(at > 0, 'buildLocalDoc is gone');
+  // Bounded to the profileSources block. The first version ended the slice at `\n  return {`,
+  // which does not occur after buildLocalDoc at all — indexOf answered -1, slice(at, -1) took
+  // the REST OF THE FILE, and the libraries[] `sheetUrl: src.sheetUrl || null` two lines
+  // below satisfied every assertion. A slice that silently widens to the whole file is a
+  // guard that pins nothing; caught by re-checking the plant.
+  const end = drive.indexOf('const lib = src && src.libraryId;', at);
+  assert.ok(end > at, 'the buildLocalDoc slice lost its end boundary');
+  const build = drive.slice(at, end);
+  assert.match(build, /profileSources\[p\.id\] = \{[\s\S]{0,200}libraryId:/,
+    'profileSources no longer carries libraryId — a restored profile cannot find its scope');
+  assert.ok(!/if \(src && src\.sheetUrl\) \{\s*\n\s*profileSources/.test(build),
+    'profileSources is written only for sheet-backed profiles again — the map empties after the migration');
+  // the restore side must not reinstate the guard that skipped sheet-less entries
+  assert.ok(!/if \(!ps \|\| !ps\.sheetUrl\) continue/.test(drive),
+    'the restore branch skips sheet-less entries again — that IS the empty-home bug');
+  assert.match(drive, /libraryId: resolveRestoredLibraryId\(/,
+    'the restore no longer routes through the pure resolver');
+
+  // A migrated entry's sheetUrl must be NULL, and this has to be checked HERE rather than in
+  // a unit test: a gdrive.test.mjs case hands serializeDb a hand-built profileSources, so it
+  // pins the FIXTURE and not the production expression — the same trap that made
+  // libraryChannels.updatedAt provably order-dependent while the suite stayed green
+  // (v1.0.22). buildLocalDoc reads IndexedDB and cannot be unit-tested at all.
+  // WHY IT MATTERS: a v1.0.37 device's own `if (!ps.sheetUrl) continue` is the entire reason
+  // the new document is harmless to it. A truthy sentinel there and the old app derives a
+  // scope from garbage.
+  assert.match(build, /sheetUrl: src\.sheetUrl \|\| null,/,
+    'buildLocalDoc no longer writes a NULL sheetUrl for a migrated profile — an older app would read the sentinel as a real sheet');
+});
+
+test('the orphan sweep is an UNCONDITIONAL STAGE of every sync (v1.0.38)', () => {
+  // THE BUG: planOrphanGC only ever ran inside applySheetMirror, gated on `if (sheetParsed)`
+  // — so a profile with NO sheet never swept, which is the normal case since v1.0.32 and the
+  // ONLY case after this release. A peer deleting a subscription sends the v1.0.36 tombstone,
+  // applyRemoteDoc deletes the row, and nothing deleted the videos: the child kept a folder
+  // full of a channel nobody subscribes to, forever.
+  const sync = MODULES.get('www/js/sync2.js');
+  const dsAt = sync.indexOf('async function doSync(');
+  assert.ok(dsAt > 0, 'doSync is gone');
+  const body = sync.slice(dsAt);
+  const subsAt = body.indexOf('const allSubs = await listLibraryChannels(lib)');
+  const gcAt = body.indexOf('gcOrphans(lib)');
+  const rssAt = body.indexOf("report('rss'");
+  assert.ok(subsAt > 0 && gcAt > 0 && rssAt > 0, 'one of the stage anchors moved');
+  assert.ok(gcAt > subsAt, 'the sweep runs before the subscription list is known');
+  assert.ok(gcAt < rssAt,
+    'the sweep runs AFTER the fetch stages — the sync would spend network on channels it is about to sweep');
+  // and it must not be gated on a sheet parse ever again
+  const stage = body.slice(subsAt, rssAt);
+  assert.doesNotMatch(stage, /if \(sheetParsed\)/,
+    'the sweep is gated on a sheet parse again — that is the bug this stage fixes');
+  // the valve is what makes an unconditional sweep safe on an old install
+  assert.match(sync, /orphanSweepValve\(/, 'the sweep lost its valve — a first pass can churn against the Drive doc');
+  const gcFn = sync.slice(sync.indexOf('export async function gcOrphans('));
+  assert.match(gcFn.slice(0, 1200), /if \(!valve\.sweep\)/, 'gcOrphans ignores the valve');
+
+  // the channel-remove button goes through removeSubscription, not the mirror
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /removeSubscription\(libScope, lc\.channelId\)/,
+    'the channel 🗑️ no longer routes through removeSubscription');
+  const rs = sync.slice(sync.indexOf('export async function removeSubscription('));
+  assert.match(rs.slice(0, 400), /deleteLibraryChannel\(/,
+    'removeSubscription does not unsubscribe — the v1.0.36 tombstone is written inside it');
+  assert.match(rs.slice(0, 400), /gcOrphans\(/, 'removeSubscription leaves the videos orphaned');
+
+  // a parked sweep must be SAID, not just recorded: a meta key nobody reads is a lie (v1.0.37)
+  assert.match(app, /gcAlert:/, 'nothing surfaces a parked sweep to the parent');
+});
+
+/* ---------------- the sheet sunset (v1.0.38 — DELETE AFTER 2026-09-10) ---------------- */
+
+test('the sunset runs BETWEEN the pull and the sync, awaited, for every profile', () => {
+  // The lifecycle is the design. Not dataver: that runs before any profile is active, blocks
+  // boot behind a faded splash with no progress UI, and has "run once" semantics where this
+  // needs "three attempts across launches". Not after the sync: the fold writes records the
+  // launch's forced pass has to enrich. Not detached: all three write the same records, which
+  // is the pullThenSync rule (v1.0.25).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function entryRefresh(');
+  assert.ok(at > 0, 'entryRefresh is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  const pull = body.indexOf('maybePullDrive(');
+  const sunset = body.indexOf('runSheetSunset(');
+  const sync = body.indexOf('syncLibrary(');
+  assert.ok(pull > 0 && sunset > 0 && sync > 0, 'one of the three stages is missing from entryRefresh');
+  assert.ok(pull < sunset && sunset < sync,
+    'the sunset must run AFTER the pull (a restored profile\'s sheetUrl arrives there) and BEFORE the sync');
+  assert.match(body.slice(sunset - 40, sunset + 60), /await/, 'the sunset is not awaited — that is the v1.0.25 race');
+
+  // exactly two mentions in the tree: the definition and this one call site
+  const calls = [...MODULES.entries()].reduce((n, [, b]) => n + (b.match(/runSheetSunset\(/g) || []).length, 0);
+  assert.equal(calls, 2, `runSheetSunset must have exactly one caller, found ${calls - 1}`);
+  // and it must not creep into the boot path
+  assert.doesNotMatch(MODULES.get('www/js/dataver.js'), /sunset/i,
+    'the sunset became a dataver step — that blocks boot behind a blank splash');
+  const init = app.slice(app.indexOf('async function init('));
+  assert.doesNotMatch(init, /runSheetSunset/, 'init() calls the sunset directly — it must ride entryRefresh');
+
+  // EVERY profile, not just the active one: a child nobody opens here would keep a sheetUrl
+  // forever against a build with no sheet stage.
+  const sun = MODULES.get('www/js/sunset.js');
+  assert.ok(sun, 'sunset.js is gone');
+  const runner = sun.slice(sun.indexOf('export async function runSheetSunset('));
+  assert.match(runner, /getProfiles\(/, 'the runner no longer covers every profile');
+  assert.doesNotMatch(runner, /activeProfileId/, 'the runner became per-active-profile');
+});
+
+test('the sunset deletes FILES, never folders, and nothing else in the tree deletes at all', () => {
+  // Deleting a Drive FOLDER deletes its contents, and under drive.file the app cannot see
+  // files the parent put in there — so it can never prove the folder is empty.
+  const sun = MODULES.get('www/js/sunset.js');
+  const deletes = (sun.match(/method:\s*'DELETE'/g) || []).length;
+  assert.equal(deletes, 1, `sunset.js must contain exactly ONE DELETE, found ${deletes}`);
+  const at = sun.indexOf("method: 'DELETE'");
+  assert.match(sun.slice(at, at + 200), /\$\{DRIVE\}\/files\/\$\{spreadsheetId\}/,
+    'the DELETE no longer addresses a single spreadsheet id');
+  for (const bad of ['mimeType', 'SHEETS_FOLDER_NAME', "'folder'", 'ensureSheetsFolder']) {
+    assert.ok(!sun.includes(bad), `sunset.js mentions ${bad} — it must never touch the folder`);
+  }
+  // no other module may grow a Drive delete
+  for (const [p, body] of MODULES) {
+    if (p === 'www/js/sunset.js') continue;
+    assert.doesNotMatch(body, /method:\s*'DELETE'/, `${p} gained an HTTP DELETE — was that deliberate?`);
+  }
+});
+
+test('the FORGET clears the sheet fields and NEVER touches libraryId', () => {
+  // The single most destructive possible mistake in this release: one stray libraryId in that
+  // patch strands the family's whole library under an unreachable scope, silently, on every
+  // device — and moveScope is deleted, so there is no tool left to repair it.
+  const sun = MODULES.get('www/js/sunset.js');
+  const at = sun.indexOf('const cur = await getSources(p.id);');
+  assert.ok(at > 0, 'the forget step moved — re-anchor this guard');
+  const forget = sun.slice(at, sun.indexOf('const afterFold', at));
+  for (const f of ['sheetUrl: null', 'sheetHash: null', 'sheetFolderId: null']) {
+    assert.ok(forget.includes(f), `the forget no longer clears ${f}`);
+  }
+  assert.ok(!forget.includes('libraryId'),
+    'THE FORGET MENTIONS libraryId — changing a scope here strands the whole library');
+});
+
+test('the sunset cannot revive a deletion, and a failed read never reaches the forget', () => {
+  const sun = MODULES.get('www/js/sunset.js');
+  // planSheetMirror.unDenyKeys is not ported, and nothing here may un-deny.
+  assert.ok(!/unDeny/.test(sun), 'sunset.js can revoke a tombstone — the final read would resurrect deletions');
+  // the fold must consult the deny set and the channel tombstones
+  assert.match(sun, /loadDenySet\(/, 'the fold no longer drops tombstoned videos');
+  assert.match(sun, /getDeletedChannels\(/, 'the fold no longer skips deleted channels — it would resurrect them');
+  assert.match(sun, /deletedChannels: await getDeletedChannels\(lib\)/,
+    'the tombstone map is not handed to planSheetFold');
+  // a read failure must `continue`, never fall through to the forget
+  const runner = sun.slice(sun.indexOf('export async function runSheetSunset('));
+  const catchAt = runner.indexOf('} catch (e) {');
+  assert.ok(catchAt > 0, 'the read is no longer wrapped — a failure would reach the forget');
+  assert.match(runner.slice(catchAt, catchAt + 320), /continue;/,
+    'a failed read does not `continue` — it would forget a sheet it never folded, then delete the file');
 });

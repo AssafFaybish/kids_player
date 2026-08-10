@@ -10,7 +10,7 @@ and data model before touching sync/db/player code.
 
 ```bash
 npm run serve        # dev server http://localhost:5173 (fixed port, no-store, /__proxy CORS helper)
-npm test             # node:test suite (~305 tests) — MUST stay green; pure logic only, no DOM
+npm test             # node:test suite (~519 tests) — MUST stay green; pure logic only, no DOM
 npm run apk          # cap copy + DEBUG apk → installs as com.assaf.kidsplayer.DEV (never collides with release)
 npm run apk:release  # cap copy + SIGNED release apk (fails loudly if ~/.keystores/kids-player.properties missing)
 npm run apk:verify   # apksigner — mandatory before publishing anything
@@ -144,27 +144,39 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   converges, min-merged, so what a child opened stays open everywhere. Decision 2026-07-31:
   syncing `giftRank` is the exact path that once produced a runaway 🎁 folder needing a
   repair migration, and the child-visible benefit is small.
+- **THE SOURCE OF TRUTH IS (SUBSCRIPTIONS, LOOSE VIDEOS); EVERYTHING ELSE IS DERIVED**
+  (v1.0.38). `libraryChannels` rows ARE the source list; video records in the `'sheet'`
+  folder are the individually added singles; both already travel in the Drive doc, which
+  is why removing the Google-Sheets list added **0 bytes** to it. There is no second store
+  and no mirror: nothing outside the app can add or delete content. See
+  [docs/V1038.md](docs/V1038.md).
 - Deletion = atomic delete + deny-list tombstone. Since v1.0.10 the deny-list is an
-  LWW-element set: entries are never removed, but the SHEET re-adding a key revokes them
-  (`removedAt >= at` = inert; `db.denyActive`, merge rule `drive.mergeDenyRecord` — later
-  event wins, tie → revoked). The ONLY undeny path is a sheet re-add
-  (`planSheetMirror.unDenyKeys`); everything else still only grows the set.
-- The sheet mirrors BOTH ways (v1.0.10), judged by PRESENCE on every successful parse
-  (never diff-vs-baseline — a baseline forgets, and a stale Drive-doc merge would
-  resurrect deleted content forever): LIVE sheet-backed records missing from the sheet
-  are deleted WITH a 'sheet-mirror' tombstone (docs can't resurrect them); denied keys
-  the sheet LISTS are revived (unless our own row-removal is still queued). PENDING
-  records are NOT sheet-backed (their row appears at approval) — mirroring them would
-  kill shares before the parent saw them (real bug, audit-caught). Unsubscribed-channel
-  content is orphan-GC'd on every mirror pass. The SAFETY VALVE (>max(10, 5%)
-  deletions at once) parks everything behind a parent decision in the sources tab;
-  "ignore" remembers the divergence signature so the SAME divergence never re-alerts.
-  In-app deletes of sheet-backed entities enqueue ROW-REMOVAL ops (sheetwrite
-  delvideo/delchannel; channel rows matched via the handleMap cache); a channel with a
-  queued delete is never re-subscribed from its lingering row. Single-video deletions
-  from a CHANNEL are NOT representable in the sheet — they stay per-account.
-- `sortKey` depends only on the row's own ordinal/timestamps — appending sheet rows never renumbers
-  existing ones (test-pinned). Sheet display order is REVERSED via DESC cursor (last row shown first).
+  LWW-element set: entries are never removed, only REVOKED (`removedAt >= at` = inert;
+  `db.denyActive`, merge rule `drive.mergeDenyRecord` — later event wins, tie → revoked).
+  **The revocation paths are now exactly two, and both are an explicit parental ANSWER**
+  (v1.0.38): `plan.deniedReAddPrompt` when the parent re-adds one key by paste/search/
+  share/import, and `app.offerDeniedRestore` for a channel's removed backlog. It must
+  never be automatic — a parent who removed three bad videos must not get them back for
+  re-pasting a link (the v1.0.23 rule). ⚠️ THIS WAS A LIVE HOLE, not a theoretical one:
+  `addClassifiedRow` never consulted the deny set at all, so a re-pasted deleted video
+  was written, shown to the child, and destroyed by the next pull
+  (`drive.mergeDbFiles` deletes any video whose tombstone is active). The sheet's
+  un-deny had been quietly repairing that.
+- **NOTHING MIRRORS ANY MORE** (v1.0.38 deleted `planSheetMirror` + `applySheetMirror`).
+  What the mirror also did — sweeping content whose channel nobody subscribes to — is now
+  an UNCONDITIONAL sync stage (`sync2.gcOrphans`, pure `plan.planOrphanGC`), which is a
+  bug fix: it only ever ran under `if (sheetParsed)`, so a sheet-less profile never swept,
+  and a peer's channel deletion left its videos forever. `plan.orphanSweepValve` parks any
+  sweep above max(10, 5%) or one that would take EVERYTHING (the v1.0.18 rule), because
+  `deleteVideoRaw` writes no tombstone and a mass sweep churns against the Drive doc; a
+  parked sweep is SAID in the sources tab, never left in a meta key nobody reads.
+- **THE COMPLETE LIST OF THINGS THAT MAY DELETE A VIDEO RECORD**: the parent's explicit
+  🗑️, `db.purgeRejected`, the 30-day rejected expiry, the migration's `# הוסר` rows,
+  `db.purgeProfile`, and the orphan sweep. Adding to this list is a safety decision.
+- `sortKey` depends only on the row's own ordinal/timestamps — appending never renumbers
+  existing rows (test-pinned). `origin:'sheet-row'` survives as an ORDERING DOMAIN
+  (`order.SHEET_BASE + rowIndex`, rendered DESC so the last line shows first); a links-file
+  import writes it, which is why an imported list keeps its file order.
 - `planMutations` twice over identical inputs ⇒ empty diff (the churn-free test is sacred).
 - Gift state lives in `profileVideoState`, NOT on video records (siblings share libraries);
   `unwrappedAt` is forever (min-merged everywhere).
@@ -210,12 +222,25 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   because with no server there is no coordination point; `store.duplicateProfileNames`
   reports it in the parent screen and the parent renames or deletes. Never auto-merge
   (irreversible: gift state + scopes) and never auto-rename behind their back.
-- Scoping (decision 20): `lib:<fnv1a(sheet)>` = shared per input-sheet; `prof:<id>` = personal.
-  A profile with NO sheet gets `lib:p:<profileId>`. CONNECTING or CHANGING a sheet therefore
-  CHANGES the scope — always route it through `adoptLibraryScope()` (→ `db.moveScope`, which
-  moves videos + channel subs and UNIONS tombstones) and register the moved items as sheet
-  rows. Skipping the migration silently orphans everything the parent added (v1.0.17 fix);
-  the queued rows are also what stops the presence-mirror from tombstoning them.
+- **A PROFILE'S `libraryId` IS IMMUTABLE** (decision 20, as of v1.0.38). `lib:p:<profileId>`
+  for every profile created from now on; `prof:<id>` stays the personal scope. A legacy
+  `lib:<fnv1a(sheetKey)>` is kept EXACTLY as it is — pre-v1.0.38 families derived it from a
+  sheet URL and several profiles may SHARE one, so changing it would strand the whole family
+  library under an unreachable scope, on every device. `db.moveScope`, `plan.planScopeAdoption`
+  and `app.adoptLibraryScope` are DELETED, which is what makes this enforceable rather than
+  aspirational: no code path can change a scope any more, and an invariants guard fails if one
+  comes back. There is deliberately NO way to attach a sources sheet either — the migration
+  deletes the family's sheet files, so a re-attached URL would point at a file nothing
+  maintains AND would undo the migration on the next launch.
+- **THE SCOPE TRAVELS IN THE DRIVE DOC** (`profileSources[pid].libraryId`, v1.0.38, additive).
+  It used to be derivable from the sheet URL and the entry was written only when one existed —
+  so after the migration a fresh device restoring the backup got the profiles and every
+  `libraries[…]` blob but NO sources row, and `ensureSources` minted `lib:p:<id>` while the
+  content sat under the old hash: empty home, full database. Pure
+  `drive.resolveRestoredLibraryId` decides (explicit id → the legacy derivation → `lib:p:`).
+  An older app is unharmed because a migrated entry carries `sheetUrl: null` and its own
+  `if (!ps.sheetUrl) continue` skips it — which is why that value must stay NULL, never `''`
+  or a sentinel (test-pinned).
 
 **Platform/native:**
 - `platform.exitApp()` prefers `KidsNative.exitApp` (finishAndRemoveTask + delayed kill) —
@@ -266,6 +291,37 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.38 — **THE GOOGLE-SHEETS SOURCES LIST IS GONE** (user request). Full record:
+  **[docs/V1038.md](docs/V1038.md)** — read it before touching `sunset`, `linksfile` or
+  `libraryId`. The short version, because each line is an invariant elsewhere in this file:
+  - The sheet was a SECOND SOURCE OF TRUTH (read every sync, DELETED what vanished from it,
+    written back through a durable queue) — the root of fixes in v1.0.10/12/18/19/20/26/32/34.
+    The sources were always in the database; removing it added **0 bytes** to the Drive doc.
+    Doc COMPACTION (614→175 B/record) was deliberately left out: it is a one-way format
+    change, and bundling it would make a sync regression impossible to attribute.
+  - **The links file** ([linksfile.js](www/js/linksfile.js)) is the bulk door and the way a
+    library moves between devices/accounts. It reuses the OLD SHEET'S ROW GRAMMAR as text, so
+    there is no new parser and no second safety boundary (`parseCsv` → `parseSourceRows` →
+    `classifySourceRow`) and a CSV pasted from an old spreadsheet still imports. Export writes
+    CANONICAL links only — never a video's stored `srcUrl`, which can carry `&list=` and read
+    back as a PLAYLIST — and only records no subscription reproduces (514 records → 4 lines,
+    measured). Import has TWO doors (picker + paste; Android TV has no picker at all) and does
+    NOT route through `addClassifiedRow`: that is one dialog per channel and one forced sync
+    per video. Delivery is write-then-share (`EXTERNAL` is permission-free; the new native
+    `shareFile` exists because `shareText` cannot attach a file).
+  - **THE MIGRATION IS DELETABLE AND A DATED TEST SAYS WHEN** ([sunset.js](www/js/sunset.js),
+    ⏳ **delete after 2026-09-10**; `test/sunset.test.mjs` fails on that date and carries the
+    checklist). It runs between the pull and the sync in `entryRefresh` — NOT in `dataver`,
+    which blocks boot behind a faded splash and means "run once" where this needs three
+    attempts across launches. Its two irrecoverable-loss guards: a channel with a v1.0.36
+    tombstone is NEVER re-subscribed by the final read (a sheet row has no timestamp and
+    `putLibraryChannel` stamps a fresh one that would beat it), and `interpretSheetResponse`
+    keeps every refusal because a wrong `[]` now forgets the sheet and then PERMANENTLY
+    deletes a file full of rows. Exactly one `files.delete`, on a FILE id — the folder is
+    never touched, because under `drive.file` we cannot prove it is empty.
+  - Two latent bugs the removal exposed and fixed: the orphan sweep never ran for a sheet-less
+    profile, and `profileSources` carried no entry without a `sheetUrl` (a restored migrated
+    family would have landed on an empty home over a full database).
 - v1.0.37 — **"הערוץ נוסף אבל אין בו סרטונים" WAS NEVER ABOUT THE CHANNEL** (@BARDAK613,
   the FIFTH report of this sentence; v1.0.28/29/31/32 each fixed a real resolution bug and
   none of them was this). **RESOLUTION IS FINE** — measured live on the reported channel:
@@ -1071,7 +1127,7 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **Release records: [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
+- **Release records: [docs/V1038.md](docs/V1038.md), [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
   [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what changed in each
   and why, including which features ALREADY EXISTED and were broken. The per-feature
   invariants stay below; those files are the map.
@@ -1729,6 +1785,14 @@ pins that the consumers follow the config and that every address is well-formed.
   photographed rather than drawn. Entry points: the parent screen (`guide-add`), the
   last onboarding slide (`tour-more`), the About tab — and the child's EMPTY home
   (`#empty-guide`, no PIN: reading adds nothing), which is where a stuck parent is.
+- v1.0.19 — ⚠️ **HISTORY: everything in this block about the sheet itself is GONE (v1.0.38).**
+  `sheetwrite.js`, `starterRows`, `SHEETS_FOLDER_NAME`, `parseSourceSheet`, `sync.js` and the
+  app-created spreadsheet no longer exist; the read gate lives on only inside `sunset.js`
+  until 2026-09-10. **The one rule here that is still LIVE and load-bearing is the first
+  sentence** — `drive.file` is the only OAuth scope, and it must never grow. The rest is kept
+  for its lessons (an unreadable response is never an empty one; a write must be proven, not
+  merely not-refused) — those doctrines still govern `interpretSheetResponse`,
+  `interpretDriveDoc` and `parseLinksFile`.
 - v1.0.19 — **`drive.file` IS THE ONLY OAUTH SCOPE.** `spreadsheets` is classified
   SENSITIVE and was the sole cause of the "Google hasn't verified this app" screen.
   Verification was not an option: it needs a DNS-level Search Console Domain

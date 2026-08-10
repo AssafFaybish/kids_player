@@ -255,6 +255,37 @@ export function planOrphanGC(records, subscriptions) {
 }
 
 /**
+ * v1.0.38 — PURE: may this orphan sweep proceed, or is it too big to be routine?
+ *
+ * WHY IT NEEDS A VALVE NOW. `planOrphanGC` only ever ran inside `applySheetMirror`, which
+ * only ran under `if (sheetParsed)` — so a profile with NO sheet never ran it at all, and
+ * after this release that is every profile. Making it an unconditional stage is a bug fix
+ * (a subscription deleted by a peer leaves its videos behind forever), but the first pass on
+ * an existing install may find months of accumulated orphans, and `deleteVideoRaw` writes no
+ * tombstone — so a mass sweep can churn against the Drive doc: deleted here, re-unioned by
+ * the document, swept again.
+ *
+ * The rule is planSheetMirror's one genuinely good idea, reused for the one deletion path
+ * that survives: anything above max(valveMin, valvePct) is parked, and so is a sweep that
+ * would take EVERYTHING (the v1.0.18 total-disappearance rule — a child owning ≤10 things
+ * was silently wiped by the percentage floor alone).
+ *
+ * A parked sweep FAILS TOWARD THE OLD BEHAVIOUR: the orphans simply stay, which is exactly
+ * what happened for every sheet-less profile until now.
+ */
+export function orphanSweepValve(opts) {
+  // `(opts || {})`, not a `= {}` default parameter — that only fires for `undefined`, and an
+  // explicit null from a caller reading an absent record would throw (the Number(null) trap).
+  const { orphanCount = 0, liveTotal = 0, valveMin = 10, valvePct = 0.05 } = opts || {};
+  const n = Math.max(0, Number(orphanCount) | 0);
+  const total = Math.max(0, Number(liveTotal) | 0);
+  if (!n) return { sweep: false, parked: false, count: 0 };
+  if (total && n >= total) return { sweep: false, parked: true, count: n };
+  const ceiling = Math.max(valveMin, Math.floor(total * valvePct));
+  return n > ceiling ? { sweep: false, parked: true, count: n } : { sweep: true, parked: false, count: n };
+}
+
+/**
  * v1.0.26 — PURE: which rejected records have run out of their recovery window?
  *
  * A rejection is PARKED, not deleted (v1.0.23), so the parent can pull it back. That makes
@@ -316,7 +347,12 @@ const CHANNEL_ADD_WAITS = {
   approve:  { title: 'מאשרים את הסרטונים', step: 'עוד רגע והכול יהיה אצל הילד…' },
   building: { title: 'מכינים את רשימת הסרטונים', step: 'טוענים את מה שהערוץ הביא…' },
   saving:   { title: 'שומרים את הבחירה', step: 'מאשרים את מה שסימנתם…' },
-  finishing:{ title: 'מסדרים את הספרייה', step: 'משבצים את הסרטונים בתיקיות ובמתנות…' }
+  finishing:{ title: 'מסדרים את הספרייה', step: 'משבצים את הסרטונים בתיקיות ובמתנות…' },
+  // v1.0.38 — the links file. Importing resolves every @handle in the file and then runs
+  // ONE forced sync for the whole list, which is minutes on a 16-channel file; exporting
+  // reads both scopes. Neither may run behind the ordinary screen.
+  importing:{ title: 'מייבאים את הרשימה', step: 'מזהים את הערוצים ושומרים…' },
+  exporting:{ title: 'מכינים את הקובץ', step: 'אוספים את הערוצים והסרטונים…' }
 };
 
 export function channelAddWait(stage, { count = 0 } = {}) {
@@ -328,6 +364,9 @@ export function channelAddWait(stage, { count = 0 } = {}) {
   }
   if (stage === 'building' && Number.isFinite(n) && n > 0) {
     return { title: base.title, step: `${n} סרטונים — עוד רגע…` };
+  }
+  if (stage === 'importing' && Number.isFinite(n) && n > 0) {
+    return { title: base.title, step: `${n} לינקים — עוד רגע…` };
   }
   return { ...base };
 }
@@ -367,18 +406,6 @@ export function evalScheduledLock({ now = Date.now(), armedAt = 0, lockedUntil =
   const deadline = armed + after * 60000;
   if (now >= deadline) return { phase: 'due', msLeft: 0 };
   return { phase: 'counting', msLeft: deadline - now };
-}
-
-/**
- * v1.0.34 — PURE: which primary action the sources tab offers (user request: a
- * sheet-less profile had a dead copy button wearing the primary color). A profile WITH
- * a sheet copies its link; one WITHOUT gets the connect door — the SAME wizard as
- * profile creation, because `adoptLibraryScope` must run on every sheet attachment.
- * Exactly one of the two, always.
- */
-export function sourcesPanelActions(src) {
-  const connected = !!(src && src.sheetUrl);
-  return { copy: connected, connect: !connected };
 }
 
 /**
@@ -821,113 +848,39 @@ export function planGifts({ profileId, liveRecords, newLiveKeys, existingStates,
 }
 
 
-/**
- * v1.0.10 — PURE mirror planner, PRESENCE-based: the sheet is the single source of
- * truth in BOTH directions, judged fresh on EVERY successful parse (not as a diff
- * against a remembered baseline — a diff forgets, and content resurrected later by
- * a stale Drive-doc merge would silently stay forever).
- *
- *  - sheet-backed local videos missing from the sheet → delete (WITH tombstone: a
- *    stale Drive doc must not re-import them; the tombstone is revoked the moment
- *    the sheet lists the key again — self-healing both ways);
- *  - locally-denied keys PRESENT in the sheet → unDeny (a deliberate re-add wins),
- *    unless our own row-removal for that key is still queued (lag, not intent);
- *  - subscribed channels missing from the sheet → unsubscribe + purge;
- *  - SAFETY VALVE: too many deletions at once (truncated read / accidental range
- *    delete) parks everything behind a parent decision. Deliberately LOW pct:
- *    a parent's routine cleanup (≤10 rows) never asks.
- *
- * @param sheetBackedKeys   keys of LOCAL records that live in the shared 'sheet'
- *                          folder (rows are their only representation)
- * @param localChannelIds   currently subscribed channel ids (all of them)
- * @param currentVideoKeys  video keys parsed from the sheet NOW
- * @param currentChannelIds resolved channel ids in the sheet NOW
- * @param pendingAppendKeys queued-but-unflushed adds ('yt:…' / 'ch:<id>') — absence is lag
- * @param pendingDeleteKeys queued-but-unflushed removals — presence is lag
- * @param deniedKeys        locally ACTIVE denies (Set) — for re-add revival
- */
-export function planSheetMirror({
-  sheetBackedKeys = [], localChannelIds = [],
-  currentVideoKeys = [], currentChannelIds = [],
-  pendingAppendKeys = [], pendingDeleteKeys = [],
-  deniedKeys = new Set(),
-  valveMin = 10, valvePct = 0.05
-} = {}) {
-  const curV = new Set(currentVideoKeys);
-  const curC = new Set(currentChannelIds);
-  const pendingAdd = new Set(pendingAppendKeys);
-  const pendingDel = new Set(pendingDeleteKeys);
-  const denied = deniedKeys instanceof Set ? deniedKeys : new Set(deniedKeys || []);
+/* planSheetMirror (v1.0.10) lived here until v1.0.38 — the presence mirror that made the
+ * sheet the truth in BOTH directions, plus its mass-deletion safety valve. Both are gone
+ * with the sheet. Its one genuinely good idea, the valve, survives as orphanSweepValve
+ * above; its unDenyKeys — the ONLY path that ever revoked a deletion tombstone — is
+ * replaced by an explicit parental answer (deniedReAddPrompt), which is the whole reason
+ * that dialog exists. */
 
-  const deleteVideoKeys = sheetBackedKeys.filter((k) => !curV.has(k) && !pendingAdd.has(k));
-  // v1.0.27: a playlist's queued append travels as 'pl:<id>' (app.js enqueues it that
-  // way), so checking only 'ch:' meant a playlist whose row had not flushed yet was
-  // unsubscribed by the very next mirror pass — permanently, on a read-only joined
-  // sheet where the append can never land.
-  const deleteChannelIds = localChannelIds.filter((id) =>
-    !curC.has(id) && !pendingAdd.has('ch:' + id) && !pendingAdd.has('pl:' + id));
-  const unDenyKeys = [...denied].filter((k) => curV.has(k) && !pendingDel.has(k));
-
-  const localTotal = sheetBackedKeys.length + localChannelIds.length;
-  const disappeared = deleteVideoKeys.length + deleteChannelIds.length;
-  // v1.0.18: a TOTAL disappearance always asks, however small the library. The
-  // >max(10, 5%) rule meant a child with ≤10 items — the common case for a
-  // five-year-old — had their whole library wiped without the parent ever being
-  // asked. Losing everything is exactly the case a safety valve exists for.
-  const valve = localTotal > 0 &&
-    (disappeared === localTotal || disappeared > Math.max(valveMin, Math.ceil(localTotal * valvePct)));
-
-  return { deleteVideoKeys, deleteChannelIds, unDenyKeys, valve, disappeared, localTotal };
-}
 
 /**
- * PURE (extracted v1.0.20): which of a library's records does the SHEET account for?
+ * PURE: does this record live in the shared ⭐ "סרטונים נוספים" bucket — a single the parent
+ * added by hand, by share or from a links file — rather than content a channel brought in?
  *
- * The presence-mirror deletes sheet-backed records the sheet no longer lists, so this
- * filter is a safety boundary, not a convenience:
- *  - `state === 'live'` — a PENDING share is parked with `homeFolderId:'sheet'` but gets
- *    its row only at APPROVAL. Including it tombstones the share before the parent has
- *    even seen the request (a real bug, caught in the v1.0.10 audit).
+ * v1.0.38 renamed it from `isSheetBacked` (and dropped its list-form twin, which only the
+ * presence-mirror used). It never described a spreadsheet: it is the home screen's
+ * loose-list boundary, and the old name kept telling readers otherwise. NOTE `'sheet'` is
+ * still the FOLDER ID — renaming that would be a folderId migration of every record in
+ * every library for zero benefit, and it would break pageAnyFolder / nextAfter /
+ * db.approvePending / snapshot / share all at once.
+ *
+ *  - `state === 'live'`: a PENDING share is parked with `homeFolderId:'sheet'` and is not
+ *    part of the child's list yet.
  *  - the folder test reads `homeFolderId` FIRST, because a parked record's `folderId` is
- *    '~pending' and its real home is the field behind it.
- * Channel videos are deliberately absent: they have no row of their own (the channel row
- * represents them), so the sheet can never "not list" them.
+ *    '~pending'/'~rejected' and its real home is the field behind it.
  */
-export function isSheetBacked(r) {
+export function isLooseRecord(r) {
   if (!r || r.state !== 'live') return false;
   return (r.homeFolderId || r.folderId) === 'sheet';
 }
 
-/** Keys of the sheet-backed records in `records`. Same boundary, list form. */
-export function sheetBackedKeysOf(records) {
-  const out = [];
-  for (const r of records || []) if (isSheetBacked(r)) out.push(r.key);
-  return out;
-}
-
-/**
- * PURE (extracted v1.0.20): what should connecting/changing a sheet do to the old scope?
- *
- * `lib:<fnv1a(sheet)>` is SHARED by every profile reading that sheet, and `moveScope`
- * MOVES — it deletes the source. So migrating one child's library while a sibling still
- * points at the old scope carried the whole family library away: a blank home for the
- * sibling and their pending shares surfacing in this child's approval list.
- *
- * @param others [{ profileId, libraryId }] — the OTHER profiles' sources
- * @returns { action: 'none'|'move', sharedWith: string[] }
- */
-export function planScopeAdoption(profileId, oldLib, newLib, others = []) {
-  if (!oldLib || !newLib || oldLib === newLib) return { action: 'none', sharedWith: [] };
-  const sharedWith = [];
-  for (const o of others || []) {
-    if (!o || o.profileId === profileId) continue;
-    if (o.libraryId && o.libraryId === oldLib) sharedWith.push(o.profileId);
-  }
-  // Someone else still lives there: the content is sheet-derived from the OLD sheet and
-  // stays with the profiles still reading it. This profile just starts from its new one.
-  if (sharedWith.length) return { action: 'none', sharedWith };
-  return { action: 'move', sharedWith: [] };
-}
+/* planScopeAdoption (v1.0.20) died in v1.0.38 with moveScope and the sheet wizard: no
+ * code path can change a profile's libraryId any more, so there is no scope move left to
+ * gate. Its sibling question — "may a profile PURGE erase this scope?" — lives on below
+ * in planProfilePurge, which is not sheet-coupled. */
 
 /**
  * v1.0.25 — PURE: deleting a profile. Which scopes may actually be erased?
@@ -1495,4 +1448,431 @@ export function planLogoDelivery({ imgConnected = false, hostConnected = false, 
   if (imgConnected) return 'set';
   if (hostConnected && channelId && hostChannelId === channelId) return 'remount';
   return 'skip';
+}
+
+/* ==================== v1.0.38 — the links file, and reviving a deletion ====================
+ *
+ * The Google-Sheets sources list is gone. Two of its jobs needed a replacement, and both
+ * live here as pure decisions:
+ *   1. bulk add / move a library between devices  → the links file (serialized elsewhere,
+ *      DECIDED here: what a row becomes, what a confirm says, what the outcome says).
+ *   2. revoking a deletion tombstone. Until now the ONLY undeny path was the sheet
+ *      re-adding the key (planSheetMirror.unDenyKeys). An explicit re-add is that act now
+ *      — but it must be an explicit ANSWER, never automatic.
+ */
+
+/**
+ * PURE: the `libraryChannels` record ONE source row asks for.
+ *
+ * Extracted from sync2's channel-row loop so the sheet reader (while it still exists),
+ * the links importer and any future row source share ONE rule. The v1.0.25/v1.0.33 lesson:
+ * two callers with private copies of "add" is exactly how the share path once shipped
+ * without the import-and-ask flow.
+ *
+ * flag 'auto' ⇒ autoApprove true · 'manual' ⇒ false · ABSENT ⇒ !!src.defaultAutoApprove.
+ * `decidedAt`: an EXPLICIT flag IS the parent's decision (v1.0.32), so the row skips the
+ * "ערוצים חדשים" section; a FLAGLESS row gets null and surfaces there for 24h — which is
+ * where a bulk import should ask, once per channel, instead of in sixteen modals.
+ * `updatedAt` is deliberately NOT set here: db.putLibraryChannel stamps it (v1.0.22).
+ */
+export function channelRowSubscription(row, src, { now = Date.now(), order = 0, source = 'file' } = {}) {
+  const r = row || {};
+  const flag = String(r.flag || '').trim().toLowerCase();
+  const explicit = flag === 'auto' || flag === 'manual';
+  const rec = {
+    libraryId: (src && src.libraryId) || null,
+    channelId: r.channelId || r.playlistId || null,
+    autoApprove: flag === 'auto' ? true : flag === 'manual' ? false : !!(src && src.defaultAutoApprove),
+    autoApproveSource: explicit ? source : 'default',
+    decidedAt: explicit ? now : null,
+    order: order | 0,
+    addedAt: now,
+    hidden: false,
+    sourceRow: true,
+    titleOverride: r.title || ''
+  };
+  if (r.kind === 'playlist' || (!r.channelId && r.playlistId)) rec.kind = 'playlist';
+  return rec;
+}
+
+/**
+ * PURE: the video record a MANUAL add writes (paste, search result, links-file row).
+ *
+ * Extracted from app.addClassifiedRow — same reason as channelRowSubscription. `origin`
+ * decides the sortKey DOMAIN (order.js), so a links-file row passes 'sheet-row' + its line
+ * number and lands in the same ordering domain a sheet row used to, while a pasted link
+ * stays 'manual' (above all of them). The caller supplies sortKey because order.js is not
+ * imported here.
+ */
+export function manualVideoRecord({ row, scope, title = '', sortKey = 0, origin = 'manual',
+  rowIndex = null, now = Date.now() } = {}) {
+  const r = row || {};
+  const display = String(title || '').trim();
+  return {
+    scopeId: scope, key: r.key, type: r.type, id: r.id ?? null, url: r.url ?? null,
+    srcUrl: r.srcUrl, driveId: r.driveId ?? null,
+    title: display, titleSource: display ? 'sheet' : null,
+    folderId: 'sheet', channelId: null,   // 'sheet' is the ⭐ folder id, not a spreadsheet
+    sortKey, publishedAt: null, rowIndex, origin, state: 'live',
+    addedAt: now, approvedAt: now,
+    thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
+  };
+}
+
+/**
+ * PURE: does some SUBSCRIPTION already reproduce this record, so the links file must not
+ * give it a line of its own?
+ *
+ * planOrphanGC's rule read forwards — deliberately the same expression, not a second copy:
+ * a record belongs to a subscription when its channelId is a subscribed CHANNEL or its
+ * folder is a subscribed PLAYLIST's `pl:<id>` (parked rows judged by homeFolderId). A
+ * subscribed channel's 2000 videos are ONE channel line; exporting them all produces a
+ * file no parent can read, doubles the import, and re-adds videos they may have rejected.
+ */
+export function coveredBySubscription(rec, subscriptions) {
+  if (!rec || !rec.key) return false;
+  const subs = [...(subscriptions || [])].filter(Boolean);
+  if (rec.channelId && subs.some((c) => c.channelId === rec.channelId)) return true;
+  const folder = (rec.folderId === '~pending' || rec.folderId === '~rejected')
+    ? rec.homeFolderId : rec.folderId;
+  return subs.some((c) => c.kind === 'playlist' && 'pl:' + c.channelId === folder);
+}
+
+/**
+ * PURE: this key was deleted before. What is the parent asked?
+ *
+ * WHY THIS EXISTS. A deny tombstone was revocable by exactly one thing — the SHEET
+ * re-adding the key (v1.0.10) — and drive.mergeDbFiles DELETES any video whose tombstone
+ * is active from the merged document. So with the sheet gone, a re-pasted deleted video
+ * would be written, shown to the child, and silently destroyed by the next pull on every
+ * device. (That hole is already open today: addClassifiedRow never consulted the deny set
+ * at all — the sheet's un-deny was quietly repairing it.)
+ *
+ * It must be an ANSWER, never automatic: a parent who removed three bad videos must not
+ * get them back for re-pasting a link (the v1.0.23 rule — showing rejected content is the
+ * betrayal, hiding wanted content is a complaint).
+ *
+ * `ask:false` when nothing is denied, or when a live record already EXISTS — asking about
+ * a tombstone for a key that also has a record is incoherent.
+ * `count` is how many keys ONE answer covers: a bulk import asks once, not N times.
+ *
+ * The wording varies by COUNT and not by entry point, deliberately: paste, search, share
+ * and import all revoke the same thing, and one dialog the parent learns once beats four
+ * that say it differently.
+ * -> { ask, emoji, title, text, ok, cancel }
+ */
+export function deniedReAddPrompt(opts) {
+  // Destructured from `(opts || {})`, never a `= {}` default parameter: that only fires for
+  // `undefined`, so an explicit `null` from a caller reading an absent record would throw
+  // — the same trap as `Number(null) === 0` in screenOffMinutes.
+  const { denied = false, exists = false, count = 1 } = opts || {};
+  const n = Math.max(0, Number(count) | 0);
+  if (!denied || exists || !n) return { ask: false };
+  // "בכל המכשירים" is not decoration: un-denying is not a local act, and a parent who
+  // thinks otherwise would be surprised on the other tablet.
+  if (n === 1) {
+    return {
+      ask: true, emoji: '♻️',
+      title: 'הסרטון הזה הוסר בעבר — להחזיר אותו?',
+      text: 'מחקתם את הסרטון הזה קודם, ולכן הוא לא נוסף שוב. "החזרה" תבטל את המחיקה בכל המכשירים.',
+      ok: 'החזרה', cancel: 'לא, להשאיר מוסר'
+    };
+  }
+  return {
+    ask: true, emoji: '♻️',
+    title: `${n} מהסרטונים בקובץ הוסרו בעבר — להחזיר אותם?`,
+    text: `${n} מהלינקים בקובץ מפנים לסרטונים שמחקתם בעבר, ולכן הם לא נוספו. `
+      + '"החזרה" תבטל את המחיקה שלהם בכל המכשירים; השאר נוספו כרגיל.',
+    ok: 'החזרה', cancel: 'לא, להשאיר מוסרים'
+  };
+}
+
+/**
+ * PURE: the same question for a whole CHANNEL's removed backlog (v1.0.37's
+ * app.offerDeniedRestore, moved here so both revive dialogs are pinned in one place).
+ * A channel video has no row anywhere, so before this the removal was permanent.
+ */
+export function deniedRestorePrompt(count = 0, { isPlaylist = false } = {}) {
+  const n = Math.max(0, Number(count) | 0);
+  if (!n) return { ask: false };
+  const what = isPlaylist ? 'רשימת ההשמעה' : 'הערוץ';
+  const many = n > 1;
+  // hebCount, for the same reason linksImportOutcome uses it: "1 סרטונים … הוסרו" is wrong in
+  // a way a parent notices, and a channel whose ONE removed video blocks the import is a
+  // perfectly ordinary case.
+  const videos = hebCount(n, 'סרטון', 'סרטונים');
+  return {
+    ask: true, emoji: '♻️',
+    title: `${videos} של ${what} ${many ? 'הוסרו' : 'הוסר'} בעבר`,
+    text: `מחקתם ${videos} של ${what} הזה בעבר, ולכן ${many ? 'הם לא נוספו' : 'הוא לא נוסף'} שוב. `
+      + `להחזיר ${many ? 'אותם' : 'אותו'} לרשימת ההמתנה לאישור? הפעולה תבטל את המחיקה בכל המכשירים.`,
+    ok: 'החזרה לאישור', cancel: many ? 'לא, להשאיר מוסרים' : 'לא, להשאיר מוסר'
+  };
+}
+
+/* ==================== v1.0.38 — the sheet SUNSET (delete after 2026-09-10) ====================
+ *
+ * The one-time migration off the Google-Sheets sources list: read the sheet ONE last time,
+ * fold it into the database, forget it, delete the file the app created. Everything here is
+ * scheduled for deletion — see test/sunset.test.mjs for the removal checklist.
+ */
+
+/**
+ * After this the migration is gone. `planSheetSunset` answers 'forget' for everything past
+ * it — WITHOUT needing a token — so no device can be left holding an inert sheetUrl that
+ * outlives the code that clears it.
+ */
+export const SUNSET_DEADLINE = Date.parse('2026-09-10T00:00:00Z');
+
+/**
+ * PURE: what should this profile's migration do right now?
+ *
+ * -> { action: 'skip'|'read'|'forget'|'delete-file', reason, attempt, spreadsheetId }
+ *
+ * The ORDER of the branches is the whole design, and every one of them is a test:
+ *  - a crash between the FOLD and the FORGET must resume at the forget, never re-read: in
+ *    between, the parent may have deleted something in the app, and a lingering sheet row
+ *    would undo it.
+ *  - a crash between the FORGET and the DELETE must still delete, from the spreadsheetId
+ *    snapshotted at read time — after the forget there is no sheetUrl left to derive it from.
+ *  - NO TOKEN does not burn an attempt. A family that never connected Google (or whose grant
+ *    lapsed) would otherwise exhaust its three tries on launches that never reached the
+ *    network, and their rows were unreadable anyway.
+ *  - THE DEADLINE OUTRANKS EVERYTHING and needs no token, which is what makes the code
+ *    deletable: past it, every device forgets its sheet on the next launch regardless.
+ */
+export function planSheetSunset(opts) {
+  const { src = null, state = null, now = Date.now(), hasToken = false,
+    maxAttempts = 3, deadline = SUNSET_DEADLINE } = opts || {};
+  const st = (state && typeof state === 'object') ? state : {};
+  const phase = String(st.phase || '');
+  const attempts = Math.max(0, Number(st.attempts) | 0);
+  const deleteAttempts = Math.max(0, Number(st.deleteAttempts) | 0);
+  const sheetUrl = (src && src.sheetUrl) || st.sheetUrl || null;
+  const spreadsheetId = st.spreadsheetId || null;
+  const done = { action: 'skip', reason: 'done', attempt: attempts, spreadsheetId };
+
+  if (phase === 'done') return done;
+  // Nothing to migrate and nothing half-finished.
+  if (!sheetUrl && !phase) return { action: 'skip', reason: 'no-sheet', attempt: attempts, spreadsheetId };
+
+  // The file delete is the only step left once the sheet is forgotten. Checked BEFORE the
+  // deadline branch: a forgotten sheet has nothing left to forget.
+  if (phase === 'forgotten') {
+    if (spreadsheetId && !st.deletedFileAt && deleteAttempts < maxAttempts && hasToken) {
+      return { action: 'delete-file', reason: 'cleanup', attempt: deleteAttempts + 1, spreadsheetId };
+    }
+    if (spreadsheetId && !st.deletedFileAt && deleteAttempts < maxAttempts) {
+      return { action: 'skip', reason: 'no-token', attempt: deleteAttempts, spreadsheetId };
+    }
+    return done;
+  }
+  if (phase === 'folded') return { action: 'forget', reason: 'resume', attempt: attempts, spreadsheetId };
+  if (now >= deadline) return { action: 'forget', reason: 'deadline', attempt: attempts, spreadsheetId };
+  if (attempts >= maxAttempts) return { action: 'forget', reason: 'gave-up', attempt: attempts, spreadsheetId };
+  if (!hasToken) return { action: 'skip', reason: 'no-token', attempt: attempts, spreadsheetId };
+  return { action: 'read', reason: 'migrate', attempt: attempts + 1, spreadsheetId };
+}
+
+/**
+ * PURE: the last sheet parse -> what to write into the database.
+ *
+ * -> { candidates, channelPuts, skippedChannelIds, removedKeys }
+ *
+ * THE DATA-SAFETY RULE, and the reason this is not a loop inlined in the runner: a sheet row
+ * carries NO timestamp, and the app has been deleting things for months. A channel the parent
+ * removed still has its row, and `db.putLibraryChannel` stamps a FRESH `updatedAt` that beats
+ * the v1.0.36 deletion tombstone by design (`channelOutlivesTombstone`). So one final read
+ * would resurrect every subscription the parent ever threw out. Any channel with a tombstone
+ * is therefore skipped OUTRIGHT — there is no timestamp to compare, and the v1.0.36 tie rule
+ * says resurrection is the betrayal.
+ *
+ * The video half needs no such branch: candidates go through `planMutations` with the real
+ * deny set, which drops tombstoned keys. And THIS FUNCTION HAS NO REVOCATION SURFACE AT ALL —
+ * `planSheetMirror.unDenyKeys` is deliberately not ported, so the migration can never revive
+ * a deletion.
+ */
+export function planSheetFold(opts) {
+  const { parsed = null, resolved = null, knownChannelIds = null, deletedChannels = null,
+    libraryId = null, defaultAutoApprove = false, legacyIndex = null, now = Date.now() } = opts || {};
+  // Array.isArray on every list, not `|| []`: a truthy NON-array (a corrupted meta record, a
+  // parser change) sails past `||` and throws on .map. These planners are TOTAL by rule
+  // (v1.0.33), and a throw here would abort a launch's whole migration pass.
+  const raw = (parsed && typeof parsed === 'object') ? parsed : {};
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const p = {
+    videoRows: list(raw.videoRows), channelRows: list(raw.channelRows),
+    playlistRows: list(raw.playlistRows), removedKeys: list(raw.removedKeys)
+  };
+  const refToId = resolved instanceof Map ? resolved : new Map(Object.entries(resolved || {}));
+  const known = knownChannelIds instanceof Set ? knownChannelIds : new Set(knownChannelIds || []);
+  const tombstones = deletedChannels instanceof Map
+    ? deletedChannels : new Map(Object.entries(deletedChannels || {}));
+  const src = { libraryId, defaultAutoApprove };
+
+  const channelPuts = [];
+  const skippedChannelIds = [];
+  let order = known.size;
+
+  const addSub = (id, row, kind) => {
+    if (!id) return;
+    // The rule above: a deleted channel is NEVER re-subscribed by the final read.
+    if (tombstones.has(id)) { skippedChannelIds.push(id); return; }
+    // Already subscribed: do NOT re-put. A fresh updatedAt would beat a peer's row and a
+    // fresh decidedAt would silently clear it out of "ערוצים חדשים".
+    if (known.has(id)) return;
+    known.add(id);
+    order += 1;
+    channelPuts.push(channelRowSubscription(
+      kind === 'playlist' ? { playlistId: id, kind: 'playlist', title: row.title, flag: row.flag }
+        : { channelId: id, title: row.title, flag: row.flag },
+      src, { now, order, source: 'sheet' }
+    ));
+  };
+
+  for (const row of p.channelRows) {
+    const ref = row && row.ref;
+    const id = ref && (ref.by === 'id' ? ref.value : refToId.get(ref.by + ':' + ref.value));
+    addSub(id || null, row, 'channel');
+  }
+  for (const row of p.playlistRows) addSub(row && row.playlistId, row, 'playlist');
+
+  // Video rows become candidates for planMutations — the same shape the sheet stage built.
+  const legacy = legacyIndex instanceof Set ? legacyIndex : (legacyIndex ? new Set(legacyIndex) : null);
+  const candidates = p.videoRows.map((row) => ({
+    scopeId: libraryId, key: row.key, type: row.type, id: row.id ?? null,
+    url: row.url ?? null, srcUrl: row.srcUrl, driveId: row.driveId ?? null,
+    title: row.title, titleSource: row.title ? 'sheet' : null, thumbUrl: row.thumbUrl || null,
+    channelId: null, folderId: 'sheet', origin: 'sheet-row', rowIndex: row.rowIndex,
+    publishedAt: null,
+    // The quarantine, moved here from sync2 (v1.0.38): it exists only to reconcile a legacy
+    // Preferences list against a SHEET PARSE, so it belongs with the last sheet parse and
+    // dies with it. No legacy index ⇒ individually curated rows are approved, as always.
+    autoApprove: legacy ? legacy.has(row.key) : true
+  }));
+
+  return { candidates, channelPuts, skippedChannelIds, removedKeys: [...p.removedKeys] };
+}
+
+/** The links file's row cap. A parent's list is tens of lines; this is the accident bound. */
+export const LINKS_IMPORT_MAX = 1000;
+
+/**
+ * PURE: a counted Hebrew noun phrase. "1 ערוצים" is wrong in a way a parent notices
+ * immediately, and every count in these messages can legitimately be 1 (one channel, one
+ * revived video, one duplicate). Hebrew puts the numeral BEFORE a plural noun but says
+ * "ערוץ אחד" for one, so the two forms are not the same shape.
+ */
+export function hebCount(n, one, many) {
+  const k = Math.max(0, Number(n) | 0);
+  return k === 1 ? `${one} אחד` : `${k} ${many}`;
+}
+
+/** The same for a FEMININE noun ("רשימה אחת"). */
+export function hebCountF(n, one, many) {
+  const k = Math.max(0, Number(n) | 0);
+  return k === 1 ? `${one} אחת` : `${k} ${many}`;
+}
+
+/**
+ * PURE: the confirm dialog for one parsed links file.
+ *
+ * Counts BY KIND, always — "יובאו 40 שורות" tells a parent nothing about whether they are
+ * about to subscribe to sixteen channels. `ok` NAMES THE TARGET profile, so a parent
+ * standing in the wrong child's profile sees it before committing. `third` is offered only
+ * when the file carries a profile name that does not already exist (never auto-rename
+ * behind their back — v1.0.22).
+ * Raised with askKid, not confirmKid: a scrim-tap dismiss must not count as an answer.
+ * -> { emoji, title, text, ok, cancel, third? }
+ */
+export function linksImportConfirm(counts, { targetName = '', profileName = '', canCreateProfile = false } = {}) {
+  const c = counts || {};
+  const ch = Math.max(0, c.channels | 0);
+  const pl = Math.max(0, c.playlists | 0);
+  const vid = Math.max(0, c.videos | 0);
+  const bad = Math.max(0, c.invalid | 0);
+  const rm = Math.max(0, c.removed | 0);
+  const parts = [];
+  if (ch) parts.push(hebCount(ch, 'ערוץ', 'ערוצים'));
+  if (pl) parts.push(hebCountF(pl, 'רשימת השמעה', 'רשימות השמעה'));
+  if (vid) parts.push(hebCount(vid, 'סרטון', 'סרטונים'));
+  const what = parts.length ? parts.join(' · ') : 'שום דבר שאפשר להוסיף';
+  let text = `בקובץ: ${what}.`;
+  if (bad) text += ` ${bad} שורות לא זוהו ויידלגו.`;
+  if (rm) text += ` ${rm} שורות מסומנות כמוסרות ויידלגו.`;
+  if (ch || pl) text += ' סרטונים מערוץ או מרשימה ימתינו לאישורכם, אלא אם סומן auto.';
+  const target = String(targetName || '').trim();
+  const out = {
+    emoji: '📄',
+    title: 'לייבא את הרשימה?',
+    text,
+    ok: target ? `ייבוא ל${target}` : 'ייבוא',
+    cancel: 'ביטול'
+  };
+  const name = String(profileName || '').trim();
+  if (canCreateProfile && name) out.third = `לפרופיל חדש בשם "${name}"`;
+  else if (name && !canCreateProfile) out.text += ` (כבר יש פרופיל בשם "${name}".)`;
+  return out;
+}
+
+/**
+ * PURE: what actually happened. Same contract as channelAddOutcome — ALWAYS name the
+ * outcome, and A ZERO MUST NAME ITS OWN CAUSE (v1.0.37). Every branch is distinct, because
+ * "nothing happened" and "everything was already here" are different facts to a parent
+ * staring at an unchanged screen.
+ */
+export function linksImportOutcome({ channels = 0, playlists = 0, videos = 0, pending = 0,
+  existed = 0, skippedDenied = 0, revived = 0, failed = 0, invalid = 0 } = {}) {
+  const ch = Math.max(0, channels | 0);
+  const pl = Math.max(0, playlists | 0);
+  const vid = Math.max(0, videos | 0);
+  const added = ch + pl + vid;
+  if (!added) {
+    if (existed) return `כל הלינקים בקובץ (${existed}) כבר קיימים בספרייה — לא נוסף כלום`;
+    if (skippedDenied) return `כל הלינקים בקובץ (${skippedDenied}) הוסרו בעבר ולא הוחזרו — לא נוסף כלום`;
+    if (failed) return `לא הצלחנו לזהות ${hebCount(failed, 'מקור', 'מקורות')} בקובץ — בדקו את הלינקים ונסו שוב`;
+    if (invalid) return 'אף שורה בקובץ לא זוהתה כלינק נתמך — לא נוסף כלום';
+    return 'לא נוסף כלום — הקובץ לא הכיל לינקים חדשים';
+  }
+  const parts = [];
+  if (ch) parts.push(hebCount(ch, 'ערוץ', 'ערוצים'));
+  if (pl) parts.push(hebCountF(pl, 'רשימת השמעה', 'רשימות השמעה'));
+  if (vid) parts.push(hebCount(vid, 'סרטון', 'סרטונים'));
+  let msg = `${added === 1 ? 'נוסף' : 'נוספו'} ${parts.join(' · ')} ✅`;
+  if (pending) msg += ` · ${hebCount(pending, 'סרטון', 'סרטונים')} ${pending === 1 ? 'ממתין' : 'ממתינים'} לאישור ברשימת "ממתינים" 👀`;
+  if (revived) msg += ` · ${revived} ${revived === 1 ? 'הוחזר' : 'הוחזרו'} ממחיקה`;
+  if (skippedDenied) msg += ` · ${skippedDenied} ${skippedDenied === 1 ? 'דולג' : 'דולגו'} (הוסרו בעבר)`;
+  if (existed) msg += ` · ${existed} ${existed === 1 ? 'כבר היה' : 'כבר היו'} בספרייה`;
+  if (failed) msg += ` · ${failed} ${failed === 1 ? 'מקור לא זוהה' : 'מקורות לא זוהו'}`;
+  return msg;
+}
+
+/**
+ * PURE: what the parent is told after an export, per delivery rung.
+ *
+ * EVERY rung names WHERE THE FILE IS, and no two share a sentence — an export whose file
+ * the parent cannot find is the same failure as no export at all. 'nothing' exists because
+ * an empty file that shares as a blank message is the silent-nothing failure (v1.0.26).
+ */
+export function linksExportOutcome({ delivery = 'none', name = '', dir = '', counts = null } = {}) {
+  const c = counts || {};
+  const n = Math.max(0, (c.channels | 0) + (c.playlists | 0) + (c.videos | 0) + (c.files | 0));
+  const where = dir ? `${dir}${name}` : name;
+  switch (delivery) {
+    case 'nothing':
+      return { ok: false, text: 'אין עדיין תוכן לייצוא — הוסיפו סרטון או ערוץ קודם' };
+    case 'native':
+      return { ok: true, text: `נשמר קובץ עם ${n} לינקים ונפתחה חלונית שיתוף. הקובץ במכשיר: ${where}` };
+    case 'file-only':
+      return { ok: true, shareTextFallback: true,
+        text: `הקובץ נשמר במכשיר ✅ ${where} — לא נמצאה אפליקציה לשיתוף. אפשר לשלוח אותו כטקסט בכפתור שמתחת.` };
+    case 'download':
+      return { ok: true, text: `הקובץ ירד לתיקיית ההורדות בשם ${name}` };
+    case 'clipboard':
+      return { ok: true, text: 'הרשימה הועתקה ללוח — הדביקו אותה בהודעה או בקובץ ושמרו' };
+    case 'shown':
+      return { ok: true, shown: true, text: 'לא הצלחנו לשמור קובץ — הרשימה מוצגת כאן להעתקה ידנית' };
+    default:
+      return { ok: false, text: 'הייצוא נכשל — נסו שוב' };
+  }
 }

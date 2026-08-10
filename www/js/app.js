@@ -22,12 +22,12 @@ import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction } from './playerlogic.js';
-import { groupSinglesByChannel, shouldFlattenHome, planScopeAdoption, isSheetBacked,
+import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
-  screenOffMinutes, evalIdleSleep, sourcesPanelActions, sourceDrops } from './plan.js';
+  screenOffMinutes, evalIdleSleep, sourceDrops } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -501,6 +501,16 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
     if (nav.isActive('gallery')) await renderHome();
   }
   if (activeProfileId !== id) return;
+  // v1.0.38 — THE SHEET SUNSET, between the pull and the sync, AWAITED. Between, because a
+  // restored profile's sheetUrl arrives from the pull and the sunset must see it in the same
+  // launch; before the sync, because the fold writes libraryChannels rows and video records
+  // that the launch's forced pass then enriches (RSS, titles, gifts). Serialized for the
+  // pullThenSync reason: all three write the same records, and a detached .then() here would
+  // be the v1.0.25 race re-introduced. Silent and best-effort — it covers EVERY profile, not
+  // just this one, so a child nobody opens on this device is not left behind.
+  // ⚠️ DELETE THIS CALL WITH sunset.js AFTER 2026-09-10 (test/sunset.test.mjs says so).
+  try { await (await import('./sunset.js')).runSheetSunset(); } catch { /* never blocks a launch */ }
+  if (activeProfileId !== id) return;
   if (!forceSync && !(await shouldSync(id))) return;
   await syncLibrary(id, { force: forceSync, onProgress: (p) => loading.progress(p) });
   if (activeProfileId !== id) return;
@@ -610,7 +620,7 @@ async function maybePromptUpdate(r) {
   // dot still shows, and the next home entry or launch re-offers.
   if (nav.isActive('watch') || nav.isActive('pin') || nav.isActive('parent')
     || nav.isActive('connect') || nav.isActive('loading') || nav.isActive('tour')
-    || nav.isActive('sheet-setup') || isModalOpen()) return;
+    || isModalOpen()) return;
   updatePromptedThisSession = true;
   const answer = await askKid({
     emoji: '🚀', title: 'יש גירסה חדשה!',
@@ -737,13 +747,8 @@ function registerViews() {
       return true;
     }
   });
-  nav.register('sheet-setup', { onBack: () => {
-    // v1.0.34: opened from the sources tab, back means "return to the parent screen" —
-    // returning false lets nav pop to it (the wizard was PUSHED there, not reset).
-    if (wizardGated) { wizardGated = false; wizardProfile = null; return false; }
-    finishSheetSetup();
-    return true;
-  } });
+  // v1.0.38: the sheet-setup wizard is GONE with the sheet itself — a new profile goes
+  // straight to activateProfile, and there is no way to attach a sources sheet anywhere.
   // v1.0.13: back on the what's-new screen CANCELS the update (user decision)
   nav.register('whatsnew', { onLeave: () => closeWhatsNew(false) });
   // v1.0.23 — leaving the picker ANY way (back, hardware back, a later navigation) must
@@ -1158,28 +1163,12 @@ async function absorbMineIntoShared(profileId) {
           homeFolderId: pending ? 'sheet' : null,
           updatedAt: Date.now()
         }]);
-        // live items are part of the master list — register them in the sheet once
-        // (pending shares enqueue at APPROVAL time instead)
-        if (!pending) {
-          // {flush:false} — a bulk caller must NOT flush per record (v1.0.18): this runs on
-          // EVERY profile activation and was one network round trip per moved video. The
-          // single flush after the loop also closes the window in which a record is live +
-          // sheet-backed + rowless, which is exactly what the presence-mirror tombstones.
-          const { enqueueSheetRow } = await import('./sheetwrite.js');
-          await enqueueSheetRow(profileId, { key: rec.key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' }, { flush: false });
-        }
         moved += 1;
       }
       await db.deleteVideoRaw(pScope, rec.key); // raw: a move, not a deletion — no tombstone
     }
     await db.copyDenies(pScope, lib); // personal deletions keep protecting the shared list
-    if (moved) {
-      try {
-        const { flushSheetQueue } = await import('./sheetwrite.js');
-        await flushSheetQueue(profileId);
-      } catch {}
-      maybeSchedulePush();
-    }
+    if (moved) maybeSchedulePush(); // the absorb must reach the other devices
   } catch { /* absorbing must never block activation; next activation retries */ }
 }
 
@@ -1255,7 +1244,7 @@ async function buildFolders() {
     // inside that channel's 📺 folder instead of a second same-named folder.
     // All of it rides ONE bulk read — the record arrays feed pagination directly.
     const { compareForDisplay } = await import('./order.js');
-    const sheetRecords = [...(await db.loadMergeIndex(lib)).values()].filter(isSheetBacked);
+    const sheetRecords = [...(await db.loadMergeIndex(lib)).values()].filter(isLooseRecord);
     const grouping = groupSinglesByChannel(sheetRecords.filter((r) => !r.channelId), subscribedIds);
     const byKey = new Map(sheetRecords.map((r) => [r.key, r]));
     const recsOf = (keys) => keys.map((k) => byKey.get(k)).filter(Boolean).sort(compareForDisplay);
@@ -1883,11 +1872,8 @@ async function confirmDeleteWatch(item) {
       if (deleted) {
         giftStates.delete(item.key);
         if (activeProfileId) { try { await db.deleteVideoState(activeProfileId, item.key); } catch {} }
-        // The sheet carries the deletion to every participant (v1.0.10/12):
-        // a sheet-backed single loses its ROW; a video inside a CHANNEL has no row
-        // of its own, so it gets a '# הוסר' removal row instead.
-        if (sheetBacked) enqueueSheetDeleteVideo(item.key);
-        else if (channelVideo) enqueueSheetRemoval(item.key, channelVideo.srcUrl || channelVideo.url || '', channelVideo.title || item.title || '');
+        // v1.0.38: the deny tombstone db.deleteVideo just wrote is what carries this to
+        // every device, through the Drive document. There is no second channel.
         maybeSchedulePush();
       }
     } catch { /* a failed delete must never strand the child outside the gallery */ }
@@ -1946,26 +1932,10 @@ function handleShareInteractive(c) {
   });
 }
 
-/* v1.0.10: fire-and-forget sheet write-back helpers (never block the UI) */
-function enqueueSheetDeleteVideo(key) {
-  import('./sheetwrite.js')
-    .then((sw) => sw.enqueueSheetVideoDelete(activeProfileId, key))
-    .then(() => refreshSheetWriteStatus().catch(() => {}))
-    .catch(() => {});
-}
-function enqueueSheetDeleteChannel(channelId, kind = 'channel') {
-  import('./sheetwrite.js')
-    .then((sw) => sw.enqueueSheetChannelDelete(activeProfileId, channelId, kind))
-    .then(() => refreshSheetWriteStatus().catch(() => {}))
-    .catch(() => {});
-}
-/** v1.0.12: '# הוסר' row for a video that lives inside a channel (no row of its own). */
-function enqueueSheetRemoval(key, srcUrl, title) {
-  import('./sheetwrite.js')
-    .then((sw) => sw.enqueueSheetRemovalRow(activeProfileId, { key, srcUrl, title }))
-    .then(() => refreshSheetWriteStatus().catch(() => {}))
-    .catch(() => {});
-}
+/* v1.0.10's sheet write-back helpers (enqueueSheetDeleteVideo / …DeleteChannel /
+ * …Removal) lived here until v1.0.38. A deletion now travels the ONE way it always
+ * should have: the record is deleted and a deny tombstone rides the Drive document to
+ * every device (db.deleteVideo + maybeSchedulePush). There is no second channel. */
 
 /* ---------------- PIN ---------------- */
 async function openParentGate() {
@@ -2201,34 +2171,34 @@ function setParentTab(name) {
   }
 }
 
-// v1.0.19's connectSheetUrl lived here. v1.0.32 removed it with its last callers (the
-// sources tab's create/join buttons — user request): the profile-creation WIZARD is
-// now the only place a sheet is attached, and it has its own connectWizardSheet, which
-// routes through adoptLibraryScope exactly the same way. Re-attaching a sheet from the
-// sources tab must go through that migration too if it ever comes back.
-
 /**
- * The sources panel's sheet section — status only since v1.0.32: create / join /
- * disconnect are no longer parent-facing (user request); the wizard at profile
- * creation is the one place a list is chosen.
+ * The sources panel — v1.0.38: the sheet section is GONE (the "connected list" status
+ * line, the copy button, the connect door). Content lives in the database and travels in
+ * the Drive backup; the links file is the bulk door. What remains here is honest state:
+ * a parked orphan sweep, and the TV default for the paste box.
  */
 async function refreshSourcesPanel() {
-  const src = await db.getSources(activeProfileId);
-  const cur = $('remote-current');
-  if (!cur) return;
-  // Only claim the folder when the move actually succeeded (sources.sheetFolderId).
-  // Asserting it unconditionally sent parents hunting for a folder that isn't there.
-  cur.textContent = !(src && src.sheetUrl)
-    ? 'אין רשימת מקורות מחוברת לפרופיל הזה — הסרטונים והערוצים נשמרים באפליקציה. אפשר ליצור רשימה או להתחבר לקיימת עם הכפתור למטה.'
-    : src.sheetFolderId
-      ? 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם, בתיקייה "רשימת השמעה לאפליקציה הסרטונים שלי".'
-      : 'הרשימה מחוברת ✅ הקובץ נמצא בגוגל דרייב שלכם.';
-  cur.className = 'field remote-current' + (src && src.sheetUrl ? ' ok' : '');
-  // v1.0.34: exactly one primary action — copy the link of a connected list, or the
-  // connect door for a sheet-less profile (the dead copy button was the user's report).
-  const acts = sourcesPanelActions(src);
-  $('remote-copy').classList.toggle('hidden', !acts.copy);
-  $('remote-connect').classList.toggle('hidden', !acts.connect);
+  // v1.0.38: a PARKED orphan sweep. The valve holds an unusually large sweep back (the first
+  // unconditional pass on an old install can find months of accumulated orphans, and
+  // deleteVideoRaw writes no tombstone), and it must not be a meta key nobody reads — the
+  // v1.0.37 lesson. Nothing to decide: it says what is being kept and why.
+  const gc = libScope ? await db.getMeta('gcAlert:' + libScope) : null;
+  const st = $('remote-status');
+  if (gc && gc.count && st) {
+    st.textContent = `${gc.count} סרטונים שייכים לערוצים שאינם מנויים יותר. הם נשמרו ולא נמחקו — `
+      + 'הסירו את הערוץ מהרשימה למטה כדי למחוק אותם, או התעלמו.';
+    st.className = 'form-msg';
+  }
+  // v1.0.38: on Android TV there is NO file picker, so the paste door is the only import
+  // door — open it by default there instead of leaving the parent to discover it.
+  const box = $('links-paste-box');
+  if (box && !box.dataset.tvChecked) {
+    box.dataset.tvChecked = '1';
+    try {
+      const { isTv } = await import('./platform.js');
+      if (await isTv()) box.open = true;
+    } catch {}
+  }
 }
 
 async function refreshParent() {
@@ -2262,65 +2232,13 @@ async function refreshParent() {
   setParentTab(parentTab);
   refreshDonateUi().catch(() => {});
   refreshDriveStatus();
-  refreshSheetWriteStatus().catch(() => {});
   runUpdateCheck().catch(() => {});
   await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
 }
 
-/** v1.0.6: surface the sheet write-back queue state in the sources tab.
-    v1.0.10: also the mirror safety-valve alert (mass row disappearance). */
-async function refreshSheetWriteStatus() {
-  const el = $('sheetwrite-status');
-  el.textContent = '';
-  el.className = 'form-msg';
-  if (!libScope) return;
-
-  const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
-  $('mirror-alert').classList.toggle('hidden', !alert);
-  if (alert) {
-    $('mirror-alert-text').textContent =
-      `⚠️ ${alert.disappeared} שורות נעלמו מקובץ המקורות בבת אחת — ייתכן שנמחקו בכוונה, וייתכן שזו תקלת קריאה. המחיקה אצלך הושהתה עד להחלטתך:`;
-  }
-
-  const { sheetWriteState, flushSheetQueue } = await import('./sheetwrite.js');
-  await flushSheetQueue(activeProfileId).catch(() => {}); // opportunistic retry on entry
-  const st = await sheetWriteState(libScope);
-  if (!st) return;
-  if (st.dropped) {
-    // The write queue hit its cap and REFUSED an op. A refused delete is the dangerous
-    // one: its row stays in the sheet, and the mirror reads that presence as a
-    // deliberate re-add. Never let this hide behind the reassuring "pending" line.
-    el.textContent = `⚠️ ${st.dropped} פעולות לא נרשמו בקובץ הרשימה (תור הכתיבה מלא) — ייתכן שמחיקות או הוספות שביצעתם לא יעברו למכשירים אחרים. בדקו את קובץ הרשימה ידנית. `;
-    el.className = 'form-msg err';
-    // …and it must be DISMISSIBLE: `acknowledgeDropped` existed with no caller, so once
-    // this warning appeared it stayed forever, hiding every later queue status behind it.
-    const ack = document.createElement('button');
-    ack.type = 'button';
-    ack.className = 'text-btn';
-    ack.textContent = 'הבנתי, אפשר להסתיר';
-    ack.addEventListener('click', async () => {
-      const { acknowledgeDropped } = await import('./sheetwrite.js');
-      await acknowledgeDropped(libScope);
-      await refreshSheetWriteStatus();
-    });
-    el.appendChild(ack);
-    return;
-  }
-  if (st.error === 'no-edit-permission') {
-    el.textContent = '⚠️ אין הרשאת עריכה לגיליון — סרטונים שנוספו באפליקציה לא נרשמים בו. שתפו את הגיליון לחשבון Google המחובר כעורך.';
-    el.className = 'form-msg err';
-  } else if (st.error === 'published-link') {
-    // v1.0.19: the old copy told the parent to "paste the normal edit link" — advice
-    // they can no longer follow, because the paste field is gone. Point at the action
-    // that actually exists now.
-    el.textContent = '⚠️ לא ניתן לכתוב לרשימה הזו (קובץ שחובר בגרסה ישנה). צרו רשימה חדשה כאן — התוכן הקיים יעבור אליה אוטומטית.';
-    el.className = 'form-msg err';
-  } else if (st.error === 'no-token' && st.pending) {
-    el.textContent = `${st.pending} סרטונים ממתינים להירשם בגיליון — יירשמו אוטומטית אחרי חיבור חשבון Google (בהגדרות).`;
-  } else if (st.pending) {
-    el.textContent = `${st.pending} סרטונים ממתינים להירשם בגיליון — יירשמו אוטומטית בסנכרון הבא.`;
-  }
-}
+/* refreshSheetWriteStatus (v1.0.6/v1.0.10) lived here until v1.0.38 — it surfaced the
+ * sheet write-queue state and the mirror safety valve. Both are gone: there is no
+ * queue, and no presence-mirror that can delete a library. */
 
 /** Update panel state (settings tab). manual=true bypasses the 6h throttle. */
 async function runUpdateCheck({ manual = false } = {}) {
@@ -2655,10 +2573,6 @@ async function refreshParentList() {
     onPreview: () => openPreview(shownLive, shownLive.indexOf(rec), 'library'),
     onDelete: async () => {
       await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
-      // the sheet carries it to everyone: singles lose their row, channel videos
-      // get a '# הוסר' removal row (v1.0.10/12)
-      if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
-      else if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
       await refreshParentList();
       renderHome();
       maybeSchedulePush();
@@ -2690,41 +2604,9 @@ async function refreshParentList() {
   }
 }
 
-/**
- * v1.0.6: approved shares / manual items become sheet rows — channel videos do NOT
- * (their channel row already represents them in the sheet).
- */
-/**
- * v1.0.18 — QUEUE ALL, THEN FLUSH ONCE.
- *
- * These records are already LIVE in the 'sheet' folder by the time we get here, so
- * until each one has a queued row it is sheet-backed, absent from the sheet, and
- * absent from pendingAppendKeys — which is exactly the shape the presence-mirror
- * deletes (with a tombstone, on every device). The old loop flushed inside every
- * enqueue, so approving N shares held that window open for N network round trips,
- * and one rejection mid-loop skipped every remaining record permanently.
- *
- * Enqueuing is local IndexedDB work, so the window now closes in one tick; the
- * single flush at the end does the network. Per-item catch: one bad record must
- * never cost the others their row.
- */
-async function enqueueApprovedForSheet(recs) {
-  const rows = (recs || []).filter((r) => r.origin === 'share-intent' || r.origin === 'manual');
-  if (!rows.length) return;
-  try {
-    const { enqueueSheetRow, flushSheetQueue } = await import('./sheetwrite.js');
-    for (const r of rows) {
-      try {
-        await enqueueSheetRow(
-          activeProfileId,
-          { key: r.key, srcUrl: r.srcUrl || r.url || '', title: r.title || '' },
-          { flush: false }
-        );
-      } catch {}
-    }
-    await flushSheetQueue(activeProfileId);
-  } catch {}
-}
+/* enqueueApprovedForSheet (v1.0.6) lived here until v1.0.38: an approved share used to
+ * get a sheet row so the family's master list stayed complete. The database IS the
+ * master list now, and approval already travels in the Drive document. */
 
 /**
  * v1.0.24 — which rows of the ממתינים queue are ticked.
@@ -2823,7 +2705,6 @@ async function refreshPendingList() {
       },
       onApprove: async () => {
         await db.approvePending(rec.scopeId, [rec.key]);
-        await enqueueApprovedForSheet([rec]);
         await refreshPendingList();
         renderHome();
         // approval is what makes the record LIVE, so this is the moment it becomes
@@ -3002,11 +2883,11 @@ async function channelRow(lc, { fresh = false } = {}) {
       ok: 'הסרה', cancel: 'ביטול', danger: true
     });
     if (!yes) return;
-    // v1.0.10: full cleanup — the subscription, its imported videos, AND the
-    // sheet row (so the channel doesn't resurrect on the next sync, anywhere)
-    const { applySheetMirror } = await import('./sync2.js');
-    await applySheetMirror(libScope, { deleteChannelIds: [lc.channelId] });
-    enqueueSheetDeleteChannel(lc.channelId, lc.kind || 'channel');
+    // v1.0.38: the subscription + everything it orphans. `removeSubscription` replaces the
+    // channel half of applySheetMirror (which goes away with the sheet); the tombstone that
+    // carries the removal to every device is written inside db.deleteLibraryChannel (v1.0.36).
+    const { removeSubscription } = await import('./sync2.js');
+    await removeSubscription(libScope, lc.channelId);
     await loadGiftStates();
     await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
     renderHome();
@@ -3045,69 +2926,11 @@ async function refreshChannelsList() {
   for (const lc of rest) ul.appendChild(await channelRow(lc, { fresh: false }));
 }
 
-/**
- * v1.0.17 — the library scope is derived from the SHEET URL, so connecting a sheet
- * (or switching to another one) moves the profile to a different scope. Everything
- * the parent had already added lived in the old scope and simply DISAPPEARED from
- * the UI. Now the content follows the profile, and the moved items are registered
- * in the new sheet — which is also what keeps the presence-mirror from tombstoning
- * them (queued appends count as "not yet in the sheet, on purpose").
- */
-async function adoptLibraryScope(profileId, oldLib, newLib) {
-  // v1.0.18 — NEVER EMPTY A SHARED SCOPE. `lib:<fnv1a(sheet)>` is shared by EVERY
-  // profile on that sheet (the wizard's "join <profile>'s file" button creates exactly
-  // that) and moveScope *moves*: it deletes the source. Changing one child's sheet used
-  // to carry the whole family library away — a blank home for the sibling and their
-  // pending shares surfacing in this child's approval list. The decision itself is pure
-  // `planScopeAdoption` (v1.0.20), so it is unit-tested rather than re-read by eye.
-  const others = [];
-  for (const p of await getProfiles()) {
-    if (p.id === profileId) continue;
-    const s = await db.getSources(p.id);
-    others.push({ profileId: p.id, libraryId: (s && s.libraryId) || null });
-  }
-  const decision = planScopeAdoption(profileId, oldLib, newLib, others);
-  if (decision.action !== 'move') {
-    return decision.sharedWith.length
-      ? { videoKeys: [], channelIds: [], sharedWith: decision.sharedWith }
-      : { videoKeys: [], channelIds: [] };
-  }
-
-  const moved = await db.moveScope(oldLib, newLib);
-  if (!moved.videoKeys.length && !moved.channelIds.length) return moved;
-  // Queue every row BEFORE any network call, then flush once. These records are
-  // already live in the new scope, so until their row is queued they are
-  // sheet-backed, absent from the sheet and absent from pendingAppendKeys — the
-  // exact shape the presence-mirror tombstones. Flushing inside the loop (the old
-  // shape) held that window open for one round trip per item, and a single throw
-  // skipped every remaining record with nothing recording that it was owed.
-  try {
-    const sw = await import('./sheetwrite.js');
-    for (const key of moved.videoKeys) {
-      try {
-        const rec = await db.getVideo(newLib, key);
-        if (!rec || rec.state !== 'live') continue;
-        if ((rec.homeFolderId || rec.folderId) !== 'sheet') continue; // channel content has no row
-        await sw.enqueueSheetRow(
-          profileId,
-          { key, srcUrl: rec.srcUrl || rec.url || '', title: rec.title || '' },
-          { flush: false }
-        );
-      } catch { /* one bad record must not cost the others their row */ }
-    }
-    for (const channelId of moved.channelIds) {
-      try {
-        await sw.enqueueSheetRow(profileId, {
-          key: 'ch:' + channelId,
-          srcUrl: 'https://www.youtube.com/channel/' + channelId,
-          flag: 'manual'
-        }, { flush: false });
-      } catch {}
-    }
-    await sw.flushSheetQueue(profileId);
-  } catch { /* queued rows survive in IndexedDB; the next sync flushes them */ }
-  return moved;
-}
+/* v1.0.17's adoptLibraryScope + db.moveScope lived here until v1.0.38. They existed for
+ * exactly one act — attaching/changing a SHEET moves the profile to a different scope —
+ * and that act is gone with the wizard. Deleting them is what makes the sunset's
+ * "libraryId never changes" rule enforceable rather than aspirational: no code path can
+ * change a profile's scope any more. (planScopeAdoption and its tests died with them.) */
 
 /** The profile's sources record, created on first use (stable library even without a sheet). */
 /** The WAITING videos of one channel, in the shared library scope (channel content
@@ -3136,28 +2959,6 @@ async function approveChannelBacklog(keys) {
   // without this the newly-approved videos arrive with no 🎁 at all
   refreshAfterAdd({ parent: true });
   maybeSchedulePush();
-}
-
-/** A playlist's row in the sources sheet — same shape as a channel's (v1.0.26). */
-function enqueuePlaylistSheetRow(playlistId, flag) {
-  return import('./sheetwrite.js')
-    .then(({ enqueueSheetRow }) => enqueueSheetRow(activeProfileId, {
-      key: 'pl:' + playlistId,
-      srcUrl: 'https://www.youtube.com/playlist?list=' + playlistId,
-      flag
-    }))
-    .catch(() => {});
-}
-
-/** The channel's row in the sources sheet; `flag` mirrors the in-app approval choice. */
-function enqueueChannelSheetRow(channelId, flag) {
-  return import('./sheetwrite.js')
-    .then(({ enqueueSheetRow }) => enqueueSheetRow(activeProfileId, {
-      key: 'ch:' + channelId,
-      srcUrl: 'https://www.youtube.com/channel/' + channelId,
-      flag
-    }))
-    .catch(() => {});
 }
 
 /**
@@ -3200,11 +3001,6 @@ async function offerChannelApproval(channelId) {
       // decidedAt (v1.0.32): this answer is THE sync decision — the row leaves "ערוצים חדשים".
       if (lc) await db.putLibraryChannel({ ...lc, autoApprove: true, autoApproveSource: 'ui', decidedAt: lc.decidedAt || Date.now() });
       await db.approvePending(scope, keys);
-      // Re-flag the sheet row to match. reconcileOps keeps the later intent, so this wins
-      // whenever the row has not flushed yet; once it HAS, sheet-presence dedupe skips the
-      // append and the sheet keeps 'manual' — harmless, because a device joining the sheet
-      // later then asks ITS parent the same question instead of inheriting our answer.
-      await enqueueChannelSheetRow(channelId, 'auto');
     });
     return { approved: true, count: keys.length };
   }
@@ -3352,11 +3148,16 @@ async function diagnoseEmptyChannel(channelId, count, drops = null) {
 async function offerDeniedRestore(sourceId, empty) {
   const keys = (empty && empty.deniedKeys) || [];
   if (!keys.length) return false;
-  const what = empty.isPlaylist ? 'רשימת ההשמעה' : 'הערוץ';
+  // v1.0.38: the wording lives in pure plan.deniedRestorePrompt, next to
+  // deniedReAddPrompt — BOTH revive dialogs are pinned in one place, so the two cannot
+  // drift into saying different things about the same act. (They already had: this
+  // function kept its own inline copy for one commit.)
+  const { deniedRestorePrompt } = await import('./plan.js');
+  const prompt = deniedRestorePrompt(keys.length, { isPlaylist: !!(empty && empty.isPlaylist) });
+  if (!prompt.ask) return false;
   const yes = await confirmKid({
-    emoji: '♻️', title: `לשחזר ${keys.length} סרטונים שהוסרו?`,
-    text: `${keys.length} מהסרטונים של ${what} הוסרו בעבר, ולכן לא נוספו שוב. אפשר לשחזר אותם עכשיו — הם יחזרו לרשימת ההמתנה לאישור.`,
-    ok: 'שחזרו', cancel: 'לא, להשאיר מוסר'
+    emoji: prompt.emoji, title: prompt.title, text: prompt.text,
+    ok: prompt.ok, cancel: prompt.cancel
   });
   if (!yes) return false;
   const scope = await currentLibScope();
@@ -3465,7 +3266,6 @@ function pickChannelVideos(channelId, name) {
         await withChannelWait('saving', { count: keep.length }, async () => {
           if (keep.length) {
             await db.approvePending(scope, keep);
-            await enqueueApprovedForSheet(recs.filter((r) => chosen.has(r.key)));
           }
           if (drop.length) await db.rejectPending(scope, drop); // parked, NOT tombstoned
           await loadGiftStates();
@@ -3531,6 +3331,14 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     // the SAME helper the search rows precompute "✓ קיים" with — the row must agree
     // with what this add answers (v1.0.33 review)
     if (await libraryHasVideo(scope, row.key)) return { status: 'exists', message: 'הסרטון כבר קיים ברשימה' };
+    // v1.0.38 — A RE-ADDED DELETED VIDEO MUST BE ANSWERED FOR, NOT SILENTLY DESTROYED.
+    // This path never consulted the deny set: the record was written, shown to the child,
+    // and then deleted by the next Drive pull (mergeDbFiles drops any video whose tombstone
+    // is active). The sheet's un-deny used to repair that behind our backs, and the sheet is
+    // gone — so the parent is asked, which is the explicit act the sheet re-add stood in for.
+    if (!(await offerDeniedReAdd(scope, row.key, 'paste'))) {
+      return { status: 'denied', message: 'הסרטון נשאר מוסר — לא נוסף' };
+    }
     const now = Date.now();
     // v1.0.32: the name/image form is gone (user request) — the name comes from the
     // content itself. YouTube: fetched below, like an empty field always was. A direct
@@ -3551,12 +3359,6 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
       thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
     };
     await db.putVideos([rec]);
-    const { enqueueSheetRow } = await import('./sheetwrite.js');
-    // AWAITED before the forced sync below: the record is live + folderId 'sheet', i.e.
-    // sheet-backed, and the presence-mirror deletes sheet-backed records the sheet does
-    // not list. Racing its own row against its own sync could tombstone it (one item
-    // never trips the safety valve). Every other add path already awaits this.
-    await enqueueSheetRow(activeProfileId, { key: rec.key, srcUrl: rec.srcUrl, title: rec.title }).catch(() => {});
     if (!rec.title && rec.type === 'youtube') {
       fetchYouTubeTitle(rec.id).then((t) => t && persistTitle(rec, t)).catch(() => {});
     }
@@ -3585,12 +3387,6 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
         libraryId: libScope, channelId, autoApprove: false, autoApproveSource: 'ui',
         order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
       });
-      if (!k) { // v1.0.6: channels added here become sheet rows too (single master list)
-        // AWAITED, like the video path above: the forced sync below runs the presence-mirror,
-        // and a subscribed channel the sheet does not list is exactly what that deletes. The
-        // queued append is what protects it (planSheetMirror's pendingAppendKeys).
-        await enqueueChannelSheetRow(channelId, 'manual'); // approval-required for now
-      }
     });
     onNote('הערוץ נוסף! מושכים סרטונים…', true);
     await refreshChannelsList();
@@ -3617,9 +3413,6 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
       autoApprove: false, autoApproveSource: 'ui',
       order: Date.now(), addedAt: Date.now(), hidden: false, sourceRow: false, titleOverride: ''
     });
-    // Same reason the channel path awaits this: the forced sync below runs the
-    // presence-mirror, and a subscription the sheet does not list is what it deletes.
-    if (!known) await enqueuePlaylistSheetRow(plId, 'manual');
     onNote('רשימת ההשמעה נוספה! מושכים סרטונים…', true);
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(plId);
@@ -3704,6 +3497,226 @@ function resetYtsUi() {
  */
 async function libraryHasVideo(libraryId, key) {
   return !!((await db.getVideo(libraryId, key)) || (await db.getVideo(db.profScope(activeProfileId), key)));
+}
+
+/* ==================== v1.0.38 — the links file ====================
+ *
+ * One plain-text file carrying a profile's whole source list. It replaced the
+ * Google-Sheets sources list as the bulk-add door, and it is how a library moves to
+ * another tablet or another Google account.
+ *
+ * The pure half — the format, the dialogs, the outcome sentences — lives in linksfile.js
+ * and plan.js. This is only the glue: dialogs, waiting screens, and ONE forced sync.
+ */
+
+/**
+ * v1.0.38 — a single key the parent is re-adding. Was it deleted before, and if so, does
+ * the parent want it back?
+ *
+ * The ONLY revocation path used to be the sheet re-adding the key (v1.0.10
+ * planSheetMirror.unDenyKeys). This is its replacement — an explicit answer, never
+ * automatic (the v1.0.23 rule: showing rejected content is the betrayal). Un-denies in
+ * BOTH scopes, because a key can carry a tombstone in the shared library and in the
+ * personal one, and `db.unDeny` writes `removedAt` so the revocation out-merges a peer's
+ * stale ACTIVE tombstone.
+ *
+ * -> true to proceed with the add, false to abort it.
+ */
+async function offerDeniedReAdd(scope, key, source = 'paste') {
+  const scopes = [...new Set([scope, db.profScope(activeProfileId)])].filter(Boolean);
+  let denied = false;
+  for (const s of scopes) if ((await db.loadDenySet(s)).has(key)) { denied = true; break; }
+  const { deniedReAddPrompt } = await import('./plan.js');
+  const prompt = deniedReAddPrompt({ denied, exists: false, source, count: 1 });
+  if (!prompt.ask) return true;
+  const yes = await confirmKid({
+    emoji: prompt.emoji, title: prompt.title, text: prompt.text, ok: prompt.ok, cancel: prompt.cancel
+  });
+  if (!yes) return false;
+  for (const s of scopes) await db.unDeny(s, key);
+  return true;
+}
+
+function linksMsg(text, cls = '') {
+  const el = $('links-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'form-msg' + (cls ? ' ' + cls : '');
+}
+
+/** Where an exported file lands, shown to the parent verbatim so they can find it. */
+const LINKS_EXPORT_DIR = 'Android/data/com.assaf.kidsplayer/files/exports/';
+
+/**
+ * Export the active profile's sources as a links file: write it, then offer the OS share
+ * sheet on the FILE.
+ *
+ * Both halves are needed. The write is the artifact a device transfer needs and the only
+ * thing that survives a cancelled share; the share is how the parent actually gets it off
+ * the tablet, because Android 11+ hides Android/data from the Files app. Every rung of the
+ * degradation reports WHERE the file is (plan.linksExportOutcome).
+ */
+async function linksExport() {
+  const lf = await import('./linksfile.js');
+  const { linksExportOutcome } = await import('./plan.js');
+  const p = await getActiveProfile();
+  const name = (p && p.name) || '';
+  let built = null;
+  try {
+    built = await withChannelWait('exporting', {}, async () => {
+      const { subscriptions, channelMeta, videos } = await lf.collectLinksExport(activeProfileId);
+      const version = await (await import('./update.js')).currentVersion().catch(() => '');
+      return lf.serializeLinksFile({ subscriptions, channelMeta, videos, profileName: name, appVersion: version || '' });
+    });
+  } catch { linksMsg('הייצוא נכשל — נסו שוב', 'err'); return; }
+
+  const totalRows = built.counts.channels + built.counts.playlists + built.counts.videos;
+  if (!totalRows) {
+    const r = linksExportOutcome({ delivery: 'nothing' });
+    linksMsg(r.text, 'err');
+    return;
+  }
+
+  const fileName = lf.linksFileName(name);
+  const plat = await import('./platform.js');
+  lastLinksExportText = built.text; // for the "send as text" fallback rung
+  $('links-share-text').classList.add('hidden');
+
+  let delivery = 'none';
+  const path = await plat.fsWriteTextExternal('exports/' + fileName, built.text);
+  if (path) {
+    delivery = (await plat.shareFile(path, { mimeType: 'text/plain', subject: fileName })) === 'native'
+      ? 'native' : 'file-only';
+  } else if ((await plat.downloadTextFile(fileName, built.text)) === 'download') {
+    delivery = 'download';
+  } else {
+    try { await navigator.clipboard.writeText(built.text); delivery = 'clipboard'; }
+    catch { delivery = 'shown'; }
+  }
+
+  const out = linksExportOutcome({ delivery, name: fileName, dir: LINKS_EXPORT_DIR, counts: built.counts });
+  linksMsg(out.text, out.ok ? 'ok' : 'err');
+  if (out.shareTextFallback) $('links-share-text').classList.remove('hidden');
+  if (out.shown) await alertKid({ emoji: '📄', title: fileName, text: built.text, ok: 'סגירה' });
+}
+
+let lastLinksExportText = '';
+
+/**
+ * v1.0.38 — the name-uniqueness gate, extracted from createNewProfile so the links
+ * import's "create a new profile from this file" branch cannot be the one path that skips
+ * it. A PROFILE NAME IS UNIQUE PER GOOGLE ACCOUNT, NOT PER DEVICE (v1.0.22): two devices
+ * each minting "נועם" splits that child's gift progress and personal videos while the
+ * parent just sees two identical avatars. Best-effort pull, then decide.
+ * -> 'remote' | 'local' | null
+ */
+async function profileNameClash(name, { quiet = false } = {}) {
+  const localBefore = await getProfiles();
+  let merged = localBefore;
+  try {
+    if (((await db.getMeta('drive')) || {}).enabled) {
+      const { pullDrive } = await import('./drive.js');
+      if (!quiet) loading.show({ title: 'בודקים שהשם פנוי…', step: 'קוראים את הגיבוי בגוגל דרייב' });
+      try { await pullDrive(activeProfileId); } finally { if (!quiet) loading.hide(); }
+      merged = await getProfiles();
+    }
+  } catch { /* offline / not connected — the local check below still applies */ }
+  return profileNameConflict(localBefore, merged, name);
+}
+
+const PROFILE_CLASH_MSG = {
+  remote: 'שם הפרופיל קיים כבר בחשבון הגוגל, במכשיר אחר — בחרו שם אחר.',
+  local: 'כבר יש פרופיל בשם הזה — בחרו שם אחר'
+};
+
+/**
+ * Import a links file into the active profile — or into a NEW profile named by the file.
+ *
+ * Deliberately NOT routed through addClassifiedRow: its channel branch raises
+ * importChannelAndAsk (loading screen + approval dialog + a 90s finishing wait) PER
+ * channel, and its video branch fires refreshAfterAdd + renderHome + a push PER video. A
+ * 16-channel file would raise 16 dialogs and a 300-line file 300 syncs. Instead: one
+ * confirm, one denied question, one batch of writes, ONE forced sync.
+ */
+async function linksImportFromText(text) {
+  const lf = await import('./linksfile.js');
+  const { linksImportConfirm, linksImportOutcome } = await import('./plan.js');
+  const parsed = lf.parseLinksFile(text);
+  if (!parsed.ok) {
+    // An unreadable input is never an empty one — each refusal names itself.
+    linksMsg({
+      empty: 'הקובץ ריק',
+      html: 'זה לא קובץ לינקים — נראה כמו דף אינטרנט שנשמר. בחרו את קובץ הטקסט שיצא מהאפליקציה.',
+      'too-big': 'הקובץ גדול מדי',
+      'no-links': 'לא נמצאו לינקים נתמכים בקובץ — כל שורה צריכה להיות לינק לערוץ, לרשימת השמעה או לסרטון'
+    }[parsed.error] || 'לא הצלחנו לקרוא את הקובץ', 'err');
+    return;
+  }
+
+  const p = await getActiveProfile();
+  const fileName = parsed.profileName;
+  const canCreate = !!fileName && !(await getProfiles()).some((x) => x && x.name === fileName);
+  const ask = linksImportConfirm(parsed.counts, {
+    targetName: (p && p.name) || '', profileName: fileName, canCreateProfile: canCreate
+  });
+  const answer = await askKid(ask);
+  if (answer !== 'ok' && answer !== 'third') return;
+
+  if (answer === 'third') {
+    const clash = await profileNameClash(fileName);
+    if (clash) { linksMsg(PROFILE_CLASH_MSG[clash], 'err'); renderProfiles(); return; }
+    const np = await createProfile(fileName, '🙂', '#eceaff');
+    profiles = await getProfiles();
+    // activateProfile owns the loading screen and the first sync — exactly the adoption
+    // context a fresh library needs. From here the import runs against the new profile,
+    // so there is ONE import path whichever answer the parent gave.
+    await activateProfile(np.id);
+  }
+
+  // The denied question, ONCE for the whole file. A channel's removed backlog is a
+  // different question and reaches offerDeniedRestore on its own — asking in both places
+  // is the "asked twice" bug.
+  const { deniedReAddPrompt } = await import('./plan.js');
+  const scope = (await ensureSources()).libraryId;
+  const activeDeny = new Set([
+    ...(await db.loadDenySet(scope)),
+    ...(await db.loadDenySet(db.profScope(activeProfileId)))
+  ]);
+  const hits = parsed.videos.filter((v) => activeDeny.has(v.key)).map((v) => v.key);
+  const reviveKeys = new Set();
+  if (hits.length) {
+    const prompt = deniedReAddPrompt({ denied: true, source: 'import', count: hits.length });
+    if (await confirmKid({ emoji: prompt.emoji, title: prompt.title, text: prompt.text, ok: prompt.ok, cancel: prompt.cancel })) {
+      for (const k of hits) reviveKeys.add(k);
+    }
+  }
+
+  let res = null;
+  await withChannelWait('importing', { count: parsed.counts.total }, async () => {
+    const key = await (await import('./yt.js')).getApiKey();
+    res = await lf.applyLinksPlan(activeProfileId, parsed, {
+      reviveKeys,
+      resolveRef: async (ref) => (await import('./yt.js')).resolveChannelRef(ref, key)
+    });
+  });
+
+  // ONE forced sync for the whole import: it is what resolves channels into videos (RSS +
+  // backfill + playlists), fills titles and assigns gift ranks. Forced because a
+  // non-forced call could JOIN a launch run that has already read the library (v1.0.25).
+  let pending = 0;
+  let backgrounded = false;
+  await withChannelWait('finishing', {}, async () => {
+    backgrounded = !(await waitWithValve(refreshAfterAdd({ parent: true, wait: true })));
+    try { pending = await pendingTotal(); } catch { pending = 0; }
+    await loadGiftStates();
+    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+    renderHome();
+    maybeSchedulePush();
+  });
+
+  const msg = linksImportOutcome({ ...res, pending, invalid: parsed.counts.invalid });
+  linksMsg(backgrounded ? msg + ' · הסנכרון ממשיך ברקע' : msg, res && (res.channels + res.playlists + res.videos) ? 'ok' : 'err');
+  await refreshGateDot();
 }
 
 function ytsMsg(text, cls = '') {
@@ -4079,23 +4092,16 @@ function openYtsPreview(item) {
 async function doSyncAndRefresh() {
   const status = $('remote-status');
   status.textContent = 'טוען…'; status.className = 'form-msg';
-  // v1.0.18: a forced sync re-reads the whole sheet, every channel feed and every
-  // logo — minutes on a big library. The .form-msg line stays (it holds the RESULT
-  // once we are done); the full-screen view is what carries the wait itself.
+  // v1.0.18: a forced sync re-reads every channel feed and every logo — minutes on a big
+  // library. The .form-msg line stays (it holds the RESULT once we are done); the
+  // full-screen view is what carries the wait itself.
   loading.show({ title: 'בודקים את רשימת הסרטונים', step: 'טוען…', pct: 0 });
   try {
     const res = await syncLibrary(activeProfileId, {
       force: true,
       onProgress: (p) => { status.textContent = p.label || 'טוען…'; loading.progress(p); }
     });
-    if (res.ok && res.sheetError) {
-      // v1.0.19: the pipeline ran, but the SHEET was never read. Saying "עודכן ✅"
-      // here is how a permanently frozen library looked healthy — reads need a token
-      // now, so a revoked grant or an unreadable file stops sync silently forever.
-      const { sheetErrorMessage } = await import('./sheetwrite.js');
-      status.textContent = sheetErrorMessage(res.sheetError);
-      status.className = 'form-msg err';
-    } else if (res.ok) {
+    if (res.ok) {
       status.textContent = `עודכן ✅ ${res.added ? `נוספו ${res.added}` : ''} ${res.pending ? `• ממתינים לאישור: ${res.pending}` : ''}`;
       status.className = 'form-msg ok';
     } else {
@@ -4198,202 +4204,13 @@ async function finishTour() {
   if (!nav.back()) goGallery();      // replay from the About tab — go back there
 }
 
-/* ---------------- Sheet setup wizard (v1.0.8, after profile creation) ---------------- */
-let wizardProfile = null; // the freshly-created profile awaiting activation
-// v1.0.34: true while the wizard was opened FROM THE PARENT SCREEN (sources tab) — the
-// parent already crossed the PIN gate seconds ago, so the wizard's own PIN is skipped,
-// and backing out returns to the parent screen instead of activating the profile.
-// Set on every openSheetSetup call (never sticky), cleared on every exit path.
-let wizardGated = false;
-
-/**
- * v1.0.12 — the wizard ALWAYS asks (it used to silently adopt the family file):
- * join an existing profile's file / create a new one / paste a link / skip.
- * Restored profiles still bypass it — they arrive with their sheet already wired
- * through the Drive doc's profileSources.
- */
-async function openSheetSetup(p, { fromParent = false } = {}) {
-  wizardProfile = p;
-  wizardGated = fromParent;
-  $('sheetsetup-name').textContent = p.name;
-  $('sheetsetup-msg').textContent = '';
-  $('sheetsetup-msg').className = 'form-msg';
-
-  // one "join <name>'s file" button per OTHER profile that already has one,
-  // deduped by CANONICAL sheet key (util.canonicalSheetKey) so two siblings on the
-  // same file — and the same file found again in Drive below — show a single choice
-  const join = $('sheetsetup-join');
-  join.innerHTML = '';
-  const seen = new Set();
-  try {
-    const { canonicalSheetKey } = await import('./util.js');
-    for (const other of await getProfiles()) {
-      if (other.id === p.id) continue;
-      const src = await db.getSources(other.id);
-      if (!src || !src.sheetUrl || seen.has(canonicalSheetKey(src.sheetUrl))) continue;
-      seen.add(canonicalSheetKey(src.sheetUrl));
-      const b = document.createElement('button');
-      b.className = 'btn btn-primary';
-      b.type = 'button';
-      b.textContent = `👨‍👩‍👧 להצטרף לקובץ של ${other.name}`;
-      b.addEventListener('click', () => joinExistingSheet(src.sheetUrl, other.name));
-      join.appendChild(b);
-    }
-  } catch {}
-  join.classList.toggle('hidden', join.children.length === 0);
-  // v1.0.34: from the sources tab the wizard is PUSHED so back returns to the parent
-  // screen; at profile creation it stays a reset (there is nothing to go back to).
-  if (fromParent) nav.go('sheet-setup'); else nav.reset('sheet-setup');
-  // enrichment, deliberately after the view is up: lists this app created in Drive
-  // (covers a reinstall / second device, which the profile buttons cannot see)
-  populateWizardDriveLists(p, seen).catch(() => {});
-}
-
-/**
- * v1.0.34 — add a join button per app-created sheet found in DRIVE (silent auth: a
- * family that skipped the Google connect must not get a sign-in dialog out of opening
- * the wizard — for them this quietly finds nothing). A stale answer may not paint:
- * the view may have moved on while we listed (the logoTarget lesson).
- */
-async function populateWizardDriveLists(p, seenKeys) {
-  let r = null;
-  try {
-    const { listAppSheets } = await import('./sheetwrite.js');
-    r = await listAppSheets();
-  } catch { r = { ok: false, error: 'threw' }; }
-  if (!nav.isActive('sheet-setup') || wizardProfile !== p) return;
-  const join = $('sheetsetup-join');
-  if (!r.ok) {
-    // FAILED ≠ EMPTY: with a connected account we must not pretend "no lists" — say we
-    // could not look. `no-token` = no Google here, where silence is the honest answer.
-    if (r.error !== 'no-token') {
-      $('sheetsetup-msg').textContent = 'לא הצלחנו לבדוק אילו רשימות קיימות בדרייב — אפשר ליצור חדשה או לנסות שוב';
-      $('sheetsetup-msg').className = 'form-msg err';
-    }
-    return;
-  }
-  const { canonicalSheetKey } = await import('./util.js');
-  for (const f of r.files.slice(0, 8)) {
-    const key = canonicalSheetKey(f.url);
-    if (seenKeys.has(key)) continue;
-    seenKeys.add(key);
-    const b = document.createElement('button');
-    b.className = 'btn btn-primary';
-    b.type = 'button';
-    b.textContent = `📄 להתחבר לרשימה "${f.name}"`;
-    b.addEventListener('click', () => joinExistingSheet(f.url, null, { fileName: f.name }));
-    join.appendChild(b);
-  }
-  join.classList.toggle('hidden', join.children.length === 0);
-}
-
-/**
- * The wizard's PIN gate. From the SOURCES TAB the parent crossed the real gate seconds
- * ago (`wizardGated`), so asking again would read as broken; every other entry — profile
- * creation, where no gate was crossed — keeps the v1.0.8 user-specified PIN.
- */
-async function wizardPinGate(title, run) {
-  if (wizardGated) { run(); return; }
-  startPin((await hasPin()) ? 'verify' : 'setup', {
-    title,
-    onSuccess: () => { if (!nav.back()) nav.reset('sheet-setup'); run(); }
-  });
-}
-
-/** Join an existing sheet — same library scope, so the whole family shares one list. */
-async function joinExistingSheet(url, ownerName, { fileName = '' } = {}) {
-  await wizardPinGate('קוד הורים לחיבור הקובץ', async () => {
-    try {
-      await connectWizardSheet(url);
-      await alertKid(ownerName
-        ? {
-            emoji: '👨‍👩‍👧', title: 'הצטרפנו לקובץ המשפחתי ✅',
-            text: `${wizardProfile ? wizardProfile.name : 'הפרופיל'} יראה את אותה רשימה של ${ownerName}.`,
-            ok: 'מעולה'
-          }
-        : {
-            emoji: '📄', title: 'הרשימה חוברה ✅',
-            text: `"${fileName || 'הרשימה'}" היא עכשיו רשימת המקורות של ${wizardProfile ? wizardProfile.name : 'הפרופיל'}.`,
-            ok: 'מעולה'
-          });
-      await finishSheetSetup();
-    } catch {
-      $('sheetsetup-msg').textContent = 'החיבור נכשל — אפשר לנסות שוב או לדלג';
-      $('sheetsetup-msg').className = 'form-msg err';
-    }
-  });
-}
-
-async function finishSheetSetup() {
-  const p = wizardProfile;
-  wizardProfile = null;
-  wizardGated = false;
-  if (p) await activateProfile(p.id); // activation syncs + shows the loading screen
-}
-
-/** The same connection routine as the sources tab — for the wizard's new profile. */
-async function connectWizardSheet(url, { folderId = null } = {}) {
-  const { libraryIdFor } = await import('./util.js');
-  let src = (await db.getSources(wizardProfile.id)) || { profileId: wizardProfile.id, schema: 1 };
-  const oldLib = src.libraryId || null;
-  src = {
-    shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
-    maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false },
-    ...src, sheetUrl: url, libraryId: libraryIdFor(url), sheetHash: null,
-    sheetFolderId: folderId, updatedAt: Date.now()
-  };
-  await db.putSources(src);
-  // same scope-change hazard as the sources tab (a wizard-created profile is usually
-  // empty, but "skip now, connect later" and re-runs are not)
-  await adoptLibraryScope(wizardProfile.id, oldLib, src.libraryId);
-}
-
-async function wizardCreateSheet() {
-  const msg = $('sheetsetup-msg');
-  msg.textContent = 'מתחברים לחשבון Google ויוצרים את הקובץ…';
-  msg.className = 'form-msg';
-  let r;
-  loading.show({ title: 'יוצרים את הקובץ בגוגל', step: 'מתחברים לחשבון…' });
-  try {
-    const { createSourceSheet, sheetNameFor } = await import('./sheetwrite.js');
-    r = await createSourceSheet(sheetNameFor(wizardProfile.name));
-  } catch {
-    msg.textContent = 'משהו השתבש — אפשר לנסות שוב או לדלג';
-    msg.className = 'form-msg err';
-    return;
-  } finally {
-    // hide BEFORE the dialogs below — a modal must never stack on the loading view
-    await loading.hide();
-  }
-  try {
-    if (!r.ok) {
-      const { lastAuthError } = await import('./gauth.js');
-      msg.textContent = r.error === 'no-token'
-        ? gauthErrorText(lastAuthError())
-        : 'יצירת הרשימה נכשלה — אפשר לנסות שוב או לדלג';
-      msg.className = 'form-msg err';
-      return;
-    }
-    await connectWizardSheet(r.url, { folderId: r.folderId || null });
-    const copy = await confirmKid({
-      emoji: '📄', title: 'הקובץ נוצר וחובר! ✅',
-      text: 'מוסיפים סרטונים בהדבקת לינקים בקובץ (שורה = סרטון או ערוץ). אפשר להעתיק את הלינק לקובץ עכשיו.',
-      ok: 'העתקת הלינק', cancel: 'סיום'
-    });
-    if (copy) {
-      try {
-        await navigator.clipboard.writeText(r.url);
-        await alertKid({ emoji: '📋', title: 'הלינק הועתק!', text: 'הדביקו בדפדפן או שמרו בפתק — משם עורכים את הרשימה.', ok: 'סבבה' });
-      } catch {
-        await alertKid({ emoji: '🔗', title: 'הלינק לקובץ', text: r.url, ok: 'סגירה' });
-      }
-    }
-    await finishSheetSetup();
-  } catch {
-    msg.textContent = 'משהו השתבש — אפשר לנסות שוב או לדלג';
-    msg.className = 'form-msg err';
-  }
-}
+/* ---------------- (the sheet-setup wizard lived here, v1.0.8–v1.0.37) ----------------
+ * v1.0.38 removed it with the Google-Sheets sources list itself. A new profile goes
+ * straight into the app (createNewProfile → activateProfile); bulk adding and moving a
+ * library between devices is the links file (sources tab). NEVER re-add a way to attach
+ * a sheet: the sunset migration deletes the family's sheet files, so a re-attached URL
+ * would point at a file nothing maintains — and re-adding the whole write layer is the
+ * two-sources-of-truth design v1.0.38 exists to end. */
 
 /* ---------------- First-launch Google connect (v1.0.4) ---------------- */
 /** Maps a gauth failure to the parent-facing message (shared: connect + settings). */
@@ -4614,37 +4431,21 @@ async function createNewProfile() {
   if (!createSel) { msg.textContent = 'בחרו תמונה'; msg.className = 'form-msg err'; return; }
 
   // v1.0.22 — the name must be unique across the whole GOOGLE ACCOUNT, not just this
-  // device. `createProfile` mints its id locally and both merge paths union by ID, so two
-  // devices could each create "נועם" and BOTH would survive the sync — splitting that
-  // child's gift progress, personal videos and (with no sheet) their whole library, while
-  // the parent sees two identical avatars. So: pull first, then decide.
-  //
-  // The pull is best-effort on purpose. Hard-blocking creation when Drive is unreachable
-  // would make the app unusable on a plane; we fall back to the local list and accept that
-  // the rare simultaneous-offline case is resolved later, in the parent screen.
-  const localBefore = await getProfiles();
-  let merged = localBefore;
-  try {
-    if (((await db.getMeta('drive')) || {}).enabled) {
-      const { pullDrive } = await import('./drive.js');
-      loading.show({ title: 'בודקים שהשם פנוי…', step: 'קוראים את הגיבוי בגוגל דרייב' });
-      try { await pullDrive(activeProfileId); } finally { loading.hide(); }
-      merged = await getProfiles(); // pullDrive already folded the remote profiles in
-    }
-  } catch { /* offline / not connected — the local check below still applies */ }
-
-  const clash = profileNameConflict(localBefore, merged, name);
+  // device. The gate lives in profileNameClash (v1.0.38) so the links import's
+  // "create a new profile from this file" branch shares it instead of skipping it.
+  const clash = await profileNameClash(name);
   if (clash) {
-    msg.textContent = clash === 'remote'
-      ? 'שם הפרופיל קיים כבר בחשבון הגוגל, במכשיר אחר — בחרו שם אחר.'
-      : 'כבר יש פרופיל בשם הזה — בחרו שם אחר';
+    msg.textContent = PROFILE_CLASH_MSG[clash];
     msg.className = 'form-msg err';
     renderProfiles(); // the pull may have added profiles — show them
     return;
   }
   const p = await createProfile(name, createSel.e, createSel.c);
   profiles = await getProfiles();
-  await openSheetSetup(p); // v1.0.8: offer a source sheet before entering the app
+  // v1.0.38: straight into the app — the sheet-setup wizard is gone. ensureSources /
+  // doSync mint `lib:p:<id>` on first use, and the empty home's guide button is the
+  // honest answer to "where will the videos come from?".
+  await activateProfile(p.id);
 }
 
 async function activateProfile(id) {
@@ -4771,17 +4572,6 @@ function wire() {
     renderTourSlide();
   });
 
-  // v1.0.8: sheet setup wizard (PIN required for create/join — user-specified; the
-  // v1.0.34 sources-tab entry skips it because the parent gate was just crossed)
-  $('sheetsetup-skip').addEventListener('click', () => {
-    // from the sources tab, skipping returns to the parent screen — activating the
-    // profile here would kick the parent to the child's home for changing nothing
-    if (wizardGated) { wizardGated = false; wizardProfile = null; nav.back(); return; }
-    finishSheetSetup();
-  });
-  $('sheetsetup-create').addEventListener('click', () => {
-    wizardPinGate('קוד הורים ליצירת הקובץ', wizardCreateSheet).catch(() => {});
-  });
 
   $('connect-google').addEventListener('click', connectGoogleFirstLaunch);
   $('connect-skip').addEventListener('click', async () => {
@@ -4829,7 +4619,6 @@ function wire() {
   });
   $('pv-approve').addEventListener('click', () => previewDecide(async (rec) => {
     await db.approvePending(rec.scopeId, [rec.key]);
-    await enqueueApprovedForSheet([rec]);
     await refreshPendingList();
     renderHome();
     refreshAfterAdd({ parent: true }); // approval is what makes it live — enrich + gift it
@@ -4847,8 +4636,6 @@ function wire() {
     });
     if (!yes) return false; // backed out — stay on this video
     await db.deleteVideo(rec.scopeId, rec.key);
-    if ((rec.homeFolderId || rec.folderId) === 'sheet') enqueueSheetDeleteVideo(rec.key);
-    else if (rec.channelId) enqueueSheetRemoval(rec.key, rec.srcUrl || rec.url || '', rec.title || '');
     await refreshParentList();
     renderHome();
     maybeSchedulePush();
@@ -4971,7 +4758,6 @@ function wire() {
       byScope.get(r.scopeId).push(r.key);
     }
     for (const [s, keys] of byScope) await db.approvePending(s, keys);
-    await enqueueApprovedForSheet(pend);
     $('approve-msg').textContent = `אושרו ${pend.length} סרטונים ✅`;
     $('approve-msg').className = 'form-msg ok';
     await loadGiftStates();
@@ -5024,8 +4810,10 @@ function wire() {
   $('pick-all').addEventListener('click', () => pickHandlers && pickHandlers.all());
   $('pick-none').addEventListener('click', () => pickHandlers && pickHandlers.none());
 
+  // v1.0.38: both snapshot buttons moved to the SETTINGS tab, so they report into
+  // #backup-msg — #add-msg belongs to the add form and is no longer on screen with them.
   $('export-btn').addEventListener('click', async () => {
-    const msg = $('add-msg');
+    const msg = $('backup-msg');
     try {
       const { exportProfileSnapshot } = await import('./snapshot.js');
       const p = await getActiveProfile();
@@ -5037,7 +4825,7 @@ function wire() {
   $('import-btn').addEventListener('click', () => $('import-file').click());
   $('import-file').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    const msg = $('add-msg');
+    const msg = $('backup-msg');
     try {
       const { importProfileSnapshot } = await import('./snapshot.js');
       const res = await importProfileSnapshot(activeProfileId, await f.text());
@@ -5052,62 +4840,40 @@ function wire() {
     e.target.value = '';
   });
 
-  $('remote-copy').addEventListener('click', async () => {
-    const src = await db.getSources(activeProfileId);
-    const url = src && src.sheetUrl;
-    if (!url) {
-      // v1.0.32: the create button is gone, so the old "אפשר ליצור אחת עכשיו" pointed
-      // at nothing — say what is actually true instead.
-      $('remote-status').textContent = 'לפרופיל הזה אין רשימת מקורות — התוכן נשמר באפליקציה ובגיבוי.';
-      $('remote-status').className = 'form-msg err';
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      $('remote-status').textContent = 'הלינק הועתק ✅ אפשר להדביק בדפדפן ולערוך את הרשימה.';
-      $('remote-status').className = 'form-msg ok';
-    } catch {
-      await alertKid({ emoji: '🔗', title: 'הלינק לרשימה', text: url, ok: 'סגירה' });
-    }
+  /* v1.0.38 — the links file. Two import doors (file picker AND paste) because Android TV
+     has no file picker at all and the WebView's is unverified on some devices; a fallback
+     you can only find after a silent failure is not a fallback. */
+  $('links-export').addEventListener('click', () => { linksExport().catch(() => linksMsg('הייצוא נכשל — נסו שוב', 'err')); });
+  $('links-share-text').addEventListener('click', async () => {
+    if (!lastLinksExportText) return;
+    const { shareText } = await import('./platform.js');
+    const how = await shareText(lastLinksExportText, 'רשימת הלינקים');
+    linksMsg(how === 'clipboard' ? 'הרשימה הועתקה ללוח' : how === 'none' ? 'לא הצלחנו לשתף' : 'נפתחה חלונית שיתוף', how === 'none' ? 'err' : 'ok');
+  });
+  $('links-import').addEventListener('click', () => $('links-file').click());
+  $('links-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = ''; // reset first: re-picking the same file must re-fire `change`
+    if (!f) return;
+    try { await linksImportFromText(await f.text()); }
+    catch { linksMsg('לא הצלחנו לקרוא את הקובץ', 'err'); }
+  });
+  $('links-paste-go').addEventListener('click', async () => {
+    const ta = $('links-paste');
+    const text = ta.value;
+    if (!text.trim()) { linksMsg('הדביקו את הרשימה בתיבה', 'err'); return; }
+    try { await linksImportFromText(text); ta.value = ''; }
+    catch { linksMsg('לא הצלחנו לקרוא את הרשימה', 'err'); }
   });
 
-  // v1.0.32: the remote-create / remote-join / remote-clear controls are gone (user
-  // request) — list management is no longer parent-facing. connectSheetUrl and
-  // createSourceSheet keep their remaining caller: the profile-creation wizard.
-  // v1.0.34 (user request): a SHEET-LESS profile gets its door back — the SAME wizard
-  // as profile creation (create / join a sibling's / pick from Drive), which routes
-  // every attachment through connectWizardSheet → adoptLibraryScope, the mandated
-  // migration. We are behind the parent gate here, so the wizard skips its own PIN.
-  $('remote-connect').addEventListener('click', async () => {
-    const p = await getActiveProfile();
-    if (!p) return;
-    await openSheetSetup(p, { fromParent: true });
-  });
+  // v1.0.38: the remote-copy / remote-connect controls are GONE with the sheet. There is
+  // deliberately NO way to attach a sources sheet any more — the sunset migration deletes
+  // the family's sheet files, so a re-attached URL would point at a file nothing maintains,
+  // and it would undo the migration. The links file is the bulk door now.
   $('remote-refresh').addEventListener('click', doSyncAndRefresh);
 
-  // v1.0.10: safety-valve resolution — the parent decides what a mass row
-  // disappearance meant. Apply = mirror the sheet (delete locally); ignore =
-  // keep everything and adopt the current sheet as the new baseline.
-  $('mirror-apply').addEventListener('click', async () => {
-    const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
-    if (!alert) return;
-    const { applySheetMirror } = await import('./sync2.js');
-    await applySheetMirror(libScope, alert);
-    await db.putMeta('sheetMirrorAlert:' + libScope, null);
-    await loadGiftStates();
-    await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
-    await refreshSheetWriteStatus().catch(() => {});
-    renderHome();
-    maybeSchedulePush();
-  });
-  $('mirror-ignore').addEventListener('click', async () => {
-    // remember WHICH divergence was waved off — the presence check runs every sync,
-    // so only a DIFFERENT deletion set may alert again
-    const alert = await db.getMeta('sheetMirrorAlert:' + libScope);
-    if (alert && alert.sig) await db.putMeta('sheetMirrorIgnoredSig:' + libScope, alert.sig);
-    await db.putMeta('sheetMirrorAlert:' + libScope, null);
-    await refreshSheetWriteStatus().catch(() => {});
-  });
+  // v1.0.38: the mirror safety-valve handlers (#mirror-apply / #mirror-ignore) are gone
+  // with the presence-mirror itself — no sheet parse can delete a library any more.
   // v1.0.28: the API-key form is gone from the UI; a stored 'yt:apiKey' override is
   // still honored by yt.getApiKey, so past users lose nothing.
 

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planMutations, planGifts, shouldFlattenHome, shouldRecordGiftBaseline,
-  sheetBackedKeysOf, isSheetBacked, planScopeAdoption, planGiftRunawayRepair,
+  isLooseRecord, planGiftRunawayRepair,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   attentionDot, parentLandingTab, pendingBulkAction, PARENT_TAB_IDS,
   planChannelLogo, LOGO_API_RETRY_MS, LOGO_SCRAPE_RETRY_MS,
@@ -526,57 +526,25 @@ test('the gift baseline still works the moment content becomes live', () => {
 
 /* ---- the two extracted safety boundaries (v1.0.20) ---- */
 
-test('sheetBackedKeysOf: a PENDING share is NEVER sheet-backed', () => {
-  // The mirror deletes sheet-backed records the sheet no longer lists. A share waiting
-  // for approval is parked with homeFolderId 'sheet' but has no row yet — counting it
-  // tombstones the share before the parent ever sees the request.
+test('isLooseRecord: only LIVE records in the shared ⭐ bucket (v1.0.38 rename)', () => {
   const recs = [
     { key: 'yt:live0000000', state: 'live', folderId: 'sheet' },
-    { key: 'yt:parked00000', state: 'pending', folderId: '~pending', homeFolderId: 'sheet' },
-    { key: 'yt:chvideo0000', state: 'live', folderId: 'ch:UCabcdefghijklmnopqrstuv' },
-    { key: 'yt:approved000', state: 'live', folderId: '~pending', homeFolderId: 'sheet' }
+    { key: 'yt:pending0000', state: 'pending', folderId: '~pending', homeFolderId: 'sheet' },
+    { key: 'yt:approved000', state: 'live', folderId: '~pending', homeFolderId: 'sheet' },
+    { key: 'yt:chvideo0000', state: 'live', folderId: 'ch:UC1' }
   ];
-  assert.deepEqual(sheetBackedKeysOf(recs), ['yt:live0000000', 'yt:approved000']);
-  // channel videos have no row of their own, so the sheet can never "not list" them
-  assert.ok(!sheetBackedKeysOf(recs).includes('yt:chvideo0000'));
-  // works straight off a Map's values (that is how sync2 calls it) and survives junk
-  assert.deepEqual(sheetBackedKeysOf(new Map([['a', recs[0]]]).values()), ['yt:live0000000']);
-  assert.deepEqual(sheetBackedKeysOf([null, undefined, {}, 0]), []);
-  assert.deepEqual(sheetBackedKeysOf(null), []);
-  // ONE predicate behind both forms: buildFolders needs the records, sync2 needs the
-  // keys, and the two used to hand-inline the same rule and could drift apart.
-  assert.deepEqual(recs.filter(isSheetBacked).map((r) => r.key), sheetBackedKeysOf(recs));
-  for (const junk of [null, undefined, {}, 0, 'x']) assert.equal(isSheetBacked(junk), false);
+  // a PENDING share is parked in the bucket but is not part of the child's list yet
+  assert.deepEqual(recs.filter(isLooseRecord).map((r) => r.key), ['yt:live0000000', 'yt:approved000']);
+  // the folder test must read homeFolderId FIRST — a parked record's folderId is '~pending'
+  assert.equal(isLooseRecord(recs[2]), true);
+  // channel content is never loose: the channel folder owns it
+  assert.equal(isLooseRecord(recs[3]), false);
+  for (const junk of [null, undefined, {}, 0, 'x']) assert.equal(isLooseRecord(junk), false);
 });
 
-test('planScopeAdoption refuses to move a scope a SIBLING still reads', () => {
-  const LIB_A = 'lib:aaaa', LIB_B = 'lib:bbbb';
-  // the bug this prevents: moveScope DELETES the source scope, so migrating one child
-  // used to carry the shared family library away from the other one
-  const shared = planScopeAdoption('kid1', LIB_A, LIB_B, [
-    { profileId: 'kid2', libraryId: LIB_A },
-    { profileId: 'kid3', libraryId: 'lib:zzzz' }
-  ]);
-  assert.equal(shared.action, 'none');
-  assert.deepEqual(shared.sharedWith, ['kid2']);
-
-  // nobody left behind -> migrate, so the parent's content follows the profile
-  const alone = planScopeAdoption('kid1', LIB_A, LIB_B, [{ profileId: 'kid3', libraryId: 'lib:zzzz' }]);
-  assert.equal(alone.action, 'move');
-  assert.deepEqual(alone.sharedWith, []);
-  assert.equal(planScopeAdoption('kid1', LIB_A, LIB_B, []).action, 'move');
-  // this profile's OWN entry must never count as another owner
-  assert.equal(planScopeAdoption('kid1', LIB_A, LIB_B, [{ profileId: 'kid1', libraryId: LIB_A }]).action, 'move');
-});
-
-test('planScopeAdoption: nothing to do is never a move', () => {
-  for (const [a, b] of [[null, 'lib:b'], ['lib:a', null], ['lib:a', 'lib:a'], [undefined, undefined]]) {
-    const r = planScopeAdoption('kid1', a, b, [{ profileId: 'kid2', libraryId: a }]);
-    assert.equal(r.action, 'none', `${a} -> ${b}`);
-  }
-  // junk in the others list must not crash the decision
-  assert.equal(planScopeAdoption('kid1', 'lib:a', 'lib:b', [null, {}, { profileId: 'x' }]).action, 'move');
-});
+/* The planScopeAdoption tests lived here. v1.0.38 deleted the function with db.moveScope and
+ * the sheet wizard: nothing can change a profile's libraryId any more, which is exactly what
+ * makes the sunset migration's "libraryId never changes" rule enforceable. */
 
 test('planGiftRunawayRepair keeps the newest 12 and retires an implausible pile', () => {
   // The state devices are in after the burned-baseline bug: the whole library gifted.
@@ -1286,20 +1254,6 @@ test('lockCountdownLabel: mm:ss, never negative, never blank', async () => {
 });
 
 /* ---------------- the sources tab's primary action (v1.0.34) ---------------- */
-
-test('sourcesPanelActions: exactly one primary action, always', async () => {
-  const { sourcesPanelActions } = await import('../www/js/plan.js');
-  // no sheet (or no sources record at all) ⇒ the connect door, never the dead copy button
-  for (const src of [null, undefined, {}, { sheetUrl: '' }, { sheetUrl: null }]) {
-    assert.deepEqual(sourcesPanelActions(src), { copy: false, connect: true }, JSON.stringify(src));
-  }
-  // a connected sheet ⇒ copy its link, no connect door
-  assert.deepEqual(
-    sourcesPanelActions({ sheetUrl: 'https://docs.google.com/spreadsheets/d/x/edit' }),
-    { copy: true, connect: false });
-});
-
-/* ---------------- idle screen-off (v1.0.34) ---------------- */
 
 test('screenOffMinutes: never-written = the DEFAULT, explicit 0 = off, nonsense = the default', async () => {
   const { screenOffMinutes } = await import('../www/js/plan.js');

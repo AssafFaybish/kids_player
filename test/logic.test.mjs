@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 import {
   extractYouTubeId, driveFileId, classifyLink, listForDisplay
 } from '../www/js/store.js';
-import { resolveListUrl, parseList } from '../www/js/sync.js';
 
 test('extractYouTubeId handles the common URL forms', () => {
   assert.equal(extractYouTubeId('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
@@ -46,43 +45,10 @@ test('classifyLink rejects everything else (the safety boundary)', () => {
   assert.equal(classifyLink(null), null);
 });
 
-test('resolveListUrl converts share links to fetchable URLs', () => {
-  assert.equal(
-    resolveListUrl('https://docs.google.com/spreadsheets/d/SHEET/edit#gid=0'),
-    'https://docs.google.com/spreadsheets/d/SHEET/export?format=csv&gid=0'
-  );
-  assert.equal(
-    resolveListUrl('https://docs.google.com/spreadsheets/d/SHEET/edit?usp=sharing'),
-    'https://docs.google.com/spreadsheets/d/SHEET/export?format=csv'
-  );
-  // already-published CSV and export URLs pass through unchanged
-  assert.equal(
-    resolveListUrl('https://docs.google.com/spreadsheets/d/e/2PACX-abc/pub?output=csv'),
-    'https://docs.google.com/spreadsheets/d/e/2PACX-abc/pub?output=csv'
-  );
-  assert.equal(
-    resolveListUrl('https://drive.google.com/file/d/FID/view'),
-    'https://drive.google.com/uc?export=download&id=FID'
-  );
-  assert.equal(resolveListUrl('https://example.com/list.txt'), 'https://example.com/list.txt');
-});
-
-test('parseList handles text, comments, CSV columns, quotes and JSON', () => {
-  const text = parseList('https://a\n# a comment\n\nhttps://b');
-  assert.deepEqual(text.map((r) => r.url), ['https://a', 'https://b']);
-
-  const csv = parseList('https://x,שם,https://thumb.jpg');
-  assert.deepEqual(csv[0], { url: 'https://x', title: 'שם', thumb: 'https://thumb.jpg' });
-
-  const quoted = parseList('"https://y","כותרת"');
-  assert.equal(quoted[0].url, 'https://y');
-  assert.equal(quoted[0].title, 'כותרת');
-
-  const json = parseList('[{"url":"https://a","title":"A"},"https://b"]');
-  assert.deepEqual(json.map((r) => r.url), ['https://a', 'https://b']);
-
-  assert.deepEqual(parseList('# only a comment\n\n'), []);
-});
+/* v1.0.38: the resolveListUrl / parseList tests lived here. sync.js — the public-CSV
+ * sheet reader, dead in production since v1.0.19 — was deleted with the sheet, and its
+ * one load-bearing regression (a quoted Hebrew title with a comma) moved to
+ * csv.test.mjs against the live links-file path. */
 
 test('listForDisplay orders correctly per mode', () => {
   const items = [

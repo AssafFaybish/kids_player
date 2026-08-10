@@ -115,7 +115,11 @@ test('the guide covers all three ways to add content', () => {
   const all = ADD_GUIDE_SLIDES.map((s) => (s.chapter || '') + ' ' + s.title + ' ' + s.text).join(' ');
   assert.ok(/שיתוף מיוטיוב/.test(all), 'sharing from the YouTube app');
   assert.ok(/מדביקים לינק|הדבקת לינק/.test(all), 'pasting inside the app');
-  assert.ok(/דרייב|קובץ הרשימה/.test(all), 'the Google Sheet list');
+  assert.ok(/קובץ (?:ה)?לינקים|ייבוא מקובץ/.test(all), 'the links FILE — the third way since v1.0.38');
+  // …and it must not send a parent back to the removed Google-Sheets list. Scoped to the
+  // phrases that mattered: the Drive BACKUP is a real remaining feature.
+  assert.doesNotMatch(all, /גיליון|Google Sheet|spreadsheet|קובץ (?:ה)?רשימה ב(?:גוגל )?דרייב/i,
+    'the Google-Sheets sources list was removed in v1.0.38');
   // and it must say what happens after — approval and deletion are the steps parents
   // ask about the day AFTER they add something.
   assert.ok(/אישור|מאשרים/.test(all), 'the approval step');
@@ -146,14 +150,17 @@ test('every guide illustration is 1280x800, like the screenshots next to it', ()
 });
 
 test('the guide shows REAL app screenshots for app screens', () => {
-  // Decision (v1.0.20): only what is not ours — YouTube, Android, the spreadsheet,
-  // the Drive folder — may be a drawing. A drawn "parent screen" sends parents
-  // looking for a button that does not look like that.
+  // Decision (v1.0.20): only what is not ours — YouTube's share button, Android's app
+  // chooser — may be a drawing, plus (v1.0.38) the links FILE itself, which is a text
+  // document and not a screen we render. A drawn "parent screen" sends parents looking
+  // for a button that does not look like that.
   const jpgs = ADD_GUIDE_SLIDES.filter((s) => /\.jpg$/.test(s.img));
   assert.ok(jpgs.length >= 10, `expected the app steps to be photographed, got ${jpgs.length}`);
   const svgs = ADD_GUIDE_SLIDES.filter((s) => /\.svg$/.test(s.img));
   for (const s of svgs) {
-    assert.ok(/map-|share-0[123]|sheet-/.test(s.img),
+    // `sheet-` is REMOVED, not merely joined: those assets are deleted, so leaving the
+    // alternative would be a pattern branch that can never match — decoration.
+    assert.ok(/map-|share-0[123]|file-/.test(s.img),
       `${s.img} is a drawing of something the app itself renders — screenshot it`);
   }
 });
@@ -214,4 +221,16 @@ test('the first-run deck stays short enough that nobody skips it', () => {
   // Rationale, not trivia: a long forced tour gets "דלג"-ed wholesale, which is
   // why the add-videos material is a SEPARATE deck reached on demand.
   assert.ok(TOUR_SLIDES.length <= 7, `first-run deck is ${TOUR_SLIDES.length} slides — keep it skimmable`);
+});
+
+test('the guide teaches the links-file grammar the importer implements (v1.0.38)', () => {
+  // The guide and the parser must not drift: a parent who follows the slide and writes
+  // `link,name,auto` has to get what the slide promised.
+  const all = ADD_GUIDE_SLIDES.map((s) => s.title + ' ' + s.text).join(' ');
+  assert.match(all, /שורה אחת = לינק אחד/, 'one link per line');
+  assert.match(all, /auto/, 'the auto/manual third column');
+  assert.match(all, /#/, 'the comment rule');
+  assert.match(all, /פסיק/, 'the optional fields come after a comma');
+  // and the transfer story, which is why the file exists at all
+  assert.match(all, /מכשיר אחר|טאבלט השני|חשבונות גוגל/, 'moving a library between devices');
 });

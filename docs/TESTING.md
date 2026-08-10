@@ -184,15 +184,36 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
-### Sources-tab sheet connect (v1.0.34 — needs a real Google account)
-- [ ] Sheet-less profile → מקורות shows **חיבור רשימת מקורות** (no dead copy button);
-      the wizard opens with NO second PIN; דילוג and hardware back both return to the
-      parent screen, not the child's home.
-- [ ] With the account connected, the wizard lists the app's existing sheets from Drive
-      ("להתחבר לרשימה …") — including after a reinstall. Connecting one runs the
-      adoption sync and the profile's content lands in the sheet's shared scope
-      (`adoptLibraryScope` — content added before the connect must survive as rows).
-- [ ] A connected profile shows the copy button again, no connect button.
+### Links file (v1.0.38 — device only; the suite cannot see any of this)
+- [ ] מקורות → **📤 ייצוא רשימת לינקים**: a real `.txt` lands in
+      `Android/data/com.assaf.kidsplayer/files/exports/`, the message NAMES that path, and
+      Android's share sheet opens on the FILE (not on 400 links pasted as message text).
+      Cancelling the share must leave the file behind.
+- [ ] Open the exported file: one link per line, `#` header carrying `# פרופיל: <name>`, a
+      subscribed channel is ONE line (not its 500 videos), and no `&list=` / `?si=` anywhere.
+- [ ] Send it to the OTHER tablet and **📥 ייבוא מקובץ**: the confirm names the target
+      profile and the counts by kind; importing reproduces the library; a channel's videos
+      land in ממתינים. Try the `לפרופיל חדש בשם …` button too — it must refuse a name that
+      already exists on the account.
+- [ ] **Android TV**: no file picker exists, so the paste box must be OPEN by default and
+      the whole flow must work from the remote.
+- [ ] Delete a video, then paste its link again: the ♻️ dialog must appear, "לא" must leave
+      it deleted, and "החזרה" must bring it back and SURVIVE the next launch (that is the
+      tombstone revocation reaching Drive).
+
+### Sheet sunset (v1.0.38 — needs a legacy profile that HAD a sheet; ⏳ delete after 2026-09-10)
+- [ ] First launch after the update, with the Google account connected: the sheet is read
+      once, its rows appear in the app, מקורות no longer mentions a list, and the
+      spreadsheet is GONE from Drive — while the folder it sat in still exists.
+- [ ] `meta['sunset:<profileId>']` ends at `phase:'done'`, and `sources.libraryId` is
+      **byte-identical** to what it was before. This is the one that matters: a changed
+      scope strands the whole library with no tool left to repair it.
+- [ ] Offline / account not connected: nothing is forgotten, nothing is deleted, no attempt
+      is burned (`attempts` stays put), and the next launch tries again.
+- [ ] A channel the parent had REMOVED but whose row is still in the sheet must NOT come
+      back (`planSheetFold` skips any channel with a tombstone).
+- [ ] Two devices, one upgraded and one not: the old one's library stays intact (its sheet
+      read now 404s, and with no mirror nothing deletes), and it migrates itself when updated.
 
 ---
 

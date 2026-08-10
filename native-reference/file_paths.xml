@@ -4,4 +4,9 @@
     <cache-path name="my_cache_images" path="." />
     <!-- F14 updater: downloaded APKs land in getExternalFilesDir(null)/updates/ -->
     <external-files-path name="app_updates" path="updates/" />
+    <!-- v1.0.38 links export: getExternalFilesDir(null)/exports/. Without this entry
+         FileProvider.getUriForFile throws IllegalArgumentException for that path and the
+         share sheet never opens (the <external-path> above is getExternalStorageDirectory,
+         a DIFFERENT root — it does not cover getExternalFilesDir). -->
+    <external-files-path name="app_exports" path="exports/" />
 </paths>

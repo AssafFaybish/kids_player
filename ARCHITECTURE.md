@@ -21,15 +21,16 @@ live and how does data flow".
 | `settings.js` | **the SYNCED settings channel** (v1.0.25): `{account:{name:{v,at}}, profiles:{pid:{name:{v,at}}}}` in Preferences — the parent PIN (account-wide) plus per-child exit lock / share approval / continuous play. `at` is stamped INSIDE `putSetting`, never by callers. Pure `mergeSettingEntry`/`mergeSettings`: per-key LWW, exact ties resolve the SAFE way. Before it, the only value that crossed devices was `libraryChannels.autoApprove` | platform |
 | `db.js` | IndexedDB I/O ONLY (no business logic) — see schema below; `dataVersion()` is a committed-write counter bumped inside `tx()` (v1.0.20 derived-state cache key) | — |
 | `migrate.js` | one-time resumable Preferences→IDB migration (never deletes the legacy blob) | platform, db, order, util |
-| `plan.js` | PURE decisions — mostly sync, some home: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental), planSheetMirror, groupSinglesByChannel, `isSheetBacked`/`sheetBackedKeysOf` (the sheet-backed boundary), planScopeAdoption, shouldRecordGiftBaseline, planGiftRunawayRepair, shouldFlattenHome (home-render rule), and the v1.0.24 parent-attention rules: attentionDot (blue=content / red=update), parentLandingTab + PARENT_TAB_IDS, pendingBulkAction (what a bulk button acts on), planChannelLogo (when to (re)fetch a channel avatar, API vs scrape); v1.0.25 `planSyncDispatch` (start/join/queue a sync — a forced caller may never ride a run that already read), `planEntryRefresh` (pull+force gates on home entry), `channelAddOutcome`, `planProfilePurge` (which scopes a deleted profile may erase — never a SHARED library); v1.0.26 `playlistVideoFolder` (a playlist video whose channel is subscribed unifies into the channel folder) and `planRejectedPurge` (the 30-day archive expiry) | normalize, order |
-| `sync2.js` | the staged pipeline (below); parseSourceRows (+parseSourceSheet — test-only since v1.0.19, no production caller) | csv, classify, plan, yt, db, quota |
+| `plan.js` | PURE decisions — mostly sync, some home: planMutations (merge/dedupe/deny/route/caps), planGifts (baseline-12 / incremental), groupSinglesByChannel, `isLooseRecord` (the ⭐ loose-list boundary; renamed from isSheetBacked in v1.0.38), shouldRecordGiftBaseline, planGiftRunawayRepair, shouldFlattenHome (home-render rule), and the v1.0.24 parent-attention rules: attentionDot (blue=content / red=update), parentLandingTab + PARENT_TAB_IDS, pendingBulkAction (what a bulk button acts on), planChannelLogo (when to (re)fetch a channel avatar, API vs scrape); v1.0.25 `planSyncDispatch` (start/join/queue a sync — a forced caller may never ride a run that already read), `planEntryRefresh` (pull+force gates on home entry), `channelAddOutcome`, `planProfilePurge` (which scopes a deleted profile may erase — never a SHARED library); v1.0.26 `playlistVideoFolder` (a playlist video whose channel is subscribed unifies into the channel folder) and `planRejectedPurge` (the 30-day archive expiry); v1.0.38 `orphanSweepValve`, `coveredBySubscription`, `channelRowSubscription` + `manualVideoRecord` (ONE record shape for every add path), `deniedReAddPrompt`/`deniedRestorePrompt`, `linksImportConfirm`/`linksImportOutcome`/`linksExportOutcome`, `hebCount`, and the migration's `planSheetSunset`/`planSheetFold`/`SUNSET_DEADLINE` (⏳ delete with sunset.js) | normalize, order |
+| `sync2.js` | the staged pipeline (below); `gcOrphans` / `removeSubscription` (v1.0.38 — the orphan sweep and the channel-removal path that replaced applySheetMirror) | linksfile, plan, yt, db, quota |
+| `linksfile.js` | **the links file** (v1.0.38): the row grammar (`parseSourceRows`, moved here from sync2 — the sheet stage died, the grammar did not), `parseLinksFile` (parseCsv → parseSourceRows → classifySourceRow, so there is no second parser and no second safety boundary), `serializeLinksFile`/`canonicalLinkFor`/`linksFileHeader`/`linksFileName`, plus the IDB glue `collectLinksExport`/`applyLinksPlan`. Pure half imports csv+classify only; consumed by app.js and (until the sunset) sunset.js | csv, classify, order, store, plan |
 | `yt.js` | Data API client: handle resolution (cached forever + HTML-scrape fallback), channels.list batched, playlistItems backfill, videos.list titles, RSS fetch, quota ledger | platform, keys, db, quota |
 | `quota.js` | batchIds, quotaCostFor, planChannelFetch truth table, playlist-id derivation: `UU` uploads / `UULF` long-form ("Videos" tab) / `UUSH` Shorts | — |
 | `ytrss.js` | pure keyless parsers (never throw): Atom feed (incl. Short/live detection from the entry's alternate-link form) + channel-page logo extractor | — |
 | `ytsearch.js` | **the parent's KEYLESS YouTube search + in-result browsing** (v1.0.33): pure parsers over the youtubei search AND browse endpoints (0 quota, no API key — ANY youtubei literal is guard-pinned to this one module) — videoRenderer/channelRenderer/lockup/officialCard (header-anchored), a channel's Videos tab / a playlist's contents, Shorts + RD-mix filtered, continuation shapes for both (an unparsable CONTINUATION = end-of-list, never the 'parse' alarm); suggestion parser (`oe=utf-8` load-bearing for Hebrew); pinned `searchMessage` texts; thin POST via `platform.httpPostJson` | platform |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
-| `sheetwrite.js` | sheet write-back: appends (v1.0.6) AND row deletions (v1.0.10) — typed durable op-queue (reconcileOps latest-intent), key-based row matching (URL variants, handleMap for @handles), batchUpdate bottom-up, presence-dedupe on appends; `interpretSheetResponse` is the ONE gate for every `values.get` read (reads and flushes alike) | platform, gauth, db, classify, csv |
+| `sunset.js` | ⏳ **DELETE AFTER 2026-09-10** (`test/sunset.test.mjs` fails on that date and carries the checklist). The one-time migration off the Google-Sheets sources list: `runSheetSunset` (every profile, silent, 3 attempts across launches), `readFinalSheet` + `interpretSheetResponse` + the id/gid extractors (lifted out of the deleted sheetwrite.js), and exactly ONE Drive `files.delete` — a FILE id, never the folder | platform, gauth, csv, linksfile, plan, store, yt, db |
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT), `interpretDriveDoc`/`interpretDriveList`/`decidePush` (an unreadable remote NEVER writes), `stripPerDeviceChannel`/`mergeChannelForApply`, `mergeLibraryChannel` (autoApprove converges; tie → still-requires-approval) + push/pull I/O | platform, gauth, normalize, db, csv |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
 | `share.js` | share-intent JS side: listener→drain→queue; v1.0.7 interactive PIN+confirm flow (videos AND channels) with silent-pending fallback; v1.0.23 optional profileChooser (asked only when profiles have DIFFERENT scopes; the drain path passes alreadyRouted and never asks) | classify, normalize, order, platform, db |
@@ -47,7 +48,6 @@ live and how does data flow".
 | `ui/*` | modal (confirmKid/alertKid), pager, tiles (in app.js currently), confetti (CSS), sound (WebAudio synth), loading (4 scenes) | — |
 | `app.js` | boot + all views (connect/profiles/folders home/folder/watch/pin/parent) + launch update prompt + attention dots + wiring — the candidate for a future views/ split | everything above |
 | `pin.js` | SHA-256 parent PIN. v1.0.25: the hash lives in the SYNCED settings channel, so one family code opens the parent screen on every device; an existing Preferences hash is lifted across on first read (the other settings deliberately do NOT migrate) | platform, settings |
-| `sync.js` | **DEAD in production since v1.0.19** — zero importers outside tests. Embodies the removed model (public CSV export of a pasted sheet). Scheduled for deletion. | platform, csv, store |
 
 Native (android/, canonical copies in native-reference/): `MainActivity.java`
 (YouTube-nav blocking, real fullscreen, popups, share onNewIntent),
@@ -59,13 +59,13 @@ Native (android/, canonical copies in native-reference/): `MainActivity.java`
 
 | Store | keyPath | Notes |
 |---|---|---|
-| `videos` | `[scopeId, key]` | scopeId: `lib:<fnv1a(sheetKey)>` (shared per input sheet) or `prof:<profileId>` (personal). Indexes: by_folder_sort `[scope,folder,sortKey]`, by_state, by_channel_title, by_key. Parked rows live in `'~pending'` / `'~rejected'` (normalize.PARKED) + `homeFolderId`; state is one of live|pending|rejected, and 'rejected' is NOT a deletion (v1.0.23). |
+| `videos` | `[scopeId, key]` | scopeId: `lib:p:<profileId>` (a profile's own library) or `prof:<profileId>` (personal). `lib:<fnv1a(sheetKey)>` is LEGACY and still load-bearing — pre-v1.0.38 families derived it from a sheet URL and several profiles may SHARE one; nothing can change a scope any more (moveScope is gone). Indexes: by_folder_sort `[scope,folder,sortKey]`, by_state, by_channel_title, by_key. Parked rows live in `'~pending'` / `'~rejected'` (normalize.PARKED) + `homeFolderId`; state is one of live|pending|rejected, and 'rejected' is NOT a deletion (v1.0.23). |
 | `profileVideoState` | `[profileId, key]` | gift state per CHILD: `{giftRank}` XOR `{unwrappedAt}`. by_gift index is SPARSE (deleting giftRank removes from index → the "חדשים" folder is a pure range scan). v1.0.32: also the DEVICE-LOCAL playback position `{posSec,durSec,posAt}` — never serialized to Drive (`drive.serializeStateEntry`), preserved on apply (`mergeAppliedState`). |
 | `channels` | `channelId` | global metadata + backfillCursor/backfillDone/lastRssCheckedAt |
-| `libraryChannels` | `[libraryId, channelId]` | subscription + autoApprove toggle (+ source: sheet flag vs UI). v1.0.32: `addedAt` orders the parent's folded list; `decidedAt` (stamped by the three-way dialog's real answers / the toggle / an explicit sheet flag) is what clears a row out of "ערוצים חדשים" (`plan.planChannelSections`). |
+| `libraryChannels` | `[libraryId, channelId]` | subscription + autoApprove toggle (+ `autoApproveSource`: `file`/`sheet`/`ui`/`default`). **This table IS the source list** since v1.0.38 (`kind:'playlist'` for a playlist). v1.0.32: `addedAt` orders the parent's folded list; `decidedAt` (stamped by the three-way dialog's real answers / the toggle / an explicit sheet flag) is what clears a row out of "ערוצים חדשים" (`plan.planChannelSections`). |
 | `thumbs` | `id` | Blob cache (legacy migrated thumbs + captured frames); by_lastUsed for LRU. v1.0.32: also channel-logo BYTES (`logo:<channelId>` + `srcUrl` meta) — folders render offline; `touchThumbs` on use keeps them off the LRU. |
 | `denylist` | `[scopeId, key]` | grow-only tombstones = durable deletion |
-| `sources` | `profileId` | `{sheetUrl, libraryId, sheetHash, shareIntent.requireApproval, defaultAutoApprove, caps…}` |
+| `sources` | `profileId` | `{libraryId, shareIntent.requireApproval, defaultAutoApprove, caps…}`. `sheetUrl`/`sheetHash`/`sheetFolderId` are LEGACY fields the migration clears and never writes again — `libraryId` is the one field that must never change. |
 | `meta` | `id` | migration flag, sync timestamps, handleMap, quota:<date>, drive:{dbFileId…}, gift baselines, dedupe reports |
 | `opLog` | autoInc | mutation ops (deny/undeny/unwrap) for future merge use |
 
@@ -78,17 +78,11 @@ mergedFrom?,updatedAt}` — ~400B, NO base64.
 
 ```
 hydrate (views read IDB directly — the ONLY thing on the critical path)
-└─ background: sheet GET (v1.0.19: AUTHENTICATED Sheets API values.get via
-   sheetwrite.readSourceSheet — NOT a public CSV export; it THROWS on any non-200 so
-   sheetParsed stays false and the mirror below cannot mistake "unreadable" for
-   "emptied") → FNV-1a hash-skip → parseSourceRows (video rows get ordinals;
-   channels rows carry auto/manual flag) → resolve channels (handle cache → API → HTML
-   scrape; ids with a queued sheet-delete are NOT re-subscribed) → MIRROR (v1.0.10,
-   PRESENCE-based each parse: live sheet-backed records absent from the sheet →
-   tombstone-delete; denied keys present → unDeny; unsubscribed-channel content →
-   orphan GC; valve alert + ignore-signature on mass deletion) → channel meta
-   batched (1 unit/50) → per channel planChannelFetch:
-   → channel meta batched (1 unit/50) → per channel planChannelFetch:
+└─ background: ORPHAN GC (v1.0.38, UNCONDITIONAL — content whose channel nobody
+   subscribes to any more, e.g. a peer's deletion arriving over the Drive doc; pure
+   planOrphanGC + orphanSweepValve, which parks a sweep above max(10,5%) or one that
+   would take everything) → channel meta batched (1 unit/50) → logo fetch/scrape
+   → per channel planChannelFetch:
         rss (free, latest 15, etag) | backfill (resumable cursor, 40-page budget, quota soft-cap)
    → planMutations (PURE: key-merge, intra-channel title dedupe, deny drop, pending routing,
      caps; quarantine on first post-migration sync) → putVideos (chunked)
@@ -100,8 +94,8 @@ hydrate (views read IDB directly — the ONLY thing on the critical path)
    → meta bookkeeping → (drive.schedulePush if enabled)
 ```
 
-Cross-device convergence (v1.0.22) is the OTHER half, and it is a separate cadence from the
-sheet sync above:
+Cross-device convergence (v1.0.22) is the OTHER half, and a separate cadence from the
+derive pipeline above:
 
 ```
 profile activation (⇒ every launch) / resume from background
@@ -113,8 +107,19 @@ profile activation (⇒ every launch) / resume from background
         ↳ libraryChannels via mergeLibraryChannel (LWW on updatedAt; tie → the row that
           still requires approval), applied with preserveTimestamp so devices don't ping-pong
      → re-render only if db.dataVersion() moved
-   → THEN the sheet sync above (serialized — both write the same video records)
+   → THEN sunset.runSheetSunset()  ⏳ v1.0.38, DELETE AFTER 2026-09-10 — the one-time
+        migration off the Google-Sheets list, for EVERY profile (entryRefresh is per-active-
+        profile, and a child nobody opens here must not keep a sheetUrl forever). Reads the
+        sheet once, folds it in, forgets it (libraryId UNTOUCHED), deletes the file.
+   → THEN syncLibrary (serialized — all three write the same video records; a detached
+        .then() here was the v1.0.25 race)
 ```
+
+**Why between the pull and the sync, and not in `dataver`:** dataver runs before any profile
+is active, blocks boot behind an already-faded splash with no progress UI, and means "run
+once" where this needs "three attempts across launches". After the pull, because a restored
+profile's `sheetUrl` arrives there; before the sync, because the fold writes the records the
+launch's forced pass then enriches.
 
 ## Player HUD state machine
 
@@ -134,7 +139,7 @@ exiting fullscreen (back / ⛶) lands on the watch page. The app rotates freely
 One Drive JSON file per Google account, tagged appProperties{kpApp} (searchable after
 reinstall). Document: `{profiles, libraries:{<libId|profScope>: {sheetUrl, videos(no
 localPath/thumbId), denylist, channels(no cursor), libraryChannels}}, profileState:{pid:
-{key:{unwrappedAt|giftRank}}}, profileSources:{pid:{sheetUrl,updatedAt}}}`. profileSources
+{key:{unwrappedAt|giftRank}}}, profileSources:{pid:{libraryId,sheetUrl,updatedAt}}}`. **v1.0.38: `libraryId` travels** — a restored profile's scope is derivable from nothing else, and without it a fresh device restoring a migrated family gets every record and no sources row (empty home, full database; pure `drive.resolveRestoredLibraryId` decides). profileSources
 (v1.0.4, additive) lets a fresh device rebuild each restored profile's sources record —
 without it a restored profile pointed at an empty `lib:p:` library. mergeDbFiles is
 commutative+idempotent: video union by key via mergeVideoRecord, deny UNION (denied never

@@ -23,7 +23,7 @@ download/cache, durable storage).
 |---|---|
 | Web app (all features) | ✅ Done, verified in browser |
 | Profiles (multi-user) | ✅ Done |
-| Remote list sync (app-created Google Sheet, authenticated) | ✅ Done |
+| Links file — export/import, the bulk door and device transfer (v1.0.38) | ✅ Done |
 | YouTube + direct-file players | ✅ Done |
 | Native code applied + compiled into the APK | ✅ Done |
 | Android **APK build** | ✅ Built → `android/app/build/outputs/apk/debug/app-debug.apk` (~3.6 MB) |
@@ -69,7 +69,8 @@ www/
     pin.js              parent PIN (SHA-256 via WebCrypto; djb2 fallback). Global (shared across profiles)
     media.js            direct-file playback: Drive URL normalize, stream→download+cache, frame-capture, clearCache
     player.js           playItem() dispatch: YouTube IFrame OR <video>; custom controls; auto-return
-    sync.js             remote list: resolveListUrl(), parseList(), syncFromRemote() (mirror)
+    linksfile.js        the links file: row grammar, parseLinksFile, serializeLinksFile, collect/apply (§8)
+    sunset.js           ⏳ one-time migration off the Google-Sheets list — DELETE AFTER 2026-09-10
     app.js              views/routing, profiles UI, gallery+pagination, watch view, PIN UI, parent screen, init()
 dev-server.mjs          local dev server (static no-cache + /__proxy) — browser testing only
 capacitor.config.json   appId, webDir, androidScheme:https
@@ -128,33 +129,78 @@ behind the scenes" bug when switching videos.
 Fullscreen requests `#player-wrap`. In the APK the custom `WebChromeClient` in `MainActivity.java`
 makes HTML5 fullscreen actually work (Capacitor's default is a no-op) and blocks pop-up windows.
 
-## 8. Remote list sync (`sync.js`)
+## 8. The links file (`linksfile.js`)
 
-> ⚠️ **SUPERSEDED as the main path (v1.0.19).** Everything in this section describes the
-> ORIGINAL model: the parent pastes a link to a sheet they own, and the app fetches it as a
-> public CSV export. That model is gone from the product.
->
-> Today the app creates the sheet itself, reads it through the **authenticated Sheets API**
-> (`sheetwrite.readSourceSheet` → `sync2.parseSourceRows`), and the sheet is **not shared
-> publicly at all**. Pasting a link was removed because the only OAuth scope is now
-> `drive.file`, which grants access solely to files the app created — an external sheet
-> returns `403 appNotAuthorizedToFile`. See CLAUDE.md's v1.0.19 block and
-> GOOGLE_CLOUD_SETUP.md שלב 3א.
->
-> `sync.js` still exists on disk but has **zero production importers** — only tests
-> reference it. Read this section as history, not as current behaviour, and treat the
-> module as scheduled for deletion.
+The bulk-add door and the way a whole library moves between devices. It replaced the
+Google-Sheets sources list in v1.0.38 (`sheetwrite.js` and `sync.js` were deleted).
 
-- `resolveListUrl(url)` makes a pasted link fetchable: a Google **Sheet** `/edit` link → CSV export
-  (`/export?format=csv&gid=…`); a Google **Drive** file link → `uc?export=download`; already-CSV or
-  other URLs pass through. (Sheet must be shared "Anyone with the link: Viewer".)
-- `parseList(text)` accepts plain text (one link per line, `#` comments), CSV (`link,title,thumb`), or
-  a JSON array. `classifyLink` keeps only valid YouTube IDs / https video URLs → **the safety boundary**
-  (a tampered file can't inject anything else).
-- `syncFromRemote()` **mirrors** the file: rebuild the active profile's list to match exactly (add
-  new, drop removed, preserve file order), keeping any downloaded `localPath`. Runs on profile
-  activation, on app resume, and via "Refresh now". Offline/failure → keep last cached list.
-- **Not supported: `.xlsx` (Excel).** It's a binary file; use a Google Sheet or plain text/CSV.
+**The format is the OLD SHEET'S ROW GRAMMAR, as text**, which is the whole trick: there is
+no new parser and no second safety boundary.
+
+```
+parseLinksFile(text)
+  → csv.looksLikeHtml   FIRST — a saved "request access" page must read as "not a links
+                        file", never as "0 links" (the interpretSheetResponse doctrine)
+  → csv.parseCsv        quoted Hebrew titles with commas, CRLF, the Sheets BOM, tab fallback
+  → parseSourceRows     one link per line; optional `,name,auto|manual`; `#` is a comment
+  → classifySourceRow   THE safety boundary — unchanged, never bypassed
+```
+
+A pasted CSV out of an old spreadsheet therefore imports as-is. `parseLinksFile` is TOTAL:
+no input throws (the v1.0.33 parser rule).
+
+**Export writes canonical links only** — `canonicalLinkFor`:
+
+| entry | line |
+|---|---|
+| channel | `https://www.youtube.com/channel/UC…` |
+| playlist | `https://www.youtube.com/playlist?list=…` |
+| YouTube video | `https://www.youtube.com/watch?v=<id>` |
+| direct file | the original `srcUrl` |
+
+**Never a YouTube video's stored `srcUrl`.** It can be a `youtu.be` link with `?si=`
+tracking, an `m.youtube` host, a `?t=` seek — or, the one that matters, a `&list=` that
+`classifySourceRow` reads back as a PLAYLIST and imports as hundreds of videos. The watch
+form is the only one that guarantees key-for-key identity on the other device.
+
+Only `state === 'live'` travels, and only records **no subscription reproduces**
+(`plan.coveredBySubscription` — `planOrphanGC`'s rule read forwards). Measured on a real
+library: 514 video records → 4 lines, 551 bytes, because a subscribed channel's 501 videos
+are one channel line.
+
+**Delivery is write-then-share** (`plan.linksExportOutcome` names every rung, and every rung
+says WHERE the file is):
+
+1. `platform.fsWriteTextExternal` → `EXTERNAL/exports/<name>.txt`. `'EXTERNAL'` is
+   `getExternalFilesDir(null)` — permission-free. NOT `DOCUMENTS`/`EXTERNAL_STORAGE`: those
+   are public dirs behind a storage permission the manifest deliberately does not declare.
+   mkdir first (the `downloadFile` ignores-`recursive` trap), and `writeFile` answers `{uri}`
+   not `{path}`.
+2. `platform.shareFile` → the native `KidsNative.shareFile` (FileProvider + `ACTION_SEND` +
+   `EXTRA_STREAM` + the grant flag). `res/xml/file_paths.xml` must contain the `exports/`
+   entry or `getUriForFile` throws. `shareText` cannot do this — it is `text/plain` +
+   `EXTRA_TEXT` and cannot attach a file.
+3. Browser: an `<a download>` blob. 4. clipboard. 5. shown for manual copy.
+
+The write comes first because it is the artifact a device transfer needs and the only thing
+that survives a cancelled share; the share exists because Android 11+ hides `Android/data`
+from the Files app.
+
+**Import** has two doors — a file picker and a paste box — and neither is a fallback for the
+other: Android TV has no file picker at all. It does NOT route through `addClassifiedRow`
+(that would be one approval dialog per channel and one forced sync per video); instead one
+confirm, one denied-keys question, one batch of writes, ONE forced sync.
+
+**A deletion tombstone is now revoked only by an explicit parental answer**
+(`plan.deniedReAddPrompt`). Until v1.0.38 the only revocation path was the sheet re-adding
+the key, and `drive.mergeDbFiles` deletes any video whose tombstone is active — so without
+that dialog a re-pasted deleted video would be written, shown to the child, and destroyed by
+the next pull.
+
+> History: `sync.js` (a public CSV export of a pasted sheet, dead in production since
+> v1.0.19) and `sheetwrite.js` (the write-back queue) were deleted in v1.0.38. The read half
+> lives on only inside `sunset.js`, the one-time migration, which is itself scheduled for
+> deletion after 2026-09-10.
 
 ## 9. Native / APK build
 

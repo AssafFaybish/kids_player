@@ -222,9 +222,19 @@ export async function importProfileSnapshot(profileId, text) {
     return { ok: false, error: 'bad-format' };
   }
 
-  // sources: adopt the snapshot's sheet/library if we have none
+  // sources: adopt the snapshot's LIBRARY SCOPE if we have none — that is what puts the
+  // imported records where this profile will look for them.
+  //
+  // v1.0.38: the three sheet fields are STRIPPED. An old snapshot still carries them, and
+  // adopting one wholesale re-introduced a `sheetUrl` after the migration had already
+  // forgotten it — inert (nothing reads a sheet any more) but able to outlive the migration
+  // code itself, which is precisely what the sunset's deadline branch exists to prevent.
+  // `libraryId` is deliberately KEPT: it is the one field that must survive a restore.
   const mySrc = await getSources(profileId);
-  if (!mySrc && snap.sources) await putSources({ ...snap.sources, profileId });
+  if (!mySrc && snap.sources) {
+    const { sheetUrl, sheetHash, sheetFolderId, sheetFetchedAt, ...clean } = snap.sources;
+    await putSources({ ...clean, profileId });
+  }
   const src = await getSources(profileId);
   const lib = src && src.libraryId;
   const validScopes = new Set([profScope(profileId), ...(lib ? [lib] : [])]);

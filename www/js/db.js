@@ -12,8 +12,12 @@
 //     its tombstone are atomic or neither happens.
 //
 // SCOPING (decision 20): content is keyed by scopeId, the first component of every key.
-//   'lib:<fnv1a(sheet)>'  — shared library content (sheet rows + channel videos):
-//                           identical across every profile/device using the same sheet.
+//   'lib:p:<profileId>'   — a profile's own library: everything the parent added for that
+//                           child, identical on every device of the account.
+//   'lib:<fnv1a(sheet)>'  — LEGACY, and still load-bearing: families created before v1.0.38
+//                           derived the id from a Google-Sheets URL, and several profiles can
+//                           SHARE one. The migration keeps those ids exactly as they are —
+//                           nothing may change a profile's scope any more (moveScope is gone).
 //   'prof:<profileId>'    — per-profile content ("הסרטונים שלי": manual adds, shares).
 // Per-child gift/unwrap state lives in profileVideoState, NOT on the video record, so
 // one child's unwrapping never affects a sibling sharing the same library.
@@ -525,11 +529,11 @@ export async function putDeletedChannels(libraryId, map) {
 }
 
 export async function deleteLibraryChannel(libraryId, channelId, { tombstone = true, tombstoneAt } = {}) {
-  // TOMBSTONE FIRST (the moveScope deny-list lesson): a crash between the two writes
-  // must leave the intent recorded, or the interrupted deletion resurrects silently.
-  // `tombstone: false` is for the two callers that are NOT a parental deletion —
-  // moveScope (a move) and drive.applyRemoteDoc (applying a peer's tombstone, whose
-  // own `at` must be preserved or the two devices restamp each other forever).
+  // TOMBSTONE FIRST: a crash between the two writes must leave the intent recorded, or
+  // the interrupted deletion resurrects silently.
+  // `tombstone: false` is for the one caller that is NOT a parental deletion —
+  // drive.applyRemoteDoc (applying a peer's tombstone, whose own `at` must be preserved
+  // or the two devices restamp each other forever).
   if (tombstone) {
     const map = await getDeletedChannels(libraryId);
     const at = tombstoneAt || Date.now();
@@ -678,53 +682,9 @@ export async function copyDenies(fromScope, toScope) {
  * v1.0.10: unDeny REVOKES instead of deleting — the inert marker (removedAt) must
  * out-merge stale active denies still sitting in Drive docs of other devices.
  */
-/**
- * v1.0.17 — move an ENTIRE library scope's content to another scope.
- * Needed because the library id is derived from the SHEET URL: connecting (or
- * changing) a sheet changes the scope, and everything the parent had already
- * added lived in the old one — it stayed in IndexedDB but vanished from the UI.
- * Videos and channel subscriptions move; tombstones are unioned (never dropped).
- * Idempotent: re-running finds an empty source scope and does nothing.
- * Returns WHAT moved (not just counts) — the caller registers exactly those in the
- * sheet; enqueueing the whole target scope could overflow the write queue and drop
- * the genuinely-new rows.
- * -> { videoKeys: [], channelIds: [] }
- */
-export async function moveScope(fromScope, toScope) {
-  if (!fromScope || !toScope || fromScope === toScope) return { videoKeys: [], channelIds: [] };
-  const recs = [...(await loadMergeIndex(fromScope)).values()];
-  const puts = [];
-  for (const rec of recs) {
-    // a key already present in the target wins (it came from the real sheet)
-    if (await getVideo(toScope, rec.key)) continue;
-    puts.push({ ...rec, scopeId: toScope, updatedAt: Date.now() });
-  }
-  if (puts.length) await putVideos(puts);
-  // v1.0.18 — TOMBSTONES FIRST. This used to run after the delete below, so a crash
-  // or reload in between lost the old scope's deny-list for good: adoptLibraryScope
-  // only fires on a scope CHANGE and src.libraryId is already rewritten by then, so
-  // nothing ever retries, and every deleted video came back on the next sheet parse.
-  // A union is idempotent, so doing it first is safe to repeat and safe to interrupt.
-  await copyDenies(fromScope, toScope);
-  await tx(['videos'], 'readwrite', (videos) => {
-    for (const rec of recs) videos.delete([fromScope, rec.key]);
-  });
-
-  const movedChannels = [];
-  const targetChannels = new Set((await listLibraryChannels(toScope)).map((c) => c.channelId));
-  for (const lc of await listLibraryChannels(fromScope)) {
-    if (!targetChannels.has(lc.channelId)) {
-      // no preserveTimestamp: the fresh stamp is load-bearing — it outranks any old
-      // deletion tombstone waiting in the TARGET scope (re-attaching a sheet is a
-      // deliberate parental act, v1.0.36).
-      await putLibraryChannel({ ...lc, libraryId: toScope });
-      movedChannels.push(lc.channelId);
-    }
-    // a MOVE is not a parental deletion — no tombstone in the abandoned scope
-    await deleteLibraryChannel(fromScope, lc.channelId, { tombstone: false });
-  }
-  return { videoKeys: puts.map((r) => r.key), channelIds: movedChannels };
-}
+/* v1.0.17's moveScope lived here until v1.0.38. Its one caller was attaching/changing a
+ * SHEET (the scope was derived from the sheet URL), and that act is gone. Nothing may
+ * change a profile's libraryId any more — the sunset migration's safety rests on it. */
 
 export async function unDeny(scopeId, key) {
   const db = await openDb();
