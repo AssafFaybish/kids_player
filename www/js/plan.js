@@ -1596,12 +1596,17 @@ export function deniedRestorePrompt(count = 0, { isPlaylist = false } = {}) {
   const n = Math.max(0, Number(count) | 0);
   if (!n) return { ask: false };
   const what = isPlaylist ? 'רשימת ההשמעה' : 'הערוץ';
+  const many = n > 1;
+  // hebCount, for the same reason linksImportOutcome uses it: "1 סרטונים … הוסרו" is wrong in
+  // a way a parent notices, and a channel whose ONE removed video blocks the import is a
+  // perfectly ordinary case.
+  const videos = hebCount(n, 'סרטון', 'סרטונים');
   return {
     ask: true, emoji: '♻️',
-    title: `${n} סרטונים של ${what} הוסרו בעבר`,
-    text: `מחקתם ${n} סרטונים של ${what} הזה בעבר, ולכן הם לא נוספו שוב. להחזיר אותם `
-      + 'לרשימת ההמתנה לאישור? הפעולה תבטל את המחיקה בכל המכשירים.',
-    ok: 'החזרה לאישור', cancel: 'לא, להשאיר מוסרים'
+    title: `${videos} של ${what} ${many ? 'הוסרו' : 'הוסר'} בעבר`,
+    text: `מחקתם ${videos} של ${what} הזה בעבר, ולכן ${many ? 'הם לא נוספו' : 'הוא לא נוסף'} שוב. `
+      + `להחזיר ${many ? 'אותם' : 'אותו'} לרשימת ההמתנה לאישור? הפעולה תבטל את המחיקה בכל המכשירים.`,
+    ok: 'החזרה לאישור', cancel: many ? 'לא, להשאיר מוסרים' : 'לא, להשאיר מוסר'
   };
 }
 

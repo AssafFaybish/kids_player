@@ -3148,11 +3148,16 @@ async function diagnoseEmptyChannel(channelId, count, drops = null) {
 async function offerDeniedRestore(sourceId, empty) {
   const keys = (empty && empty.deniedKeys) || [];
   if (!keys.length) return false;
-  const what = empty.isPlaylist ? 'רשימת ההשמעה' : 'הערוץ';
+  // v1.0.38: the wording lives in pure plan.deniedRestorePrompt, next to
+  // deniedReAddPrompt — BOTH revive dialogs are pinned in one place, so the two cannot
+  // drift into saying different things about the same act. (They already had: this
+  // function kept its own inline copy for one commit.)
+  const { deniedRestorePrompt } = await import('./plan.js');
+  const prompt = deniedRestorePrompt(keys.length, { isPlaylist: !!(empty && empty.isPlaylist) });
+  if (!prompt.ask) return false;
   const yes = await confirmKid({
-    emoji: '♻️', title: `לשחזר ${keys.length} סרטונים שהוסרו?`,
-    text: `${keys.length} מהסרטונים של ${what} הוסרו בעבר, ולכן לא נוספו שוב. אפשר לשחזר אותם עכשיו — הם יחזרו לרשימת ההמתנה לאישור.`,
-    ok: 'שחזרו', cancel: 'לא, להשאיר מוסר'
+    emoji: prompt.emoji, title: prompt.title, text: prompt.text,
+    ok: prompt.ok, cancel: prompt.cancel
   });
   if (!yes) return false;
   const scope = await currentLibScope();

@@ -817,8 +817,6 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 /* ---------- Sheet setup wizard (v1.0.8) ---------- */
 #view-sheet-setup { min-height: 100dvh; }
 #view-sheet-setup.active { display: flex; align-items: center; justify-content: center; }
-.sheetsetup-paste { display: flex; flex-direction: column; gap: 10px; width: min(88vw, 420px); }
-.sheetsetup-join { display: flex; flex-direction: column; gap: 8px; width: min(88vw, 420px); }
 
 #view-create-profile { min-height: 100dvh; }
 #view-create-profile.active { display: flex; align-items: center; justify-content: center; }

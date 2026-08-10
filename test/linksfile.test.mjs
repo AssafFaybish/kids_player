@@ -463,6 +463,21 @@ test('the counted messages are grammatical in Hebrew for ONE of anything', () =>
   assert.match(many, /נוספו 2 ערוצים · 3 רשימות השמעה · 4 סרטונים/);
   assert.match(many, /5 סרטונים ממתינים/);
 
+  // deniedRestorePrompt too — it is the OTHER counted dialog, and it shipped ungrammatical
+  // for one commit because hebCount existed and was not used there (caught in the browser).
+  for (const isPlaylist of [false, true]) {
+    const one = deniedRestorePrompt(1, { isPlaylist });
+    assert.ok(!/\b1 סרטונים/.test(one.title + one.text), `ungrammatical singular: ${one.title}`);
+    assert.match(one.title, /סרטון אחד .* הוסר בעבר/);
+    assert.match(one.text, /הוא לא נוסף/);
+    assert.match(one.text, /להחזיר אותו/);
+    assert.equal(one.cancel, 'לא, להשאיר מוסר');
+    const many = deniedRestorePrompt(4, { isPlaylist });
+    assert.match(many.title, /^4 סרטונים .* הוסרו בעבר/);
+    assert.match(many.text, /הם לא נוספו/);
+    assert.equal(many.cancel, 'לא, להשאיר מוסרים');
+  }
+
   const conf = linksImportConfirm({ channels: 1, playlists: 1, videos: 1 }, { targetName: 'נ' });
   assert.ok(!/\b1 ערוצים|\b1 סרטונים|\b1 רשימות/.test(conf.text), `ungrammatical singular: ${conf.text}`);
   assert.match(conf.text, /ערוץ אחד · רשימת השמעה אחת · סרטון אחד/);

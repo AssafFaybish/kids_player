@@ -23,10 +23,13 @@ export function pendingSteps(current, steps) {
 /* ---------------- the steps ---------------- */
 
 /**
- * v1: force a FULL sheet re-parse on the next sync of every profile.
- * The sheet hash-skip is a performance cache — after an update that changes how
- * rows are interpreted (folders, thumbs, flags), the cache must not mask the
- * new interpretation.
+ * v1 (v1.0.8): force a full re-parse of every profile's source sheet.
+ *
+ * ⚠️ v1.0.38 — VESTIGIAL, ON PURPOSE. Nothing writes `sheetHash` any more (the sheet stage
+ * is gone and the migration clears the field), so on any device that has already migrated
+ * this loop finds nothing and does nothing. The ENTRY stays in STEPS regardless: removing it
+ * would shift `DATA_VERSION` and re-run step 2 on every installed device. Leave it as a
+ * documented no-op until the next deliberate DATA_VERSION change.
  */
 async function forceSheetReparse() {
   for (const p of await getProfiles()) {

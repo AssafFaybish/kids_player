@@ -1785,6 +1785,14 @@ pins that the consumers follow the config and that every address is well-formed.
   photographed rather than drawn. Entry points: the parent screen (`guide-add`), the
   last onboarding slide (`tour-more`), the About tab — and the child's EMPTY home
   (`#empty-guide`, no PIN: reading adds nothing), which is where a stuck parent is.
+- v1.0.19 — ⚠️ **HISTORY: everything in this block about the sheet itself is GONE (v1.0.38).**
+  `sheetwrite.js`, `starterRows`, `SHEETS_FOLDER_NAME`, `parseSourceSheet`, `sync.js` and the
+  app-created spreadsheet no longer exist; the read gate lives on only inside `sunset.js`
+  until 2026-09-10. **The one rule here that is still LIVE and load-bearing is the first
+  sentence** — `drive.file` is the only OAuth scope, and it must never grow. The rest is kept
+  for its lessons (an unreadable response is never an empty one; a write must be proven, not
+  merely not-refused) — those doctrines still govern `interpretSheetResponse`,
+  `interpretDriveDoc` and `parseLinksFile`.
 - v1.0.19 — **`drive.file` IS THE ONLY OAUTH SCOPE.** `spreadsheets` is classified
   SENSITIVE and was the sole cause of the "Google hasn't verified this app" screen.
   Verification was not an option: it needs a DNS-level Search Console Domain

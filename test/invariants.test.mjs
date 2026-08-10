@@ -1429,6 +1429,43 @@ test('a re-added deleted video is ANSWERED for, never silently destroyed (v1.0.3
     'only one scope is un-denied — the other tombstone survives and re-deletes the video');
 });
 
+test('both revive dialogs get their words from ONE place (v1.0.38)', () => {
+  // There are exactly two acts that revoke a deletion tombstone — re-adding one key
+  // (deniedReAddPrompt) and restoring a channel's backlog (deniedRestorePrompt) — and their
+  // wording must not drift into describing the same act differently. It already had: for one
+  // commit `offerDeniedRestore` kept an inline copy while the pure helper sat unused, which is
+  // also the "a helper with no consumer is a lie" smell (v1.0.37).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function offerDeniedRestore(');
+  assert.ok(at > 0, 'offerDeniedRestore is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /deniedRestorePrompt\(/, 'offerDeniedRestore grew its own dialog text again');
+  // no Hebrew dialog literal may live in either revive path — plan.js owns them
+  for (const frag of ['לשחזר', 'שחזרו', 'להשאיר מוסר']) {
+    assert.ok(!body.includes(frag), `offerDeniedRestore hard-codes "${frag}" — it belongs in plan.js`);
+  }
+  const plan = MODULES.get('www/js/plan.js');
+  for (const fn of ['deniedReAddPrompt', 'deniedRestorePrompt']) {
+    assert.match(plan, new RegExp('export function ' + fn + '\\('), `plan.${fn} is gone`);
+  }
+});
+
+test('a snapshot import never re-introduces a forgotten sheet (v1.0.38)', () => {
+  // An OLD snapshot still carries sheetUrl/sheetHash/sheetFolderId. Adopting one wholesale
+  // put a sheetUrl back on a profile that had already migrated — inert today, but able to
+  // outlive sunset.js itself, which is exactly what its deadline branch exists to prevent.
+  // libraryId must SURVIVE: it is what puts the imported records where the profile looks.
+  const snap = MODULES.get('www/js/snapshot.js');
+  const at = snap.indexOf('const mySrc = await getSources(profileId);');
+  assert.ok(at > 0, 'the snapshot sources adoption moved — re-anchor this guard');
+  const body = snap.slice(at, at + 600);
+  assert.match(body, /sheetUrl, sheetHash, sheetFolderId/, 'the sheet fields are adopted again');
+  assert.ok(!/putSources\(\{ \.\.\.snap\.sources/.test(snap),
+    'snap.sources is adopted wholesale again — that carries the sheet fields back in');
+  assert.ok(!/libraryId[^\n]*\.\.\.rest|libraryId,/.test(body),
+    'libraryId must NOT be stripped — the imported records would be unreachable');
+});
+
 test('EVERY unDeny in the UI layer sits next to a question (v1.0.38)', () => {
   // With the sheet gone there are exactly two sanctioned revocation paths, and both are an
   // explicit parental answer: offerDeniedReAdd (one key) and offerDeniedRestore (a
