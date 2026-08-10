@@ -427,6 +427,137 @@ export function screenOffMinutes(raw, defMin = 10) {
   return Math.min(600, Math.floor(n));
 }
 
+/* ---------------- rolling window (v1.0.39) ---------------- */
+
+/**
+ * v1.0.39 — PURE: how many newest videos to keep per channel. 0 = the feature is OFF.
+ *
+ * The OPPOSITE default to `screenOffMinutes` above, and deliberately so: that feature
+ * turns a screen off, this one DELETES the child's videos. So never-written ⇒ OFF, and
+ * every unusable value ⇒ OFF too. `planRejectedPurge`'s "nonsense falls back to the
+ * default, never to something destructive" rule points at 0 here, because 0 is the
+ * harmless direction — a typo must not start proposing deletions.
+ *
+ * A window BELOW `min` is refused (→ OFF) for the same reason: `keep: 1` on a 500-video
+ * channel is almost certainly a mistyped 100, and it would propose emptying the folder.
+ */
+export function keepNewestPerChannel(raw, { min = 10, max = 5000 } = {}) {
+  if (raw === null || raw === undefined || raw === '') return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;      // an explicit 0 IS the answer: off
+  const v = Math.floor(n);
+  if (v < min) return 0;
+  return Math.min(max, v);
+}
+
+/**
+ * v1.0.39 — PURE: which of a channel's videos sit OUTSIDE the rolling window?
+ *
+ * It PROPOSES; it never deletes. The sync stores nothing and acts on nothing — the parent
+ * reviews per channel and answers (the user's decision 2026-08-09). That is the whole
+ * safety model of this feature, so the split is structural: this function cannot delete
+ * because it returns keys, and the sync has no code that consumes them.
+ *
+ * Rules, each one a decision:
+ *  - LIVE records only. Pending and rejected are PARKED (`~pending`/`~rejected`), invisible
+ *    to the child, and owned by the approval queue and its 30-day purge — deleting them
+ *    here would silently answer a question the parent has not been asked.
+ *  - NEWEST first (`sortKey` desc, the same order `db.pageFolder` renders): the first
+ *    `keep` records stay, everything after them is proposed.
+ *  - A PROTECTED key is never proposed, at ANY depth. It does not consume a slot from the
+ *    newest `keep` either, so a folder with 30 protected favourites and a window of 200
+ *    settles at 230 rather than hiding 30 recent uploads. The child's favourite is the
+ *    thing this feature must never eat — a 5-year-old rewatches one video 200 times.
+ *  - `keep <= 0` ⇒ nothing proposed. OFF must be OFF everywhere, not only in the caller.
+ *
+ * @param records  live-or-not records of ONE library (the caller may pass everything)
+ * @param keep     window size; 0/negative ⇒ no proposal at all
+ * @param protectedKeys Set of keys the parent marked, plus anything the child has opened
+ * @returns { byChannel: { [sourceId]: { over: [key…], total, keptCount } }, total }
+ */
+export function planChannelWindow({ records, keep, protectedKeys = new Set() }) {
+  const n = Math.floor(Number(keep) || 0);
+  const out = { byChannel: {}, total: 0 };
+  if (!(n > 0)) return out;
+  const guard = protectedKeys instanceof Set ? protectedKeys : new Set(protectedKeys || []);
+
+  // group LIVE records by the folder that actually shows them
+  const groups = new Map();
+  for (const rec of records || []) {
+    if (!rec || !rec.key || rec.state !== 'live') continue;
+    const m = /^(?:ch|pl):(.+)$/.exec(String(rec.folderId || ''));
+    if (!m) continue; // loose singles have no channel folder and no window
+    if (!groups.has(m[1])) groups.set(m[1], []);
+    groups.get(m[1]).push(rec);
+  }
+
+  for (const [sourceId, list] of groups) {
+    // newest first. `sortKey` is the app's own display order (order.js) and is finite for
+    // every stored record (a non-finite one is refused at import), so this is total.
+    list.sort((a, b) => (Number(b.sortKey) || 0) - (Number(a.sortKey) || 0));
+    const over = [];
+    let kept = 0;
+    for (const rec of list) {
+      if (guard.has(rec.key)) { kept += 1; continue; } // protected: survives at any depth
+      if (kept < n) { kept += 1; continue; }
+      over.push(rec.key);
+    }
+    if (over.length) {
+      out.byChannel[sourceId] = { over, total: list.length, keptCount: list.length - over.length };
+      out.total += over.length;
+    }
+  }
+  return out;
+}
+
+/**
+ * v1.0.39 — PURE: split a proposal into the rows the review screen renders and the
+ * remainder it must SAY OUT LOUD.
+ *
+ * A channel 4000 over the window cannot render 4000 thumbnails, and a parent must never be
+ * asked to confirm a deletion whose size they were not told. The rows are the NEWEST of the
+ * proposed keys (the caller passes them in that order) — the ones most likely to be worth
+ * keeping — and `hidden` is what the confirm text has to name.
+ */
+/**
+ * v1.0.39 — PURE: every key the rolling window must not touch.
+ *
+ * Two sources: what the PARENT marked (`keepForever` on the record — the durable answer to
+ * "let me mark what not to delete") and the one honest signal that the CHILD used a video,
+ * a saved playback position (`posSec`).
+ *
+ * ⚠️ `unwrappedAt` IS NOT A WATCH SIGNAL, and assuming it was made this whole feature a
+ * no-op — measured in the browser: a 60-video channel 40 over its window proposed ZERO.
+ * `planGifts`' baseline stamps `unwrappedAt` on **every live record that did not become a
+ * gift**, precisely so it can never be gifted later, so after one sync almost the entire
+ * library carries it. Opening a gift writes the same field, and nothing distinguishes the
+ * two. The app has no play counter, so "the child watched this" is simply not knowable
+ * beyond `posSec` — which only exists while the resume setting is on. Hence the parent's
+ * ticks are the real protection, and this is the belt.
+ *
+ * Pure for a second reason, also found in the browser: per-child state is a **Map**
+ * (`loadGiftStates`), and the first version read it with `Object.entries` — which yields
+ * nothing, so the child half protected NOBODY. Both shapes are accepted and pinned.
+ */
+export function protectedWindowKeys({ records = [], states = null } = {}) {
+  const out = new Set();
+  for (const rec of records) if (rec && rec.key && rec.keepForever) out.add(rec.key);
+  const entries = states instanceof Map
+    ? states.entries()
+    : Object.entries(states && typeof states === 'object' ? states : {});
+  for (const [key, st] of entries) {
+    if (!key || !st) continue;
+    if (Number(st.posSec) > 0) out.add(key);
+  }
+  return out;
+}
+
+export function pruneReviewList(overKeys, cap = 200) {
+  const all = Array.isArray(overKeys) ? overKeys.filter(Boolean) : [];
+  const c = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.floor(Number(cap)) : 200;
+  return { rows: all.slice(0, c), hidden: Math.max(0, all.length - c), total: all.length };
+}
+
 /**
  * v1.0.34 — PURE: the idle screen-off state machine (user decisions 2026-08-07).
  * After `afterMin` minutes with NO user input while a video PLAYS: show "עדיין צופים?"

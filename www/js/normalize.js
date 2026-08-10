@@ -108,6 +108,13 @@ export function mergeVideoRecord(a, b) {
   out.normTitle = normalizeTitle(out.title);
   out.thumbId = s.thumbId || l.thumbId || null;
   out.thumbUrl = s.thumbUrl || l.thumbUrl || null;
+  // v1.0.39 — `keepForever` is GROW-ONLY, like unwrappedAt is min-merged forever: the
+  // parent marked this video as one the rolling window may never delete. `out = {...s}`
+  // alone would lose it whenever the OTHER copy wins (a peer whose `addedAt` is older
+  // becomes the survivor, and the fresh sync candidate carries no flag at all), and the
+  // failure mode is a protected favourite quietly becoming deletable on the next sync.
+  // OR is also commutative, so the Drive merge stays order-free.
+  if (s.keepForever || l.keepForever) out.keepForever = true;
   const merged = new Set([...(s.mergedFrom || []), ...(l.mergedFrom || [])]);
   if (l.key !== out.key) merged.add(l.key);
   out.mergedFrom = [...merged];

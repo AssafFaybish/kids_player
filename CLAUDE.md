@@ -291,6 +291,58 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.39 — **THE ROLLING WINDOW: the library stops growing forever, and NOTHING is ever
+  deleted without the parent answering** (user request 2026-08-09: "I want to stay up to
+  date with the newest videos" → their own conditions: *tell me which channel, let me mark
+  what not to delete, or wipe the channel and keep only new ones*).
+  - **THE FRAMING CORRECTION THAT CAME FIRST, and it was measured**: the per-channel cap
+    does NOT block new uploads. A folder at 500 — or at 3000 — accepts fresh RSS entries
+    (5 offered, 5 imported). The ceiling that eventually stops new videos is
+    `MAX_ITEMS_TOTAL`, and it stops them **for every channel at once**. So this feature
+    bounds GROWTH; it is not a fix for "new videos do not arrive".
+  - **`keepNewest` is per-profile, SYNCED, and 0 (OFF) unless written.** The opposite
+    default to `screenOffAfterMin`, deliberately: it is the only setting in the app that
+    deletes the CHILD's content, so it may never arrive with an update. Pure
+    `plan.keepNewestPerChannel` reads every unusable value — including a window below the
+    10 minimum — as OFF: a mistyped `1` must not propose emptying a folder.
+  - **THE SYNC NEVER DELETES FOR THE WINDOW.** `plan.planChannelWindow` PROPOSES (live
+    records only — pending/rejected are parked and belong to the approval queue and its
+    30-day purge), the מקורות tab NAMES the channels that are over, and the only code that
+    deletes sits behind a `confirmKid`. An invariants test bans any other module from even
+    mentioning `planChannelWindow` or `deleteVideosWithTombstones`.
+  - The review reuses `view-pick` with the MIRRORED default: rows arrive **unticked**
+    (they are the ones proposed for deletion; a tick means "keep forever"), where the
+    approval picker starts all-ticked. Two answers: delete those over the window, or
+    `pick-alt` — delete every video of the channel and let RSS repopulate it ("only new
+    from now on"; the backfill is already finished for a subscribed channel).
+    `pickHandlers.keepOpen` exists because a CANCELLED confirm must leave the parent on the
+    list with live buttons — the shared wiring nulls the handlers and navigates back.
+  - **`keepForever` is GROW-ONLY through `normalize.mergeVideoRecord`** (`s.keepForever ||
+    l.keepForever`). `out = {...s}` alone loses it whenever the other copy wins — a peer
+    with an older `addedAt` becomes the survivor, and the fresh sync candidate carries no
+    flag — and the failure mode is a protected favourite quietly becoming deletable.
+  - The prune uses **`db.deleteVideosWithTombstones`** (`reason: 'window-prune'`), chunked.
+    A tombstone is NOT optional: a raw delete is pure absence and every Drive merge is a
+    union, so a peer would re-push every pruned video (the v1.0.36 lesson). Consequence to
+    state out loud, and the confirm does: a pruned video returns only by re-adding the
+    channel (`app.offerDeniedRestore`, v1.0.37).
+  - **THREE DEFECTS THE BROWSER CAUGHT AND REASONING DID NOT** — all three would have
+    shipped green:
+    1. `giftStates` is a **Map**, and the first version read it with `Object.entries`, so
+       the child-side protection matched NOBODY.
+    2. **`unwrappedAt` IS NOT A WATCH SIGNAL.** `planGifts`' baseline stamps it on every
+       live record that did not become a gift, so after one sync nearly the whole library
+       carries it — trusting it made the feature a measured no-op (a 60-video channel 40
+       over its window proposed ZERO). The app has no play counter; `posSec` (resume) is
+       the only honest signal, so **the parent's ticks are the real protection**.
+    3. `pick-alt` deleted videos the parent had ALREADY marked keep-forever — a marked
+       video is not proposed, so it never appears in the list and cannot be re-ticked.
+       `allLive` now excludes `keepForever`.
+  - Verified end-to-end in the browser through the real PIN gate: 60 live + window 20 → 40
+    proposed → two ticked → confirm CANCELLED leaves 60 records, 0 marks and live buttons →
+    confirmed leaves exactly 22 (20 newest + 2 marked), 38 `window-prune` tombstones, and
+    the notice disappears. 12 unit tests + 6 wiring invariants, every guard proven red on a
+    planted regression.
 - v1.0.38 — **THE GOOGLE-SHEETS SOURCES LIST IS GONE** (user request). Full record:
   **[docs/V1038.md](docs/V1038.md)** — read it before touching `sunset`, `linksfile` or
   `libraryId`. The short version, because each line is an invariant elsewhere in this file:

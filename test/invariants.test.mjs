@@ -1709,3 +1709,91 @@ test('the sunset cannot revive a deletion, and a failed read never reaches the f
   assert.match(runner.slice(catchAt, catchAt + 320), /continue;/,
     'a failed read does not `continue` — it would forget a sheet it never folded, then delete the file');
 });
+
+/* ---------------- the rolling window (v1.0.39) ---------------- */
+
+test('THE SYNC NEVER DELETES FOR THE WINDOW — it has no consumer at all (v1.0.39)', () => {
+  // The whole safety model of this feature: planChannelWindow PROPOSES, and the only code
+  // that deletes runs behind a parent's confirm. If the sync ever starts consuming the
+  // proposal, the child's videos begin disappearing in the background — which is exactly
+  // what the user asked NOT to happen ("tell me first, let me mark what to keep").
+  for (const [p, s] of MODULES) {
+    // plan.js declares the planner, app.js holds the review, db.js DEFINES the bulk delete
+    if (p === 'www/js/plan.js' || p === 'www/js/app.js') continue;
+    assert.ok(!/planChannelWindow/.test(s),
+      `${p} reaches into the rolling window — only the parent-facing review may act on it`);
+    if (p === 'www/js/db.js') continue; // its definition, not a call
+    assert.ok(!/deleteVideosWithTombstones/.test(s),
+      `${p} performs a bulk prune — only the parent-facing review may delete for the window`);
+  }
+  const sync = MODULES.get('www/js/sync2.js');
+  assert.ok(!/keepNewest|keepForever/.test(sync),
+    'sync2.js now knows about the window — the proposal must stay out of the background pipeline');
+});
+
+test('the window review DELETES ONLY behind a confirm, and marks favourites FIRST (v1.0.39)', () => {
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function reviewChannelWindow(');
+  assert.ok(at > 0, 'the rolling-window review is gone');
+  const body = app.slice(at, app.indexOf('\n}\n\nasync function refreshChannelsList', at));
+  const askAt = body.indexOf('confirmKid(');
+  const delAt = body.indexOf('deleteVideosWithTombstones(');
+  const markAt = body.indexOf('markKeepForever(');
+  assert.ok(askAt > 0, 'the review no longer ASKS before deleting');
+  assert.ok(delAt > askAt, 'the deletion runs BEFORE the parent confirms it');
+  assert.match(body, /if \(!yes\)/, 'a declined confirm must change nothing');
+  // The marks are written first on purpose: a crash in between must leave the favourites
+  // protected, never leave them deletable with the deletion already committed.
+  assert.ok(markAt > 0 && markAt < delAt,
+    'the keep-forever marks must be written BEFORE the deletion');
+  // …and the tombstone form is required: a raw delete is pure absence, and every Drive
+  // merge is a union, so a peer would re-push every pruned video (the v1.0.36 lesson).
+  assert.ok(!/deleteVideoRaw\(/.test(body), 'the prune uses a tombstone-free delete — peers will resurrect it');
+});
+
+test('the window is surfaced BY NAME in the sources tab, and derived not stored (v1.0.39)', () => {
+  const app = MODULES.get('www/js/app.js');
+  const sources = app.slice(app.indexOf('async function refreshSourcesPanel('));
+  assert.match(sources.slice(0, sources.indexOf('\n}\n')), /refreshWindowBox\(\)/,
+    'the מקורות tab no longer tells the parent which channels are over the window');
+  // Nothing about the proposal may be persisted: a stored proposal is a second source of
+  // truth that goes stale on the next sync, pull or manual deletion — the entire class of
+  // bug v1.0.38 removed. It must be derived on demand.
+  const derive = app.slice(app.indexOf('async function channelsOverWindow('));
+  const body = derive.slice(0, derive.indexOf('\n}\n'));
+  assert.ok(!/putMeta\(/.test(body), 'the window proposal is being stored — it will go stale');
+  assert.match(body, /planChannelWindow\(/, 'the derivation no longer uses the pure planner');
+  // The protection set must come from the PURE helper, whose own test pins what counts
+  // (the parent's marks + a saved position, and NOT unwrappedAt — the gift baseline stamps
+  // that on nearly every record, which made the window propose nothing at all: measured).
+  assert.match(body, /protectedWindowKeys\(/, 'the protection set is no longer built by the pure helper');
+  assert.match(body, /states: giftStates/, 'the child\'s per-video state is no longer consulted');
+});
+
+test('the window setting is per-profile, synced, and OFF unless written (v1.0.39)', () => {
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /putSetting\(activeProfileId, 'keepNewest'/, 'the window is no longer per-profile');
+  assert.match(app, /getSetting\(activeProfileId, 'keepNewest', null\)/,
+    'reading it with a non-null fallback would make never-written indistinguishable from a real 0');
+  // it travels: a screen-time style decision belongs to the child, not to one tablet
+  const setAt = app.indexOf("$('keep-newest').addEventListener");
+  assert.ok(setAt > 0, 'the settings field is not wired');
+  const handler = app.slice(setAt, app.indexOf('});', setAt));
+  assert.match(handler, /maybeSchedulePush\(\)/, 'the window size no longer syncs to the other devices');
+  assert.match(handler, /keepNewestPerChannel\(/, 'the field writes a raw value — a mistyped 1 would propose emptying folders');
+  // saving a setting may never delete anything by itself
+  assert.ok(!/deleteVideo|markKeepForever/.test(handler), 'saving the setting deletes content');
+});
+
+test('"delete this whole channel" still honours an earlier keep-forever mark (v1.0.39)', () => {
+  // A marked video is not PROPOSED, so it never appears in the list and cannot be ticked
+  // again — which is exactly how the first version deleted two favourites the parent had
+  // already protected, behind a button whose label only mentioned a count. Measured in the
+  // browser. The promise made when they ticked ("יישארו לתמיד") has to outlive this button.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function reviewChannelWindow(');
+  const body = app.slice(at, app.indexOf('\n}\n\nasync function refreshChannelsList', at));
+  const decl = body.slice(body.indexOf('const allLive ='), body.indexOf(';', body.indexOf('const allLive =')));
+  assert.match(decl, /!r\.keepForever/,
+    'the "delete every video of this channel" pool includes keep-forever marks again');
+});

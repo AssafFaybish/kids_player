@@ -249,6 +249,49 @@ export async function setVideoFields(scopeId, key, patch) {
   });
 }
 
+/**
+ * v1.0.39 — mark videos the rolling window may NEVER delete (the parent ticked them).
+ * Grow-only: it only ever sets the flag, and `normalize.mergeVideoRecord` ORs it so the
+ * protection survives a sync and a peer's older copy.
+ */
+export async function markKeepForever(scopeId, keys) {
+  const list = [...new Set((keys || []).filter(Boolean))];
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const slice = list.slice(i, i + CHUNK);
+    await tx(['videos'], 'readwrite', (videos) => {
+      for (const key of slice) {
+        const r = videos.get([scopeId, key]);
+        r.onsuccess = () => { if (r.result) videos.put({ ...r.result, keepForever: true, updatedAt: Date.now() }); };
+      }
+    });
+  }
+  return list.length;
+}
+
+/**
+ * v1.0.39 — the BULK form of deleteVideo, for the rolling window's prune.
+ *
+ * A channel can sit thousands of videos over the window, and one transaction per key
+ * (three stores each) is minutes of jank on a tablet. Chunked, like putVideos. The
+ * tombstone is NOT optional here: a raw delete is pure row absence, and every Drive merge
+ * is a union — a peer would re-push every pruned video straight back (the v1.0.36 lesson).
+ */
+export async function deleteVideosWithTombstones(scopeId, keys, reason = 'window-prune') {
+  const list = [...new Set((keys || []).filter(Boolean))];
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const slice = list.slice(i, i + CHUNK);
+    const now = Date.now();
+    await tx(['videos', 'denylist', 'opLog'], 'readwrite', (videos, deny, ops) => {
+      for (const key of slice) {
+        videos.delete([scopeId, key]);
+        deny.put({ scopeId, key, at: now, reason });
+        ops.add({ scopeId, op: 'deny', key, at: now });
+      }
+    });
+  }
+  return list.length;
+}
+
 /** Delete + tombstone + oplog atomically (contract #4). Durable across all future syncs. */
 export async function deleteVideo(scopeId, key, reason = 'parent-delete') {
   const now = Date.now();
