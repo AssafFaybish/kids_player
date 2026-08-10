@@ -555,10 +555,43 @@ export function protectedWindowKeys({ records = [], states = null } = {}) {
   return out;
 }
 
+
 export function pruneReviewList(over, cap = 200) {
   const all = Array.isArray(over) ? over.filter(Boolean) : [];
   const c = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.floor(Number(cap)) : 200;
   return { rows: all.slice(0, c), hidden: Math.max(0, all.length - c), total: all.length };
+}
+
+/**
+ * v1.0.39 — PURE: the rolling window's confirm. The words ARE the feature (the v1.0.27
+ * rule), and three of them were missing or wrong:
+ *
+ *  - **`hidden` must be NAMED.** `pruneReviewList`'s own contract says a parent must never
+ *    confirm a deletion whose size they were not told, and the review renders at most
+ *    `PRUNE_REVIEW_CAP` rows. A parent could press "סמן הכול", read "סומנו להשארה: 200",
+ *    and still be deleting 3800 — because ticking can only reach what is rendered.
+ *  - **`emptied` must be SAID.** Wiping a channel removes its tile from the child's home,
+ *    and because the prune writes tombstones the current RSS window does NOT come back —
+ *    only a genuinely NEW upload repopulates it, which for a dormant channel is never.
+ *  - **THE WAY BACK IS NOT A PROMISE.** The old text said "כדי להחזיר אותם צריך להוסיף את
+ *    הערוץ מחדש" as a fact. It is conditional: re-adding means remove-then-add, the
+ *    orphan sweep then takes the channel's remaining records (including ones marked keep
+ *    forever), the backfill only re-arms when no other library still subscribes, and a
+ *    keyless install gets RSS's ~15 newest instead of the back catalogue — so the pruned
+ *    keys may never be re-offered and `offerDeniedRestore` will have nothing to restore.
+ *    It is stated as "not always possible", because that is what it is.
+ */
+export function pruneConfirmText({ name = '', count = 0, hidden = 0, kept = 0, emptied = false } = {}) {
+  const n = Math.max(0, Number(count) | 0);
+  const h = Math.max(0, Number(hidden) | 0);
+  const k = Math.max(0, Number(kept) | 0);
+  const parts = [`מ"${name}".`];
+  if (h) parts.push(`מתוכם ${h} אינם מוצגים ברשימה שראיתם.`);
+  if (k) parts.push(`${k} סרטונים שסימנתם יישארו לתמיד ולא יוצעו שוב.`);
+  parts.push('סרטונים שסומנו בעבר להשארה לא יימחקו.');
+  if (emptied) parts.push('התיקייה של הערוץ תתרוקן ותיעלם ממסך הילד עד שיתפרסם סרטון חדש.');
+  parts.push('המחיקה היא לצמיתות: הסרטונים לא יחזרו בסנכרון, והחזרה שלהם בהמשך אינה מובטחת.');
+  return { title: `למחוק ${n} סרטונים?`, text: parts.join(' ') };
 }
 
 /**

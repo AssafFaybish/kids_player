@@ -489,6 +489,32 @@ export async function deleteVideoState(profileId, key) {
   await tx(['profileVideoState'], 'readwrite', (s) => { s.delete([profileId, key]); });
 }
 
+/**
+ * v1.0.39 — the BULK form, for the rolling window's prune. Chunked, and across every
+ * profile the caller names.
+ *
+ * NOT optional bookkeeping. `planGifts` counts `outstanding` gifts straight out of this
+ * store — `giftRank && !unwrappedAt`, records or no records — and stops gifting once
+ * `outstanding >= baseline`. So pruning even a handful of UN-OPENED gifts would leave
+ * orphan ranks that jam gifting **permanently**: the child never receives another 🎁, and
+ * `planGiftRunawayRepair` cannot rescue it (it no-ops below its 60-record floor). The 🎁
+ * tile also counts index entries, so the orphans would promise a folder that resolves to
+ * nothing. And `drive.serializeStateEntry` emits every row, so they would sit in the
+ * family document forever — in a feature whose whole purpose is bounding growth.
+ */
+export async function deleteVideoStates(profileIds, keys) {
+  const pids = [...new Set((profileIds || []).filter(Boolean))];
+  const list = [...new Set((keys || []).filter(Boolean))];
+  if (!pids.length || !list.length) return 0;
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const slice = list.slice(i, i + CHUNK);
+    await tx(['profileVideoState'], 'readwrite', (s) => {
+      for (const pid of pids) for (const key of slice) s.delete([pid, key]);
+    });
+  }
+  return list.length * pids.length;
+}
+
 /** Unwrap: set unwrappedAt, DELETE giftRank (drops out of by_gift automatically). */
 export async function unwrapGift(profileId, key) {
   await tx(['profileVideoState', 'opLog'], 'readwrite', (s, ops) => {

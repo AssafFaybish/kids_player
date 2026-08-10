@@ -11,7 +11,7 @@ import {
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
   planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
-  effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys
+  effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText
 } from '../www/js/plan.js';
 
 import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
@@ -1640,4 +1640,30 @@ test('protectedWindowKeys: reads a MAP of child state, not only an object (v1.0.
     assert.deepEqual([...protectedWindowKeys({ records: [], states: bad })], [], JSON.stringify(bad));
   }
   assert.deepEqual([...protectedWindowKeys({})], []);
+});
+
+test('pruneConfirmText: names the hidden rows, the emptying, and does not PROMISE a way back (v1.0.39)', () => {
+  // pruneReviewList's contract: "a parent must never be asked to confirm a deletion whose
+  // size they were not told". The review renders at most PRUNE_REVIEW_CAP rows, so a parent
+  // could tick every row they were SHOWN, read "סומנו להשארה: 200", and still delete 3800.
+  const big = pruneConfirmText({ name: 'ערוץ', count: 3800, hidden: 3600, kept: 200 });
+  assert.match(big.title, /3800/);
+  assert.match(big.text, /3600/, 'the rows the parent could not even see are unnamed');
+  assert.match(big.text, /200 סרטונים שסימנתם/);
+  // wiping a channel removes its tile from the child's home, and the tombstones mean the
+  // CURRENT RSS window does not come back either — only a genuinely new upload
+  assert.match(pruneConfirmText({ name: 'ערוץ', count: 10, emptied: true }).text, /תתרוקן/);
+  assert.ok(!/תתרוקן/.test(pruneConfirmText({ name: 'ערוץ', count: 10 }).text),
+    'a partial prune must not claim the folder disappears');
+  // THE WAY BACK IS CONDITIONAL, not a promise: re-adding means remove-then-add (whose
+  // orphan sweep takes the channel's remaining records), the backfill re-arms only when no
+  // other library subscribes, and a keyless install only ever sees the RSS window.
+  const plain = pruneConfirmText({ name: 'ערוץ', count: 5 }).text;
+  assert.match(plain, /אינה מובטחת/, 'the way back is stated as a certainty again');
+  assert.ok(!/צריך להוסיף את הערוץ מחדש/.test(plain), 'the old unconditional promise is back');
+  // garbage never leaks a NaN onto the parent's screen
+  for (const bad of [undefined, null, {}, { count: NaN, hidden: -3, kept: 'x' }]) {
+    const r = pruneConfirmText(bad || undefined);
+    assert.ok(!/NaN|undefined/.test(r.title + r.text), JSON.stringify(bad));
+  }
 });

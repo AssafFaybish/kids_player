@@ -1794,8 +1794,16 @@ test('"delete this whole channel" still honours an earlier keep-forever mark (v1
   const at = app.indexOf('async function reviewChannelWindow(');
   const body = app.slice(at, app.indexOf('\n}\n\nasync function refreshChannelsList', at));
   const decl = body.slice(body.indexOf('const allLive ='), body.indexOf(';', body.indexOf('const allLive =')));
-  assert.match(decl, /!r\.keepForever/,
-    'the "delete every video of this channel" pool includes keep-forever marks again');
+  // The pool must exclude the WHOLE protected set, not just `keepForever`: the other half
+  // (a saved playback position) has the identical property — never proposed, therefore never
+  // rendered, therefore impossible for the parent to tick and save.
+  assert.match(decl, /!guarded\.has\(r\.key\)/,
+    'the "delete every video of this channel" pool no longer excludes the full protected set');
+  assert.match(body, /const guarded = protectedWindowKeys\(/,
+    'the protected set is no longer built from the pure helper inside the review');
+  // and the same set must gate the PROPOSAL, so the two buttons cannot disagree
+  assert.match(body, /entry\.over\.map\(\(k\) => index\.get\(k\)\)\.filter\(\(r\) => r && !guarded\.has\(r\.key\)\)/,
+    'the proposal no longer filters against the protected set');
 });
 
 test('the window prune RE-READS before deleting — the proposal can go stale (v1.0.39)', () => {
@@ -1815,4 +1823,51 @@ test('the window prune RE-READS before deleting — the proposal can go stale (v
     'the re-read no longer filters to still-prunable live records');
   // and the toast must report what was ACTUALLY removed, not the pre-confirm intent
   assert.match(body, /toast\(`נמחקו \$\{removed\}/, 'the toast reports the stale count again');
+});
+
+test('the prune clears per-child gift state, or 🎁 jams forever (v1.0.39)', () => {
+  // THE SEVEREST audit finding. planGifts counts `outstanding` straight out of
+  // profileVideoState — `giftRank && !unwrappedAt`, whether or not the video record still
+  // exists — and stops gifting at `outstanding >= baseline`. Prune a handful of un-opened
+  // gifts and the child NEVER receives another one; planGiftRunawayRepair cannot rescue it
+  // (it no-ops below its 60-record floor). The 🎁 tile counts the same index, so the orphans
+  // would also promise a folder that resolves to nothing.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const commit = async (everything)');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  assert.match(body, /deleteVideoStates\(/, 'the prune leaves orphan gift state — gifting will jam');
+  const del = body.indexOf('deleteVideosWithTombstones(');
+  assert.ok(body.indexOf('deleteVideoStates(') > del, 'the state must be cleared for what was ACTUALLY deleted');
+  assert.match(body, /giftStates\.delete\(/, 'the in-memory gift map keeps the orphans until the next load');
+  // …for every profile that reads this library, not just the active one: a legacy shared
+  // scope means a sibling's gift counter is jammed just as easily.
+  assert.match(body, /src\.libraryId === scope/, 'only the active profile\'s state is cleared');
+});
+
+test('a failed prune is SAID, and never leaves the buttons inert (v1.0.39)', () => {
+  // `settled` used to be released only on a cancelled confirm, so any rejection inside the
+  // work (a tx-aborted write, a failed chunk) left the parent on the review with both delete
+  // buttons dead and no message — the handlers' .catch(() => {}) ate the reason.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const commit = async (everything)');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  assert.match(body, /\} catch \(e\) \{/, 'the commit no longer catches its own failure');
+  const cat = body.slice(body.lastIndexOf('} catch (e) {'));
+  assert.match(cat, /settled = false/, 'a failure leaves settled=true — both buttons stay inert forever');
+  assert.match(cat, /toast\(/, 'a failed deletion says nothing to the parent');
+  // ticking every row is a legitimate answer and must not open a "delete 0" confirm
+  assert.match(body, /if \(!doomed\.length\)/, 'an empty selection still raises a confirm for zero videos');
+});
+
+test('only ONE window review can be open at a time (v1.0.39)', () => {
+  // The prelude does two full library reads before it navigates, so a double-tap let a
+  // second review repaint the list and replace pickHandlers — and the resulting nav.go
+  // fired the pick view's onLeave, which nulls whatever pickHandlers holds: the LIVE one.
+  // The screen became a zombie with dead buttons and two 'pick' entries on the stack.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function reviewChannelWindow(');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /windowReviewOpening \|\| nav\.isActive\('pick'\)/,
+    'a second review can open over a live one again');
+  assert.match(body, /finally/, 'the in-flight flag is not released on every path');
 });

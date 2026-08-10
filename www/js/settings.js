@@ -108,8 +108,12 @@ export function mergeSettingEntry(name, a, b) {
   if (a.v === b.v) return a;
   const safe = SAFE_ON_TIE[name];
   if (safe !== undefined) return a.v === safe ? a : b;
-  // v1.0.39: a numeric setting whose safe direction is "delete less" — see SAFE_ON_TIE_MAX
+  // v1.0.39: a numeric setting whose safe direction is "delete less" — see SAFE_ON_TIE_MAX.
+  // 0 IS NOT A SMALL WINDOW, IT IS OFF, and off deletes nothing at all — so it wins before
+  // the max rule. Without that, an exact `at` collision let the phone turn the feature back
+  // ON for a parent who had just switched it off on the tablet.
   if (SAFE_ON_TIE_MAX.has(name) && Number.isFinite(Number(a.v)) && Number.isFinite(Number(b.v))) {
+    if (Number(a.v) === 0 || Number(b.v) === 0) return Number(a.v) === 0 ? a : b;
     return Number(a.v) >= Number(b.v) ? a : b;
   }
   // No safe direction (the PIN hash is just an opaque string): order by VALUE so both

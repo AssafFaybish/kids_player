@@ -29,7 +29,8 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
-  keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys } from './plan.js';
+  keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
+  pruneConfirmText } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -2974,9 +2975,9 @@ async function refreshWindowBox() {
     const lc = subs.find((c) => c.channelId === id) || null;
     const name = (lc && lc.titleOverride) || (ch && ch.title) || id;
     const li = document.createElement('li');
-    const img = document.createElement('img');
+    const img = document.createElement(ch && ch.logoUrl ? 'img' : 'span');
     img.className = 'li-thumb';
-    if (ch && ch.logoUrl) img.src = ch.logoUrl;
+    if (ch && ch.logoUrl) img.src = ch.logoUrl; else img.textContent = '📺';
     const body = document.createElement('div');
     body.className = 'li-body';
     const t = document.createElement('div');
@@ -3016,7 +3017,26 @@ async function refreshWindowBox() {
  *              subscribed channel, so RSS is all that is left, which IS "only new")
  * A tick always wins over both, so a protected favourite is never in danger.
  */
+let windowReviewOpening = false;
 async function reviewChannelWindow(sourceId, name) {
+  // ONE review at a time. The prelude does two full library reads before it navigates, so a
+  // double-tap on 🧺 בדיקה (or a tap on a second over-limit row) used to let a SECOND review
+  // finish behind the first: it repainted the list and replaced `pickHandlers`, and the
+  // resulting `nav.go('pick')` fired the pick view's onLeave, which nulls whatever
+  // pickHandlers currently holds — the LIVE one. The screen was then a zombie: B's rows with
+  // dead buttons, two 'pick' entries on the stack, and a confirm that could name channel A
+  // over channel B's list. Reachable only because `keepOpen` deliberately keeps the handlers
+  // alive while the screen is up.
+  if (windowReviewOpening || nav.isActive('pick')) return false;
+  windowReviewOpening = true;
+  try {
+    return await openWindowReview(sourceId, name);
+  } finally {
+    windowReviewOpening = false;
+  }
+}
+
+async function openWindowReview(sourceId, name) {
   const scope = await currentLibScope();
   if (!scope) return false;
   const over = await channelsOverWindow();
@@ -3024,15 +3044,22 @@ async function reviewChannelWindow(sourceId, name) {
   if (!entry || !entry.over.length) { await refreshWindowBox(); return false; }
 
   const index = await db.loadMergeIndex(scope);
-  const proposed = entry.over.map((k) => index.get(k)).filter(Boolean);
+  const records = [...index.values()];
+  // ONE protected set for BOTH buttons, and ONE list of records behind every number on the
+  // screen. Two separate defects came from not doing this:
+  //  · `allLive` excluded only `keepForever`, so pick-alt tombstoned the OTHER protected
+  //    half (a saved playback position). Identical shape to the bug that exclusion fixed:
+  //    a protected video is never proposed, so it is never rendered, so it cannot be
+  //    ticked — the parent has no way to save it.
+  //  · the labels counted records found in THIS read while the delete pool used the keys
+  //    from the earlier one, so the button could say 38 and the confirm 40.
+  const guarded = protectedWindowKeys({ records, states: giftStates });
+  const proposed = entry.over.map((k) => index.get(k)).filter((r) => r && !guarded.has(r.key));
   const { rows, hidden, total } = pruneReviewList(proposed, PRUNE_REVIEW_CAP);
-  // What pick-alt ("start this channel over") acts on: every live video of the source
-  // EXCEPT the ones already marked keep-forever. Without that exclusion the button
-  // silently broke the promise made when the parent ticked them ("יישארו לתמיד") — and
-  // it could not be caught by ticking again, because a protected video is not proposed
-  // and so never appears in the list. Found in the browser: two marked favourites were
-  // deleted by a button whose label only ever mentioned a count.
-  const allLive = [...index.values()].filter((r) => r && r.state === 'live' && !r.keepForever
+  const proposedKeys = proposed.map((r) => r.key);
+  // What pick-alt ("start this channel over") acts on: every live video of the source that
+  // is not protected at all.
+  const allLive = records.filter((r) => r && r.state === 'live' && !guarded.has(r.key)
     && (r.folderId === 'ch:' + sourceId || r.folderId === 'pl:' + sourceId));
 
   const keepTicked = new Set();
@@ -3046,6 +3073,11 @@ async function reviewChannelWindow(sourceId, name) {
     $('pick-alt').textContent = `מחיקת כל ${Math.max(0, allLive.length - keepTicked.size)} הסרטונים של הערוץ`;
   };
   $('pick-title').textContent = 'מה למחוק מהערוץ?';
+  // the borrowed chrome, retargeted: a green ✅ over a deletion screen and "סמן הכול"
+  // (which here means "keep everything") both read backwards
+  $('pick-emoji').textContent = '🧺';
+  $('pick-all').textContent = 'להשאיר הכול';
+  $('pick-none').textContent = 'לא להשאיר אף אחד';
   $('pick-alt').classList.remove('hidden');
   ul.innerHTML = '';
   const boxes = new Map();
@@ -3093,41 +3125,80 @@ async function reviewChannelWindow(sourceId, name) {
   const commit = async (everything) => {
     if (settled) return;
     settled = true;
-    const pool = everything ? allLive.map((r) => r.key) : entry.over;
-    const doomed = pool.filter((k) => !keepTicked.has(k));
-    const yes = await confirmKid({
-      emoji: '🧺',
-      title: `למחוק ${doomed.length} סרטונים?`,
-      text: `מ"${name}". ${keepTicked.size ? `${keepTicked.size} סרטונים שסימנתם יישארו לתמיד ולא יוצעו שוב. ` : ''}`
-        + 'סרטונים שסומנו בעבר להשארה לא יימחקו. '
-        + 'הסרטונים שיימחקו לא יחזרו בסנכרון הבא — כדי להחזיר אותם צריך להוסיף את הערוץ מחדש.',
-      ok: 'מחיקה', cancel: 'ביטול', danger: true
-    });
-    if (!yes) { settled = false; return; } // stay on the screen — nothing happened
-    let removed = 0;
-    await withChannelWait('saving', { count: doomed.length }, async () => {
-      // the marks FIRST: a crash between the two must leave the favourites protected,
-      // never leave them deletable with the deletion already done
-      if (keepTicked.size) await db.markKeepForever(scope, [...keepTicked]);
-      // RE-READ before deleting. The proposal was computed when the screen opened, and a
-      // sync, a Drive pull or the parent's own action in another tab can have moved a video
-      // since: approved into pending, rejected, protected, or deleted outright. Writing a
-      // tombstone for something that is no longer a prunable live record would delete
-      // (and permanently deny) a video nobody in this dialog was asked about.
-      const fresh = await db.loadMergeIndex(scope);
-      const live = doomed.filter((k) => {
-        const r = fresh.get(k);
-        return r && r.state === 'live' && !r.keepForever;
+    // EVERY release of `settled` goes through here. It used to be released only on a
+    // cancelled confirm, so ANY rejection inside the work below (a tx-aborted write, a
+    // quota failure, a chunk of the delete) left the parent on the review with both delete
+    // buttons permanently inert, no message, and possibly the marks written but nothing
+    // deleted — the `.catch(() => {})` on the handlers swallowed the reason.
+    try {
+      const pool = everything ? allLive.map((r) => r.key) : proposedKeys;
+      const doomed = pool.filter((k) => !keepTicked.has(k));
+      if (!doomed.length) { // ticking every row is a legitimate answer: nothing to do
+        toast(keepTicked.size ? 'לא נמחק כלום — כל הסרטונים סומנו להשארה' : 'אין מה למחוק');
+        settled = false;
+        return;
+      }
+      // `emptied`: this wipe leaves the channel with no live video, so its tile disappears
+      // from the child's home — and the tombstones mean the current RSS window will NOT
+      // come back, only a genuinely new upload.
+      const emptied = everything && !allLive.some((r) => keepTicked.has(r.key))
+        && !records.some((r) => r.state === 'live' && guarded.has(r.key)
+          && (r.folderId === 'ch:' + sourceId || r.folderId === 'pl:' + sourceId));
+      const { title, text } = pruneConfirmText({
+        name, count: doomed.length, kept: keepTicked.size, emptied,
+        // only the window answer hides rows; the wipe acts on everything either way
+        hidden: everything ? 0 : hidden
       });
-      if (live.length) await db.deleteVideosWithTombstones(scope, live, 'window-prune');
-      removed = live.length;
-      await loadGiftStates();
-      await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList(), refreshWindowBox()]);
-      renderHome();
-      maybeSchedulePush();
-    });
-    if (nav.isActive('pick')) nav.back();
-    toast(`נמחקו ${removed} סרטונים מ"${name}"`);
+      const yes = await confirmKid({ emoji: '🧺', title, text, ok: 'מחיקה', cancel: 'ביטול', danger: true });
+      if (!yes) { settled = false; return; } // stay on the screen — nothing happened
+      let removed = 0;
+      await withChannelWait('saving', { count: doomed.length }, async () => {
+        // the marks FIRST: a crash between the two must leave the favourites protected,
+        // never leave them deletable with the deletion already done
+        if (keepTicked.size) await db.markKeepForever(scope, [...keepTicked]);
+        // RE-READ before deleting. The proposal was computed when the screen opened, and a
+        // sync, a Drive pull or the parent's own action in another tab can have moved a video
+        // since: approved into pending, rejected, protected, or deleted outright. Writing a
+        // tombstone for something that is no longer a prunable live record would delete
+        // (and permanently deny) a video nobody in this dialog was asked about.
+        const fresh = await db.loadMergeIndex(scope);
+        const live = doomed.filter((k) => {
+          const r = fresh.get(k);
+          return r && r.state === 'live' && !r.keepForever;
+        });
+        if (live.length) await db.deleteVideosWithTombstones(scope, live, 'window-prune');
+        // …AND their per-child state. Not bookkeeping: planGifts counts outstanding gifts
+        // straight out of that store, records or none, and stops gifting at
+        // `outstanding >= baseline` — so orphan un-opened ranks would jam 🎁 FOREVER
+        // (planGiftRunawayRepair no-ops below its 60-record floor). The 🎁 tile counts the
+        // same index, so they would also promise a folder that resolves to nothing, and
+        // drive.serializeStateEntry would carry them in the family document indefinitely.
+        // Cleared for every profile that READS this library, not just the active one: a
+        // legacy shared scope means a sibling's gift counter is jammed just as easily.
+        if (live.length) {
+          const pids = [];
+          for (const p of await getProfiles()) {
+            const src = await db.getSources(p.id).catch(() => null);
+            if (src && src.libraryId === scope) pids.push(p.id);
+          }
+          if (activeProfileId && !pids.includes(activeProfileId)) pids.push(activeProfileId);
+          await db.deleteVideoStates(pids, live);
+          for (const k of live) giftStates.delete(k);
+        }
+        removed = live.length;
+        await loadGiftStates();
+        await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList(), refreshWindowBox()]);
+        renderHome();
+        maybeSchedulePush();
+      });
+      if (nav.isActive('pick')) nav.back();
+      toast(`נמחקו ${removed} סרטונים מ"${name}"`);
+    } catch (e) {
+      // Say so, and let them try again — a silent dead end is the worse failure.
+      settled = false;
+      toast('המחיקה נכשלה — אפשר לנסות שוב');
+      throw e;
+    }
   };
 
   pickHandlers = {
@@ -3439,6 +3510,9 @@ function pickChannelVideos(channelId, name) {
       // v1.0.39: the view is shared with the rolling-window review, which retitles it and
       // shows a third button. Restore this screen's own chrome rather than inheriting it.
       $('pick-title').textContent = 'אילו סרטונים להשאיר?';
+      $('pick-emoji').textContent = '✅';
+      $('pick-all').textContent = 'סמן הכול';
+      $('pick-none').textContent = 'נקה בחירה';
       $('pick-alt').classList.add('hidden');
 
       const paint = () => {

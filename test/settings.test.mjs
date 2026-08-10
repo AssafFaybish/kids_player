@@ -176,9 +176,13 @@ test('keepNewest ties resolve to the LARGER window, and stay commutative (v1.0.3
   const B = { v: 200, at: 1000 };
   assert.equal(mergeSettingEntry('keepNewest', A, B).v, 200);
   assert.equal(mergeSettingEntry('keepNewest', B, A).v, 200, 'and it must be commutative');
-  // 0 (off) vs a window: off deletes nothing, but a window is what the parent asked for —
-  // the rule is simply "the larger number", and 0 loses to any real window.
-  assert.equal(mergeSettingEntry('keepNewest', { v: 0, at: 5 }, { v: 50, at: 5 }).v, 50);
+  // 0 IS NOT A SMALL WINDOW, IT IS OFF, and off deletes nothing at all — so it wins the tie
+  // before the max rule. Without this, an exact `at` collision let the phone turn the
+  // feature back ON for a parent who had just switched it off on the tablet.
+  assert.equal(mergeSettingEntry('keepNewest', { v: 0, at: 5 }, { v: 50, at: 5 }).v, 0);
+  assert.equal(mergeSettingEntry('keepNewest', { v: 50, at: 5 }, { v: 0, at: 5 }).v, 0, 'and commutative');
+  // a real timestamp still decides — OFF does not outrank recency
+  assert.equal(mergeSettingEntry('keepNewest', { v: 0, at: 5 }, { v: 50, at: 9 }).v, 50);
   // a real timestamp still decides — the tie-break may never override recency
   assert.equal(mergeSettingEntry('keepNewest', { v: 9, at: 2000 }, { v: 200, at: 1000 }).v, 9);
   // and it does not leak onto other numeric settings (they keep the documented ordering)

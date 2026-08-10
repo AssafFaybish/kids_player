@@ -357,11 +357,45 @@ pins that the consumers follow the config and that every address is well-formed.
     so one child's window prunes the shared folder for the siblings too. The settings label
     names the child (`keep-newest-owner`) and every deletion is reviewed per channel, so
     nothing happens unseen — but the effect crosses profiles.
+  - **THE ADVERSARIAL PASS FOUND FIVE MORE, and the first one was severe** (all fixed,
+    all pinned):
+    1. **ORPHAN GIFT STATE JAMS 🎁 FOREVER.** `planGifts` counts `outstanding` straight out
+       of `profileVideoState` — `giftRank && !unwrappedAt`, records or no records — and stops
+       gifting at `outstanding >= baseline`. Pruning a handful of UN-OPENED gifts therefore
+       meant the child never received another one, and `planGiftRunawayRepair` cannot rescue
+       it (it no-ops below its 60-record floor). The 🎁 tile counts the same index, so the
+       orphans also promised a folder that resolved to nothing, and `serializeStateEntry`
+       would have carried them in the Drive doc forever — in a feature whose purpose is
+       bounding growth. `db.deleteVideoStates` now clears them for **every profile that reads
+       the library**, not just the active one (a legacy shared scope jams a sibling too).
+    2. **`pick-alt` deleted the `posSec`-protected half** — the exact twin of the
+       keep-forever bug: protected ⇒ never proposed ⇒ never rendered ⇒ impossible to tick.
+       ONE `guarded` set now gates the proposal AND the wipe pool.
+    3. **`SAFE_ON_TIE_MAX` turned an explicit OFF into ON**: 0 is not a small window, it is
+       off, so it wins the tie before the max rule.
+    4. **A throw inside `commit` was a silent dead end** — `settled` was released only on a
+       cancelled confirm, so any failed write left both buttons inert with no message.
+       try/catch releases it and says so.
+    5. **The review could be opened twice** (its prelude does two library reads before
+       navigating): the second open repainted the list and replaced `pickHandlers`, and the
+       `nav.go('pick')` then nulled the LIVE handler — a zombie screen with dead buttons.
+       One-at-a-time guard.
+    Plus the honesty fixes the feature's own rules demanded: pure `plan.pruneConfirmText`
+    names the rows the parent could NOT see (`hidden`), says when the folder will empty and
+    vanish from the child's home, and states the way back as **not guaranteed** (re-adding
+    means remove-then-add, whose orphan sweep takes the channel's remaining records; the
+    backfill re-arms only when no other library subscribes; a keyless install only sees the
+    RSS window). The borrowed `view-pick` chrome is retargeted (🧺, "להשאיר הכול") instead of
+    heading a deletion screen with a green ✅.
+  - ⚠️ **`posSec` IS A WEAK BELT, and the reason is worth knowing**: a video watched to the
+    END clears its position (`resumeSaveDecision` → 'clear'), so the most-rewatched video —
+    the one the rationale is about — carries no signal at all. Only ABANDONED videos are
+    belted. The app has no play counter; the parent's ticks are the protection.
   - Verified end-to-end in the browser through the real PIN gate: 60 live + window 20 → 40
     proposed → two ticked → confirm CANCELLED leaves 60 records, 0 marks and live buttons →
     confirmed leaves exactly 22 (20 newest + 2 marked), 38 `window-prune` tombstones, and
     the notice disappears. The wipe path verified to honour an earlier mark (28 of 30).
-    16 unit tests + 8 wiring invariants, every guard proven red on a planted regression.
+    20 unit tests + 11 wiring invariants, every guard proven red on a planted regression.
 - v1.0.38 — **THE GOOGLE-SHEETS SOURCES LIST IS GONE** (user request). Full record:
   **[docs/V1038.md](docs/V1038.md)** — read it before touching `sunset`, `linksfile` or
   `libraryId`. The short version, because each line is an invariant elsewhere in this file:
