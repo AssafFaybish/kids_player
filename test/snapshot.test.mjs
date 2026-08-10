@@ -433,3 +433,24 @@ test('a REJECTED library scope takes the sheet folder down with it', () => {
     'ch:UCaaaaaaaaaaaaaaaaaaaaaa'
   );
 });
+
+test('a snapshot restore keeps the parent\'s keep-forever marks (v1.0.39)', () => {
+  // The export carries full records, so the mark travelled — and the import built an
+  // EXPLICIT record that dropped it, so a restore silently unprotected every favourite and
+  // the next rolling-window review proposed them again. Same class as the srcChannel*
+  // fields this function already carries for exactly that reason.
+  const base = {
+    key: 'yt:aaaaaaaaaaa', type: 'youtube', id: 'aaaaaaaaaaa', srcUrl: 'https://youtu.be/aaaaaaaaaaa',
+    title: 'שיר', folderId: 'ch:UC1', channelId: 'UC1', state: 'live', addedAt: 100, sortKey: 5
+  };
+  const opts = { validScopes: new Set(['lib:1', 'prof:p1']), profileId: 'p1' };
+  const kept = sanitizeSnapshotVideo({ ...base, scopeId: 'lib:1', keepForever: true }, opts);
+  assert.equal(kept.keepForever, true, 'the mark was dropped on import — favourites become deletable again');
+  // sparse on purpose: never written as false, exactly as mergeVideoRecord sets it
+  const plain = sanitizeSnapshotVideo({ ...base, scopeId: 'lib:1' }, opts);
+  assert.ok(!('keepForever' in plain), 'an unmarked record must not gain the field');
+  for (const junk of ['yes', 1, {}, [], 'false']) {
+    const r = sanitizeSnapshotVideo({ ...base, scopeId: 'lib:1', keepForever: junk }, opts);
+    assert.ok(!('keepForever' in r), `a non-boolean must not protect: ${JSON.stringify(junk)}`);
+  }
+});

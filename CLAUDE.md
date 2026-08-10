@@ -338,11 +338,30 @@ pins that the consumers follow the config and that every address is well-formed.
     3. `pick-alt` deleted videos the parent had ALREADY marked keep-forever — a marked
        video is not proposed, so it never appears in the list and cannot be re-ticked.
        `allLive` now excludes `keepForever`.
+  - **THE PROPOSAL IS RE-READ AT COMMIT TIME.** It is computed when the review OPENS, and a
+    sync, a Drive pull or the parent acting elsewhere can move a video in between (approved,
+    rejected, protected, already gone). Writing a `window-prune` tombstone for something
+    that is no longer a prunable live record would permanently deny a video this dialog
+    never asked about; the toast reports what was ACTUALLY removed, not the pre-confirm
+    intent.
+  - `keepForever` also travels through the SNAPSHOT: the export carries full records, and
+    the import (which builds an explicit record) used to drop it, so a restore silently
+    unprotected every favourite — the same class as the `srcChannel*` fields that function
+    already carries for exactly that reason. It stays SPARSE (never written as `false`).
+  - `settings.SAFE_ON_TIE_MAX` — a numeric tie-break for `keepNewest`: on an exact `at`
+    collision the LARGER window wins, because the generic fallback orders by STRING and
+    would prefer `"9"` over `"200"`. Too large keeps videos nobody wanted; too small
+    proposes deleting videos the child watches (the resolveCuration asymmetry).
+  - ⚠️ KNOWN CONSEQUENCE, not a bug: on a LEGACY shared library (`lib:<hash>`, several
+    profiles on one sheet-derived scope) the setting is per-child but the CONTENT is shared,
+    so one child's window prunes the shared folder for the siblings too. The settings label
+    names the child (`keep-newest-owner`) and every deletion is reviewed per channel, so
+    nothing happens unseen — but the effect crosses profiles.
   - Verified end-to-end in the browser through the real PIN gate: 60 live + window 20 → 40
     proposed → two ticked → confirm CANCELLED leaves 60 records, 0 marks and live buttons →
     confirmed leaves exactly 22 (20 newest + 2 marked), 38 `window-prune` tombstones, and
-    the notice disappears. 12 unit tests + 6 wiring invariants, every guard proven red on a
-    planted regression.
+    the notice disappears. The wipe path verified to honour an earlier mark (28 of 30).
+    16 unit tests + 8 wiring invariants, every guard proven red on a planted regression.
 - v1.0.38 — **THE GOOGLE-SHEETS SOURCES LIST IS GONE** (user request). Full record:
   **[docs/V1038.md](docs/V1038.md)** — read it before touching `sunset`, `linksfile` or
   `libraryId`. The short version, because each line is an invariant elsewhere in this file:

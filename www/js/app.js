@@ -2965,11 +2965,13 @@ async function refreshWindowBox() {
   const ids = Object.keys(over.byChannel || {});
   box.classList.toggle('hidden', ids.length === 0);
   if (!ids.length) return;
+  // hoisted: the subscription list is per LIBRARY, and reading it inside the loop made the
+  // notice quadratic in the number of channels over the window
+  const subs = await db.listLibraryChannels(await currentLibScope()).catch(() => []);
   for (const id of ids) {
     const entry = over.byChannel[id];
     const ch = await db.getChannel(id).catch(() => null);
-    const lc = (await db.listLibraryChannels(await currentLibScope()).catch(() => []))
-      .find((c) => c.channelId === id) || null;
+    const lc = subs.find((c) => c.channelId === id) || null;
     const name = (lc && lc.titleOverride) || (ch && ch.title) || id;
     const li = document.createElement('li');
     const img = document.createElement('img');
@@ -3102,18 +3104,30 @@ async function reviewChannelWindow(sourceId, name) {
       ok: 'מחיקה', cancel: 'ביטול', danger: true
     });
     if (!yes) { settled = false; return; } // stay on the screen — nothing happened
+    let removed = 0;
     await withChannelWait('saving', { count: doomed.length }, async () => {
       // the marks FIRST: a crash between the two must leave the favourites protected,
       // never leave them deletable with the deletion already done
       if (keepTicked.size) await db.markKeepForever(scope, [...keepTicked]);
-      if (doomed.length) await db.deleteVideosWithTombstones(scope, doomed, 'window-prune');
+      // RE-READ before deleting. The proposal was computed when the screen opened, and a
+      // sync, a Drive pull or the parent's own action in another tab can have moved a video
+      // since: approved into pending, rejected, protected, or deleted outright. Writing a
+      // tombstone for something that is no longer a prunable live record would delete
+      // (and permanently deny) a video nobody in this dialog was asked about.
+      const fresh = await db.loadMergeIndex(scope);
+      const live = doomed.filter((k) => {
+        const r = fresh.get(k);
+        return r && r.state === 'live' && !r.keepForever;
+      });
+      if (live.length) await db.deleteVideosWithTombstones(scope, live, 'window-prune');
+      removed = live.length;
       await loadGiftStates();
       await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList(), refreshWindowBox()]);
       renderHome();
       maybeSchedulePush();
     });
     if (nav.isActive('pick')) nav.back();
-    toast(`נמחקו ${doomed.length} סרטונים מ"${name}"`);
+    toast(`נמחקו ${removed} סרטונים מ"${name}"`);
   };
 
   pickHandlers = {
@@ -5185,7 +5199,7 @@ function wire() {
     const msg = $('settings-msg');
     msg.textContent = v > 0
       ? `נשמור את ${v} הסרטונים החדשים בכל ערוץ. כשערוץ יעבור את המגבלה תופיע התראה בלשונית "מקורות" — שום דבר לא יימחק בלי אישורכם ✅`
-      : 'המגבלה כבויה — שום סרטון לא יימחק (מינימום 10, או 0 לכיבוי)';
+      : `המגבלה כבויה — שום סרטון לא יימחק. להפעלה הקלידו מספר מ-10 ומעלה (מומלץ ${KEEP_NEWEST_SUGGESTED})`;
     msg.className = 'form-msg ok';
     await refreshWindowBox();
   });

@@ -515,9 +515,12 @@ export function planChannelWindow({ records, keep, protectedKeys = new Set() }) 
  * remainder it must SAY OUT LOUD.
  *
  * A channel 4000 over the window cannot render 4000 thumbnails, and a parent must never be
- * asked to confirm a deletion whose size they were not told. The rows are the NEWEST of the
- * proposed keys (the caller passes them in that order) — the ones most likely to be worth
+ * asked to confirm a deletion whose size they were not told. The items are the NEWEST of
+ * the proposal (the caller passes them in that order) — the ones most likely to be worth
  * keeping — and `hidden` is what the confirm text has to name.
+ *
+ * Takes whatever the caller renders (records, or bare keys): it only ever slices and counts,
+ * so the contract is "an ordered proposal", not a particular element shape.
  */
 /**
  * v1.0.39 — PURE: every key the rolling window must not touch.
@@ -552,8 +555,8 @@ export function protectedWindowKeys({ records = [], states = null } = {}) {
   return out;
 }
 
-export function pruneReviewList(overKeys, cap = 200) {
-  const all = Array.isArray(overKeys) ? overKeys.filter(Boolean) : [];
+export function pruneReviewList(over, cap = 200) {
+  const all = Array.isArray(over) ? over.filter(Boolean) : [];
   const c = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.floor(Number(cap)) : 200;
   return { rows: all.slice(0, c), hidden: Math.max(0, all.length - c), total: all.length };
 }

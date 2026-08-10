@@ -1797,3 +1797,22 @@ test('"delete this whole channel" still honours an earlier keep-forever mark (v1
   assert.match(decl, /!r\.keepForever/,
     'the "delete every video of this channel" pool includes keep-forever marks again');
 });
+
+test('the window prune RE-READS before deleting — the proposal can go stale (v1.0.39)', () => {
+  // The proposal is computed when the review OPENS. A sync, a Drive pull or the parent
+  // acting elsewhere can move a video in between: approved, rejected, protected, or already
+  // deleted. Writing a window tombstone for something that is no longer a prunable live
+  // record would permanently deny a video this dialog never asked about.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const commit = async (everything)');
+  assert.ok(at > 0, 'the window commit is gone');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  const reread = body.indexOf('await db.loadMergeIndex(scope)');
+  const del = body.indexOf('deleteVideosWithTombstones(');
+  assert.ok(reread > 0, 'the commit no longer re-reads the library before deleting');
+  assert.ok(reread < del, 'the re-read must happen BEFORE the deletion');
+  assert.match(body, /r\.state === 'live' && !r\.keepForever/,
+    'the re-read no longer filters to still-prunable live records');
+  // and the toast must report what was ACTUALLY removed, not the pre-confirm intent
+  assert.match(body, /toast\(`נמחקו \$\{removed\}/, 'the toast reports the stale count again');
+});
