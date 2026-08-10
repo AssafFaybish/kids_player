@@ -1572,3 +1572,92 @@ test('the orphan sweep is an UNCONDITIONAL STAGE of every sync (v1.0.38)', () =>
   // a parked sweep must be SAID, not just recorded: a meta key nobody reads is a lie (v1.0.37)
   assert.match(app, /gcAlert:/, 'nothing surfaces a parked sweep to the parent');
 });
+
+/* ---------------- the sheet sunset (v1.0.38 — DELETE AFTER 2026-09-10) ---------------- */
+
+test('the sunset runs BETWEEN the pull and the sync, awaited, for every profile', () => {
+  // The lifecycle is the design. Not dataver: that runs before any profile is active, blocks
+  // boot behind a faded splash with no progress UI, and has "run once" semantics where this
+  // needs "three attempts across launches". Not after the sync: the fold writes records the
+  // launch's forced pass has to enrich. Not detached: all three write the same records, which
+  // is the pullThenSync rule (v1.0.25).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function entryRefresh(');
+  assert.ok(at > 0, 'entryRefresh is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  const pull = body.indexOf('maybePullDrive(');
+  const sunset = body.indexOf('runSheetSunset(');
+  const sync = body.indexOf('syncLibrary(');
+  assert.ok(pull > 0 && sunset > 0 && sync > 0, 'one of the three stages is missing from entryRefresh');
+  assert.ok(pull < sunset && sunset < sync,
+    'the sunset must run AFTER the pull (a restored profile\'s sheetUrl arrives there) and BEFORE the sync');
+  assert.match(body.slice(sunset - 40, sunset + 60), /await/, 'the sunset is not awaited — that is the v1.0.25 race');
+
+  // exactly two mentions in the tree: the definition and this one call site
+  const calls = [...MODULES.entries()].reduce((n, [, b]) => n + (b.match(/runSheetSunset\(/g) || []).length, 0);
+  assert.equal(calls, 2, `runSheetSunset must have exactly one caller, found ${calls - 1}`);
+  // and it must not creep into the boot path
+  assert.doesNotMatch(MODULES.get('www/js/dataver.js'), /sunset/i,
+    'the sunset became a dataver step — that blocks boot behind a blank splash');
+  const init = app.slice(app.indexOf('async function init('));
+  assert.doesNotMatch(init, /runSheetSunset/, 'init() calls the sunset directly — it must ride entryRefresh');
+
+  // EVERY profile, not just the active one: a child nobody opens here would keep a sheetUrl
+  // forever against a build with no sheet stage.
+  const sun = MODULES.get('www/js/sunset.js');
+  assert.ok(sun, 'sunset.js is gone');
+  const runner = sun.slice(sun.indexOf('export async function runSheetSunset('));
+  assert.match(runner, /getProfiles\(/, 'the runner no longer covers every profile');
+  assert.doesNotMatch(runner, /activeProfileId/, 'the runner became per-active-profile');
+});
+
+test('the sunset deletes FILES, never folders, and nothing else in the tree deletes at all', () => {
+  // Deleting a Drive FOLDER deletes its contents, and under drive.file the app cannot see
+  // files the parent put in there — so it can never prove the folder is empty.
+  const sun = MODULES.get('www/js/sunset.js');
+  const deletes = (sun.match(/method:\s*'DELETE'/g) || []).length;
+  assert.equal(deletes, 1, `sunset.js must contain exactly ONE DELETE, found ${deletes}`);
+  const at = sun.indexOf("method: 'DELETE'");
+  assert.match(sun.slice(at, at + 200), /\$\{DRIVE\}\/files\/\$\{spreadsheetId\}/,
+    'the DELETE no longer addresses a single spreadsheet id');
+  for (const bad of ['mimeType', 'SHEETS_FOLDER_NAME', "'folder'", 'ensureSheetsFolder']) {
+    assert.ok(!sun.includes(bad), `sunset.js mentions ${bad} — it must never touch the folder`);
+  }
+  // no other module may grow a Drive delete
+  for (const [p, body] of MODULES) {
+    if (p === 'www/js/sunset.js') continue;
+    assert.doesNotMatch(body, /method:\s*'DELETE'/, `${p} gained an HTTP DELETE — was that deliberate?`);
+  }
+});
+
+test('the FORGET clears the sheet fields and NEVER touches libraryId', () => {
+  // The single most destructive possible mistake in this release: one stray libraryId in that
+  // patch strands the family's whole library under an unreachable scope, silently, on every
+  // device — and moveScope is deleted, so there is no tool left to repair it.
+  const sun = MODULES.get('www/js/sunset.js');
+  const at = sun.indexOf('const cur = await getSources(p.id);');
+  assert.ok(at > 0, 'the forget step moved — re-anchor this guard');
+  const forget = sun.slice(at, sun.indexOf('const afterFold', at));
+  for (const f of ['sheetUrl: null', 'sheetHash: null', 'sheetFolderId: null']) {
+    assert.ok(forget.includes(f), `the forget no longer clears ${f}`);
+  }
+  assert.ok(!forget.includes('libraryId'),
+    'THE FORGET MENTIONS libraryId — changing a scope here strands the whole library');
+});
+
+test('the sunset cannot revive a deletion, and a failed read never reaches the forget', () => {
+  const sun = MODULES.get('www/js/sunset.js');
+  // planSheetMirror.unDenyKeys is not ported, and nothing here may un-deny.
+  assert.ok(!/unDeny/.test(sun), 'sunset.js can revoke a tombstone — the final read would resurrect deletions');
+  // the fold must consult the deny set and the channel tombstones
+  assert.match(sun, /loadDenySet\(/, 'the fold no longer drops tombstoned videos');
+  assert.match(sun, /getDeletedChannels\(/, 'the fold no longer skips deleted channels — it would resurrect them');
+  assert.match(sun, /deletedChannels: await getDeletedChannels\(lib\)/,
+    'the tombstone map is not handed to planSheetFold');
+  // a read failure must `continue`, never fall through to the forget
+  const runner = sun.slice(sun.indexOf('export async function runSheetSunset('));
+  const catchAt = runner.indexOf('} catch (e) {');
+  assert.ok(catchAt > 0, 'the read is no longer wrapped — a failure would reach the forget');
+  assert.match(runner.slice(catchAt, catchAt + 320), /continue;/,
+    'a failed read does not `continue` — it would forget a sheet it never folded, then delete the file');
+});

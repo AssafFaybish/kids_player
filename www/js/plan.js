@@ -1691,6 +1691,150 @@ export function deniedRestorePrompt(count = 0, { isPlaylist = false } = {}) {
   };
 }
 
+/* ==================== v1.0.38 — the sheet SUNSET (delete after 2026-09-10) ====================
+ *
+ * The one-time migration off the Google-Sheets sources list: read the sheet ONE last time,
+ * fold it into the database, forget it, delete the file the app created. Everything here is
+ * scheduled for deletion — see test/sunset.test.mjs for the removal checklist.
+ */
+
+/**
+ * After this the migration is gone. `planSheetSunset` answers 'forget' for everything past
+ * it — WITHOUT needing a token — so no device can be left holding an inert sheetUrl that
+ * outlives the code that clears it.
+ */
+export const SUNSET_DEADLINE = Date.parse('2026-09-10T00:00:00Z');
+
+/**
+ * PURE: what should this profile's migration do right now?
+ *
+ * -> { action: 'skip'|'read'|'forget'|'delete-file', reason, attempt, spreadsheetId }
+ *
+ * The ORDER of the branches is the whole design, and every one of them is a test:
+ *  - a crash between the FOLD and the FORGET must resume at the forget, never re-read: in
+ *    between, the parent may have deleted something in the app, and a lingering sheet row
+ *    would undo it.
+ *  - a crash between the FORGET and the DELETE must still delete, from the spreadsheetId
+ *    snapshotted at read time — after the forget there is no sheetUrl left to derive it from.
+ *  - NO TOKEN does not burn an attempt. A family that never connected Google (or whose grant
+ *    lapsed) would otherwise exhaust its three tries on launches that never reached the
+ *    network, and their rows were unreadable anyway.
+ *  - THE DEADLINE OUTRANKS EVERYTHING and needs no token, which is what makes the code
+ *    deletable: past it, every device forgets its sheet on the next launch regardless.
+ */
+export function planSheetSunset(opts) {
+  const { src = null, state = null, now = Date.now(), hasToken = false,
+    maxAttempts = 3, deadline = SUNSET_DEADLINE } = opts || {};
+  const st = (state && typeof state === 'object') ? state : {};
+  const phase = String(st.phase || '');
+  const attempts = Math.max(0, Number(st.attempts) | 0);
+  const deleteAttempts = Math.max(0, Number(st.deleteAttempts) | 0);
+  const sheetUrl = (src && src.sheetUrl) || st.sheetUrl || null;
+  const spreadsheetId = st.spreadsheetId || null;
+  const done = { action: 'skip', reason: 'done', attempt: attempts, spreadsheetId };
+
+  if (phase === 'done') return done;
+  // Nothing to migrate and nothing half-finished.
+  if (!sheetUrl && !phase) return { action: 'skip', reason: 'no-sheet', attempt: attempts, spreadsheetId };
+
+  // The file delete is the only step left once the sheet is forgotten. Checked BEFORE the
+  // deadline branch: a forgotten sheet has nothing left to forget.
+  if (phase === 'forgotten') {
+    if (spreadsheetId && !st.deletedFileAt && deleteAttempts < maxAttempts && hasToken) {
+      return { action: 'delete-file', reason: 'cleanup', attempt: deleteAttempts + 1, spreadsheetId };
+    }
+    if (spreadsheetId && !st.deletedFileAt && deleteAttempts < maxAttempts) {
+      return { action: 'skip', reason: 'no-token', attempt: deleteAttempts, spreadsheetId };
+    }
+    return done;
+  }
+  if (phase === 'folded') return { action: 'forget', reason: 'resume', attempt: attempts, spreadsheetId };
+  if (now >= deadline) return { action: 'forget', reason: 'deadline', attempt: attempts, spreadsheetId };
+  if (attempts >= maxAttempts) return { action: 'forget', reason: 'gave-up', attempt: attempts, spreadsheetId };
+  if (!hasToken) return { action: 'skip', reason: 'no-token', attempt: attempts, spreadsheetId };
+  return { action: 'read', reason: 'migrate', attempt: attempts + 1, spreadsheetId };
+}
+
+/**
+ * PURE: the last sheet parse -> what to write into the database.
+ *
+ * -> { candidates, channelPuts, skippedChannelIds, removedKeys }
+ *
+ * THE DATA-SAFETY RULE, and the reason this is not a loop inlined in the runner: a sheet row
+ * carries NO timestamp, and the app has been deleting things for months. A channel the parent
+ * removed still has its row, and `db.putLibraryChannel` stamps a FRESH `updatedAt` that beats
+ * the v1.0.36 deletion tombstone by design (`channelOutlivesTombstone`). So one final read
+ * would resurrect every subscription the parent ever threw out. Any channel with a tombstone
+ * is therefore skipped OUTRIGHT — there is no timestamp to compare, and the v1.0.36 tie rule
+ * says resurrection is the betrayal.
+ *
+ * The video half needs no such branch: candidates go through `planMutations` with the real
+ * deny set, which drops tombstoned keys. And THIS FUNCTION HAS NO REVOCATION SURFACE AT ALL —
+ * `planSheetMirror.unDenyKeys` is deliberately not ported, so the migration can never revive
+ * a deletion.
+ */
+export function planSheetFold(opts) {
+  const { parsed = null, resolved = null, knownChannelIds = null, deletedChannels = null,
+    libraryId = null, defaultAutoApprove = false, legacyIndex = null, now = Date.now() } = opts || {};
+  // Array.isArray on every list, not `|| []`: a truthy NON-array (a corrupted meta record, a
+  // parser change) sails past `||` and throws on .map. These planners are TOTAL by rule
+  // (v1.0.33), and a throw here would abort a launch's whole migration pass.
+  const raw = (parsed && typeof parsed === 'object') ? parsed : {};
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const p = {
+    videoRows: list(raw.videoRows), channelRows: list(raw.channelRows),
+    playlistRows: list(raw.playlistRows), removedKeys: list(raw.removedKeys)
+  };
+  const refToId = resolved instanceof Map ? resolved : new Map(Object.entries(resolved || {}));
+  const known = knownChannelIds instanceof Set ? knownChannelIds : new Set(knownChannelIds || []);
+  const tombstones = deletedChannels instanceof Map
+    ? deletedChannels : new Map(Object.entries(deletedChannels || {}));
+  const src = { libraryId, defaultAutoApprove };
+
+  const channelPuts = [];
+  const skippedChannelIds = [];
+  let order = known.size;
+
+  const addSub = (id, row, kind) => {
+    if (!id) return;
+    // The rule above: a deleted channel is NEVER re-subscribed by the final read.
+    if (tombstones.has(id)) { skippedChannelIds.push(id); return; }
+    // Already subscribed: do NOT re-put. A fresh updatedAt would beat a peer's row and a
+    // fresh decidedAt would silently clear it out of "ערוצים חדשים".
+    if (known.has(id)) return;
+    known.add(id);
+    order += 1;
+    channelPuts.push(channelRowSubscription(
+      kind === 'playlist' ? { playlistId: id, kind: 'playlist', title: row.title, flag: row.flag }
+        : { channelId: id, title: row.title, flag: row.flag },
+      src, { now, order, source: 'sheet' }
+    ));
+  };
+
+  for (const row of p.channelRows) {
+    const ref = row && row.ref;
+    const id = ref && (ref.by === 'id' ? ref.value : refToId.get(ref.by + ':' + ref.value));
+    addSub(id || null, row, 'channel');
+  }
+  for (const row of p.playlistRows) addSub(row && row.playlistId, row, 'playlist');
+
+  // Video rows become candidates for planMutations — the same shape the sheet stage built.
+  const legacy = legacyIndex instanceof Set ? legacyIndex : (legacyIndex ? new Set(legacyIndex) : null);
+  const candidates = p.videoRows.map((row) => ({
+    scopeId: libraryId, key: row.key, type: row.type, id: row.id ?? null,
+    url: row.url ?? null, srcUrl: row.srcUrl, driveId: row.driveId ?? null,
+    title: row.title, titleSource: row.title ? 'sheet' : null, thumbUrl: row.thumbUrl || null,
+    channelId: null, folderId: 'sheet', origin: 'sheet-row', rowIndex: row.rowIndex,
+    publishedAt: null,
+    // The quarantine, moved here from sync2 (v1.0.38): it exists only to reconcile a legacy
+    // Preferences list against a SHEET PARSE, so it belongs with the last sheet parse and
+    // dies with it. No legacy index ⇒ individually curated rows are approved, as always.
+    autoApprove: legacy ? legacy.has(row.key) : true
+  }));
+
+  return { candidates, channelPuts, skippedChannelIds, removedKeys: [...p.removedKeys] };
+}
+
 /** The links file's row cap. A parent's list is tens of lines; this is the accident bound. */
 export const LINKS_IMPORT_MAX = 1000;
 
