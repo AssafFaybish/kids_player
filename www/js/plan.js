@@ -316,7 +316,12 @@ const CHANNEL_ADD_WAITS = {
   approve:  { title: 'מאשרים את הסרטונים', step: 'עוד רגע והכול יהיה אצל הילד…' },
   building: { title: 'מכינים את רשימת הסרטונים', step: 'טוענים את מה שהערוץ הביא…' },
   saving:   { title: 'שומרים את הבחירה', step: 'מאשרים את מה שסימנתם…' },
-  finishing:{ title: 'מסדרים את הספרייה', step: 'משבצים את הסרטונים בתיקיות ובמתנות…' }
+  finishing:{ title: 'מסדרים את הספרייה', step: 'משבצים את הסרטונים בתיקיות ובמתנות…' },
+  // v1.0.38 — the links file. Importing resolves every @handle in the file and then runs
+  // ONE forced sync for the whole list, which is minutes on a 16-channel file; exporting
+  // reads both scopes. Neither may run behind the ordinary screen.
+  importing:{ title: 'מייבאים את הרשימה', step: 'מזהים את הערוצים ושומרים…' },
+  exporting:{ title: 'מכינים את הקובץ', step: 'אוספים את הערוצים והסרטונים…' }
 };
 
 export function channelAddWait(stage, { count = 0 } = {}) {
@@ -328,6 +333,9 @@ export function channelAddWait(stage, { count = 0 } = {}) {
   }
   if (stage === 'building' && Number.isFinite(n) && n > 0) {
     return { title: base.title, step: `${n} סרטונים — עוד רגע…` };
+  }
+  if (stage === 'importing' && Number.isFinite(n) && n > 0) {
+    return { title: base.title, step: `${n} לינקים — עוד רגע…` };
   }
   return { ...base };
 }
@@ -1495,4 +1503,282 @@ export function planLogoDelivery({ imgConnected = false, hostConnected = false, 
   if (imgConnected) return 'set';
   if (hostConnected && channelId && hostChannelId === channelId) return 'remount';
   return 'skip';
+}
+
+/* ==================== v1.0.38 — the links file, and reviving a deletion ====================
+ *
+ * The Google-Sheets sources list is gone. Two of its jobs needed a replacement, and both
+ * live here as pure decisions:
+ *   1. bulk add / move a library between devices  → the links file (serialized elsewhere,
+ *      DECIDED here: what a row becomes, what a confirm says, what the outcome says).
+ *   2. revoking a deletion tombstone. Until now the ONLY undeny path was the sheet
+ *      re-adding the key (planSheetMirror.unDenyKeys). An explicit re-add is that act now
+ *      — but it must be an explicit ANSWER, never automatic.
+ */
+
+/**
+ * PURE: the `libraryChannels` record ONE source row asks for.
+ *
+ * Extracted from sync2's channel-row loop so the sheet reader (while it still exists),
+ * the links importer and any future row source share ONE rule. The v1.0.25/v1.0.33 lesson:
+ * two callers with private copies of "add" is exactly how the share path once shipped
+ * without the import-and-ask flow.
+ *
+ * flag 'auto' ⇒ autoApprove true · 'manual' ⇒ false · ABSENT ⇒ !!src.defaultAutoApprove.
+ * `decidedAt`: an EXPLICIT flag IS the parent's decision (v1.0.32), so the row skips the
+ * "ערוצים חדשים" section; a FLAGLESS row gets null and surfaces there for 24h — which is
+ * where a bulk import should ask, once per channel, instead of in sixteen modals.
+ * `updatedAt` is deliberately NOT set here: db.putLibraryChannel stamps it (v1.0.22).
+ */
+export function channelRowSubscription(row, src, { now = Date.now(), order = 0, source = 'file' } = {}) {
+  const r = row || {};
+  const flag = String(r.flag || '').trim().toLowerCase();
+  const explicit = flag === 'auto' || flag === 'manual';
+  const rec = {
+    libraryId: (src && src.libraryId) || null,
+    channelId: r.channelId || r.playlistId || null,
+    autoApprove: flag === 'auto' ? true : flag === 'manual' ? false : !!(src && src.defaultAutoApprove),
+    autoApproveSource: explicit ? source : 'default',
+    decidedAt: explicit ? now : null,
+    order: order | 0,
+    addedAt: now,
+    hidden: false,
+    sourceRow: true,
+    titleOverride: r.title || ''
+  };
+  if (r.kind === 'playlist' || (!r.channelId && r.playlistId)) rec.kind = 'playlist';
+  return rec;
+}
+
+/**
+ * PURE: the video record a MANUAL add writes (paste, search result, links-file row).
+ *
+ * Extracted from app.addClassifiedRow — same reason as channelRowSubscription. `origin`
+ * decides the sortKey DOMAIN (order.js), so a links-file row passes 'sheet-row' + its line
+ * number and lands in the same ordering domain a sheet row used to, while a pasted link
+ * stays 'manual' (above all of them). The caller supplies sortKey because order.js is not
+ * imported here.
+ */
+export function manualVideoRecord({ row, scope, title = '', sortKey = 0, origin = 'manual',
+  rowIndex = null, now = Date.now() } = {}) {
+  const r = row || {};
+  const display = String(title || '').trim();
+  return {
+    scopeId: scope, key: r.key, type: r.type, id: r.id ?? null, url: r.url ?? null,
+    srcUrl: r.srcUrl, driveId: r.driveId ?? null,
+    title: display, titleSource: display ? 'sheet' : null,
+    folderId: 'sheet', channelId: null,   // 'sheet' is the ⭐ folder id, not a spreadsheet
+    sortKey, publishedAt: null, rowIndex, origin, state: 'live',
+    addedAt: now, approvedAt: now,
+    thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
+  };
+}
+
+/**
+ * PURE: does some SUBSCRIPTION already reproduce this record, so the links file must not
+ * give it a line of its own?
+ *
+ * planOrphanGC's rule read forwards — deliberately the same expression, not a second copy:
+ * a record belongs to a subscription when its channelId is a subscribed CHANNEL or its
+ * folder is a subscribed PLAYLIST's `pl:<id>` (parked rows judged by homeFolderId). A
+ * subscribed channel's 2000 videos are ONE channel line; exporting them all produces a
+ * file no parent can read, doubles the import, and re-adds videos they may have rejected.
+ */
+export function coveredBySubscription(rec, subscriptions) {
+  if (!rec || !rec.key) return false;
+  const subs = [...(subscriptions || [])].filter(Boolean);
+  if (rec.channelId && subs.some((c) => c.channelId === rec.channelId)) return true;
+  const folder = (rec.folderId === '~pending' || rec.folderId === '~rejected')
+    ? rec.homeFolderId : rec.folderId;
+  return subs.some((c) => c.kind === 'playlist' && 'pl:' + c.channelId === folder);
+}
+
+/**
+ * PURE: this key was deleted before. What is the parent asked?
+ *
+ * WHY THIS EXISTS. A deny tombstone was revocable by exactly one thing — the SHEET
+ * re-adding the key (v1.0.10) — and drive.mergeDbFiles DELETES any video whose tombstone
+ * is active from the merged document. So with the sheet gone, a re-pasted deleted video
+ * would be written, shown to the child, and silently destroyed by the next pull on every
+ * device. (That hole is already open today: addClassifiedRow never consulted the deny set
+ * at all — the sheet's un-deny was quietly repairing it.)
+ *
+ * It must be an ANSWER, never automatic: a parent who removed three bad videos must not
+ * get them back for re-pasting a link (the v1.0.23 rule — showing rejected content is the
+ * betrayal, hiding wanted content is a complaint).
+ *
+ * `ask:false` when nothing is denied, or when a live record already EXISTS — asking about
+ * a tombstone for a key that also has a record is incoherent.
+ * `count` is how many keys ONE answer covers: a bulk import asks once, not N times.
+ *
+ * The wording varies by COUNT and not by entry point, deliberately: paste, search, share
+ * and import all revoke the same thing, and one dialog the parent learns once beats four
+ * that say it differently.
+ * -> { ask, emoji, title, text, ok, cancel }
+ */
+export function deniedReAddPrompt(opts) {
+  // Destructured from `(opts || {})`, never a `= {}` default parameter: that only fires for
+  // `undefined`, so an explicit `null` from a caller reading an absent record would throw
+  // — the same trap as `Number(null) === 0` in screenOffMinutes.
+  const { denied = false, exists = false, count = 1 } = opts || {};
+  const n = Math.max(0, Number(count) | 0);
+  if (!denied || exists || !n) return { ask: false };
+  // "בכל המכשירים" is not decoration: un-denying is not a local act, and a parent who
+  // thinks otherwise would be surprised on the other tablet.
+  if (n === 1) {
+    return {
+      ask: true, emoji: '♻️',
+      title: 'הסרטון הזה הוסר בעבר — להחזיר אותו?',
+      text: 'מחקתם את הסרטון הזה קודם, ולכן הוא לא נוסף שוב. "החזרה" תבטל את המחיקה בכל המכשירים.',
+      ok: 'החזרה', cancel: 'לא, להשאיר מוסר'
+    };
+  }
+  return {
+    ask: true, emoji: '♻️',
+    title: `${n} מהסרטונים בקובץ הוסרו בעבר — להחזיר אותם?`,
+    text: `${n} מהלינקים בקובץ מפנים לסרטונים שמחקתם בעבר, ולכן הם לא נוספו. `
+      + '"החזרה" תבטל את המחיקה שלהם בכל המכשירים; השאר נוספו כרגיל.',
+    ok: 'החזרה', cancel: 'לא, להשאיר מוסרים'
+  };
+}
+
+/**
+ * PURE: the same question for a whole CHANNEL's removed backlog (v1.0.37's
+ * app.offerDeniedRestore, moved here so both revive dialogs are pinned in one place).
+ * A channel video has no row anywhere, so before this the removal was permanent.
+ */
+export function deniedRestorePrompt(count = 0, { isPlaylist = false } = {}) {
+  const n = Math.max(0, Number(count) | 0);
+  if (!n) return { ask: false };
+  const what = isPlaylist ? 'רשימת ההשמעה' : 'הערוץ';
+  return {
+    ask: true, emoji: '♻️',
+    title: `${n} סרטונים של ${what} הוסרו בעבר`,
+    text: `מחקתם ${n} סרטונים של ${what} הזה בעבר, ולכן הם לא נוספו שוב. להחזיר אותם `
+      + 'לרשימת ההמתנה לאישור? הפעולה תבטל את המחיקה בכל המכשירים.',
+    ok: 'החזרה לאישור', cancel: 'לא, להשאיר מוסרים'
+  };
+}
+
+/** The links file's row cap. A parent's list is tens of lines; this is the accident bound. */
+export const LINKS_IMPORT_MAX = 1000;
+
+/**
+ * PURE: a counted Hebrew noun phrase. "1 ערוצים" is wrong in a way a parent notices
+ * immediately, and every count in these messages can legitimately be 1 (one channel, one
+ * revived video, one duplicate). Hebrew puts the numeral BEFORE a plural noun but says
+ * "ערוץ אחד" for one, so the two forms are not the same shape.
+ */
+export function hebCount(n, one, many) {
+  const k = Math.max(0, Number(n) | 0);
+  return k === 1 ? `${one} אחד` : `${k} ${many}`;
+}
+
+/** The same for a FEMININE noun ("רשימה אחת"). */
+export function hebCountF(n, one, many) {
+  const k = Math.max(0, Number(n) | 0);
+  return k === 1 ? `${one} אחת` : `${k} ${many}`;
+}
+
+/**
+ * PURE: the confirm dialog for one parsed links file.
+ *
+ * Counts BY KIND, always — "יובאו 40 שורות" tells a parent nothing about whether they are
+ * about to subscribe to sixteen channels. `ok` NAMES THE TARGET profile, so a parent
+ * standing in the wrong child's profile sees it before committing. `third` is offered only
+ * when the file carries a profile name that does not already exist (never auto-rename
+ * behind their back — v1.0.22).
+ * Raised with askKid, not confirmKid: a scrim-tap dismiss must not count as an answer.
+ * -> { emoji, title, text, ok, cancel, third? }
+ */
+export function linksImportConfirm(counts, { targetName = '', profileName = '', canCreateProfile = false } = {}) {
+  const c = counts || {};
+  const ch = Math.max(0, c.channels | 0);
+  const pl = Math.max(0, c.playlists | 0);
+  const vid = Math.max(0, c.videos | 0);
+  const bad = Math.max(0, c.invalid | 0);
+  const rm = Math.max(0, c.removed | 0);
+  const parts = [];
+  if (ch) parts.push(hebCount(ch, 'ערוץ', 'ערוצים'));
+  if (pl) parts.push(hebCountF(pl, 'רשימת השמעה', 'רשימות השמעה'));
+  if (vid) parts.push(hebCount(vid, 'סרטון', 'סרטונים'));
+  const what = parts.length ? parts.join(' · ') : 'שום דבר שאפשר להוסיף';
+  let text = `בקובץ: ${what}.`;
+  if (bad) text += ` ${bad} שורות לא זוהו ויידלגו.`;
+  if (rm) text += ` ${rm} שורות מסומנות כמוסרות ויידלגו.`;
+  if (ch || pl) text += ' סרטונים מערוץ או מרשימה ימתינו לאישורכם, אלא אם סומן auto.';
+  const target = String(targetName || '').trim();
+  const out = {
+    emoji: '📄',
+    title: 'לייבא את הרשימה?',
+    text,
+    ok: target ? `ייבוא ל${target}` : 'ייבוא',
+    cancel: 'ביטול'
+  };
+  const name = String(profileName || '').trim();
+  if (canCreateProfile && name) out.third = `לפרופיל חדש בשם "${name}"`;
+  else if (name && !canCreateProfile) out.text += ` (כבר יש פרופיל בשם "${name}".)`;
+  return out;
+}
+
+/**
+ * PURE: what actually happened. Same contract as channelAddOutcome — ALWAYS name the
+ * outcome, and A ZERO MUST NAME ITS OWN CAUSE (v1.0.37). Every branch is distinct, because
+ * "nothing happened" and "everything was already here" are different facts to a parent
+ * staring at an unchanged screen.
+ */
+export function linksImportOutcome({ channels = 0, playlists = 0, videos = 0, pending = 0,
+  existed = 0, skippedDenied = 0, revived = 0, failed = 0, invalid = 0 } = {}) {
+  const ch = Math.max(0, channels | 0);
+  const pl = Math.max(0, playlists | 0);
+  const vid = Math.max(0, videos | 0);
+  const added = ch + pl + vid;
+  if (!added) {
+    if (existed) return `כל הלינקים בקובץ (${existed}) כבר קיימים בספרייה — לא נוסף כלום`;
+    if (skippedDenied) return `כל הלינקים בקובץ (${skippedDenied}) הוסרו בעבר ולא הוחזרו — לא נוסף כלום`;
+    if (failed) return `לא הצלחנו לזהות ${hebCount(failed, 'מקור', 'מקורות')} בקובץ — בדקו את הלינקים ונסו שוב`;
+    if (invalid) return 'אף שורה בקובץ לא זוהתה כלינק נתמך — לא נוסף כלום';
+    return 'לא נוסף כלום — הקובץ לא הכיל לינקים חדשים';
+  }
+  const parts = [];
+  if (ch) parts.push(hebCount(ch, 'ערוץ', 'ערוצים'));
+  if (pl) parts.push(hebCountF(pl, 'רשימת השמעה', 'רשימות השמעה'));
+  if (vid) parts.push(hebCount(vid, 'סרטון', 'סרטונים'));
+  let msg = `${added === 1 ? 'נוסף' : 'נוספו'} ${parts.join(' · ')} ✅`;
+  if (pending) msg += ` · ${hebCount(pending, 'סרטון', 'סרטונים')} ${pending === 1 ? 'ממתין' : 'ממתינים'} לאישור ברשימת "ממתינים" 👀`;
+  if (revived) msg += ` · ${revived} ${revived === 1 ? 'הוחזר' : 'הוחזרו'} ממחיקה`;
+  if (skippedDenied) msg += ` · ${skippedDenied} ${skippedDenied === 1 ? 'דולג' : 'דולגו'} (הוסרו בעבר)`;
+  if (existed) msg += ` · ${existed} ${existed === 1 ? 'כבר היה' : 'כבר היו'} בספרייה`;
+  if (failed) msg += ` · ${failed} ${failed === 1 ? 'מקור לא זוהה' : 'מקורות לא זוהו'}`;
+  return msg;
+}
+
+/**
+ * PURE: what the parent is told after an export, per delivery rung.
+ *
+ * EVERY rung names WHERE THE FILE IS, and no two share a sentence — an export whose file
+ * the parent cannot find is the same failure as no export at all. 'nothing' exists because
+ * an empty file that shares as a blank message is the silent-nothing failure (v1.0.26).
+ */
+export function linksExportOutcome({ delivery = 'none', name = '', dir = '', counts = null } = {}) {
+  const c = counts || {};
+  const n = Math.max(0, (c.channels | 0) + (c.playlists | 0) + (c.videos | 0) + (c.files | 0));
+  const where = dir ? `${dir}${name}` : name;
+  switch (delivery) {
+    case 'nothing':
+      return { ok: false, text: 'אין עדיין תוכן לייצוא — הוסיפו סרטון או ערוץ קודם' };
+    case 'native':
+      return { ok: true, text: `נשמר קובץ עם ${n} לינקים ונפתחה חלונית שיתוף. הקובץ במכשיר: ${where}` };
+    case 'file-only':
+      return { ok: true, shareTextFallback: true,
+        text: `הקובץ נשמר במכשיר ✅ ${where} — לא נמצאה אפליקציה לשיתוף. אפשר לשלוח אותו כטקסט בכפתור שמתחת.` };
+    case 'download':
+      return { ok: true, text: `הקובץ ירד לתיקיית ההורדות בשם ${name}` };
+    case 'clipboard':
+      return { ok: true, text: 'הרשימה הועתקה ללוח — הדביקו אותה בהודעה או בקובץ ושמרו' };
+    case 'shown':
+      return { ok: true, shown: true, text: 'לא הצלחנו לשמור קובץ — הרשימה מוצגת כאן להעתקה ידנית' };
+    default:
+      return { ok: false, text: 'הייצוא נכשל — נסו שוב' };
+  }
 }

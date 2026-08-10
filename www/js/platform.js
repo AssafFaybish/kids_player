@@ -206,6 +206,67 @@ export async function fsDeleteExternal(path) {
   if (!FS) return;
   try { await FS.deleteFile({ path, directory: 'EXTERNAL' }); } catch {}
 }
+/**
+ * v1.0.38 — write UTF-8 TEXT into the app's own EXTERNAL dir. platform.js had no
+ * text-write helper at all until now (only download/stat/mkdir/delete).
+ *
+ * DIRECTORY: 'EXTERNAL' = getExternalFilesDir(null) — permission-free, and already the
+ * updater's target. NOT 'DOCUMENTS' / 'EXTERNAL_STORAGE': @capacitor/filesystem classifies
+ * those as PUBLIC directories and gates them behind a storage permission this app
+ * deliberately does not declare (the manifest is exactly INTERNET +
+ * REQUEST_INSTALL_PACKAGES). The price is that Android 11+ hides Android/data from the
+ * Files app — which is why the caller SHARES the file rather than telling the parent to go
+ * find it.
+ *
+ * mkdir FIRST: downloadFile is documented above as ignoring recursive:true on Android, and
+ * betting that writeFile differs is not a bet worth making.
+ * ⚠ writeFile answers { uri }, NOT { path } like downloadFile — normalized here to an
+ * absolute filesystem path, because the native side does `new File(path)`.
+ * -> absolute path | null
+ */
+export async function fsWriteTextExternal(path, text) {
+  const FS = plugin('Filesystem');
+  if (!FS || !FS.writeFile) return null;
+  const dir = String(path).replace(/\/[^/]*$/, '');
+  if (dir && dir !== path) await fsMkdirExternal(dir);
+  try {
+    const res = await FS.writeFile({
+      path, directory: 'EXTERNAL', data: String(text ?? ''), encoding: 'utf8', recursive: true
+    });
+    const uri = (res && (res.uri || res.path)) || '';
+    return uri ? String(uri).replace(/^file:\/\//, '') : null;
+  } catch { return null; }
+}
+
+/**
+ * v1.0.38 — the OS share sheet on a FILE (a links export). shareText cannot do this: it is
+ * hard-coded text/plain + EXTRA_TEXT and rejects an empty body, and a 400-link list pasted
+ * into a WhatsApp message is not a file the other device can import.
+ * -> 'native' | 'none'. Never throws.
+ */
+export async function shareFile(path, { mimeType = 'text/plain', subject = '' } = {}) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.shareFile || !path) return 'none';
+  try { await kids.shareFile({ path, mimeType, subject }); return 'native'; } catch { return 'none'; }
+}
+
+/** Browser-only rung: an <a download> blob click. -> 'download' | 'none' */
+export async function downloadTextFile(name, text) {
+  try {
+    if (typeof document === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) return 'none';
+    const blob = new Blob([String(text ?? '')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = String(name || 'links.txt');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 10000);
+    return 'download';
+  } catch { return 'none'; }
+}
+
 export async function fsDownloadExternal(url, path, onProgress) {
   const FS = plugin('Filesystem');
   if (!FS) throw new Error('no-filesystem');

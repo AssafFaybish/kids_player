@@ -396,6 +396,9 @@ body {
   width: 100%;
 }
 .input:focus { outline: none; border-color: var(--brand); }
+/* v1.0.38 links file: a paste box. Monospace + LTR because its content is links, and
+   nowrap-free so a long URL wraps instead of scrolling the panel sideways. */
+.links-paste { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; resize: vertical; }
 .opt-details { margin-bottom: 12px; }
 .opt-details summary { cursor: pointer; color: var(--muted); font-weight: 700; padding: 6px 0; }
 

@@ -17,7 +17,7 @@ import { prefGet } from './platform.js';
 // path. parseCsv still backs parseSourceSheet, which is TEST-ONLY (no production
 // caller) — see the note on that function.
 import { parseCsv } from './csv.js';
-import { classifySourceRow } from './classify.js';
+import { parseSourceRows } from './linksfile.js';
 import { fnv1a, libraryIdFor, mapWithConcurrency } from './util.js';
 import {
   planMutations, planGifts, planSheetMirror, shouldRecordGiftBaseline, sheetBackedKeysOf,
@@ -64,45 +64,13 @@ export function parseSourceSheet(text) {
 }
 
 /**
- * v1.0.19 — the same parser over ALREADY-TOKENIZED rows (array of arrays), which is
- * what the authenticated Sheets API returns. Reads used to go through a public CSV
- * export, which forced every family's playlist to be shared "anyone with the link".
- * `parseSourceSheet` stays as the CSV front door so the tokenizer keeps its tests.
+ * v1.0.38 — the row grammar MOVED to linksfile.js and is re-exported here so its existing
+ * importers keep working. It had to move: this module's sheet stage and the whole sunset
+ * migration are scheduled for deletion, and the grammar is not — the links file uses it.
+ * A local import, not `export … from`: `parseSourceSheet` above calls it, and a bare
+ * re-export creates no local binding.
  */
-export function parseSourceRows(rows) {
-  const videoRows = [];
-  const channelRows = [];
-  const playlistRows = [];
-  const removedKeys = []; // v1.0.12: '# הוסר: <link>' rows — deny these for everyone
-  const invalid = [];
-  let videoOrdinal = 0;
-  for (const fields of (Array.isArray(rows) ? rows : [])) {
-    // The Sheets API omits trailing empty cells, so rows arrive ragged — and a
-    // malformed payload can hand us a non-array row. Neither may throw here: this
-    // runs inside the try that decides `sheetParsed`, and a throw would be read as
-    // "the sheet is unreadable" on input that is merely untidy.
-    const parts = (Array.isArray(fields) ? fields : []).map((s) => String(s ?? '').trim().replace(/^"+|"+$/g, ''));
-    const row = classifySourceRow(parts[0] || '');
-    if (row.kind === 'removed') { removedKeys.push(row.key); continue; }
-    if (row.kind === 'blank' || row.kind === 'comment') continue;
-    if (row.kind === 'video') {
-      videoRows.push({ ...row, title: parts[1] || '', thumbUrl: parts[2] || '', rowIndex: videoOrdinal });
-      videoOrdinal += 1;
-    } else if (row.kind === 'channel') {
-      channelRows.push({ ref: row.channelRef, title: parts[1] || '', flag: (parts[2] || '').toLowerCase() });
-    } else if (row.kind === 'playlist') {
-      // v1.0.26: a playlist row is a SUBSCRIPTION, same as a channel row. It used to land
-      // in `invalid` as 'playlist-unsupported-yet' — recognised, then thrown away.
-      playlistRows.push({ playlistId: row.playlistId, title: parts[1] || '', flag: (parts[2] || '').toLowerCase() });
-    } else {
-      invalid.push(row);
-    }
-  }
-  // a removal row always wins over a video row for the same key in the SAME sheet:
-  // safety-first — to bring a video back the parent deletes the removal row.
-  const removed = new Set(removedKeys);
-  return { videoRows: videoRows.filter((r) => !removed.has(r.key)), channelRows, playlistRows, removedKeys, invalid };
-}
+export { parseSourceRows };
 
 const inFlight = new Map();   // profileId -> entry that is EXECUTING (has already read)
 const queuedRuns = new Map(); // profileId -> entry waiting to start (has read NOTHING yet)

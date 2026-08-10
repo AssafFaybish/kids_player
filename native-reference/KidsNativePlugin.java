@@ -194,6 +194,45 @@ public class KidsNativePlugin extends Plugin {
         }
     }
 
+    /**
+     * v1.0.38 — the system share chooser on a FILE (the links export).
+     *
+     * shareText cannot do this: it is text/plain + EXTRA_TEXT and rejects an empty body.
+     * The URI must come from our FileProvider (authority <applicationId>.fileprovider,
+     * declared in the manifest) — handing out a raw file:// URI throws FileUriExposedException
+     * on API 24+ — and the receiving app needs FLAG_GRANT_READ_URI_PERMISSION or it opens an
+     * empty document. res/xml/file_paths.xml must contain an <external-files-path> entry
+     * covering exports/, or getUriForFile throws IllegalArgumentException for this path.
+     */
+    @PluginMethod
+    public void shareFile(PluginCall call) {
+        String path = call.getString("path");
+        if (path == null || path.isEmpty()) { call.reject("no-path"); return; }
+        String mimeType = call.getString("mimeType");
+        if (mimeType == null || mimeType.isEmpty()) mimeType = "text/plain";
+        String subject = call.getString("subject");
+        try {
+            File f = new File(path);
+            if (!f.exists()) { call.reject("no-file"); return; }
+            Context ctx = getContext();
+            Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", f);
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType(mimeType);
+            send.putExtra(Intent.EXTRA_STREAM, uri);
+            if (subject != null && !subject.isEmpty()) send.putExtra(Intent.EXTRA_SUBJECT, subject);
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(send, null);
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            ctx.startActivity(chooser);
+            call.resolve();
+        } catch (Exception e) {
+            // Every failure here is recoverable by the JS side (it falls back to sharing the
+            // list as text, then the clipboard), so reject rather than crash.
+            call.reject("share-file-failed: " + e.getMessage());
+        }
+    }
+
     /* ---------------- share-intent inbox (F12b) ---------------- */
 
     private static final ArrayDeque<JSObject> INBOX = new ArrayDeque<>();

@@ -2229,6 +2229,16 @@ async function refreshSourcesPanel() {
   const acts = sourcesPanelActions(src);
   $('remote-copy').classList.toggle('hidden', !acts.copy);
   $('remote-connect').classList.toggle('hidden', !acts.connect);
+  // v1.0.38: on Android TV there is NO file picker, so the paste door is the only import
+  // door — open it by default there instead of leaving the parent to discover it.
+  const box = $('links-paste-box');
+  if (box && !box.dataset.tvChecked) {
+    box.dataset.tvChecked = '1';
+    try {
+      const { isTv } = await import('./platform.js');
+      if (await isTv()) box.open = true;
+    } catch {}
+  }
 }
 
 async function refreshParent() {
@@ -3531,6 +3541,14 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     // the SAME helper the search rows precompute "✓ קיים" with — the row must agree
     // with what this add answers (v1.0.33 review)
     if (await libraryHasVideo(scope, row.key)) return { status: 'exists', message: 'הסרטון כבר קיים ברשימה' };
+    // v1.0.38 — A RE-ADDED DELETED VIDEO MUST BE ANSWERED FOR, NOT SILENTLY DESTROYED.
+    // This path never consulted the deny set: the record was written, shown to the child,
+    // and then deleted by the next Drive pull (mergeDbFiles drops any video whose tombstone
+    // is active). The sheet's un-deny used to repair that behind our backs, and the sheet is
+    // gone — so the parent is asked, which is the explicit act the sheet re-add stood in for.
+    if (!(await offerDeniedReAdd(scope, row.key, 'paste'))) {
+      return { status: 'denied', message: 'הסרטון נשאר מוסר — לא נוסף' };
+    }
     const now = Date.now();
     // v1.0.32: the name/image form is gone (user request) — the name comes from the
     // content itself. YouTube: fetched below, like an empty field always was. A direct
@@ -3704,6 +3722,226 @@ function resetYtsUi() {
  */
 async function libraryHasVideo(libraryId, key) {
   return !!((await db.getVideo(libraryId, key)) || (await db.getVideo(db.profScope(activeProfileId), key)));
+}
+
+/* ==================== v1.0.38 — the links file ====================
+ *
+ * One plain-text file carrying a profile's whole source list. It replaced the
+ * Google-Sheets sources list as the bulk-add door, and it is how a library moves to
+ * another tablet or another Google account.
+ *
+ * The pure half — the format, the dialogs, the outcome sentences — lives in linksfile.js
+ * and plan.js. This is only the glue: dialogs, waiting screens, and ONE forced sync.
+ */
+
+/**
+ * v1.0.38 — a single key the parent is re-adding. Was it deleted before, and if so, does
+ * the parent want it back?
+ *
+ * The ONLY revocation path used to be the sheet re-adding the key (v1.0.10
+ * planSheetMirror.unDenyKeys). This is its replacement — an explicit answer, never
+ * automatic (the v1.0.23 rule: showing rejected content is the betrayal). Un-denies in
+ * BOTH scopes, because a key can carry a tombstone in the shared library and in the
+ * personal one, and `db.unDeny` writes `removedAt` so the revocation out-merges a peer's
+ * stale ACTIVE tombstone.
+ *
+ * -> true to proceed with the add, false to abort it.
+ */
+async function offerDeniedReAdd(scope, key, source = 'paste') {
+  const scopes = [...new Set([scope, db.profScope(activeProfileId)])].filter(Boolean);
+  let denied = false;
+  for (const s of scopes) if ((await db.loadDenySet(s)).has(key)) { denied = true; break; }
+  const { deniedReAddPrompt } = await import('./plan.js');
+  const prompt = deniedReAddPrompt({ denied, exists: false, source, count: 1 });
+  if (!prompt.ask) return true;
+  const yes = await confirmKid({
+    emoji: prompt.emoji, title: prompt.title, text: prompt.text, ok: prompt.ok, cancel: prompt.cancel
+  });
+  if (!yes) return false;
+  for (const s of scopes) await db.unDeny(s, key);
+  return true;
+}
+
+function linksMsg(text, cls = '') {
+  const el = $('links-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'form-msg' + (cls ? ' ' + cls : '');
+}
+
+/** Where an exported file lands, shown to the parent verbatim so they can find it. */
+const LINKS_EXPORT_DIR = 'Android/data/com.assaf.kidsplayer/files/exports/';
+
+/**
+ * Export the active profile's sources as a links file: write it, then offer the OS share
+ * sheet on the FILE.
+ *
+ * Both halves are needed. The write is the artifact a device transfer needs and the only
+ * thing that survives a cancelled share; the share is how the parent actually gets it off
+ * the tablet, because Android 11+ hides Android/data from the Files app. Every rung of the
+ * degradation reports WHERE the file is (plan.linksExportOutcome).
+ */
+async function linksExport() {
+  const lf = await import('./linksfile.js');
+  const { linksExportOutcome } = await import('./plan.js');
+  const p = await getActiveProfile();
+  const name = (p && p.name) || '';
+  let built = null;
+  try {
+    built = await withChannelWait('exporting', {}, async () => {
+      const { subscriptions, channelMeta, videos } = await lf.collectLinksExport(activeProfileId);
+      const version = await (await import('./update.js')).currentVersion().catch(() => '');
+      return lf.serializeLinksFile({ subscriptions, channelMeta, videos, profileName: name, appVersion: version || '' });
+    });
+  } catch { linksMsg('הייצוא נכשל — נסו שוב', 'err'); return; }
+
+  const totalRows = built.counts.channels + built.counts.playlists + built.counts.videos;
+  if (!totalRows) {
+    const r = linksExportOutcome({ delivery: 'nothing' });
+    linksMsg(r.text, 'err');
+    return;
+  }
+
+  const fileName = lf.linksFileName(name);
+  const plat = await import('./platform.js');
+  lastLinksExportText = built.text; // for the "send as text" fallback rung
+  $('links-share-text').classList.add('hidden');
+
+  let delivery = 'none';
+  const path = await plat.fsWriteTextExternal('exports/' + fileName, built.text);
+  if (path) {
+    delivery = (await plat.shareFile(path, { mimeType: 'text/plain', subject: fileName })) === 'native'
+      ? 'native' : 'file-only';
+  } else if ((await plat.downloadTextFile(fileName, built.text)) === 'download') {
+    delivery = 'download';
+  } else {
+    try { await navigator.clipboard.writeText(built.text); delivery = 'clipboard'; }
+    catch { delivery = 'shown'; }
+  }
+
+  const out = linksExportOutcome({ delivery, name: fileName, dir: LINKS_EXPORT_DIR, counts: built.counts });
+  linksMsg(out.text, out.ok ? 'ok' : 'err');
+  if (out.shareTextFallback) $('links-share-text').classList.remove('hidden');
+  if (out.shown) await alertKid({ emoji: '📄', title: fileName, text: built.text, ok: 'סגירה' });
+}
+
+let lastLinksExportText = '';
+
+/**
+ * v1.0.38 — the name-uniqueness gate, extracted from createNewProfile so the links
+ * import's "create a new profile from this file" branch cannot be the one path that skips
+ * it. A PROFILE NAME IS UNIQUE PER GOOGLE ACCOUNT, NOT PER DEVICE (v1.0.22): two devices
+ * each minting "נועם" splits that child's gift progress and personal videos while the
+ * parent just sees two identical avatars. Best-effort pull, then decide.
+ * -> 'remote' | 'local' | null
+ */
+async function profileNameClash(name, { quiet = false } = {}) {
+  const localBefore = await getProfiles();
+  let merged = localBefore;
+  try {
+    if (((await db.getMeta('drive')) || {}).enabled) {
+      const { pullDrive } = await import('./drive.js');
+      if (!quiet) loading.show({ title: 'בודקים שהשם פנוי…', step: 'קוראים את הגיבוי בגוגל דרייב' });
+      try { await pullDrive(activeProfileId); } finally { if (!quiet) loading.hide(); }
+      merged = await getProfiles();
+    }
+  } catch { /* offline / not connected — the local check below still applies */ }
+  return profileNameConflict(localBefore, merged, name);
+}
+
+const PROFILE_CLASH_MSG = {
+  remote: 'שם הפרופיל קיים כבר בחשבון הגוגל, במכשיר אחר — בחרו שם אחר.',
+  local: 'כבר יש פרופיל בשם הזה — בחרו שם אחר'
+};
+
+/**
+ * Import a links file into the active profile — or into a NEW profile named by the file.
+ *
+ * Deliberately NOT routed through addClassifiedRow: its channel branch raises
+ * importChannelAndAsk (loading screen + approval dialog + a 90s finishing wait) PER
+ * channel, and its video branch fires refreshAfterAdd + renderHome + a push PER video. A
+ * 16-channel file would raise 16 dialogs and a 300-line file 300 syncs. Instead: one
+ * confirm, one denied question, one batch of writes, ONE forced sync.
+ */
+async function linksImportFromText(text) {
+  const lf = await import('./linksfile.js');
+  const { linksImportConfirm, linksImportOutcome } = await import('./plan.js');
+  const parsed = lf.parseLinksFile(text);
+  if (!parsed.ok) {
+    // An unreadable input is never an empty one — each refusal names itself.
+    linksMsg({
+      empty: 'הקובץ ריק',
+      html: 'זה לא קובץ לינקים — נראה כמו דף אינטרנט שנשמר. בחרו את קובץ הטקסט שיצא מהאפליקציה.',
+      'too-big': 'הקובץ גדול מדי',
+      'no-links': 'לא נמצאו לינקים נתמכים בקובץ — כל שורה צריכה להיות לינק לערוץ, לרשימת השמעה או לסרטון'
+    }[parsed.error] || 'לא הצלחנו לקרוא את הקובץ', 'err');
+    return;
+  }
+
+  const p = await getActiveProfile();
+  const fileName = parsed.profileName;
+  const canCreate = !!fileName && !(await getProfiles()).some((x) => x && x.name === fileName);
+  const ask = linksImportConfirm(parsed.counts, {
+    targetName: (p && p.name) || '', profileName: fileName, canCreateProfile: canCreate
+  });
+  const answer = await askKid(ask);
+  if (answer !== 'ok' && answer !== 'third') return;
+
+  if (answer === 'third') {
+    const clash = await profileNameClash(fileName);
+    if (clash) { linksMsg(PROFILE_CLASH_MSG[clash], 'err'); renderProfiles(); return; }
+    const np = await createProfile(fileName, '🙂', '#eceaff');
+    profiles = await getProfiles();
+    // activateProfile owns the loading screen and the first sync — exactly the adoption
+    // context a fresh library needs. From here the import runs against the new profile,
+    // so there is ONE import path whichever answer the parent gave.
+    await activateProfile(np.id);
+  }
+
+  // The denied question, ONCE for the whole file. A channel's removed backlog is a
+  // different question and reaches offerDeniedRestore on its own — asking in both places
+  // is the "asked twice" bug.
+  const { deniedReAddPrompt } = await import('./plan.js');
+  const scope = (await ensureSources()).libraryId;
+  const activeDeny = new Set([
+    ...(await db.loadDenySet(scope)),
+    ...(await db.loadDenySet(db.profScope(activeProfileId)))
+  ]);
+  const hits = parsed.videos.filter((v) => activeDeny.has(v.key)).map((v) => v.key);
+  const reviveKeys = new Set();
+  if (hits.length) {
+    const prompt = deniedReAddPrompt({ denied: true, source: 'import', count: hits.length });
+    if (await confirmKid({ emoji: prompt.emoji, title: prompt.title, text: prompt.text, ok: prompt.ok, cancel: prompt.cancel })) {
+      for (const k of hits) reviveKeys.add(k);
+    }
+  }
+
+  let res = null;
+  await withChannelWait('importing', { count: parsed.counts.total }, async () => {
+    const key = await (await import('./yt.js')).getApiKey();
+    res = await lf.applyLinksPlan(activeProfileId, parsed, {
+      reviveKeys,
+      resolveRef: async (ref) => (await import('./yt.js')).resolveChannelRef(ref, key)
+    });
+  });
+
+  // ONE forced sync for the whole import: it is what resolves channels into videos (RSS +
+  // backfill + playlists), fills titles and assigns gift ranks. Forced because a
+  // non-forced call could JOIN a launch run that has already read the library (v1.0.25).
+  let pending = 0;
+  let backgrounded = false;
+  await withChannelWait('finishing', {}, async () => {
+    backgrounded = !(await waitWithValve(refreshAfterAdd({ parent: true, wait: true })));
+    try { pending = await pendingTotal(); } catch { pending = 0; }
+    await loadGiftStates();
+    await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList()]);
+    renderHome();
+    maybeSchedulePush();
+  });
+
+  const msg = linksImportOutcome({ ...res, pending, invalid: parsed.counts.invalid });
+  linksMsg(backgrounded ? msg + ' · הסנכרון ממשיך ברקע' : msg, res && (res.channels + res.playlists + res.videos) ? 'ok' : 'err');
+  await refreshGateDot();
 }
 
 function ytsMsg(text, cls = '') {
@@ -4614,30 +4852,11 @@ async function createNewProfile() {
   if (!createSel) { msg.textContent = 'בחרו תמונה'; msg.className = 'form-msg err'; return; }
 
   // v1.0.22 — the name must be unique across the whole GOOGLE ACCOUNT, not just this
-  // device. `createProfile` mints its id locally and both merge paths union by ID, so two
-  // devices could each create "נועם" and BOTH would survive the sync — splitting that
-  // child's gift progress, personal videos and (with no sheet) their whole library, while
-  // the parent sees two identical avatars. So: pull first, then decide.
-  //
-  // The pull is best-effort on purpose. Hard-blocking creation when Drive is unreachable
-  // would make the app unusable on a plane; we fall back to the local list and accept that
-  // the rare simultaneous-offline case is resolved later, in the parent screen.
-  const localBefore = await getProfiles();
-  let merged = localBefore;
-  try {
-    if (((await db.getMeta('drive')) || {}).enabled) {
-      const { pullDrive } = await import('./drive.js');
-      loading.show({ title: 'בודקים שהשם פנוי…', step: 'קוראים את הגיבוי בגוגל דרייב' });
-      try { await pullDrive(activeProfileId); } finally { loading.hide(); }
-      merged = await getProfiles(); // pullDrive already folded the remote profiles in
-    }
-  } catch { /* offline / not connected — the local check below still applies */ }
-
-  const clash = profileNameConflict(localBefore, merged, name);
+  // device. The gate lives in profileNameClash (v1.0.38) so the links import's
+  // "create a new profile from this file" branch shares it instead of skipping it.
+  const clash = await profileNameClash(name);
   if (clash) {
-    msg.textContent = clash === 'remote'
-      ? 'שם הפרופיל קיים כבר בחשבון הגוגל, במכשיר אחר — בחרו שם אחר.'
-      : 'כבר יש פרופיל בשם הזה — בחרו שם אחר';
+    msg.textContent = PROFILE_CLASH_MSG[clash];
     msg.className = 'form-msg err';
     renderProfiles(); // the pull may have added profiles — show them
     return;
@@ -5024,8 +5243,10 @@ function wire() {
   $('pick-all').addEventListener('click', () => pickHandlers && pickHandlers.all());
   $('pick-none').addEventListener('click', () => pickHandlers && pickHandlers.none());
 
+  // v1.0.38: both snapshot buttons moved to the SETTINGS tab, so they report into
+  // #backup-msg — #add-msg belongs to the add form and is no longer on screen with them.
   $('export-btn').addEventListener('click', async () => {
-    const msg = $('add-msg');
+    const msg = $('backup-msg');
     try {
       const { exportProfileSnapshot } = await import('./snapshot.js');
       const p = await getActiveProfile();
@@ -5037,7 +5258,7 @@ function wire() {
   $('import-btn').addEventListener('click', () => $('import-file').click());
   $('import-file').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    const msg = $('add-msg');
+    const msg = $('backup-msg');
     try {
       const { importProfileSnapshot } = await import('./snapshot.js');
       const res = await importProfileSnapshot(activeProfileId, await f.text());
@@ -5050,6 +5271,32 @@ function wire() {
       } else { msg.textContent = 'קובץ לא תקין'; msg.className = 'form-msg err'; }
     } catch { msg.textContent = 'קובץ לא תקין'; msg.className = 'form-msg err'; }
     e.target.value = '';
+  });
+
+  /* v1.0.38 — the links file. Two import doors (file picker AND paste) because Android TV
+     has no file picker at all and the WebView's is unverified on some devices; a fallback
+     you can only find after a silent failure is not a fallback. */
+  $('links-export').addEventListener('click', () => { linksExport().catch(() => linksMsg('הייצוא נכשל — נסו שוב', 'err')); });
+  $('links-share-text').addEventListener('click', async () => {
+    if (!lastLinksExportText) return;
+    const { shareText } = await import('./platform.js');
+    const how = await shareText(lastLinksExportText, 'רשימת הלינקים');
+    linksMsg(how === 'clipboard' ? 'הרשימה הועתקה ללוח' : how === 'none' ? 'לא הצלחנו לשתף' : 'נפתחה חלונית שיתוף', how === 'none' ? 'err' : 'ok');
+  });
+  $('links-import').addEventListener('click', () => $('links-file').click());
+  $('links-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = ''; // reset first: re-picking the same file must re-fire `change`
+    if (!f) return;
+    try { await linksImportFromText(await f.text()); }
+    catch { linksMsg('לא הצלחנו לקרוא את הקובץ', 'err'); }
+  });
+  $('links-paste-go').addEventListener('click', async () => {
+    const ta = $('links-paste');
+    const text = ta.value;
+    if (!text.trim()) { linksMsg('הדביקו את הרשימה בתיבה', 'err'); return; }
+    try { await linksImportFromText(text); ta.value = ''; }
+    catch { linksMsg('לא הצלחנו לקרוא את הרשימה', 'err'); }
   });
 
   $('remote-copy').addEventListener('click', async () => {

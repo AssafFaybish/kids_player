@@ -352,9 +352,13 @@ test('every path that makes a record LIVE forces a refresh', () => {
   // answers, which is the waiting-screens feature's whole point on that branch (the
   // "no step is silent" test pins that path). A new add/approve path adds one HERE,
   // and a removal must explain where its refresh went.
+  // v1.0.38 DELIBERATE change 7→8: linksImportFromText. ONE call for the whole file
+  // (behind the 'finishing' wait), never one per row — a 300-line file must not fire 300
+  // forced syncs, which is exactly why the importer does not route through
+  // addClassifiedRow. The count is what would catch that regression.
   const sites = (app.match(/refreshAfterAdd\(/g) || []).length - 1;
-  assert.equal(sites, 7,
-    `expected exactly 7 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
+  assert.equal(sites, 8,
+    `expected exactly 8 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
   // it must FORCE: the 3-min shouldSync throttle is what made the bug invisible
   const fn = app.slice(app.indexOf('function refreshAfterAdd('));
   // `[^}]*` rather than an immediate `}`: v1.0.26 added an `onProgress` option for the one
@@ -1317,4 +1321,169 @@ test('a previously-removed backlog has a way back, and it is the PARENT who says
     'the restore must be offered by the channel AND the playlist add path (plus its definition)');
   assert.match(app, /if \(!count && await offerDeniedRestore\(channelId, empty\)\)/,
     'the channel path offers the restore unconditionally or not at all');
+});
+
+/* ---------------- the links file (v1.0.38) ---------------- */
+
+test('the links import goes through classifySourceRow, never a raw line', () => {
+  // classifyLink/classifySourceRow is THE safety boundary — every link that enters the
+  // library passes through it. A bulk importer that split lines itself would be the one
+  // door that skips it, on input the parent got from someone else.
+  const lf = MODULES.get('www/js/linksfile.js');
+  assert.ok(lf, 'linksfile.js is gone');
+  const at = lf.indexOf('export function parseLinksFile(');
+  assert.ok(at > 0, 'parseLinksFile is gone');
+  const body = lf.slice(at, lf.indexOf('\n}\n', at));
+  assert.match(body, /parseSourceRows\(parseCsv\(/,
+    'parseLinksFile no longer tokenizes with parseCsv + parseSourceRows — the grammar was re-implemented');
+  // and it must refuse an unreadable body BEFORE it can read as empty
+  const htmlAt = body.indexOf('looksLikeHtml(');
+  const parseAt = body.indexOf('parseSourceRows(');
+  assert.ok(htmlAt > 0 && htmlAt < parseAt,
+    'looksLikeHtml must run BEFORE parsing, or a saved permission page reads as "0 links"');
+  assert.doesNotMatch(lf, /split\(\s*\/\[\\t,\]/, 'a hand-rolled delimiter split is back');
+  // The module BUILDS canonical URLs (that is canonicalLinkFor's whole job) but must never
+  // PARSE one — parsing is classify.js's. So every youtube.com literal must live inside
+  // canonicalLinkFor, and none of them may be fed to .match()/.test().
+  // Comments are stripped first: this is a rule about CODE, and the doc comment on
+  // canonicalLinkFor explains at length why a stored youtu.be srcUrl is not used.
+  const code = lf.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const buildAt = code.indexOf('export function canonicalLinkFor(');
+  const buildEnd = code.indexOf('\n}\n', buildAt);
+  const outside = code.slice(0, buildAt) + code.slice(buildEnd);
+  assert.ok(!/youtube\.com|youtu\.be/.test(outside),
+    'a YouTube URL literal escaped canonicalLinkFor — link building must stay in one place');
+  assert.ok(!/\/[^\n/]*youtu[^\n/]*\/[gimsuy]*\s*\.(test|exec)|\.match\(\s*\/[^\n/]*youtu/.test(lf),
+    'linksfile.js parses a YouTube link with its own regex — classifySourceRow owns that');
+});
+
+test('the links importer does NOT route through the per-item add paths', () => {
+  // addClassifiedRow's channel branch raises importChannelAndAsk (loading screen + the
+  // three-way approval dialog + a 90s finishing wait) PER CHANNEL, and its video branch
+  // fires refreshAfterAdd + renderHome + a push PER VIDEO. A 16-channel file would raise
+  // 16 dialogs; a 300-line file, 300 forced syncs.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function linksImportFromText(');
+  assert.ok(at > 0, 'the links importer is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.ok(!body.includes('importChannelAndAsk('),
+    'the importer calls importChannelAndAsk — that is one dialog per channel');
+  assert.ok(!body.includes('addClassifiedRow('),
+    'the importer calls addClassifiedRow — that is one forced sync per video');
+  // ONE forced sync, and it must be forced: a non-forced call can JOIN a launch run that
+  // already read the library (planSyncDispatch, the v1.0.25 field bug).
+  assert.equal((body.match(/refreshAfterAdd\(/g) || []).length, 1,
+    'the import must refresh exactly ONCE for the whole file');
+  assert.match(body, /wait: true/, 'the import refresh must be the awaited one — it owns a waiting screen');
+  // the denied question is asked ONCE, outside any loop over rows
+  assert.equal((body.match(/deniedReAddPrompt\(/g) || []).length, 1,
+    'the denied question must be asked once for the whole file, not per row');
+  assert.match(body, /source: 'import', count: hits\.length/,
+    'the denied question must carry the real count — that is the whole point of asking once');
+});
+
+test('a re-added deleted video is ANSWERED for, never silently destroyed (v1.0.38)', () => {
+  // THE HOLE THIS CLOSES. A deny tombstone was revocable by exactly one thing — the SHEET
+  // re-adding the key (planSheetMirror.unDenyKeys) — and drive.mergeDbFiles DELETES any
+  // video whose tombstone is active from the merged document. addClassifiedRow never
+  // consulted the deny set at all, so a re-pasted deleted video was written, shown to the
+  // child, and destroyed by the next pull on every device.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function addClassifiedRow(');
+  assert.ok(at > 0, 'addClassifiedRow is gone');
+  const body = app.slice(at, app.indexOf("\n  if (row && row.kind === 'channel')", at));
+  const gate = body.indexOf('offerDeniedReAdd(');
+  const write = body.indexOf('db.putVideos(');
+  assert.ok(gate > 0, 'the video add path no longer checks the deny list — the v1.0.38 hole is back open');
+  assert.ok(write > 0 && gate < write, 'the deny check must run BEFORE the record is written');
+
+  // the helper itself: it must ASK, and only un-deny on a yes
+  const hAt = app.indexOf('async function offerDeniedReAdd(');
+  assert.ok(hAt > 0, 'offerDeniedReAdd is gone');
+  const helper = app.slice(hAt, app.indexOf('\n}\n', hAt));
+  assert.match(helper, /confirmKid\(/, 'the re-add must ASK — never revoke a tombstone silently');
+  assert.match(helper, /if \(!yes\) return false/, 'a declined re-add must not add the video');
+  assert.ok(helper.indexOf('unDeny(') > helper.indexOf('confirmKid('),
+    'the tombstone is revoked BEFORE the parent answers');
+  // BOTH scopes: a key can carry a tombstone in the shared library and in the personal one
+  assert.match(helper, /profScope\(activeProfileId\)/,
+    'only one scope is un-denied — the other tombstone survives and re-deletes the video');
+});
+
+test('EVERY unDeny in the UI layer sits next to a question (v1.0.38)', () => {
+  // With the sheet gone there are exactly two sanctioned revocation paths, and both are an
+  // explicit parental answer: offerDeniedReAdd (one key) and offerDeniedRestore (a
+  // channel's backlog). A third, unconditional one would make deletion meaningless.
+  for (const p of ['www/js/app.js', 'www/js/share.js', 'www/js/linksfile.js']) {
+    const body = MODULES.get(p) || '';
+    const re = /unDeny\(/g;
+    let m;
+    while ((m = re.exec(body))) {
+      const around = body.slice(Math.max(0, m.index - 1400), m.index + 400);
+      assert.ok(/deniedReAddPrompt|offerDeniedRestore|offerDeniedReAdd|reviveKeys/.test(around),
+        `${p}: an unDeny at index ${m.index} is not guarded by a parental answer`);
+    }
+  }
+});
+
+test('the export WRITES the file before it shares it, and shares the FILE first (v1.0.38)', () => {
+  // The write is the artifact a device transfer needs and the only thing that survives a
+  // cancelled share; the share is how it leaves the tablet at all, because Android 11+
+  // hides Android/data from the Files app. Sharing the list as TEXT is the last rung —
+  // EXTRA_TEXT is a Binder payload receivers truncate, and a 400-link message is not a
+  // file the other device can import.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function linksExport(');
+  assert.ok(at > 0, 'linksExport is gone');
+  const body = app.slice(at, app.indexOf('\nlet lastLinksExportText', at));
+  const write = body.indexOf('fsWriteTextExternal(');
+  const shareF = body.indexOf('shareFile(');
+  assert.ok(write > 0, 'the export no longer writes a file');
+  assert.ok(shareF > write, 'the share must come AFTER the write — a cancelled share must leave the file');
+  assert.ok(!body.includes('shareText('), 'shareText must not be a rung of the export itself');
+  // the empty library must be refused, not exported as a blank file
+  assert.match(body, /delivery: 'nothing'/, 'an empty library must be named, not exported as an empty file');
+});
+
+test('the native shareFile exists in BOTH java copies and its FileProvider path is declared', () => {
+  // ARCHITECTURE.md calls native-reference/ the canonical rebuild copy; a method that lives
+  // in only one of them is a rebuild that silently loses the feature.
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                   'native-reference/KidsNativePlugin.java']) {
+    const java = readFileSync(join(ROOT, p), 'utf8');
+    const at = java.indexOf('public void shareFile(PluginCall call)');
+    assert.ok(at > 0, `${p}: shareFile is missing — the links export cannot leave the device`);
+    const body = java.slice(at, java.indexOf('\n    }\n', java.indexOf('try {', at)));
+    assert.match(body, /FileProvider\.getUriForFile/,
+      `${p}: a raw file:// URI throws FileUriExposedException on API 24+`);
+    assert.match(body, /EXTRA_STREAM/, `${p}: shareFile attaches no file`);
+    assert.match(body, /FLAG_GRANT_READ_URI_PERMISSION/,
+      `${p}: without the grant flag the receiving app opens an empty document`);
+  }
+  // …and the path must be whitelisted, in both copies, or getUriForFile throws
+  for (const p of ['android/app/src/main/res/xml/file_paths.xml', 'native-reference/file_paths.xml']) {
+    const xml = readFileSync(join(ROOT, p), 'utf8');
+    assert.match(xml, /<external-files-path[^>]*path="exports\/"/,
+      `${p}: exports/ is not declared — FileProvider.getUriForFile throws for the export path`);
+  }
+});
+
+test('a links import cannot mint a duplicate profile name (v1.0.38)', () => {
+  // A PROFILE NAME IS UNIQUE PER GOOGLE ACCOUNT, NOT PER DEVICE (v1.0.22): two devices each
+  // creating "נועם" splits that child's gift progress and personal videos while the parent
+  // sees two identical avatars. The import's "create a new profile from this file" branch is
+  // a NEW way to mint one and must not be the path that skips the check.
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /async function profileNameClash\(/, 'the shared name gate is gone');
+  const gate = app.slice(app.indexOf('async function profileNameClash('));
+  assert.match(gate.slice(0, 900), /profileNameConflict\(/, 'the gate no longer uses the pure conflict rule');
+  assert.match(gate.slice(0, 900), /pullDrive\(/, 'the gate no longer pulls first — a peer name would be invisible');
+  const at = app.indexOf('async function linksImportFromText(');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /profileNameClash\(/, 'the create-a-profile branch skips the uniqueness gate');
+  assert.ok(body.indexOf('profileNameClash(') < body.indexOf('createProfile('),
+    'the name is checked AFTER the profile is created');
+  // and createNewProfile must share it rather than keep a private copy
+  const cn = app.slice(app.indexOf('async function createNewProfile('), app.indexOf('async function activateProfile('));
+  assert.match(cn, /profileNameClash\(/, 'createNewProfile grew a private copy of the gate again');
 });
