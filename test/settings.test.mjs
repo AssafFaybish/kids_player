@@ -167,3 +167,26 @@ test('a local change made since the last push survives applying an older remote 
   assert.equal(await getSetting('k', 'exitLock', true), false,
     'a stale peer re-locked a tablet the parent had just unlocked');
 });
+
+test('keepNewest ties resolve to the LARGER window, and stay commutative (v1.0.39)', () => {
+  // The rolling window's two failure directions are not symmetric: too large keeps videos
+  // nobody wanted, too small proposes deleting videos the child watches. The generic
+  // fallback orders by STRING, which would prefer "9" over "200" on an exact `at` tie.
+  const A = { v: 9, at: 1000 };
+  const B = { v: 200, at: 1000 };
+  assert.equal(mergeSettingEntry('keepNewest', A, B).v, 200);
+  assert.equal(mergeSettingEntry('keepNewest', B, A).v, 200, 'and it must be commutative');
+  // 0 IS NOT A SMALL WINDOW, IT IS OFF, and off deletes nothing at all — so it wins the tie
+  // before the max rule. Without this, an exact `at` collision let the phone turn the
+  // feature back ON for a parent who had just switched it off on the tablet.
+  assert.equal(mergeSettingEntry('keepNewest', { v: 0, at: 5 }, { v: 50, at: 5 }).v, 0);
+  assert.equal(mergeSettingEntry('keepNewest', { v: 50, at: 5 }, { v: 0, at: 5 }).v, 0, 'and commutative');
+  // a real timestamp still decides — OFF does not outrank recency
+  assert.equal(mergeSettingEntry('keepNewest', { v: 0, at: 5 }, { v: 50, at: 9 }).v, 50);
+  // a real timestamp still decides — the tie-break may never override recency
+  assert.equal(mergeSettingEntry('keepNewest', { v: 9, at: 2000 }, { v: 200, at: 1000 }).v, 9);
+  // and it does not leak onto other numeric settings (they keep the documented ordering)
+  const s = mergeSettingEntry('lockAfterMin', { v: 9, at: 7 }, { v: 200, at: 7 });
+  assert.equal(s.v, mergeSettingEntry('lockAfterMin', { v: 200, at: 7 }, { v: 9, at: 7 }).v,
+    'every tie-break must be commutative, whichever rule applies');
+});

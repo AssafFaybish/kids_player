@@ -17,6 +17,10 @@ import { getAccessToken, invalidateToken } from './gauth.js';
 import { libraryIdFor } from './util.js';
 import { looksLikeHtml } from './csv.js'; // a 200 + sign-in page is a FAILURE, never an empty doc
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
+// v1.0.40: the favourite half of a state entry is merged by the same pure rule everywhere
+// (plan.js is the same import layer as this module — see the order in CLAUDE.md — and it
+// does not import drive.js, so this edge adds no cycle).
+import { mergeFavState } from './plan.js';
 import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel, deleteLibraryChannel,
@@ -156,9 +160,18 @@ const PER_DEVICE_CHANNEL_FIELDS = [
  */
 export function serializeStateEntry(v) {
   if (!v) return null;
-  if (v.unwrappedAt) return { unwrappedAt: v.unwrappedAt };
-  if (v.giftRank !== undefined) return { giftRank: v.giftRank };
-  return null;
+  // v1.0.40 — THE FAVOURITE HALF RIDES ALONG, and it must be added BEFORE the early
+  // returns below, not after. This function was an if/return chain — "whichever field
+  // wins" — so a ⭐ on a video the child had already opened (i.e. almost every one) would
+  // have been silently dropped from the document and the star would exist on one device
+  // only. Both timestamps travel because REMOVING a star is an event too (plan.favActive):
+  // with only `favAt`, a peer's stale copy re-stars what the child just un-starred.
+  const fav = {};
+  if (v.favAt) fav.favAt = v.favAt;
+  if (v.favOffAt) fav.favOffAt = v.favOffAt;
+  if (v.unwrappedAt) return { unwrappedAt: v.unwrappedAt, ...fav };
+  if (v.giftRank !== undefined) return { giftRank: v.giftRank, ...fav };
+  return Object.keys(fav).length ? fav : null;
 }
 
 /**
@@ -170,16 +183,26 @@ export function serializeStateEntry(v) {
  * Dropping giftRank from the result is the unwrap semantics (db.unwrapGift does the same).
  */
 export function mergeAppliedState(mine, remote) {
-  if (!remote || !remote.unwrappedAt) return null;
-  const out = {
-    unwrappedAt: mine && mine.unwrappedAt
+  // v1.0.40 — a remote entry carrying ONLY a favourite must still apply. The old guard
+  // returned null unless the remote had `unwrappedAt`, so a ⭐ added on the phone was
+  // thrown away on the tablet's pull — the feature would have looked device-local.
+  const fav = mergeFavState(mine, remote);
+  const hasFav = fav.favAt || fav.favOffAt;
+  if (!remote || (!remote.unwrappedAt && !hasFav)) return null;
+  const out = { ...fav };
+  if (remote.unwrappedAt || (mine && mine.unwrappedAt)) {
+    out.unwrappedAt = mine && mine.unwrappedAt && remote.unwrappedAt
       ? Math.min(mine.unwrappedAt, remote.unwrappedAt)
-      : remote.unwrappedAt
-  };
+      : (remote.unwrappedAt || mine.unwrappedAt);
+  }
   if (mine) {
     if (mine.posSec !== undefined) out.posSec = mine.posSec;
     if (mine.durSec !== undefined) out.durSec = mine.durSec;
     if (mine.posAt !== undefined) out.posAt = mine.posAt;
+    // a LOCAL gift rank is device-local by rule and must survive a fold that only
+    // carries a star (the old shape dropped it as part of the unwrap semantics, which is
+    // right for an unwrap and wrong for a favourite-only entry)
+    if (!out.unwrappedAt && mine.giftRank !== undefined) out.giftRank = mine.giftRank;
   }
   return out;
 }

@@ -291,6 +291,160 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.40 — **⭐ מועדפים: THE CHILD'S OWN MARK** (user request 2026-08-11: any video the child
+  taps ⭐ on appears in its own folder at the top of the home, IN ADDITION to where it lives,
+  and is never deleted automatically; a second tap removes it).
+  - **IT ALSO FIXES v1.0.39's WEAKEST POINT.** The window's automatic belt was `posSec`, and
+    a video watched to the END clears its position — so the most-rewatched video carried no
+    signal at all. A star is a STATEMENT, not a guess, and it is now the strongest member of
+    `protectedWindowKeys`.
+  - **`favAt` + `favOffAt`, AN LWW-ELEMENT SET** (`plan.favActive`, the `db.denyActive`
+    pattern). A removal is an EVENT, never a cleared field: with a single `favAt`, un-starring
+    on the tablet would be undone by the phone's stale copy and the video would walk back
+    into ⭐. Later event wins; a TIE is NOT a favourite (a star the child taps again is a
+    shrug, a video that refuses to leave is the app disobeying them). `mergeFavState` is
+    max-per-field, so it is commutative and idempotent.
+  - **TWO FUNCTIONS WOULD HAVE DROPPED IT IN SILENCE**, and the feature would have looked
+    device-local: `drive.serializeStateEntry` was an if/return chain ("whichever field
+    wins"), so a star on an already-opened video — i.e. almost every one — never reached the
+    document; and `mergeAppliedState` returned `null` unless the REMOTE carried an
+    `unwrappedAt`, so a favourite-only entry was discarded on pull. Both now carry the
+    favourite half, and the fold preserves the local position AND a local `giftRank`.
+  - **NO NEW INDEX AND NO `DB_VERSION` BUMP**: the ⭐ folder is derived from the profile's
+    state map, which `loadGiftStates` already holds in memory for every render. `db.setFavourite`
+    is a read-modify-write on ONE row so it cannot disturb the gift/unwrap/resume fields.
+  - **ORDER IS `favAt` ASCENDING — a new star is APPENDED** (the user's decision). A
+    5-year-old navigates by POSITION, not by title; newest-first would move every video they
+    already know each time they add one.
+  - ⭐ is pushed SECOND in `buildFolders`, right after 🎁, and hidden at zero (a tile that
+    opens an empty grid is the v1.0.21 bug). Both `pageAnyFolder` AND `nextAfter` learn the
+    kind — the existing invariant that they cover the same set now includes `'fav'`, so the
+    chain can never disagree with the grid. ⭐ IS chained (unlike 🎁): watching favourites
+    one after another is the point of the folder.
+  - The ⭐ pager's self-heal clears only the FAVOURITE fields. The gift folder may delete the
+    whole state row (a rank is its whole point); doing that here would erase `unwrappedAt`
+    and RE-GIFT a video the child already opened.
+  - The button lives in `.watch-top` next to 🏠, **OUTSIDE `player-wrap`** — the HUD's tap
+    model (centre tap = pause, double tap = seek) has been broken more than once, and a real
+    `<button>` there is also what the TV remote reaches. No PIN and no confirm: it is not
+    destructive in either direction.
+  - **A SIBLING'S STAR PROTECTS TOO** (`protectedWindowKeys({ statesByProfile })` +
+    `db.loadVideoStates`): on a legacy shared library one child's window must never prune the
+    other child's favourite — the same cross-profile rule `db.deleteVideoStates` follows.
+  - ⚠️ **NO CAP, by the user's decision** (2026-08-11) after the consequence was stated: a
+    child who stars a great many videos narrows what the rolling window can ever propose. A
+    channel whose whole over-window set is starred simply produces no notice, which is the
+    honest outcome — there is nothing to offer.
+  - Verified end-to-end in the browser: ☆ → ⭐ → ☆ → ⭐ with the stored LWW timestamps, the
+    home ordering 🎁 → ⭐ → 📺, the video present in BOTH ⭐ and its channel folder, and a
+    window of 1 over 8 videos proposing seven — never the starred one. 8 unit tests + 4
+    wiring invariants, every guard proven red on a planted regression (one of them caught
+    VACUOUS on its first plant and sharpened).
+- v1.0.39 — **THE ROLLING WINDOW: the library stops growing forever, and NOTHING is ever
+  deleted without the parent answering** (user request 2026-08-09: "I want to stay up to
+  date with the newest videos" → their own conditions: *tell me which channel, let me mark
+  what not to delete, or wipe the channel and keep only new ones*).
+  - **THE FRAMING CORRECTION THAT CAME FIRST, and it was measured**: the per-channel cap
+    does NOT block new uploads. A folder at 500 — or at 3000 — accepts fresh RSS entries
+    (5 offered, 5 imported). The ceiling that eventually stops new videos is
+    `MAX_ITEMS_TOTAL`, and it stops them **for every channel at once**. So this feature
+    bounds GROWTH; it is not a fix for "new videos do not arrive".
+  - **`keepNewest` is per-profile, SYNCED, and 0 (OFF) unless written.** The opposite
+    default to `screenOffAfterMin`, deliberately: it is the only setting in the app that
+    deletes the CHILD's content, so it may never arrive with an update. Pure
+    `plan.keepNewestPerChannel` reads every unusable value — including a window below the
+    10 minimum — as OFF: a mistyped `1` must not propose emptying a folder.
+  - **THE SYNC NEVER DELETES FOR THE WINDOW.** `plan.planChannelWindow` PROPOSES (live
+    records only — pending/rejected are parked and belong to the approval queue and its
+    30-day purge), the מקורות tab NAMES the channels that are over, and the only code that
+    deletes sits behind a `confirmKid`. An invariants test bans any other module from even
+    mentioning `planChannelWindow` or `deleteVideosWithTombstones`.
+  - The review reuses `view-pick` with the MIRRORED default: rows arrive **unticked**
+    (they are the ones proposed for deletion; a tick means "keep forever"), where the
+    approval picker starts all-ticked. Two answers: delete those over the window, or
+    `pick-alt` — delete every video of the channel and let RSS repopulate it ("only new
+    from now on"; the backfill is already finished for a subscribed channel).
+    `pickHandlers.keepOpen` exists because a CANCELLED confirm must leave the parent on the
+    list with live buttons — the shared wiring nulls the handlers and navigates back.
+  - **`keepForever` is GROW-ONLY through `normalize.mergeVideoRecord`** (`s.keepForever ||
+    l.keepForever`). `out = {...s}` alone loses it whenever the other copy wins — a peer
+    with an older `addedAt` becomes the survivor, and the fresh sync candidate carries no
+    flag — and the failure mode is a protected favourite quietly becoming deletable.
+  - The prune uses **`db.deleteVideosWithTombstones`** (`reason: 'window-prune'`), chunked.
+    A tombstone is NOT optional: a raw delete is pure absence and every Drive merge is a
+    union, so a peer would re-push every pruned video (the v1.0.36 lesson). Consequence to
+    state out loud, and the confirm does: a pruned video returns only by re-adding the
+    channel (`app.offerDeniedRestore`, v1.0.37).
+  - **THREE DEFECTS THE BROWSER CAUGHT AND REASONING DID NOT** — all three would have
+    shipped green:
+    1. `giftStates` is a **Map**, and the first version read it with `Object.entries`, so
+       the child-side protection matched NOBODY.
+    2. **`unwrappedAt` IS NOT A WATCH SIGNAL.** `planGifts`' baseline stamps it on every
+       live record that did not become a gift, so after one sync nearly the whole library
+       carries it — trusting it made the feature a measured no-op (a 60-video channel 40
+       over its window proposed ZERO). The app has no play counter; `posSec` (resume) is
+       the only honest signal, so **the parent's ticks are the real protection**.
+    3. `pick-alt` deleted videos the parent had ALREADY marked keep-forever — a marked
+       video is not proposed, so it never appears in the list and cannot be re-ticked.
+       `allLive` now excludes `keepForever`.
+  - **THE PROPOSAL IS RE-READ AT COMMIT TIME.** It is computed when the review OPENS, and a
+    sync, a Drive pull or the parent acting elsewhere can move a video in between (approved,
+    rejected, protected, already gone). Writing a `window-prune` tombstone for something
+    that is no longer a prunable live record would permanently deny a video this dialog
+    never asked about; the toast reports what was ACTUALLY removed, not the pre-confirm
+    intent.
+  - `keepForever` also travels through the SNAPSHOT: the export carries full records, and
+    the import (which builds an explicit record) used to drop it, so a restore silently
+    unprotected every favourite — the same class as the `srcChannel*` fields that function
+    already carries for exactly that reason. It stays SPARSE (never written as `false`).
+  - `settings.SAFE_ON_TIE_MAX` — a numeric tie-break for `keepNewest`: on an exact `at`
+    collision the LARGER window wins, because the generic fallback orders by STRING and
+    would prefer `"9"` over `"200"`. Too large keeps videos nobody wanted; too small
+    proposes deleting videos the child watches (the resolveCuration asymmetry).
+  - ⚠️ KNOWN CONSEQUENCE, not a bug: on a LEGACY shared library (`lib:<hash>`, several
+    profiles on one sheet-derived scope) the setting is per-child but the CONTENT is shared,
+    so one child's window prunes the shared folder for the siblings too. The settings label
+    names the child (`keep-newest-owner`) and every deletion is reviewed per channel, so
+    nothing happens unseen — but the effect crosses profiles.
+  - **THE ADVERSARIAL PASS FOUND FIVE MORE, and the first one was severe** (all fixed,
+    all pinned):
+    1. **ORPHAN GIFT STATE JAMS 🎁 FOREVER.** `planGifts` counts `outstanding` straight out
+       of `profileVideoState` — `giftRank && !unwrappedAt`, records or no records — and stops
+       gifting at `outstanding >= baseline`. Pruning a handful of UN-OPENED gifts therefore
+       meant the child never received another one, and `planGiftRunawayRepair` cannot rescue
+       it (it no-ops below its 60-record floor). The 🎁 tile counts the same index, so the
+       orphans also promised a folder that resolved to nothing, and `serializeStateEntry`
+       would have carried them in the Drive doc forever — in a feature whose purpose is
+       bounding growth. `db.deleteVideoStates` now clears them for **every profile that reads
+       the library**, not just the active one (a legacy shared scope jams a sibling too).
+    2. **`pick-alt` deleted the `posSec`-protected half** — the exact twin of the
+       keep-forever bug: protected ⇒ never proposed ⇒ never rendered ⇒ impossible to tick.
+       ONE `guarded` set now gates the proposal AND the wipe pool.
+    3. **`SAFE_ON_TIE_MAX` turned an explicit OFF into ON**: 0 is not a small window, it is
+       off, so it wins the tie before the max rule.
+    4. **A throw inside `commit` was a silent dead end** — `settled` was released only on a
+       cancelled confirm, so any failed write left both buttons inert with no message.
+       try/catch releases it and says so.
+    5. **The review could be opened twice** (its prelude does two library reads before
+       navigating): the second open repainted the list and replaced `pickHandlers`, and the
+       `nav.go('pick')` then nulled the LIVE handler — a zombie screen with dead buttons.
+       One-at-a-time guard.
+    Plus the honesty fixes the feature's own rules demanded: pure `plan.pruneConfirmText`
+    names the rows the parent could NOT see (`hidden`), says when the folder will empty and
+    vanish from the child's home, and states the way back as **not guaranteed** (re-adding
+    means remove-then-add, whose orphan sweep takes the channel's remaining records; the
+    backfill re-arms only when no other library subscribes; a keyless install only sees the
+    RSS window). The borrowed `view-pick` chrome is retargeted (🧺, "להשאיר הכול") instead of
+    heading a deletion screen with a green ✅.
+  - ⚠️ **`posSec` IS A WEAK BELT, and the reason is worth knowing**: a video watched to the
+    END clears its position (`resumeSaveDecision` → 'clear'), so the most-rewatched video —
+    the one the rationale is about — carries no signal at all. Only ABANDONED videos are
+    belted. The app has no play counter; the parent's ticks are the protection.
+  - Verified end-to-end in the browser through the real PIN gate: 60 live + window 20 → 40
+    proposed → two ticked → confirm CANCELLED leaves 60 records, 0 marks and live buttons →
+    confirmed leaves exactly 22 (20 newest + 2 marked), 38 `window-prune` tombstones, and
+    the notice disappears. The wipe path verified to honour an earlier mark (28 of 30).
+    20 unit tests + 11 wiring invariants, every guard proven red on a planted regression.
 - v1.0.38 — **THE GOOGLE-SHEETS SOURCES LIST IS GONE** (user request). Full record:
   **[docs/V1038.md](docs/V1038.md)** — read it before touching `sunset`, `linksfile` or
   `libraryId`. The short version, because each line is an invariant elsewhere in this file:

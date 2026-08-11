@@ -129,3 +129,23 @@ test('mergeVideoRecord: mergedFrom accumulates the loser key, never undefined-cl
   assert.ok(m.mergedFrom.includes('yt:b'));
   assert.equal(m.localPath, 'videos/a.mp4');
 });
+
+test('keepForever is GROW-ONLY through the merge, in both directions (v1.0.39)', () => {
+  // The parent marked this video as one the rolling window may never delete. `out = {...s}`
+  // keeps it only when the LOCAL copy happens to win — and it does not always: a peer whose
+  // `addedAt` is older becomes the survivor, and the fresh sync candidate carries no flag at
+  // all. Losing it turns a protected favourite back into a deletion candidate, silently.
+  const base = {
+    key: 'yt:a', scopeId: 'lib:1', type: 'youtube', id: 'a', title: 'שיר',
+    titleSource: 'api', state: 'live', addedAt: 500, updatedAt: 500, folderId: 'ch:UC1'
+  };
+  const marked = { ...base, keepForever: true, addedAt: 900 };  // protected, but NEWER
+  const plain = { ...base, addedAt: 100 };                      // unmarked, and OLDER → survivor
+  assert.equal(mergeVideoRecord(marked, plain).keepForever, true,
+    'the protection was dropped when the other copy won the merge');
+  assert.equal(mergeVideoRecord(plain, marked).keepForever, true, 'and it must be commutative');
+  // a sync candidate (no flag) merging over a protected prior — the every-30-minutes path
+  assert.equal(mergeVideoRecord({ ...base, keepForever: true }, { ...base, addedAt: 999 }).keepForever, true);
+  // and it is never INVENTED: two unmarked copies stay unmarked (otherwise nothing is prunable)
+  assert.equal(mergeVideoRecord(plain, { ...base, addedAt: 700 }).keepForever, undefined);
+});

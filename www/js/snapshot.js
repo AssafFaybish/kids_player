@@ -167,6 +167,12 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
     addedAt, approvedAt: state === 'rejected' ? null : (v.approvedAt ?? null),
     // the ORIGINAL rejection time (or none) — see the rules block above
     rejectedAt: state === 'rejected' ? num(v.rejectedAt) : null,
+    // v1.0.39 — the parent's "never delete this one" mark. The export carries it (full
+    // records), and dropping it HERE meant a restore silently unprotected every favourite,
+    // so the next rolling-window review proposed them again. Same class as the srcChannel*
+    // fields above. Sparse on purpose: only ever written when true, exactly as
+    // normalize.mergeVideoRecord sets it.
+    ...(v.keepForever === true ? { keepForever: true } : {}),
     thumbId: null, // blobs don't travel in the snapshot
     thumbUrl: typeof v.thumbUrl === 'string' && /^https:/.test(v.thumbUrl) ? v.thumbUrl : null,
     // typeof FIRST: RegExp.test stringifies, so `["videos/x.mp4"]` used to pass the shape

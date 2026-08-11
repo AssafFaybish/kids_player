@@ -58,6 +58,22 @@ export const SCREEN_OFF_DEFAULT_MIN = 10;
 export const SCREEN_OFF_PROMPT_SEC = 45;
 
 
+/* v1.0.39 — ROLLING WINDOW: keep only the newest N videos per channel.
+   0 = OFF, and OFF IS THE DEFAULT. This is the only feature in the app that deletes the
+   CHILD'S content, so it may never arrive with an update: a family that never opens the
+   settings screen keeps every video it has. When it IS on, the sync still deletes nothing
+   on its own — it only proposes, and the parent reviews per channel (the user's decision
+   2026-08-09: "tell me which channel, let me mark what not to delete, or wipe it and keep
+   only new ones"). */
+// The number the parent is POINTED AT when they type something unusable (a mistyped `1`
+// reads as off, and an "off" message with no way forward is a dead end). It has a live
+// consumer for the reason v1.0.37 exists: a constant nobody reads is a lie.
+export const KEEP_NEWEST_SUGGESTED = 200;
+// The review screen renders at most this many rows. A channel 4000 videos over the window
+// would otherwise build 4000 thumbnails and read as a frozen app; the rows shown are the
+// NEWEST of those proposed, i.e. the ones a parent is most likely to want to keep.
+export const PRUNE_REVIEW_CAP = 200;
+
 /* Sync */
 // v1.0.37 — THESE ARE THE LIVE CAPS NOW. They existed here since the overhaul with
 // ZERO consumers: the binding values were literals frozen into each profile's `sources`

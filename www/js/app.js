@@ -16,7 +16,8 @@ import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
-  SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC } from './config.js';
+  SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
+  KEEP_NEWEST_SUGGESTED } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -27,7 +28,9 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
   planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
-  screenOffMinutes, evalIdleSleep, sourceDrops } from './plan.js';
+  screenOffMinutes, evalIdleSleep, sourceDrops,
+  keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
+  pruneConfirmText, favActive, favouriteKeys } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -380,7 +383,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner', 'screen-off-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -1202,6 +1205,11 @@ async function buildFolders() {
   if (!pid) return out;
   const giftCount = await db.countGifts(pid);
   if (giftCount > 0) out.push({ id: 'new', title: 'חדשים', emoji: '🎁', count: giftCount, isNew: true });
+  // v1.0.40 — ⭐ SECOND, immediately after 🎁 (the user's request: at the top of all the
+  // folders, after "חדשים"). Hidden at zero, exactly like the gift folder: a tile that
+  // opens an empty grid is the v1.0.21 bug.
+  const favCount = favouriteKeys(giftStates).length;
+  if (favCount > 0) out.push({ id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true });
 
   const src = await db.getSources(pid);
   const lib = (src && src.libraryId) || null;
@@ -1375,6 +1383,36 @@ async function pageGiftFolder({ offset, limit }) {
 }
 
 /**
+ * v1.0.40 — the child's ⭐ folder. Same shape as the gift folder above and for the same
+ * reason: no record carries `folderId:'fav'`, so this is derived from the profile's state.
+ *
+ * Order is `favAt` ASCENDING — a new star is APPENDED (the user's decision). A pre-reader
+ * navigates by POSITION, so putting the newest first would move every video they know.
+ *
+ * The self-heal drops only the FAVOURITE fields when the video is gone everywhere: the row
+ * also carries gift/unwrap/resume state, and deleting it wholesale (as the gift folder may,
+ * because a rank IS the whole point there) would re-gift a video the child already opened.
+ */
+async function pageFavFolder({ offset, limit }) {
+  const keys = favouriteKeys(giftStates);
+  const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  const items = [];
+  const slice = keys.slice(offset, offset + limit);
+  for (const key of slice) {
+    const rec = await db.findLiveByKey(key, prefer);
+    if (rec) items.push(rec);
+    else {
+      try {
+        await db.setFavourite(activeProfileId, key, false);
+        const st = giftStates.get(key);
+        if (st) giftStates.set(key, { ...st, favOffAt: Date.now() });
+      } catch {}
+    }
+  }
+  return { items, total: keys.length };
+}
+
+/**
  * One pagination entry point for every folder kind (v1.0.12):
  *   new      — 🎁 "חדשים": the sparse gift index, resolved to live records (v1.0.21);
  *   grp:<id> — a virtual folder of loose singles sharing a channel (array slice);
@@ -1392,6 +1430,7 @@ async function pageGiftFolder({ offset, limit }) {
 async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {}) {
   const slice = (arr) => ({ items: arr.slice(offset, offset + limit), total: arr.length });
   if (fid === 'new') return pageGiftFolder({ offset, limit });
+  if (fid === 'fav') return pageFavFolder({ offset, limit });
   if (String(fid).startsWith('grp:')) return slice(singleGroups.get(String(fid).slice(4)) || []);
   if (fid === 'sheet' && looseSingles.length) return slice(looseSingles);
 
@@ -1420,6 +1459,15 @@ async function nextAfter(scope, fid, current) {
   // 🎁 is never chained (planAutoplay stops first); it is also not a stored folder, so
   // there is no cursor to advance here even if it were.
   if (fid === 'new') return null;
+  // ⭐ IS chained: it is an ordinary list of live videos, and "watch my favourites one
+  // after another" is the whole point of the folder. Derived from the same ordered keys
+  // the grid renders, so the chain can never disagree with what is on screen.
+  if (fid === 'fav') {
+    const keys = favouriteKeys(giftStates);
+    const at = keys.indexOf(current.key);
+    if (at < 0 || at + 1 >= keys.length) return null;
+    return db.findLiveByKey(keys[at + 1], [libScope, db.profScope(activeProfileId)].filter(Boolean));
+  }
   if (String(fid).startsWith('grp:')) return nextInOrder(singleGroups.get(String(fid).slice(4)) || [], current.key);
   if (fid === 'sheet' && looseSingles.length) return nextInOrder(looseSingles, current.key);
 
@@ -1528,7 +1576,7 @@ async function openFolder(fid) {
   folderPage = 0;
   const f = folders.find((x) => x.id === fid)
     || (searchIndex && searchIndex.folders.find((x) => x.id === fid)); // opened from search
-  $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.title) : '';
+  $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.isFav ? 'מועדפים ⭐' : f.title) : '';
   // v1.0.4: the channel's logo (or the folder emoji) next to the name — the child
   // always sees WHICH channel they're inside.
   const logoTop = $('folder-logo-top');
@@ -1715,6 +1763,56 @@ function enterPlayerFullscreen() {
   } catch { /* embedded webviews may deny — playing inline is a fine fallback */ }
 }
 
+/* ---------------- favourites (v1.0.40) ---------------- */
+/**
+ * The ⭐ button's two states. `giftStates` mirrors the whole per-video state store, so this
+ * is a synchronous lookup — the button must be correct in the same frame the video opens,
+ * or the child sees an empty star over a video they already starred.
+ */
+function paintFavButton(key) {
+  const btn = $('watch-fav');
+  if (!btn) return;
+  const on = favActive(giftStates.get(key));
+  btn.textContent = on ? '⭐' : '☆';
+  btn.classList.toggle('is-fav', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.setAttribute('aria-label', on ? 'להסיר מהמועדפים' : 'להוסיף למועדפים');
+}
+
+/**
+ * The child's own toggle — no PIN, no confirm. It is not destructive in either direction:
+ * the video stays exactly where it lives, ⭐ is an ADDITIONAL place to find it (the user's
+ * request), and a second tap removes it again.
+ *
+ * The write goes through `db.setFavourite`, which records a REMOVAL as its own timestamp
+ * rather than clearing the field — see plan.favActive for why an un-favourite has to be an
+ * event that can travel between devices.
+ */
+async function toggleFavourite() {
+  if (!activeProfileId || !currentWatch || !currentWatch.key) return;
+  const key = currentWatch.key;
+  const now = Date.now();
+  const on = !favActive(giftStates.get(key));
+  // mirror in memory FIRST so the button and the home agree immediately; the IDB write
+  // and the render follow (the same order tileEl's gift state relies on)
+  const st = giftStates.get(key) || { profileId: activeProfileId, key };
+  giftStates.set(key, on ? { ...st, favAt: now } : { ...st, favOffAt: now });
+  paintFavButton(key);
+  try {
+    await db.setFavourite(activeProfileId, key, on, now);
+    maybeSchedulePush(); // a star is a child decision and belongs on every device
+  } catch {
+    giftStates.set(key, st); // put the memory back — the button must not lie
+    paintFavButton(key);
+    toast('לא הצלחנו לשמור. אפשר לנסות שוב');
+    return;
+  }
+  toast(on ? 'נוסף למועדפים ⭐' : 'הוסר מהמועדפים');
+  // the ⭐ folder's count and existence change with this, and the child may be looking at
+  // the home behind the player (the under-player grid renders from the same folders)
+  renderWatchGrid(currentWatch);
+}
+
 async function openWatch(item) {
   // v1.0.32: switching video→video — bank the OLD video's stop point BEFORE playItem
   // reuses or tears down the player (the clock goes with it).
@@ -1751,6 +1849,7 @@ async function openWatch(item) {
   status.classList.add('hidden');
   status.textContent = '';
   setWatchTitle(item);
+  paintFavButton(item.key); // v1.0.40 — ⭐ on/off for THIS video
   renderWatchGrid(item);
 
   // v1.0.32: resume — the pure decision; 0 whenever the setting is off, nothing usable
@@ -2199,6 +2298,9 @@ async function refreshSourcesPanel() {
       if (await isTv()) box.open = true;
     } catch {}
   }
+  // v1.0.39 — the rolling window's notice. Derived here, per visit: nothing about it is
+  // stored, so it can never disagree with the library it describes.
+  await refreshWindowBox().catch(() => {});
 }
 
 async function refreshParent() {
@@ -2215,6 +2317,9 @@ async function refreshParent() {
   // distinction is screenOffMinutes' whole job (Number(null) is 0, the wrong answer).
   $('screen-off-min').value = String(screenOffMinutes(
     await getSetting(activeProfileId, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN));
+  // v1.0.39: the OPPOSITE default — never-written reads as 0 (off), because this is the
+  // one setting that deletes the child's videos.
+  $('keep-newest').value = String(keepNewestPerChannel(await getSetting(activeProfileId, 'keepNewest', null)));
   await labelProfileSettings();
   // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
   // cannot be blocked retroactively, and merging or renaming it silently would be worse —
@@ -2908,6 +3013,312 @@ async function channelRow(lc, { fresh = false } = {}) {
   return li;
 }
 
+/* ---------------- rolling window (v1.0.39) ---------------- */
+/**
+ * The parent's window size for the ACTIVE profile. Per-profile and SYNCED (a screen-time
+ * style decision belongs to the child, not the tablet), 0 = off — see plan.keepNewestPerChannel
+ * for why every unusable value also reads as off.
+ */
+async function keepNewestSetting() {
+  if (!activeProfileId) return 0;
+  try { return keepNewestPerChannel(await getSetting(activeProfileId, 'keepNewest', null)); } catch { return 0; }
+}
+
+/**
+ * Which channels currently sit OVER the window — DERIVED on demand, never stored.
+ *
+ * Nothing is persisted deliberately: a stored proposal is a second source of truth that
+ * would go stale the moment a sync, a peer's pull or the parent's own deletion changed the
+ * folder (the whole class of bug v1.0.38 removed). The derivation is one library read,
+ * which the parent screen does anyway.
+ *
+ * The protected set is the parent's own marks (`keepForever`) plus a saved playback
+ * position — see plan.protectedWindowKeys for why `unwrappedAt` is NOT in that list
+ * (the gift baseline stamps it library-wide, which made the window a measured no-op).
+ */
+async function channelsOverWindow() {
+  const keep = await keepNewestSetting();
+  if (!keep) return { keep: 0, byChannel: {}, total: 0 };
+  const scope = await currentLibScope();
+  if (!scope) return { keep, byChannel: {}, total: 0 };
+  const records = [...(await db.loadMergeIndex(scope)).values()];
+  // pure, and deliberately so: the first version of this read `giftStates` — a MAP — with
+  // Object.entries, so the "the child watched it" half of the protection matched NOTHING
+  // and nothing but the parent's own ticks was ever safe. The browser caught it; the pure
+  // helper is what makes it testable.
+  // v1.0.40 — the SIBLINGS' stars count too. A legacy shared library (`lib:<hash>`) is read
+  // by several profiles, so pruning under child A's window would otherwise delete a video
+  // child B had starred — the same cross-profile rule db.deleteVideoStates follows.
+  const statesByProfile = [];
+  for (const p of await getProfiles()) {
+    if (p.id === activeProfileId) continue; // the active one is `giftStates`, already loaded
+    const src = await db.getSources(p.id).catch(() => null);
+    if (!src || src.libraryId !== scope) continue;
+    statesByProfile.push(await db.loadVideoStates(p.id).catch(() => null));
+  }
+  const guarded = protectedWindowKeys({ records, states: giftStates, statesByProfile });
+  const plan = planChannelWindow({ records, keep, protectedKeys: guarded });
+  return { keep, ...plan };
+}
+
+/** The מקורות tab's notice: name the channels that are over, never delete on our own. */
+async function refreshWindowBox() {
+  const box = $('window-box');
+  const ul = $('window-list');
+  if (!box || !ul) return;
+  ul.innerHTML = '';
+  let over;
+  try { over = await channelsOverWindow(); } catch { over = { total: 0, byChannel: {} }; }
+  const ids = Object.keys(over.byChannel || {});
+  box.classList.toggle('hidden', ids.length === 0);
+  if (!ids.length) return;
+  // hoisted: the subscription list is per LIBRARY, and reading it inside the loop made the
+  // notice quadratic in the number of channels over the window
+  const subs = await db.listLibraryChannels(await currentLibScope()).catch(() => []);
+  for (const id of ids) {
+    const entry = over.byChannel[id];
+    const ch = await db.getChannel(id).catch(() => null);
+    const lc = subs.find((c) => c.channelId === id) || null;
+    const name = (lc && lc.titleOverride) || (ch && ch.title) || id;
+    const li = document.createElement('li');
+    const img = document.createElement(ch && ch.logoUrl ? 'img' : 'span');
+    img.className = 'li-thumb';
+    if (ch && ch.logoUrl) img.src = ch.logoUrl; else img.textContent = '📺';
+    const body = document.createElement('div');
+    body.className = 'li-body';
+    const t = document.createElement('div');
+    t.className = 'li-title';
+    t.textContent = name;
+    const note = document.createElement('div');
+    note.className = 'li-note';
+    note.textContent = `${entry.total} סרטונים · ${entry.over.length} מעל המגבלה`;
+    body.appendChild(t);
+    body.appendChild(note);
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-small';
+    btn.type = 'button';
+    btn.textContent = 'בדיקה';
+    btn.addEventListener('click', () => { reviewChannelWindow(id, name).catch(() => {}); });
+    li.appendChild(img);
+    li.appendChild(body);
+    li.appendChild(btn);
+    ul.appendChild(li);
+  }
+}
+
+/**
+ * THE REVIEW. The one place the rolling window may delete anything, and it deletes only
+ * what the parent just answered for.
+ *
+ * Rows arrive UNTICKED — they are the videos PROPOSED for deletion, and a tick means "keep
+ * this one forever" (the user's request: "let me mark what not to delete"). That is the
+ * mirror image of the approval picker, where everything starts ticked because a freshly
+ * added channel is presumed wanted; here the parent is confirming a removal they enabled,
+ * so the safe default is that a tick is an act.
+ *
+ * Two answers, both explicit:
+ *   pick-ok  → delete the ones over the window that are NOT ticked
+ *   pick-alt → delete EVERY video of this channel except the ticked ones ("start over, and
+ *              from now on only new uploads arrive" — the backfill is finished for a
+ *              subscribed channel, so RSS is all that is left, which IS "only new")
+ * A tick always wins over both, so a protected favourite is never in danger.
+ */
+let windowReviewOpening = false;
+async function reviewChannelWindow(sourceId, name) {
+  // ONE review at a time. The prelude does two full library reads before it navigates, so a
+  // double-tap on 🧺 בדיקה (or a tap on a second over-limit row) used to let a SECOND review
+  // finish behind the first: it repainted the list and replaced `pickHandlers`, and the
+  // resulting `nav.go('pick')` fired the pick view's onLeave, which nulls whatever
+  // pickHandlers currently holds — the LIVE one. The screen was then a zombie: B's rows with
+  // dead buttons, two 'pick' entries on the stack, and a confirm that could name channel A
+  // over channel B's list. Reachable only because `keepOpen` deliberately keeps the handlers
+  // alive while the screen is up.
+  if (windowReviewOpening || nav.isActive('pick')) return false;
+  windowReviewOpening = true;
+  try {
+    return await openWindowReview(sourceId, name);
+  } finally {
+    windowReviewOpening = false;
+  }
+}
+
+async function openWindowReview(sourceId, name) {
+  const scope = await currentLibScope();
+  if (!scope) return false;
+  const over = await channelsOverWindow();
+  const entry = (over.byChannel || {})[sourceId];
+  if (!entry || !entry.over.length) { await refreshWindowBox(); return false; }
+
+  const index = await db.loadMergeIndex(scope);
+  const records = [...index.values()];
+  // ONE protected set for BOTH buttons, and ONE list of records behind every number on the
+  // screen. Two separate defects came from not doing this:
+  //  · `allLive` excluded only `keepForever`, so pick-alt tombstoned the OTHER protected
+  //    half (a saved playback position). Identical shape to the bug that exclusion fixed:
+  //    a protected video is never proposed, so it is never rendered, so it cannot be
+  //    ticked — the parent has no way to save it.
+  //  · the labels counted records found in THIS read while the delete pool used the keys
+  //    from the earlier one, so the button could say 38 and the confirm 40.
+  const guarded = protectedWindowKeys({ records, states: giftStates });
+  const proposed = entry.over.map((k) => index.get(k)).filter((r) => r && !guarded.has(r.key));
+  const { rows, hidden, total } = pruneReviewList(proposed, PRUNE_REVIEW_CAP);
+  const proposedKeys = proposed.map((r) => r.key);
+  // What pick-alt ("start this channel over") acts on: every live video of the source that
+  // is not protected at all.
+  const allLive = records.filter((r) => r && r.state === 'live' && !guarded.has(r.key)
+    && (r.folderId === 'ch:' + sourceId || r.folderId === 'pl:' + sourceId));
+
+  const keepTicked = new Set();
+  const ul = $('pick-list');
+  const paint = () => {
+    const willDelete = total - keepTicked.size;
+    $('pick-sub').textContent = hidden
+      ? `${name} · ${total} סרטונים מוצעים למחיקה (מוצגים ${rows.length} החדשים שביניהם; ${hidden} נוספים לא מוצגים) · סומנו להשארה: ${keepTicked.size}`
+      : `${name} · ${total} סרטונים מוצעים למחיקה · סומנו להשארה: ${keepTicked.size}`;
+    $('pick-ok').textContent = `מחיקת ${Math.max(0, willDelete)} הישנים`;
+    $('pick-alt').textContent = `מחיקת כל ${Math.max(0, allLive.length - keepTicked.size)} הסרטונים של הערוץ`;
+  };
+  $('pick-title').textContent = 'מה למחוק מהערוץ?';
+  // the borrowed chrome, retargeted: a green ✅ over a deletion screen and "סמן הכול"
+  // (which here means "keep everything") both read backwards
+  $('pick-emoji').textContent = '🧺';
+  $('pick-all').textContent = 'להשאיר הכול';
+  $('pick-none').textContent = 'לא להשאיר אף אחד';
+  $('pick-alt').classList.remove('hidden');
+  ul.innerHTML = '';
+  const boxes = new Map();
+  for (const rec of rows) {
+    const li = document.createElement('li');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'pick-cb';
+    cb.checked = false;
+    const img = document.createElement('img');
+    img.className = 'li-thumb';
+    setThumb(img, rec);
+    const body = document.createElement('div');
+    body.className = 'li-body';
+    const title = document.createElement('div');
+    title.className = 'li-title';
+    title.textContent = rec.title || '(ללא שם)';
+    body.appendChild(title);
+    const sync = () => {
+      if (cb.checked) keepTicked.add(rec.key); else keepTicked.delete(rec.key);
+      li.classList.toggle('pick-off', !cb.checked);
+      paint();
+    };
+    li.classList.add('pick-off'); // unticked = on its way out, and it should look like it
+    li.addEventListener('click', (e) => { if (e.target !== cb) { cb.checked = !cb.checked; sync(); } });
+    cb.addEventListener('change', sync);
+    boxes.set(rec.key, { cb, li });
+    li.appendChild(cb);
+    li.appendChild(img);
+    li.appendChild(body);
+    ul.appendChild(li);
+  }
+  const setAll = (on) => {
+    keepTicked.clear();
+    for (const [key, { cb, li }] of boxes) {
+      cb.checked = on;
+      li.classList.toggle('pick-off', !on);
+      if (on) keepTicked.add(key);
+    }
+    paint();
+  };
+  paint();
+
+  let settled = false;
+  const commit = async (everything) => {
+    if (settled) return;
+    settled = true;
+    // EVERY release of `settled` goes through here. It used to be released only on a
+    // cancelled confirm, so ANY rejection inside the work below (a tx-aborted write, a
+    // quota failure, a chunk of the delete) left the parent on the review with both delete
+    // buttons permanently inert, no message, and possibly the marks written but nothing
+    // deleted — the `.catch(() => {})` on the handlers swallowed the reason.
+    try {
+      const pool = everything ? allLive.map((r) => r.key) : proposedKeys;
+      const doomed = pool.filter((k) => !keepTicked.has(k));
+      if (!doomed.length) { // ticking every row is a legitimate answer: nothing to do
+        toast(keepTicked.size ? 'לא נמחק כלום — כל הסרטונים סומנו להשארה' : 'אין מה למחוק');
+        settled = false;
+        return;
+      }
+      // `emptied`: this wipe leaves the channel with no live video, so its tile disappears
+      // from the child's home — and the tombstones mean the current RSS window will NOT
+      // come back, only a genuinely new upload.
+      const emptied = everything && !allLive.some((r) => keepTicked.has(r.key))
+        && !records.some((r) => r.state === 'live' && guarded.has(r.key)
+          && (r.folderId === 'ch:' + sourceId || r.folderId === 'pl:' + sourceId));
+      const { title, text } = pruneConfirmText({
+        name, count: doomed.length, kept: keepTicked.size, emptied,
+        // only the window answer hides rows; the wipe acts on everything either way
+        hidden: everything ? 0 : hidden
+      });
+      const yes = await confirmKid({ emoji: '🧺', title, text, ok: 'מחיקה', cancel: 'ביטול', danger: true });
+      if (!yes) { settled = false; return; } // stay on the screen — nothing happened
+      let removed = 0;
+      await withChannelWait('saving', { count: doomed.length }, async () => {
+        // the marks FIRST: a crash between the two must leave the favourites protected,
+        // never leave them deletable with the deletion already done
+        if (keepTicked.size) await db.markKeepForever(scope, [...keepTicked]);
+        // RE-READ before deleting. The proposal was computed when the screen opened, and a
+        // sync, a Drive pull or the parent's own action in another tab can have moved a video
+        // since: approved into pending, rejected, protected, or deleted outright. Writing a
+        // tombstone for something that is no longer a prunable live record would delete
+        // (and permanently deny) a video nobody in this dialog was asked about.
+        const fresh = await db.loadMergeIndex(scope);
+        const live = doomed.filter((k) => {
+          const r = fresh.get(k);
+          return r && r.state === 'live' && !r.keepForever;
+        });
+        if (live.length) await db.deleteVideosWithTombstones(scope, live, 'window-prune');
+        // …AND their per-child state. Not bookkeeping: planGifts counts outstanding gifts
+        // straight out of that store, records or none, and stops gifting at
+        // `outstanding >= baseline` — so orphan un-opened ranks would jam 🎁 FOREVER
+        // (planGiftRunawayRepair no-ops below its 60-record floor). The 🎁 tile counts the
+        // same index, so they would also promise a folder that resolves to nothing, and
+        // drive.serializeStateEntry would carry them in the family document indefinitely.
+        // Cleared for every profile that READS this library, not just the active one: a
+        // legacy shared scope means a sibling's gift counter is jammed just as easily.
+        if (live.length) {
+          const pids = [];
+          for (const p of await getProfiles()) {
+            const src = await db.getSources(p.id).catch(() => null);
+            if (src && src.libraryId === scope) pids.push(p.id);
+          }
+          if (activeProfileId && !pids.includes(activeProfileId)) pids.push(activeProfileId);
+          await db.deleteVideoStates(pids, live);
+          for (const k of live) giftStates.delete(k);
+        }
+        removed = live.length;
+        await loadGiftStates();
+        await Promise.all([refreshChannelsList(), refreshPendingList(), refreshParentList(), refreshWindowBox()]);
+        renderHome();
+        maybeSchedulePush();
+      });
+      if (nav.isActive('pick')) nav.back();
+      toast(`נמחקו ${removed} סרטונים מ"${name}"`);
+    } catch (e) {
+      // Say so, and let them try again — a silent dead end is the worse failure.
+      settled = false;
+      toast('המחיקה נכשלה — אפשר לנסות שוב');
+      throw e;
+    }
+  };
+
+  pickHandlers = {
+    keepOpen: true, // a cancelled confirm must not throw the parent out of the list
+    ok: () => commit(false).catch(() => {}),
+    alt: () => commit(true).catch(() => {}),
+    cancel: () => { settled = true; },
+    all: () => setAll(true),
+    none: () => setAll(false)
+  };
+  nav.go('pick');
+  return true;
+}
+
 async function refreshChannelsList() {
   const ul = $('channels-list');
   const newUl = $('channels-new-list');
@@ -3202,6 +3613,13 @@ function pickChannelVideos(channelId, name) {
       const chosen = new Set(recs.map((r) => r.key)); // all ticked
       const ul = $('pick-list');
       const boxes = new Map();
+      // v1.0.39: the view is shared with the rolling-window review, which retitles it and
+      // shows a third button. Restore this screen's own chrome rather than inheriting it.
+      $('pick-title').textContent = 'אילו סרטונים להשאיר?';
+      $('pick-emoji').textContent = '✅';
+      $('pick-all').textContent = 'סמן הכול';
+      $('pick-none').textContent = 'נקה בחירה';
+      $('pick-alt').classList.add('hidden');
 
       const paint = () => {
         $('pick-sub').textContent = `${name} · נבחרו ${chosen.size} מתוך ${recs.length}`;
@@ -4649,6 +5067,7 @@ function wire() {
     return !!r && (r.status === 'added' || r.status === 'exists');
   }));
   $('watch-home').addEventListener('click', goGallery);
+  $('watch-fav').addEventListener('click', () => { toggleFavourite().catch(() => {}); });
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
     const el = $('player-wrap');
@@ -4805,7 +5224,19 @@ function wire() {
     maybeSchedulePush(); // the tombstones must reach the other devices
   });
 
-  $('pick-ok').addEventListener('click', () => { const h = pickHandlers; if (h) { pickHandlers = null; h.ok(); } if (nav.isActive('pick')) nav.back(); });
+  // v1.0.39: `keepOpen` handlers own their own navigation — the rolling-window review
+  // raises a confirm, and a CANCELLED confirm must leave the parent on the list with the
+  // buttons still live. Nulling pickHandlers here (as the approval picker wants) would
+  // strand that screen with dead buttons.
+  $('pick-ok').addEventListener('click', () => {
+    const h = pickHandlers;
+    if (!h) { if (nav.isActive('pick')) nav.back(); return; }
+    if (h.keepOpen) { h.ok(); return; }
+    pickHandlers = null;
+    h.ok();
+    if (nav.isActive('pick')) nav.back();
+  });
+  $('pick-alt').addEventListener('click', () => { const h = pickHandlers; if (h && h.alt) h.alt(); });
   $('pick-cancel').addEventListener('click', () => { if (nav.isActive('pick')) nav.back(); }); // onLeave cancels
   $('pick-all').addEventListener('click', () => pickHandlers && pickHandlers.all());
   $('pick-none').addEventListener('click', () => pickHandlers && pickHandlers.none());
@@ -4936,6 +5367,22 @@ function wire() {
       ? `כיבוי מסך: אחרי ${v} דקות בלי שימוש הסרטון יושהה והמסך יכבה לפי הגדרת המכשיר ✅`
       : 'כיבוי המסך בוטל — המסך יישאר דולק כל עוד סרטון מתנגן';
     msg.className = 'form-msg ok';
+  });
+  // v1.0.39 — the rolling window. Saving it deletes NOTHING; it only decides what the
+  // מקורות tab will offer for review. A value below the minimum reads as OFF (see
+  // plan.keepNewestPerChannel: a mistyped 1 must not propose emptying a folder), and the
+  // message says which of the two happened so a silent "off" can never look like a save.
+  $('keep-newest').addEventListener('change', async () => {
+    const v = keepNewestPerChannel($('keep-newest').value);
+    $('keep-newest').value = String(v);
+    await putSetting(activeProfileId, 'keepNewest', v);
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = v > 0
+      ? `נשמור את ${v} הסרטונים החדשים בכל ערוץ. כשערוץ יעבור את המגבלה תופיע התראה בלשונית "מקורות" — שום דבר לא יימחק בלי אישורכם ✅`
+      : `המגבלה כבויה — שום סרטון לא יימחק. להפעלה הקלידו מספר מ-10 ומעלה (מומלץ ${KEEP_NEWEST_SUGGESTED})`;
+    msg.className = 'form-msg ok';
+    await refreshWindowBox();
   });
   $('exit-lock-toggle').addEventListener('change', async (e) => {
     const on = e.target.checked;

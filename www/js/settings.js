@@ -83,6 +83,18 @@ const SAFE_ON_TIE = {
   resume: false         // start from the beginning (v1.0.32 — today's behaviour)
 };
 
+/**
+ * v1.0.39 — NUMERIC settings whose safe tie-break is the LARGER value.
+ *
+ * `keepNewest` is the rolling window, and the two ways to be wrong are not symmetric: a
+ * window that is too large keeps videos nobody wanted (a complaint), a window that is too
+ * small proposes deleting videos the child watches (a betrayal — the resolveCuration rule).
+ * The generic fallback below orders by STRING, which is deterministic but would prefer
+ * "9" over "200" on an exact `at` collision. `Math.max` is commutative, so the merge stays
+ * order-free either way.
+ */
+const SAFE_ON_TIE_MAX = new Set(['keepNewest']);
+
 /** PURE: which of two writes of ONE setting survives. Commutative — tests pin that. */
 export function mergeSettingEntry(name, a, b) {
   const okA = a && typeof a === 'object' && 'v' in a;
@@ -96,6 +108,14 @@ export function mergeSettingEntry(name, a, b) {
   if (a.v === b.v) return a;
   const safe = SAFE_ON_TIE[name];
   if (safe !== undefined) return a.v === safe ? a : b;
+  // v1.0.39: a numeric setting whose safe direction is "delete less" — see SAFE_ON_TIE_MAX.
+  // 0 IS NOT A SMALL WINDOW, IT IS OFF, and off deletes nothing at all — so it wins before
+  // the max rule. Without that, an exact `at` collision let the phone turn the feature back
+  // ON for a parent who had just switched it off on the tablet.
+  if (SAFE_ON_TIE_MAX.has(name) && Number.isFinite(Number(a.v)) && Number.isFinite(Number(b.v))) {
+    if (Number(a.v) === 0 || Number(b.v) === 0) return Number(a.v) === 0 ? a : b;
+    return Number(a.v) >= Number(b.v) ? a : b;
+  }
   // No safe direction (the PIN hash is just an opaque string): order by VALUE so both
   // argument orders answer identically.
   return String(a.v) > String(b.v) ? a : b;

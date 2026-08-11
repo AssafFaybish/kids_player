@@ -427,6 +427,241 @@ export function screenOffMinutes(raw, defMin = 10) {
   return Math.min(600, Math.floor(n));
 }
 
+/* ---------------- favourites (v1.0.40) ---------------- */
+
+/**
+ * v1.0.40 — PURE: is this per-child state entry an ACTIVE favourite?
+ *
+ * An LWW-element set, exactly like the deny-list (`db.denyActive`) and for the same reason:
+ * **un-favouriting has to travel too.** With a single `favAt` field, removing a star on the
+ * tablet would be undone by the phone's stale copy on the next pull — the child would take
+ * a video out of ⭐ and watch it walk back in. So a removal is an EVENT (`favOffAt`), never
+ * a deletion, and the later event wins.
+ *
+ * A TIE resolves to NOT-favourite: of the two ways to be wrong, a star the child has to tap
+ * again is a shrug, and a video that refuses to leave ⭐ is the app disobeying them. (The
+ * deny-list resolves its own tie the same way — toward the state the user last asked for.)
+ */
+export function favActive(st) {
+  if (!st) return false;
+  const on = Number(st.favAt) || 0;
+  const off = Number(st.favOffAt) || 0;
+  return on > 0 && on > off;
+}
+
+/**
+ * v1.0.40 — PURE: merge two copies of the favourite half of one state entry.
+ * MAX per field, so it is commutative and idempotent (tested) — no server, two devices.
+ */
+export function mergeFavState(a, b) {
+  const pick = (f) => Math.max(Number((a && a[f]) || 0), Number((b && b[f]) || 0));
+  const out = {};
+  const on = pick('favAt');
+  const off = pick('favOffAt');
+  if (on) out.favAt = on;
+  if (off) out.favOffAt = off;
+  return out;
+}
+
+/**
+ * v1.0.40 — PURE: the child's ⭐ folder, in the order they will see it.
+ *
+ * `favAt` ASCENDING — a new favourite is APPENDED (the user's decision 2026-08-11). A
+ * 5-year-old navigates by POSITION, not by title: putting the newest star first would move
+ * every video they already know, every time they add one.
+ *
+ * @param states Map<key, stateEntry> | object — the profile's whole per-video state
+ * @returns keys, oldest favourite first
+ */
+export function favouriteKeys(states) {
+  const entries = states instanceof Map
+    ? [...states.entries()]
+    : Object.entries(states && typeof states === 'object' ? states : {});
+  return entries
+    .filter(([, st]) => favActive(st))
+    .sort((x, y) => (Number(x[1].favAt) || 0) - (Number(y[1].favAt) || 0))
+    .map(([key]) => key);
+}
+
+/* ---------------- rolling window (v1.0.39) ---------------- */
+
+/**
+ * v1.0.39 — PURE: how many newest videos to keep per channel. 0 = the feature is OFF.
+ *
+ * The OPPOSITE default to `screenOffMinutes` above, and deliberately so: that feature
+ * turns a screen off, this one DELETES the child's videos. So never-written ⇒ OFF, and
+ * every unusable value ⇒ OFF too. `planRejectedPurge`'s "nonsense falls back to the
+ * default, never to something destructive" rule points at 0 here, because 0 is the
+ * harmless direction — a typo must not start proposing deletions.
+ *
+ * A window BELOW `min` is refused (→ OFF) for the same reason: `keep: 1` on a 500-video
+ * channel is almost certainly a mistyped 100, and it would propose emptying the folder.
+ */
+export function keepNewestPerChannel(raw, { min = 10, max = 5000 } = {}) {
+  if (raw === null || raw === undefined || raw === '') return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;      // an explicit 0 IS the answer: off
+  const v = Math.floor(n);
+  if (v < min) return 0;
+  return Math.min(max, v);
+}
+
+/**
+ * v1.0.39 — PURE: which of a channel's videos sit OUTSIDE the rolling window?
+ *
+ * It PROPOSES; it never deletes. The sync stores nothing and acts on nothing — the parent
+ * reviews per channel and answers (the user's decision 2026-08-09). That is the whole
+ * safety model of this feature, so the split is structural: this function cannot delete
+ * because it returns keys, and the sync has no code that consumes them.
+ *
+ * Rules, each one a decision:
+ *  - LIVE records only. Pending and rejected are PARKED (`~pending`/`~rejected`), invisible
+ *    to the child, and owned by the approval queue and its 30-day purge — deleting them
+ *    here would silently answer a question the parent has not been asked.
+ *  - NEWEST first (`sortKey` desc, the same order `db.pageFolder` renders): the first
+ *    `keep` records stay, everything after them is proposed.
+ *  - A PROTECTED key is never proposed, at ANY depth. It does not consume a slot from the
+ *    newest `keep` either, so a folder with 30 protected favourites and a window of 200
+ *    settles at 230 rather than hiding 30 recent uploads. The child's favourite is the
+ *    thing this feature must never eat — a 5-year-old rewatches one video 200 times.
+ *  - `keep <= 0` ⇒ nothing proposed. OFF must be OFF everywhere, not only in the caller.
+ *
+ * @param records  live-or-not records of ONE library (the caller may pass everything)
+ * @param keep     window size; 0/negative ⇒ no proposal at all
+ * @param protectedKeys Set of keys the parent marked, plus anything the child has opened
+ * @returns { byChannel: { [sourceId]: { over: [key…], total, keptCount } }, total }
+ */
+export function planChannelWindow({ records, keep, protectedKeys = new Set() }) {
+  const n = Math.floor(Number(keep) || 0);
+  const out = { byChannel: {}, total: 0 };
+  if (!(n > 0)) return out;
+  const guard = protectedKeys instanceof Set ? protectedKeys : new Set(protectedKeys || []);
+
+  // group LIVE records by the folder that actually shows them
+  const groups = new Map();
+  for (const rec of records || []) {
+    if (!rec || !rec.key || rec.state !== 'live') continue;
+    const m = /^(?:ch|pl):(.+)$/.exec(String(rec.folderId || ''));
+    if (!m) continue; // loose singles have no channel folder and no window
+    if (!groups.has(m[1])) groups.set(m[1], []);
+    groups.get(m[1]).push(rec);
+  }
+
+  for (const [sourceId, list] of groups) {
+    // newest first. `sortKey` is the app's own display order (order.js) and is finite for
+    // every stored record (a non-finite one is refused at import), so this is total.
+    list.sort((a, b) => (Number(b.sortKey) || 0) - (Number(a.sortKey) || 0));
+    const over = [];
+    let kept = 0;
+    for (const rec of list) {
+      if (guard.has(rec.key)) { kept += 1; continue; } // protected: survives at any depth
+      if (kept < n) { kept += 1; continue; }
+      over.push(rec.key);
+    }
+    if (over.length) {
+      out.byChannel[sourceId] = { over, total: list.length, keptCount: list.length - over.length };
+      out.total += over.length;
+    }
+  }
+  return out;
+}
+
+/**
+ * v1.0.39 — PURE: split a proposal into the rows the review screen renders and the
+ * remainder it must SAY OUT LOUD.
+ *
+ * A channel 4000 over the window cannot render 4000 thumbnails, and a parent must never be
+ * asked to confirm a deletion whose size they were not told. The items are the NEWEST of
+ * the proposal (the caller passes them in that order) — the ones most likely to be worth
+ * keeping — and `hidden` is what the confirm text has to name.
+ *
+ * Takes whatever the caller renders (records, or bare keys): it only ever slices and counts,
+ * so the contract is "an ordered proposal", not a particular element shape.
+ */
+/**
+ * v1.0.39 — PURE: every key the rolling window must not touch.
+ *
+ * Two sources: what the PARENT marked (`keepForever` on the record — the durable answer to
+ * "let me mark what not to delete") and the one honest signal that the CHILD used a video,
+ * a saved playback position (`posSec`).
+ *
+ * ⚠️ `unwrappedAt` IS NOT A WATCH SIGNAL, and assuming it was made this whole feature a
+ * no-op — measured in the browser: a 60-video channel 40 over its window proposed ZERO.
+ * `planGifts`' baseline stamps `unwrappedAt` on **every live record that did not become a
+ * gift**, precisely so it can never be gifted later, so after one sync almost the entire
+ * library carries it. Opening a gift writes the same field, and nothing distinguishes the
+ * two. The app has no play counter, so "the child watched this" is simply not knowable
+ * beyond `posSec` — which only exists while the resume setting is on. Hence the parent's
+ * ticks are the real protection, and this is the belt.
+ *
+ * Pure for a second reason, also found in the browser: per-child state is a **Map**
+ * (`loadGiftStates`), and the first version read it with `Object.entries` — which yields
+ * nothing, so the child half protected NOBODY. Both shapes are accepted and pinned.
+ *
+ * v1.0.40 — the CHILD'S OWN ⭐ joins the set, and it is the strongest signal in it: a star
+ * is a deliberate statement, where `posSec` is a guess that a fully-watched video does not
+ * even leave behind. `statesByProfile` carries EVERY profile that reads this library, not
+ * only the active one: on a legacy shared scope, one child's window must never prune the
+ * sibling's favourite (the same cross-profile rule `db.deleteVideoStates` follows).
+ */
+export function protectedWindowKeys({ records = [], states = null, statesByProfile = null } = {}) {
+  const out = new Set();
+  for (const rec of records) if (rec && rec.key && rec.keepForever) out.add(rec.key);
+  const readEntries = (s) => (s instanceof Map
+    ? [...s.entries()]
+    : Object.entries(s && typeof s === 'object' ? s : {}));
+  const sets = [];
+  if (states) sets.push(states);
+  for (const s of (Array.isArray(statesByProfile) ? statesByProfile : [])) if (s) sets.push(s);
+  for (const src of sets) {
+    for (const [key, st] of readEntries(src)) {
+      if (!key || !st) continue;
+      if (favActive(st)) { out.add(key); continue; } // the child said so, explicitly
+      if (Number(st.posSec) > 0) out.add(key);
+    }
+  }
+  return out;
+}
+
+
+export function pruneReviewList(over, cap = 200) {
+  const all = Array.isArray(over) ? over.filter(Boolean) : [];
+  const c = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.floor(Number(cap)) : 200;
+  return { rows: all.slice(0, c), hidden: Math.max(0, all.length - c), total: all.length };
+}
+
+/**
+ * v1.0.39 — PURE: the rolling window's confirm. The words ARE the feature (the v1.0.27
+ * rule), and three of them were missing or wrong:
+ *
+ *  - **`hidden` must be NAMED.** `pruneReviewList`'s own contract says a parent must never
+ *    confirm a deletion whose size they were not told, and the review renders at most
+ *    `PRUNE_REVIEW_CAP` rows. A parent could press "סמן הכול", read "סומנו להשארה: 200",
+ *    and still be deleting 3800 — because ticking can only reach what is rendered.
+ *  - **`emptied` must be SAID.** Wiping a channel removes its tile from the child's home,
+ *    and because the prune writes tombstones the current RSS window does NOT come back —
+ *    only a genuinely NEW upload repopulates it, which for a dormant channel is never.
+ *  - **THE WAY BACK IS NOT A PROMISE.** The old text said "כדי להחזיר אותם צריך להוסיף את
+ *    הערוץ מחדש" as a fact. It is conditional: re-adding means remove-then-add, the
+ *    orphan sweep then takes the channel's remaining records (including ones marked keep
+ *    forever), the backfill only re-arms when no other library still subscribes, and a
+ *    keyless install gets RSS's ~15 newest instead of the back catalogue — so the pruned
+ *    keys may never be re-offered and `offerDeniedRestore` will have nothing to restore.
+ *    It is stated as "not always possible", because that is what it is.
+ */
+export function pruneConfirmText({ name = '', count = 0, hidden = 0, kept = 0, emptied = false } = {}) {
+  const n = Math.max(0, Number(count) | 0);
+  const h = Math.max(0, Number(hidden) | 0);
+  const k = Math.max(0, Number(kept) | 0);
+  const parts = [`מ"${name}".`];
+  if (h) parts.push(`מתוכם ${h} אינם מוצגים ברשימה שראיתם.`);
+  if (k) parts.push(`${k} סרטונים שסימנתם יישארו לתמיד ולא יוצעו שוב.`);
+  parts.push('סרטונים שסומנו בעבר להשארה לא יימחקו.');
+  if (emptied) parts.push('התיקייה של הערוץ תתרוקן ותיעלם ממסך הילד עד שיתפרסם סרטון חדש.');
+  parts.push('המחיקה היא לצמיתות: הסרטונים לא יחזרו בסנכרון, והחזרה שלהם בהמשך אינה מובטחת.');
+  return { title: `למחוק ${n} סרטונים?`, text: parts.join(' ') };
+}
+
 /**
  * v1.0.34 — PURE: the idle screen-off state machine (user decisions 2026-08-07).
  * After `afterMin` minutes with NO user input while a video PLAYS: show "עדיין צופים?"

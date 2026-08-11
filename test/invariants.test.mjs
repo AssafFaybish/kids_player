@@ -329,7 +329,8 @@ test('every grid pages through pageAnyFolder — including the 🎁 folder', () 
   // other means the chain silently disagrees with the grid the child is looking at —
   // stopping early, or worse, playing something that is not the next tile.
   const nextBody = lines.slice(nextFn, afterNext + 1).join('\n');
-  for (const kind of ["'new'", "'grp:'", "'sheet'", "'ch:'"]) {
+  // v1.0.40: 'fav' (⭐) joins the list — another folder that no record carries.
+  for (const kind of ["'new'", "'fav'", "'grp:'", "'sheet'", "'ch:'"]) {
     assert.ok(body.includes(kind), `pageAnyFolder no longer handles ${kind}`);
     assert.ok(nextBody.includes(kind),
       `nextAfter does not handle ${kind} — continuous play would disagree with the grid`);
@@ -1708,4 +1709,225 @@ test('the sunset cannot revive a deletion, and a failed read never reaches the f
   assert.ok(catchAt > 0, 'the read is no longer wrapped — a failure would reach the forget');
   assert.match(runner.slice(catchAt, catchAt + 320), /continue;/,
     'a failed read does not `continue` — it would forget a sheet it never folded, then delete the file');
+});
+
+/* ---------------- the rolling window (v1.0.39) ---------------- */
+
+test('THE SYNC NEVER DELETES FOR THE WINDOW — it has no consumer at all (v1.0.39)', () => {
+  // The whole safety model of this feature: planChannelWindow PROPOSES, and the only code
+  // that deletes runs behind a parent's confirm. If the sync ever starts consuming the
+  // proposal, the child's videos begin disappearing in the background — which is exactly
+  // what the user asked NOT to happen ("tell me first, let me mark what to keep").
+  for (const [p, s] of MODULES) {
+    // plan.js declares the planner, app.js holds the review, db.js DEFINES the bulk delete
+    if (p === 'www/js/plan.js' || p === 'www/js/app.js') continue;
+    assert.ok(!/planChannelWindow/.test(s),
+      `${p} reaches into the rolling window — only the parent-facing review may act on it`);
+    if (p === 'www/js/db.js') continue; // its definition, not a call
+    assert.ok(!/deleteVideosWithTombstones/.test(s),
+      `${p} performs a bulk prune — only the parent-facing review may delete for the window`);
+  }
+  const sync = MODULES.get('www/js/sync2.js');
+  assert.ok(!/keepNewest|keepForever/.test(sync),
+    'sync2.js now knows about the window — the proposal must stay out of the background pipeline');
+});
+
+test('the window review DELETES ONLY behind a confirm, and marks favourites FIRST (v1.0.39)', () => {
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function reviewChannelWindow(');
+  assert.ok(at > 0, 'the rolling-window review is gone');
+  const body = app.slice(at, app.indexOf('\n}\n\nasync function refreshChannelsList', at));
+  const askAt = body.indexOf('confirmKid(');
+  const delAt = body.indexOf('deleteVideosWithTombstones(');
+  const markAt = body.indexOf('markKeepForever(');
+  assert.ok(askAt > 0, 'the review no longer ASKS before deleting');
+  assert.ok(delAt > askAt, 'the deletion runs BEFORE the parent confirms it');
+  assert.match(body, /if \(!yes\)/, 'a declined confirm must change nothing');
+  // The marks are written first on purpose: a crash in between must leave the favourites
+  // protected, never leave them deletable with the deletion already committed.
+  assert.ok(markAt > 0 && markAt < delAt,
+    'the keep-forever marks must be written BEFORE the deletion');
+  // …and the tombstone form is required: a raw delete is pure absence, and every Drive
+  // merge is a union, so a peer would re-push every pruned video (the v1.0.36 lesson).
+  assert.ok(!/deleteVideoRaw\(/.test(body), 'the prune uses a tombstone-free delete — peers will resurrect it');
+});
+
+test('the window is surfaced BY NAME in the sources tab, and derived not stored (v1.0.39)', () => {
+  const app = MODULES.get('www/js/app.js');
+  const sources = app.slice(app.indexOf('async function refreshSourcesPanel('));
+  assert.match(sources.slice(0, sources.indexOf('\n}\n')), /refreshWindowBox\(\)/,
+    'the מקורות tab no longer tells the parent which channels are over the window');
+  // Nothing about the proposal may be persisted: a stored proposal is a second source of
+  // truth that goes stale on the next sync, pull or manual deletion — the entire class of
+  // bug v1.0.38 removed. It must be derived on demand.
+  const derive = app.slice(app.indexOf('async function channelsOverWindow('));
+  const body = derive.slice(0, derive.indexOf('\n}\n'));
+  assert.ok(!/putMeta\(/.test(body), 'the window proposal is being stored — it will go stale');
+  assert.match(body, /planChannelWindow\(/, 'the derivation no longer uses the pure planner');
+  // The protection set must come from the PURE helper, whose own test pins what counts
+  // (the parent's marks + a saved position, and NOT unwrappedAt — the gift baseline stamps
+  // that on nearly every record, which made the window propose nothing at all: measured).
+  assert.match(body, /protectedWindowKeys\(/, 'the protection set is no longer built by the pure helper');
+  assert.match(body, /states: giftStates/, 'the child\'s per-video state is no longer consulted');
+});
+
+test('the window setting is per-profile, synced, and OFF unless written (v1.0.39)', () => {
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /putSetting\(activeProfileId, 'keepNewest'/, 'the window is no longer per-profile');
+  assert.match(app, /getSetting\(activeProfileId, 'keepNewest', null\)/,
+    'reading it with a non-null fallback would make never-written indistinguishable from a real 0');
+  // it travels: a screen-time style decision belongs to the child, not to one tablet
+  const setAt = app.indexOf("$('keep-newest').addEventListener");
+  assert.ok(setAt > 0, 'the settings field is not wired');
+  const handler = app.slice(setAt, app.indexOf('});', setAt));
+  assert.match(handler, /maybeSchedulePush\(\)/, 'the window size no longer syncs to the other devices');
+  assert.match(handler, /keepNewestPerChannel\(/, 'the field writes a raw value — a mistyped 1 would propose emptying folders');
+  // saving a setting may never delete anything by itself
+  assert.ok(!/deleteVideo|markKeepForever/.test(handler), 'saving the setting deletes content');
+});
+
+test('"delete this whole channel" still honours an earlier keep-forever mark (v1.0.39)', () => {
+  // A marked video is not PROPOSED, so it never appears in the list and cannot be ticked
+  // again — which is exactly how the first version deleted two favourites the parent had
+  // already protected, behind a button whose label only mentioned a count. Measured in the
+  // browser. The promise made when they ticked ("יישארו לתמיד") has to outlive this button.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function reviewChannelWindow(');
+  const body = app.slice(at, app.indexOf('\n}\n\nasync function refreshChannelsList', at));
+  const decl = body.slice(body.indexOf('const allLive ='), body.indexOf(';', body.indexOf('const allLive =')));
+  // The pool must exclude the WHOLE protected set, not just `keepForever`: the other half
+  // (a saved playback position) has the identical property — never proposed, therefore never
+  // rendered, therefore impossible for the parent to tick and save.
+  assert.match(decl, /!guarded\.has\(r\.key\)/,
+    'the "delete every video of this channel" pool no longer excludes the full protected set');
+  assert.match(body, /const guarded = protectedWindowKeys\(/,
+    'the protected set is no longer built from the pure helper inside the review');
+  // and the same set must gate the PROPOSAL, so the two buttons cannot disagree
+  assert.match(body, /entry\.over\.map\(\(k\) => index\.get\(k\)\)\.filter\(\(r\) => r && !guarded\.has\(r\.key\)\)/,
+    'the proposal no longer filters against the protected set');
+});
+
+test('the window prune RE-READS before deleting — the proposal can go stale (v1.0.39)', () => {
+  // The proposal is computed when the review OPENS. A sync, a Drive pull or the parent
+  // acting elsewhere can move a video in between: approved, rejected, protected, or already
+  // deleted. Writing a window tombstone for something that is no longer a prunable live
+  // record would permanently deny a video this dialog never asked about.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const commit = async (everything)');
+  assert.ok(at > 0, 'the window commit is gone');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  const reread = body.indexOf('await db.loadMergeIndex(scope)');
+  const del = body.indexOf('deleteVideosWithTombstones(');
+  assert.ok(reread > 0, 'the commit no longer re-reads the library before deleting');
+  assert.ok(reread < del, 'the re-read must happen BEFORE the deletion');
+  assert.match(body, /r\.state === 'live' && !r\.keepForever/,
+    'the re-read no longer filters to still-prunable live records');
+  // and the toast must report what was ACTUALLY removed, not the pre-confirm intent
+  assert.match(body, /toast\(`נמחקו \$\{removed\}/, 'the toast reports the stale count again');
+});
+
+test('the prune clears per-child gift state, or 🎁 jams forever (v1.0.39)', () => {
+  // THE SEVEREST audit finding. planGifts counts `outstanding` straight out of
+  // profileVideoState — `giftRank && !unwrappedAt`, whether or not the video record still
+  // exists — and stops gifting at `outstanding >= baseline`. Prune a handful of un-opened
+  // gifts and the child NEVER receives another one; planGiftRunawayRepair cannot rescue it
+  // (it no-ops below its 60-record floor). The 🎁 tile counts the same index, so the orphans
+  // would also promise a folder that resolves to nothing.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const commit = async (everything)');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  assert.match(body, /deleteVideoStates\(/, 'the prune leaves orphan gift state — gifting will jam');
+  const del = body.indexOf('deleteVideosWithTombstones(');
+  assert.ok(body.indexOf('deleteVideoStates(') > del, 'the state must be cleared for what was ACTUALLY deleted');
+  assert.match(body, /giftStates\.delete\(/, 'the in-memory gift map keeps the orphans until the next load');
+  // …for every profile that reads this library, not just the active one: a legacy shared
+  // scope means a sibling's gift counter is jammed just as easily.
+  assert.match(body, /src\.libraryId === scope/, 'only the active profile\'s state is cleared');
+});
+
+test('a failed prune is SAID, and never leaves the buttons inert (v1.0.39)', () => {
+  // `settled` used to be released only on a cancelled confirm, so any rejection inside the
+  // work (a tx-aborted write, a failed chunk) left the parent on the review with both delete
+  // buttons dead and no message — the handlers' .catch(() => {}) ate the reason.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const commit = async (everything)');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  assert.match(body, /\} catch \(e\) \{/, 'the commit no longer catches its own failure');
+  const cat = body.slice(body.lastIndexOf('} catch (e) {'));
+  assert.match(cat, /settled = false/, 'a failure leaves settled=true — both buttons stay inert forever');
+  assert.match(cat, /toast\(/, 'a failed deletion says nothing to the parent');
+  // ticking every row is a legitimate answer and must not open a "delete 0" confirm
+  assert.match(body, /if \(!doomed\.length\)/, 'an empty selection still raises a confirm for zero videos');
+});
+
+test('only ONE window review can be open at a time (v1.0.39)', () => {
+  // The prelude does two full library reads before it navigates, so a double-tap let a
+  // second review repaint the list and replace pickHandlers — and the resulting nav.go
+  // fired the pick view's onLeave, which nulls whatever pickHandlers holds: the LIVE one.
+  // The screen became a zombie with dead buttons and two 'pick' entries on the stack.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function reviewChannelWindow(');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /windowReviewOpening \|\| nav\.isActive\('pick'\)/,
+    'a second review can open over a live one again');
+  assert.match(body, /finally/, 'the in-flight flag is not released on every path');
+});
+
+/* ---------------- favourites (v1.0.40) ---------------- */
+
+test('⭐ sits directly after 🎁 at the top of the home, and hides at zero (v1.0.40)', () => {
+  // The user's explicit requirement: "בראש כל התיקיות, אחרי התיקיה של החדשים". And a tile
+  // that opens an empty grid is the v1.0.21 bug, so a count of 0 gets no tile at all.
+  const app = MODULES.get('www/js/app.js');
+  const gift = app.indexOf("out.push({ id: 'new'");
+  const fav = app.indexOf("out.push({ id: 'fav'");
+  const firstChannel = app.indexOf("id: prefix + lc.channelId");
+  assert.ok(gift > 0 && fav > gift, '⭐ must be pushed AFTER 🎁');
+  assert.ok(fav < firstChannel, '⭐ must come before the channel folders');
+  const line = app.slice(app.lastIndexOf('\n', fav), fav);
+  assert.match(app.slice(fav - 200, fav), /favCount > 0/, '⭐ renders a tile at zero favourites');
+});
+
+test('the ⭐ toggle has ONE write path, and no gate (v1.0.40)', () => {
+  // It is the CHILD's button: no PIN, no confirm — it is not destructive in either
+  // direction (the video stays where it lives; ⭐ is an additional place to find it).
+  const app = MODULES.get('www/js/app.js');
+  assert.equal((app.match(/db\.setFavourite\(/g) || []).length, 2,
+    'db.setFavourite must have exactly two callers: the toggle and the ⭐ folder self-heal');
+  const at = app.indexOf('async function toggleFavourite(');
+  assert.ok(at > 0, 'the toggle is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.ok(!/startPin\(|confirmKid\(/.test(body), 'the child\'s own star must not be gated');
+  assert.match(body, /maybeSchedulePush\(\)/, 'a star is a child decision and must reach the other devices');
+  // the in-memory mirror must be restored when the write fails, or the button lies
+  assert.match(body, /catch \{[\s\S]*giftStates\.set\(key, st\)/, 'a failed write leaves the button showing a star that was never saved');
+});
+
+test('the ⭐ folder self-heal clears only the FAVOURITE fields (v1.0.40)', () => {
+  // The state row also carries gift/unwrap/resume. The gift folder may delete the whole row
+  // (a rank IS the whole point there); doing that here would erase `unwrappedAt` and
+  // RE-GIFT a video the child already opened.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function pageFavFolder(');
+  assert.ok(at > 0, 'the ⭐ pager is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /db\.setFavourite\(activeProfileId, key, false\)/,
+    'the self-heal no longer un-stars the missing video');
+  assert.ok(!/deleteVideoState\(/.test(body),
+    'the self-heal deletes the whole state row — that would re-gift an opened video');
+});
+
+test('a favourite is protected from the window, including a sibling\'s (v1.0.40)', () => {
+  // The feature's central promise. The pure half is unit-tested; this pins the WIRING,
+  // which the node suite cannot execute (it reads IndexedDB per profile).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function channelsOverWindow(');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  // pin the CALL, not the mere mention: the first version of this guard matched the array's
+  // construction, so dropping it from the protectedWindowKeys arguments passed vacuously —
+  // the exact trap CLAUDE.md documents.
+  assert.match(body, /protectedWindowKeys\(\{ records, states: giftStates, statesByProfile \}\)/,
+    'the siblings\' stars are built but not passed — a shared library eats the sibling\'s favourite');
+  assert.match(body, /src\.libraryId !== scope/, 'the sibling scan no longer filters to THIS library');
+  assert.match(body, /loadVideoStates\(/, 'the siblings\' state is never read');
 });

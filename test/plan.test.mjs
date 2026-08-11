@@ -11,7 +11,8 @@ import {
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
   planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
-  effectiveCaps, sourceDrops
+  effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText,
+  favActive, mergeFavState, favouriteKeys
 } from '../www/js/plan.js';
 
 import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
@@ -1498,4 +1499,248 @@ test('channelAddOutcome: a ZERO names ITS OWN cause — library full vs removed-
   assert.equal(channelAddOutcome(false, 0, { hasLive: true }), 'הערוץ סונכרן ✅');
   assert.match(channelAddOutcome(false, 0, { noLongForm: true, capped: 0 }), /Shorts/);
   assert.equal(channelAddOutcome(false, 98, {}), 'הערוץ נוסף. 98 סרטונים ממתינים לאישור ברשימת "ממתינים" 👀');
+});
+
+/* ---------------- the rolling window (v1.0.39) ---------------- */
+// The user's request (2026-08-09): "keep me up to date with the newest videos", answered by
+// bounding growth rather than by raising a ceiling — and with their own conditions: tell me
+// WHICH channel, let me mark what not to delete, or wipe the channel and keep only new ones.
+// The one hard rule: this plans, it never deletes.
+
+const wrec = (i, over = {}) => ({
+  key: 'yt:w' + i, scopeId: 'lib:1', channelId: CH, folderId: 'ch:' + CH,
+  state: 'live', sortKey: i, title: 'שיר ' + i, ...over
+});
+
+test('keepNewestPerChannel: never-written and every nonsense value read as OFF (v1.0.39)', () => {
+  // The OPPOSITE default to screenOffMinutes, deliberately: this setting DELETES the
+  // child's videos, so 0 is the only safe fallback. A mistyped tiny window must not
+  // propose emptying a folder either.
+  for (const off of [null, undefined, '', 0, '0', -5, NaN, Infinity, 'abc', {}, [], 9, '9']) {
+    assert.equal(keepNewestPerChannel(off), 0, JSON.stringify(off));
+  }
+  assert.equal(keepNewestPerChannel(10), 10, 'the minimum itself must be accepted');
+  assert.equal(keepNewestPerChannel(200), 200);
+  assert.equal(keepNewestPerChannel('200'), 200);
+  assert.equal(keepNewestPerChannel(250.7), 250, 'a fractional entry floors');
+  assert.equal(keepNewestPerChannel(99999), 5000, 'capped');
+});
+
+test('planChannelWindow: keeps the NEWEST, proposes the rest, oldest included (v1.0.39)', () => {
+  const records = Array.from({ length: 30 }, (_, i) => wrec(i)); // sortKey 0..29
+  const p = planChannelWindow({ records, keep: 10 });
+  assert.equal(p.total, 20);
+  const entry = p.byChannel[CH];
+  assert.equal(entry.total, 30);
+  assert.equal(entry.keptCount, 10);
+  // the kept ones are the highest sortKeys; the proposal must contain the OLDEST
+  assert.ok(entry.over.includes('yt:w0'), 'the oldest video was not proposed');
+  assert.ok(!entry.over.includes('yt:w29'), 'the NEWEST video was proposed for deletion');
+  assert.equal(entry.over.length, 20);
+});
+
+test('planChannelWindow: OFF means OFF, in the planner and not only in the caller', () => {
+  const records = Array.from({ length: 30 }, (_, i) => wrec(i));
+  for (const keep of [0, -1, null, undefined, NaN, 'x']) {
+    const p = planChannelWindow({ records, keep });
+    assert.deepEqual(p.byChannel, {}, String(keep));
+    assert.equal(p.total, 0);
+  }
+});
+
+test('planChannelWindow: a PROTECTED video is never proposed, at any depth (v1.0.39)', () => {
+  // The child's favourite is the thing an automatic window must never eat: a 5-year-old
+  // rewatches one video 200 times, and it is by definition an OLD one.
+  const records = Array.from({ length: 30 }, (_, i) => wrec(i));
+  const p = planChannelWindow({ records, keep: 10, protectedKeys: new Set(['yt:w0', 'yt:w1']) });
+  const entry = p.byChannel[CH];
+  assert.ok(!entry.over.includes('yt:w0'), 'a marked favourite was proposed for deletion');
+  assert.ok(!entry.over.includes('yt:w1'));
+  assert.equal(entry.over.length, 18);
+  // …and it does not consume a slot from the newest `keep`, or protecting favourites would
+  // silently hide recent uploads instead.
+  assert.ok(entry.over.includes('yt:w2'));
+  // the newest 10 (w20..w29) are kept in full — protecting two OLD favourites must not
+  // push a recent upload out of the window
+  for (let i = 20; i < 30; i++) {
+    assert.ok(!entry.over.includes('yt:w' + i), `the newest 10 must be kept in full (w${i} was proposed)`);
+  }
+  assert.ok(entry.over.includes('yt:w19'), 'the 11th-newest is outside a window of 10');
+  assert.equal(entry.keptCount, 12);
+  // an array (not a Set) must work too — a caller reading keys from the DB
+  assert.equal(planChannelWindow({ records, keep: 10, protectedKeys: ['yt:w0'] }).byChannel[CH].over.length, 19);
+});
+
+test('planChannelWindow: PARKED records are none of the window\'s business (v1.0.39)', () => {
+  // pending/rejected are invisible to the child and owned by the approval queue and its
+  // 30-day purge. Deleting them here would answer a question the parent was never asked.
+  const records = [
+    ...Array.from({ length: 5 }, (_, i) => wrec(i)),
+    ...Array.from({ length: 40 }, (_, i) => wrec(100 + i, { state: 'pending', folderId: '~pending', homeFolderId: 'ch:' + CH })),
+    ...Array.from({ length: 40 }, (_, i) => wrec(200 + i, { state: 'rejected', folderId: '~rejected', homeFolderId: 'ch:' + CH }))
+  ];
+  assert.deepEqual(planChannelWindow({ records, keep: 10 }).byChannel, {},
+    'the window reached into the approval queue');
+});
+
+test('planChannelWindow: loose singles have no window; a PLAYLIST folder has one', () => {
+  const singles = Array.from({ length: 30 }, (_, i) => wrec(i, { folderId: 'sheet', channelId: null }));
+  assert.deepEqual(planChannelWindow({ records: singles, keep: 10 }).byChannel, {},
+    'the shared "סרטונים נוספים" list is not a channel and must not be pruned');
+  const PL = 'PLxyz';
+  const pl = Array.from({ length: 30 }, (_, i) => wrec(i, { folderId: 'pl:' + PL, channelId: 'UCowner' }));
+  const p = planChannelWindow({ records: pl, keep: 10 });
+  assert.equal(p.byChannel[PL].over.length, 20, 'a playlist folder is keyed by the PLAYLIST');
+  assert.equal(p.byChannel.UCowner, undefined, 'and not by the owner channel');
+});
+
+test('planChannelWindow: each channel gets its own window', () => {
+  const CH2 = 'UCsecond0000000000000001';
+  const records = [
+    ...Array.from({ length: 15 }, (_, i) => wrec(i)),
+    ...Array.from({ length: 12 }, (_, i) => wrec(500 + i, { channelId: CH2, folderId: 'ch:' + CH2 }))
+  ];
+  const p = planChannelWindow({ records, keep: 10 });
+  assert.equal(p.byChannel[CH].over.length, 5);
+  assert.equal(p.byChannel[CH2].over.length, 2);
+  assert.equal(p.total, 7);
+});
+
+test('pruneReviewList: a proposal too big to render still states its real size (v1.0.39)', () => {
+  const keys = Array.from({ length: 4000 }, (_, i) => 'yt:k' + i);
+  const r = pruneReviewList(keys, 200);
+  assert.equal(r.rows.length, 200, 'the screen would build 4000 thumbnails');
+  assert.equal(r.hidden, 3800, 'the parent must be told what they cannot see');
+  assert.equal(r.total, 4000);
+  // small proposals show whole, and garbage never throws
+  assert.deepEqual(pruneReviewList(['a', 'b'], 200), { rows: ['a', 'b'], hidden: 0, total: 2 });
+  assert.deepEqual(pruneReviewList(null, 200), { rows: [], hidden: 0, total: 0 });
+  assert.equal(pruneReviewList(keys, 0).rows.length, 200, 'a nonsense cap falls back, never to 0 rows');
+});
+
+test('protectedWindowKeys: reads a MAP of child state, not only an object (v1.0.39)', () => {
+  // THE BUG THE BROWSER CAUGHT. Per-child state is a Map (app.loadGiftStates), and the
+  // first version read it with Object.entries — which yields nothing, so the
+  // "the child already watched this" half of the protection guarded NOBODY and an
+  // automatic window would have eaten the favourite it exists to save.
+  const records = [{ key: 'yt:a' }, { key: 'yt:b', keepForever: true }];
+  const asMap = new Map([['yt:c', { posSec: 42 }], ['yt:d', { unwrappedAt: 5 }], ['yt:e', {}], ['yt:f', { posSec: 0 }]]);
+  const fromMap = protectedWindowKeys({ records, states: asMap });
+  assert.deepEqual([...fromMap].sort(), ['yt:b', 'yt:c'],
+    'a saved position must protect; an empty state must not');
+  // ⚠️ unwrappedAt must NOT protect: planGifts' baseline stamps it on every live record
+  // that did not become a gift, so trusting it made the window a measured no-op — a
+  // 60-video channel 40 over its window proposed ZERO.
+  assert.ok(!fromMap.has('yt:d'), 'unwrappedAt is not a watch signal — the gift baseline writes it library-wide');
+  assert.ok(!fromMap.has('yt:f'), 'a zero position is not a watch');
+  // the plain-object shape keeps working (and is what a future caller might pass)
+  const fromObj = protectedWindowKeys({ records, states: { 'yt:c': { posSec: 9 } } });
+  assert.deepEqual([...fromObj].sort(), ['yt:b', 'yt:c']);
+  // garbage in, empty out — never a throw inside the parent screen's render
+  for (const bad of [null, undefined, 0, 'x', []]) {
+    assert.deepEqual([...protectedWindowKeys({ records: [], states: bad })], [], JSON.stringify(bad));
+  }
+  assert.deepEqual([...protectedWindowKeys({})], []);
+});
+
+test('pruneConfirmText: names the hidden rows, the emptying, and does not PROMISE a way back (v1.0.39)', () => {
+  // pruneReviewList's contract: "a parent must never be asked to confirm a deletion whose
+  // size they were not told". The review renders at most PRUNE_REVIEW_CAP rows, so a parent
+  // could tick every row they were SHOWN, read "סומנו להשארה: 200", and still delete 3800.
+  const big = pruneConfirmText({ name: 'ערוץ', count: 3800, hidden: 3600, kept: 200 });
+  assert.match(big.title, /3800/);
+  assert.match(big.text, /3600/, 'the rows the parent could not even see are unnamed');
+  assert.match(big.text, /200 סרטונים שסימנתם/);
+  // wiping a channel removes its tile from the child's home, and the tombstones mean the
+  // CURRENT RSS window does not come back either — only a genuinely new upload
+  assert.match(pruneConfirmText({ name: 'ערוץ', count: 10, emptied: true }).text, /תתרוקן/);
+  assert.ok(!/תתרוקן/.test(pruneConfirmText({ name: 'ערוץ', count: 10 }).text),
+    'a partial prune must not claim the folder disappears');
+  // THE WAY BACK IS CONDITIONAL, not a promise: re-adding means remove-then-add (whose
+  // orphan sweep takes the channel's remaining records), the backfill re-arms only when no
+  // other library subscribes, and a keyless install only ever sees the RSS window.
+  const plain = pruneConfirmText({ name: 'ערוץ', count: 5 }).text;
+  assert.match(plain, /אינה מובטחת/, 'the way back is stated as a certainty again');
+  assert.ok(!/צריך להוסיף את הערוץ מחדש/.test(plain), 'the old unconditional promise is back');
+  // garbage never leaks a NaN onto the parent's screen
+  for (const bad of [undefined, null, {}, { count: NaN, hidden: -3, kept: 'x' }]) {
+    const r = pruneConfirmText(bad || undefined);
+    assert.ok(!/NaN|undefined/.test(r.title + r.text), JSON.stringify(bad));
+  }
+});
+
+/* ---------------- favourites (v1.0.40) ---------------- */
+// The child marks a video with ⭐; it appears in its own folder at the top of the home AND
+// stays where it lives, and it is NEVER deleted automatically. The user's decisions
+// (2026-08-11): no cap, the star sits next to 🏠, new favourites APPEND, nothing in the
+// parent screen.
+
+test('favActive: an LWW-element set, because UN-favouriting has to travel too (v1.0.40)', () => {
+  // With a single `favAt`, removing a star on the tablet would be undone by the phone's
+  // stale copy on the next pull — the child takes a video out of ⭐ and watches it walk
+  // back in. So a removal is its own event and the LATER one wins (the deny-list rule).
+  assert.equal(favActive({ favAt: 100 }), true);
+  assert.equal(favActive({ favAt: 100, favOffAt: 200 }), false, 'a later removal must win');
+  assert.equal(favActive({ favAt: 300, favOffAt: 200 }), true, 'a later re-star must win');
+  // a TIE is NOT a favourite: a star the child taps again is a shrug, a video that refuses
+  // to leave ⭐ is the app disobeying them
+  assert.equal(favActive({ favAt: 100, favOffAt: 100 }), false);
+  for (const junk of [null, undefined, {}, { favOffAt: 5 }, { favAt: 0 }, { favAt: 'x' }]) {
+    assert.equal(favActive(junk), false, JSON.stringify(junk));
+  }
+});
+
+test('mergeFavState is commutative and idempotent — two devices, no server (v1.0.40)', () => {
+  const a = { favAt: 100, favOffAt: 0 };
+  const b = { favAt: 0, favOffAt: 250 };
+  assert.deepEqual(mergeFavState(a, b), mergeFavState(b, a));
+  assert.equal(favActive(mergeFavState(a, b)), false, 'the later removal survives the merge');
+  const m = mergeFavState(a, b);
+  assert.deepEqual(mergeFavState(m, m), m, 'idempotent');
+  // a re-star after that removal wins on either side
+  assert.equal(favActive(mergeFavState(m, { favAt: 900 })), true);
+  assert.deepEqual(mergeFavState(null, undefined), {}, 'nothing in, nothing out');
+});
+
+test('favouriteKeys: STABLE order — a new star is APPENDED (v1.0.40)', () => {
+  // A 5-year-old navigates by POSITION, not by title. Newest-first would move every video
+  // they already know, every time they add one (the user's decision).
+  const states = new Map([
+    ['yt:c', { favAt: 300 }],
+    ['yt:a', { favAt: 100 }],
+    ['yt:gone', { favAt: 200, favOffAt: 400 }], // un-starred
+    ['yt:b', { favAt: 200 }],
+    ['yt:none', { posSec: 12 }]
+  ]);
+  assert.deepEqual(favouriteKeys(states), ['yt:a', 'yt:b', 'yt:c']);
+  // the plain-object shape works too, and garbage never throws inside a render
+  assert.deepEqual(favouriteKeys({ 'yt:x': { favAt: 5 } }), ['yt:x']);
+  for (const bad of [null, undefined, 0, 'x', []]) assert.deepEqual(favouriteKeys(bad), [], JSON.stringify(bad));
+});
+
+test('a favourite is protected from the rolling window, including a SIBLING\'s (v1.0.40)', () => {
+  // This is the feature's central promise: "מועדפים לא יימחקו אוטומטית לעולם".
+  const records = [{ key: 'yt:a' }, { key: 'yt:b' }, { key: 'yt:c' }];
+  const mine = new Map([['yt:a', { favAt: 5 }]]);
+  const sibling = new Map([['yt:b', { favAt: 7 }]]);
+  const guarded = protectedWindowKeys({ records, states: mine, statesByProfile: [sibling] });
+  assert.ok(guarded.has('yt:a'), 'the child\'s own star is unprotected');
+  assert.ok(guarded.has('yt:b'), 'a SIBLING\'s star is unprotected — a shared library would eat it');
+  assert.ok(!guarded.has('yt:c'));
+  // an UN-starred video is not protected by its dead favAt
+  const off = protectedWindowKeys({ records, states: new Map([['yt:c', { favAt: 5, favOffAt: 9 }]]) });
+  assert.ok(!off.has('yt:c'), 'a removed star still protects — the window can never prune again');
+  // and the window itself must then leave them alone
+  const live = [
+    { key: 'yt:a', state: 'live', folderId: 'ch:' + CH, sortKey: 1 },
+    { key: 'yt:b', state: 'live', folderId: 'ch:' + CH, sortKey: 2 },
+    { key: 'yt:c', state: 'live', folderId: 'ch:' + CH, sortKey: 3 }
+  ];
+  // a window of 1 over 3 videos: without the stars it would propose TWO deletions…
+  const bare = planChannelWindow({ records: live, keep: 1 });
+  assert.equal(bare.total, 2, 'the contrast case must actually propose something');
+  // …and with them, nothing is proposed at all (no proposal ⇒ no entry for the channel)
+  const tight = planChannelWindow({ records: live, keep: 1, protectedKeys: guarded });
+  assert.equal(tight.total, 0, 'a favourite was proposed for deletion');
+  assert.deepEqual(tight.byChannel, {});
 });

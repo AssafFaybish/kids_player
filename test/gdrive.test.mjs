@@ -661,3 +661,41 @@ test('the forget CONVERGES against a peer still on the old app, in both orders',
   assert.equal(parseDb(serializeDb({ profiles: [], libraries: {}, profileState: {},
     profileSources: once.profileSources })).profileSources.p1.libraryId, 'lib:abc');
 });
+
+/* ---------------- favourites travel (v1.0.40) ---------------- */
+// TWO functions would have dropped a ⭐ in silence, and the feature would have looked
+// device-local: serializeStateEntry was an if/return chain ("whichever field wins"), and
+// mergeAppliedState returned null unless the REMOTE carried an unwrap.
+
+test('serializeStateEntry carries the favourite alongside a gift/unwrap (v1.0.40)', () => {
+  // the common case: the child stars a video they have already opened
+  assert.deepEqual(serializeStateEntry({ unwrappedAt: 5, favAt: 9 }), { unwrappedAt: 5, favAt: 9 });
+  assert.deepEqual(serializeStateEntry({ giftRank: 3, favAt: 9 }), { giftRank: 3, favAt: 9 });
+  // favourite-only entries travel on their own
+  assert.deepEqual(serializeStateEntry({ favAt: 9 }), { favAt: 9 });
+  // and so does the REMOVAL — otherwise a peer's stale copy re-stars it
+  assert.deepEqual(serializeStateEntry({ favAt: 9, favOffAt: 20 }), { favAt: 9, favOffAt: 20 });
+  // the position still never travels (v1.0.32), and an empty entry is still nothing
+  assert.deepEqual(serializeStateEntry({ posSec: 42, durSec: 100 }), null);
+  assert.equal(serializeStateEntry(null), null);
+});
+
+test('mergeAppliedState applies a favourite-only remote, and keeps local state (v1.0.40)', () => {
+  // a ⭐ added on the phone must land on the tablet's pull
+  const applied = mergeAppliedState(null, { favAt: 100 });
+  assert.equal(applied.favAt, 100);
+  // the local playback position and gift rank survive the fold
+  const keep = mergeAppliedState({ posSec: 42, durSec: 90, giftRank: 4 }, { favAt: 100 });
+  assert.equal(keep.posSec, 42);
+  assert.equal(keep.giftRank, 4, 'a device-local gift rank was dropped by a favourite-only fold');
+  // an UN-star from the peer wins over the local star (later event)
+  const off = mergeAppliedState({ favAt: 100 }, { favAt: 100, favOffAt: 300 });
+  assert.equal(off.favOffAt, 300);
+  // …and unwrappedAt keeps its min-merge, with the star riding along
+  const both = mergeAppliedState({ unwrappedAt: 50, favAt: 10 }, { unwrappedAt: 20, favAt: 70 });
+  assert.equal(both.unwrappedAt, 20, 'the EARLIEST open must still win');
+  assert.equal(both.favAt, 70);
+  // nothing to apply is still nothing
+  assert.equal(mergeAppliedState({ posSec: 5 }, { posSec: 9 }), null);
+  assert.equal(mergeAppliedState(null, null), null);
+});

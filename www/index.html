@@ -85,7 +85,7 @@
     <section id="view-pick" class="view">
       <div class="wn-wrap">
         <header class="wn-head">
-          <div class="wn-emoji">✅</div>
+          <div id="pick-emoji" class="wn-emoji">✅</div>
           <h1 id="pick-title" class="wn-title">אילו סרטונים להשאיר?</h1>
           <p id="pick-sub" class="modal-text"></p>
           <div class="row-btns">
@@ -96,6 +96,9 @@
         <div id="pick-body" class="wn-body"><ul id="pick-list" class="parent-list"></ul></div>
         <div class="wn-actions">
           <button id="pick-ok" class="btn btn-primary wn-ok" type="button">אישור</button>
+          <!-- v1.0.39: the rolling window's second answer ("delete this channel's videos and
+               keep only new ones from now on"). Hidden in the approval picker. -->
+          <button id="pick-alt" class="btn wn-ok hidden" type="button"></button>
           <button id="pick-cancel" class="text-btn" type="button">אחר כך</button>
         </div>
       </div>
@@ -276,6 +279,11 @@
            going home requires exiting fullscreen first, then tapping home). -->
       <div class="watch-top">
         <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
+        <!-- v1.0.40 — the child's ⭐. OUTSIDE player-wrap, next to 🏠, deliberately: the HUD
+             inside owns a delicate tap model (centre tap = pause, double tap = seek) that
+             has been broken more than once, and a real <button> here is also what the TV
+             remote can reach. Tapping again removes the star. -->
+        <button id="watch-fav" class="round-btn watch-fav" type="button" aria-label="סרטון מועדף">☆</button>
         <!-- v1.0.5: small, deliberately dim delete — every tap requires the parent
              PIN again, then an explicit confirm (user-specified order). -->
         <button id="watch-delete" class="round-btn watch-delete" type="button" aria-label="מחיקת הסרטון">🗑️</button>
@@ -554,6 +562,17 @@
         </details>
         <div id="links-msg" class="form-msg"></div>
 
+        <!-- v1.0.39 — THE ROLLING WINDOW'S NOTICE. The sync never deletes on its own; when a
+             channel grows past the window it says so HERE, by name, and the parent reviews.
+             Hidden whenever no channel is over (which is always, while the feature is off). -->
+        <div id="window-box" class="hidden">
+          <div class="list-head" style="margin-top:18px"><span class="list-count">🧺 ערוצים מעל המגבלה</span></div>
+          <p class="hint">בערוצים האלה יש יותר סרטונים מהמגבלה שקבעתם. <b>שום דבר לא נמחק
+            בלי אישורכם</b> — לחצו על ערוץ כדי לראות מה מוצע למחיקה, לסמן מה להשאיר לתמיד,
+            או למחוק את כל הסרטונים שלו ולהתחיל מחדש.</p>
+          <ul id="window-list" class="parent-list"></ul>
+        </div>
+
         <!-- v1.0.32: a channel awaiting its sync decision surfaces HERE for 24h (pure
              plan.planChannelSections). Hidden whenever the section is empty. -->
         <div id="channels-new-box" class="hidden">
@@ -637,6 +656,22 @@
               דקות בלי מגע</label>
           </div>
           <p class="hint sched-lock-hint">בזמן ניגון תופיע שאלת "עדיין צופים?" — בלי תשובה הסרטון יושהה והמסך יכבה לפי הגדרת הזמן של המכשיר. 0 = המסך נשאר דולק תמיד (כמו עד היום).</p>
+        </div>
+
+        <!-- v1.0.39 — the ROLLING WINDOW. OFF by default (0): this is the only setting that
+             deletes the child's videos, so it may never arrive with an update. Even when on,
+             the sync only PROPOSES — the notice appears in the מקורות tab and the parent
+             decides per channel. -->
+        <div class="sched-lock-row">
+          <span class="sched-lock-label">🧺 להשאיר רק את החדשים בכל ערוץ<b id="keep-newest-owner" class="setting-owner"></b></span>
+          <div class="sched-lock-fields">
+            <label>לשמור את
+              <input id="keep-newest" class="input sched-num" type="number" min="0" max="5000" step="10" inputmode="numeric" value="0" />
+              הסרטונים החדשים בכל ערוץ</label>
+          </div>
+          <p class="hint sched-lock-hint">מונע מהספרייה לגדול בלי סוף. <b>שום סרטון לא נמחק
+            אוטומטית:</b> כשערוץ עובר את המגבלה תופיע התראה בלשונית "מקורות", ושם אפשר לסמן
+            מה להשאיר לתמיד או למחוק. 0 = כבוי (כמו עד היום). המינימום הוא 10.</p>
         </div>
         <div id="settings-msg" class="form-msg"></div>
 
