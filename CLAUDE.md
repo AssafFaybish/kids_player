@@ -284,6 +284,27 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     top; and a LATE event after the navigation left the folder's position alone.
   - Both vendor event names are bound (older WebViews fire only `webkitfullscreenchange`).
 
+- v1.0.44 — **THE SHEET SUNSET IS DELETED, a month before its deadline** (user request). The
+  v1.0.38 migration's whole job was one final read of the family's sources sheet plus the
+  deletion of that file; `test/sunset.test.mjs` carried the seven-step checklist and all of it
+  is done. What that removes from the app: the **only** Google Sheets call and the **only**
+  HTTP DELETE it ever made — both now banned by an invariant, because either one coming back
+  would also bring back a Google capability the app does not need.
+  - **DEVIATION FROM MY OWN CHECKLIST, deliberate**: step 4 said to delete
+    `migrate.planMigration`'s `legacySheetMigrated` along with `sheetUrl`/`sheetHash`. It has a
+    LIVE consumer — `sync2`'s quarantine reads it to route a legacy family's unknown keys to
+    `'pending'` instead of resurrecting videos they deleted in the pre-overhaul app. `sheetUrl`
+    had to go (nothing clears it once the sunset is gone) and `sheetHash` was already
+    vestigial; the flag stays, and does not depend on a sheet existing.
+  - `sunset:<pid>` meta rows are left behind on devices that ran the migration. Deliberate: a
+    dataver step to sweep a few dead bytes per profile is more machinery than the tidiness is
+    worth, and nothing reads them.
+  - ⚠️ **THE EARLY REMOVAL'S COST, stated because it is real**: a family that never launched
+    v1.0.38–v1.0.43 three times will now never have its sheet read. The failure mode is NOT
+    destruction — with the migration gone nothing deletes their sheet either, so the file
+    stays in their Drive and its rows can be re-imported through the links-file paste. What
+    they lose is the automatic fold of rows the sync had not already stored.
+
 ## Verification workflow
 
 **Full guide: [docs/TESTING.md](docs/TESTING.md)** — including what a green suite does NOT

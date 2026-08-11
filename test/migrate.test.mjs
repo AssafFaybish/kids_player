@@ -50,18 +50,24 @@ test('base64 thumbs split into thumb jobs; http thumbs stay as thumbUrl', () => 
   assert.equal(yt.thumbId, null);
 });
 
-test('remote source migrates to a sources record with a libraryId', () => {
+test('a legacy remote source still derives its libraryId — but keeps NO sheet url (v1.0.44)', () => {
+  // The sheet URL used to be stored so the v1.0.38 sunset could do one final read of it.
+  // The sunset is gone, so storing it would leave a field nothing can ever clear — and the
+  // scope it derives is IMMUTABLE (decision 20), which is why the derivation stays.
   const url = 'https://docs.google.com/spreadsheets/d/SHEET/edit#gid=0';
   const { sources } = planMigration({ profileId: 'p1', items: [], source: { mode: 'remote', url } });
-  assert.equal(sources.sheetUrl, url);
-  assert.match(sources.libraryId, /^lib:[0-9a-f]{8}$/);
+  assert.ok(!('sheetUrl' in sources), 'the migration stores a sheet url again — nothing clears it now');
+  assert.ok(!('sheetHash' in sources), 'sheetHash was vestigial before the sunset and is dead after it');
+  assert.match(sources.libraryId, /^lib:[0-9a-f]{8}$/, 'the legacy scope must still be derived from the url');
+  // KEPT deliberately: sync2's quarantine reads this to route a legacy family's unknown keys
+  // to 'pending' instead of resurrecting videos they had deleted in the pre-overhaul app.
   assert.equal(sources.legacySheetMigrated, true);
 });
 
-test('manual source migrates with no sheet and no library', () => {
+test('manual source migrates with no library', () => {
   const { sources } = planMigration({ profileId: 'p1', items: [], source: { mode: 'manual', url: '' } });
-  assert.equal(sources.sheetUrl, null);
   assert.equal(sources.libraryId, null);
+  assert.ok(!('sheetUrl' in sources));
 });
 
 test('dataUrlToBytes decodes base64 and percent-encoded; malformed → null, never throws', () => {
