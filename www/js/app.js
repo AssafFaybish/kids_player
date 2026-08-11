@@ -1099,6 +1099,24 @@ function mountChannelLogo(host, url, channelId, emoji) {
   if (channelId) resolveLogo(channelId, url || null, img, host).catch(() => {});
 }
 
+/**
+ * v1.0.40 — mount a BUNDLED folder illustration, with the emoji as its fallback.
+ *
+ * `onerror` matters even for a file that ships in the APK: a stale WebView cache or a
+ * failed asset copy would otherwise leave an EMPTY circle where the child expects their
+ * folder. Same rule as the channel logos (noteLogoFailure) — never show nothing.
+ */
+function mountFolderArt(host, src, fallbackEmoji) {
+  host.innerHTML = '';
+  const img = document.createElement('img');
+  img.className = 'folder-art';
+  img.alt = '';
+  img.decoding = 'async';
+  img.addEventListener('error', () => { host.textContent = fallbackEmoji || '⭐'; }, { once: true });
+  img.src = src;
+  host.appendChild(img);
+}
+
 function folderTile(f) {
   const btn = document.createElement('button');
   btn.className = 'tile tile-folder' + (f.isNew ? ' folder-new' : '');
@@ -1109,7 +1127,8 @@ function folderTile(f) {
   logo.className = 'folder-logo';
   // v1.0.32: a channelId alone is enough — cached bytes may exist even when the URL
   // is gone (rebrand) or was never fetched on this device.
-  if (f.logoUrl || f.channelId) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
+  if (f.art) mountFolderArt(logo, f.art, f.emoji);
+  else if (f.logoUrl || f.channelId) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
   else logo.textContent = f.emoji;
   const nm = document.createElement('span');
   nm.className = 'folder-name';
@@ -1209,7 +1228,15 @@ async function buildFolders() {
   // folders, after "חדשים"). Hidden at zero, exactly like the gift folder: a tile that
   // opens an empty grid is the v1.0.21 bug.
   const favCount = favouriteKeys(giftStates).length;
-  if (favCount > 0) out.push({ id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true });
+  if (favCount > 0) {
+    out.push({
+      id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true,
+      // v1.0.40 (user request): a drawn kids' scene rather than a bare emoji — and the
+      // emoji stays as the FALLBACK, so a missing/blocked asset degrades to ⭐ instead of
+      // an empty circle (the noteLogoFailure lesson, applied to a bundled file).
+      art: 'assets/folders/favourites.svg'
+    });
+  }
 
   const src = await db.getSources(pid);
   const lib = (src && src.libraryId) || null;
@@ -1284,7 +1311,9 @@ async function buildFolders() {
     ]);
     loose = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
     if (loose.length) {
-      out.push({ id: 'sheet', scope: lib, title: 'סרטונים נוספים', emoji: '⭐', count: loose.length });
+      // v1.0.40: was ⭐, which now reads as the FAVOURITES folder — 🎬 keeps it distinct
+      // from every other folder kind (📺 channel, 🎞️ collection, 🎵 playlist, 🎁 new, ⭐ fav).
+      out.push({ id: 'sheet', scope: lib, title: 'סרטונים נוספים', emoji: '🎬', count: loose.length });
     }
   }
   // legacy safety: pre-absorb profile-scope items (e.g. before the first sync creates
@@ -1581,7 +1610,10 @@ async function openFolder(fid) {
   // always sees WHICH channel they're inside.
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
-  if (f && (f.logoUrl || f.channelId)) { // v1.0.32: cached bytes render even URL-less
+  if (f && f.art) { // v1.0.40 — the ⭐ folder's drawn scene, same art as its tile
+    mountFolderArt(logoTop, f.art, f.emoji || '⭐');
+    logoTop.classList.remove('hidden');
+  } else if (f && (f.logoUrl || f.channelId)) { // v1.0.32: cached bytes render even URL-less
     mountChannelLogo(logoTop, f.logoUrl, f.channelId, f.emoji || '📺');
     logoTop.classList.remove('hidden');
   } else if (f && f.emoji && !f.isNew) {
@@ -1616,8 +1648,18 @@ async function renderWatchGrid(current) {
   // Same-folder browsing (user decision): the grid pages the folder the child came
   // from. A gift opened from "חדשים" browses its ORIGIN folder (rec.folderId).
   const scope = watchCtx.scope;
-  const fid = watchCtx.folderId;
+  let fid = watchCtx.folderId;
   if (!scope || !fid) { grid.innerHTML = ''; watchPager.update(0, 1); return; }
+  // v1.0.40 — ⭐ IS A VIEW, NOT A FOLDER, and the child can empty it from this very screen:
+  // un-starring the video they are watching removes it from the list the grid is paging. If
+  // that leaves ⭐ with nothing, fall back to where the video actually LIVES, so the child
+  // keeps a populated grid instead of staring at an empty one. Exactly the fix the 🎁 folder
+  // needed for the same reason (v1.0.21, resolveWatchContext) — a gift leaves 🎁 the moment
+  // it is unwrapped.
+  if (fid === 'fav' && !favouriteKeys(giftStates).length) {
+    fid = (current && (current.homeFolderId || current.folderId)) || fid;
+    watchCtx = { scope, folderId: fid };
+  }
 
   const res = await pageAnyFolder(scope, fid, { offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH });
   const total = Math.max(1, Math.ceil(res.total / PAGE_WATCH));

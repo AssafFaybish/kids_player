@@ -1879,13 +1879,16 @@ test('⭐ sits directly after 🎁 at the top of the home, and hides at zero (v1
   // The user's explicit requirement: "בראש כל התיקיות, אחרי התיקיה של החדשים". And a tile
   // that opens an empty grid is the v1.0.21 bug, so a count of 0 gets no tile at all.
   const app = MODULES.get('www/js/app.js');
-  const gift = app.indexOf("out.push({ id: 'new'");
-  const fav = app.indexOf("out.push({ id: 'fav'");
+  const gift = app.indexOf("id: 'new', title:");
+  const fav = app.indexOf("id: 'fav', title:");
   const firstChannel = app.indexOf("id: prefix + lc.channelId");
-  assert.ok(gift > 0 && fav > gift, '⭐ must be pushed AFTER 🎁');
+  assert.ok(gift > 0, 'the 🎁 folder is gone');
+  assert.ok(fav > gift, '⭐ must be pushed AFTER 🎁');
   assert.ok(fav < firstChannel, '⭐ must come before the channel folders');
-  const line = app.slice(app.lastIndexOf('\n', fav), fav);
-  assert.match(app.slice(fav - 200, fav), /favCount > 0/, '⭐ renders a tile at zero favourites');
+  assert.match(app.slice(fav - 300, fav), /favCount > 0/, '⭐ renders a tile at zero favourites');
+  // v1.0.40: the loose list must NOT reuse ⭐ — it read as the favourites folder (user report)
+  const loose = app.slice(app.indexOf("id: 'sheet', scope: lib"), app.indexOf("id: 'sheet', scope: lib") + 160);
+  assert.ok(!/emoji: '⭐'/.test(loose), '"סרטונים נוספים" is wearing the favourites folder\'s star again');
 });
 
 test('the ⭐ toggle has ONE write path, and no gate (v1.0.40)', () => {
@@ -1930,4 +1933,70 @@ test('a favourite is protected from the window, including a sibling\'s (v1.0.40)
     'the siblings\' stars are built but not passed — a shared library eats the sibling\'s favourite');
   assert.match(body, /src\.libraryId !== scope/, 'the sibling scan no longer filters to THIS library');
   assert.match(body, /loadVideoStates\(/, 'the siblings\' state is never read');
+});
+
+test('a tap on a video reaches fullscreen SYNCHRONOUSLY (v1.0.2 rule, pinned v1.0.40)', () => {
+  // CLAUDE.md has called this an invariant since v1.0.2 — "enterPlayerFullscreen() runs
+  // SYNCHRONOUSLY inside the tap gesture (an await first may void the user activation)" —
+  // and nothing pinned it. Every feature since has added lines to openWatch and to the tile
+  // handler; one `await` in front of either silently costs the child fullscreen, and the
+  // symptom (a video that opens windowed, sometimes) is untestable in node.
+  const app = MODULES.get('www/js/app.js');
+
+  // 1) the TILE handler must call openWatch with nothing awaited before it
+  const tileAt = app.indexOf('function tileEl(');
+  const tileBody = app.slice(tileAt, app.indexOf('\n}\n', tileAt));
+  const handlerAt = tileBody.indexOf("btn.addEventListener('click'");
+  assert.ok(handlerAt > 0, 'the tile click handler moved — re-anchor this guard');
+  const handler = tileBody.slice(handlerAt, tileBody.indexOf('});', handlerAt));
+  assert.ok(!/\basync\b/.test(handler), 'the tile handler is async — the tap loses its user activation');
+  assert.ok(!/\bawait\b/.test(handler), 'the tile handler awaits before opening the video');
+  assert.match(handler, /openWatch\(item\)/, 'the tile no longer opens the video directly');
+
+  // 2) openWatch must reach the fullscreen request with no await in front of it
+  const openAt = app.indexOf('async function openWatch(');
+  assert.ok(openAt > 0, 'openWatch is gone');
+  const fsAt = app.indexOf('enterPlayerFullscreen();', openAt);
+  assert.ok(fsAt > openAt, 'openWatch no longer requests fullscreen');
+  const prelude = app.slice(openAt, fsAt)
+    .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  assert.ok(!/\bawait\b/.test(prelude),
+    'openWatch awaits something BEFORE going fullscreen — the tap\'s user activation is spent');
+});
+
+test('the ⭐ folder\'s illustration ships, is self-contained, and has an emoji fallback (v1.0.40)', () => {
+  // Same rule the guide slides follow: an asset named in code must EXIST in www/, or the
+  // child gets an empty circle where their folder should be. And it must be self-contained
+  // — the app runs from file:// inside a WebView with no network guarantee, so an external
+  // font/image/filter reference would silently render nothing.
+  const app = MODULES.get('www/js/app.js');
+  const m = app.match(/art: '([^']+)'/);
+  assert.ok(m, 'the ⭐ folder no longer names an illustration');
+  const rel = m[1];
+  const svg = readFileSync(join(ROOT, 'www', rel), 'utf8'); // throws if it is not shipped
+  assert.match(svg, /^<svg/, `${rel} is not an SVG`);
+  for (const forbidden of [/xlink:href/, /<image\b/, /url\(https?:/, /@font-face/, /<script/]) {
+    assert.ok(!forbidden.test(svg), `${rel} pulls in something external (${forbidden}) — it must be self-contained`);
+  }
+  // the emoji fallback is what makes a missing/blocked asset degrade instead of vanish
+  const mountAt = app.indexOf('function mountFolderArt(');
+  assert.ok(mountAt > 0, 'the art mounter is gone');
+  const body = app.slice(mountAt, app.indexOf('\n}\n', mountAt));
+  assert.match(body, /addEventListener\('error'/, 'a failed illustration leaves an EMPTY circle');
+  assert.match(body, /fallbackEmoji/, 'the fallback emoji is no longer used');
+});
+
+test('emptying ⭐ from the watch screen falls back to the real folder (v1.0.40)', () => {
+  // ⭐ is a VIEW, not a folder, and the child can empty it from the very screen that pages
+  // it: un-starring the video they are watching removes it from the list. With one favourite
+  // that leaves an EMPTY under-player grid and then an empty folder screen — the same shape
+  // the 🎁 folder needed fixing for in v1.0.21 (a gift leaves 🎁 the instant it is unwrapped).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function renderWatchGrid(');
+  assert.ok(at > 0, 'renderWatchGrid is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /fid === 'fav' && !favouriteKeys\(giftStates\)\.length/,
+    'an emptied ⭐ no longer falls back — the child is left with an empty grid');
+  assert.match(body, /current && \(current\.homeFolderId \|\| current\.folderId\)/,
+    'the fallback must be where the video actually LIVES');
 });

@@ -335,6 +335,37 @@ pins that the consumers follow the config and that every address is well-formed.
     child who stars a great many videos narrows what the rolling window can ever propose. A
     channel whose whole over-window set is starred simply produces no notice, which is the
     honest outcome — there is nothing to offer.
+  - **THE FOLDER ART** (user request, same release): the ⭐ folder carries a hand-authored
+    SVG scene (rainbow + horse + two laughing children) instead of a bare emoji, and the
+    loose "סרטונים נוספים" list moved ⭐ → **🎬** — it was wearing the favourites folder's
+    star. Two constraints decided the drawing and the first draft broke both: it renders in a
+    104px circle (72px under 560px), so a shape must be ~35 of 120 units to read at all (the
+    draft's 22-unit faces came out ~7px, i.e. mud); and the circular clip cuts anything past
+    ~52 units from the centre (the draft's sun and second child were sliced). `mountFolderArt`
+    keeps the emoji as an `onerror` FALLBACK — a stale WebView cache must degrade to ⭐, never
+    to an empty circle. An invariants test pins that the asset SHIPS, that it is
+    self-contained (no xlink/image/remote url/font/script — the app runs from file://), and
+    that the fallback exists.
+  - **⭐ IS A VIEW THE CHILD CAN EMPTY FROM INSIDE IT**, which nothing else in the app can do:
+    un-starring the video they are watching removes it from the very list the under-player
+    grid is paging, and with one favourite that left an EMPTY grid and then an empty folder
+    screen. `renderWatchGrid` falls back to where the video actually LIVES
+    (`homeFolderId || folderId`) when ⭐ runs dry — the same fix 🎁 needed in v1.0.21, for the
+    same reason (a gift leaves 🎁 the instant it is unwrapped). Verified in the browser: the
+    grid went 1 → 3 tiles (the channel) instead of 1 → 0.
+  - **TAP → FULLSCREEN IS NOW PINNED** (the v1.0.2 rule had no test for 38 releases). Every
+    feature since has added lines to `openWatch` and to the tile handler, and ONE `await` in
+    front of either silently costs the child fullscreen — a symptom node cannot see. The guard
+    checks the tile handler is neither `async` nor awaiting, and that nothing is awaited
+    between `openWatch`'s entry and `enterPlayerFullscreen()`. Measured with a REAL tap in the
+    browser: the request reaches `#player-wrap` with `navigator.userActivation.isActive` TRUE.
+  - **TV AUDIT** (v1.0.40): the ⭐ makes `.watch-top` a three-button row; verified in `tv=1`
+    that all three are real, visible `<button>`s, that the remote reaches the star (up from
+    the player, then left), and that `html.tv button:focus` covers it. ⚠️ WHILE AUDITING,
+    `getComputedStyle` reported `outline-style: none` on ALL THREE — including two untouched
+    buttons. That was **`document.hasFocus() === false`** in a background pane, so `:focus`
+    matched nothing: an artifact, not a bug (the same class as the preview browser's fake
+    image failures, v1.0.24). Verify a focus ring only in a pane that holds focus.
   - Verified end-to-end in the browser: ☆ → ⭐ → ☆ → ⭐ with the stored LWW timestamps, the
     home ordering 🎁 → ⭐ → 📺, the video present in BOTH ⭐ and its channel folder, and a
     window of 1 over 8 videos proposing seven — never the starred one. 8 unit tests + 4
