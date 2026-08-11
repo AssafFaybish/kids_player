@@ -427,6 +427,62 @@ export function screenOffMinutes(raw, defMin = 10) {
   return Math.min(600, Math.floor(n));
 }
 
+/* ---------------- favourites (v1.0.40) ---------------- */
+
+/**
+ * v1.0.40 — PURE: is this per-child state entry an ACTIVE favourite?
+ *
+ * An LWW-element set, exactly like the deny-list (`db.denyActive`) and for the same reason:
+ * **un-favouriting has to travel too.** With a single `favAt` field, removing a star on the
+ * tablet would be undone by the phone's stale copy on the next pull — the child would take
+ * a video out of ⭐ and watch it walk back in. So a removal is an EVENT (`favOffAt`), never
+ * a deletion, and the later event wins.
+ *
+ * A TIE resolves to NOT-favourite: of the two ways to be wrong, a star the child has to tap
+ * again is a shrug, and a video that refuses to leave ⭐ is the app disobeying them. (The
+ * deny-list resolves its own tie the same way — toward the state the user last asked for.)
+ */
+export function favActive(st) {
+  if (!st) return false;
+  const on = Number(st.favAt) || 0;
+  const off = Number(st.favOffAt) || 0;
+  return on > 0 && on > off;
+}
+
+/**
+ * v1.0.40 — PURE: merge two copies of the favourite half of one state entry.
+ * MAX per field, so it is commutative and idempotent (tested) — no server, two devices.
+ */
+export function mergeFavState(a, b) {
+  const pick = (f) => Math.max(Number((a && a[f]) || 0), Number((b && b[f]) || 0));
+  const out = {};
+  const on = pick('favAt');
+  const off = pick('favOffAt');
+  if (on) out.favAt = on;
+  if (off) out.favOffAt = off;
+  return out;
+}
+
+/**
+ * v1.0.40 — PURE: the child's ⭐ folder, in the order they will see it.
+ *
+ * `favAt` ASCENDING — a new favourite is APPENDED (the user's decision 2026-08-11). A
+ * 5-year-old navigates by POSITION, not by title: putting the newest star first would move
+ * every video they already know, every time they add one.
+ *
+ * @param states Map<key, stateEntry> | object — the profile's whole per-video state
+ * @returns keys, oldest favourite first
+ */
+export function favouriteKeys(states) {
+  const entries = states instanceof Map
+    ? [...states.entries()]
+    : Object.entries(states && typeof states === 'object' ? states : {});
+  return entries
+    .filter(([, st]) => favActive(st))
+    .sort((x, y) => (Number(x[1].favAt) || 0) - (Number(y[1].favAt) || 0))
+    .map(([key]) => key);
+}
+
 /* ---------------- rolling window (v1.0.39) ---------------- */
 
 /**
@@ -541,16 +597,28 @@ export function planChannelWindow({ records, keep, protectedKeys = new Set() }) 
  * Pure for a second reason, also found in the browser: per-child state is a **Map**
  * (`loadGiftStates`), and the first version read it with `Object.entries` — which yields
  * nothing, so the child half protected NOBODY. Both shapes are accepted and pinned.
+ *
+ * v1.0.40 — the CHILD'S OWN ⭐ joins the set, and it is the strongest signal in it: a star
+ * is a deliberate statement, where `posSec` is a guess that a fully-watched video does not
+ * even leave behind. `statesByProfile` carries EVERY profile that reads this library, not
+ * only the active one: on a legacy shared scope, one child's window must never prune the
+ * sibling's favourite (the same cross-profile rule `db.deleteVideoStates` follows).
  */
-export function protectedWindowKeys({ records = [], states = null } = {}) {
+export function protectedWindowKeys({ records = [], states = null, statesByProfile = null } = {}) {
   const out = new Set();
   for (const rec of records) if (rec && rec.key && rec.keepForever) out.add(rec.key);
-  const entries = states instanceof Map
-    ? states.entries()
-    : Object.entries(states && typeof states === 'object' ? states : {});
-  for (const [key, st] of entries) {
-    if (!key || !st) continue;
-    if (Number(st.posSec) > 0) out.add(key);
+  const readEntries = (s) => (s instanceof Map
+    ? [...s.entries()]
+    : Object.entries(s && typeof s === 'object' ? s : {}));
+  const sets = [];
+  if (states) sets.push(states);
+  for (const s of (Array.isArray(statesByProfile) ? statesByProfile : [])) if (s) sets.push(s);
+  for (const src of sets) {
+    for (const [key, st] of readEntries(src)) {
+      if (!key || !st) continue;
+      if (favActive(st)) { out.add(key); continue; } // the child said so, explicitly
+      if (Number(st.posSec) > 0) out.add(key);
+    }
   }
   return out;
 }

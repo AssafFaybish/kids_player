@@ -264,6 +264,21 @@ body {
   width: 42px; height: 42px; min-height: 42px; font-size: 17px;
   opacity: 0.45; box-shadow: none; background: #f4f2ff;
 }
+/* v1.0.40 — the child's ⭐, next to 🏠 and OUTSIDE the player (the HUD's tap model is
+   delicate and has been broken more than once). Big and bright, unlike the deliberately
+   dim 🗑️ beside it: this is the child's own button, and it must look pressable. The ON
+   state is a filled star + a warm ring, so "is it saved?" is answerable at a glance by
+   someone who cannot read. */
+.watch-fav {
+  width: 52px; height: 52px; min-height: 52px; font-size: 26px; line-height: 1;
+  background: #fff9e6; color: #b8860b;
+  transition: transform 0.12s ease-out, background 0.15s ease-out;
+}
+.watch-fav.is-fav {
+  background: #ffe9a8;
+  box-shadow: 0 0 0 3px #ffd45e inset, 0 2px 8px rgba(184, 134, 11, 0.25);
+}
+.watch-fav:active { transform: scale(0.92); }
 .player-hud {
   position: absolute; inset-inline: 0; bottom: 0; z-index: 3;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.6)); padding-bottom: 8px;

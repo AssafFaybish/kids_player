@@ -291,6 +291,55 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.40 — **⭐ מועדפים: THE CHILD'S OWN MARK** (user request 2026-08-11: any video the child
+  taps ⭐ on appears in its own folder at the top of the home, IN ADDITION to where it lives,
+  and is never deleted automatically; a second tap removes it).
+  - **IT ALSO FIXES v1.0.39's WEAKEST POINT.** The window's automatic belt was `posSec`, and
+    a video watched to the END clears its position — so the most-rewatched video carried no
+    signal at all. A star is a STATEMENT, not a guess, and it is now the strongest member of
+    `protectedWindowKeys`.
+  - **`favAt` + `favOffAt`, AN LWW-ELEMENT SET** (`plan.favActive`, the `db.denyActive`
+    pattern). A removal is an EVENT, never a cleared field: with a single `favAt`, un-starring
+    on the tablet would be undone by the phone's stale copy and the video would walk back
+    into ⭐. Later event wins; a TIE is NOT a favourite (a star the child taps again is a
+    shrug, a video that refuses to leave is the app disobeying them). `mergeFavState` is
+    max-per-field, so it is commutative and idempotent.
+  - **TWO FUNCTIONS WOULD HAVE DROPPED IT IN SILENCE**, and the feature would have looked
+    device-local: `drive.serializeStateEntry` was an if/return chain ("whichever field
+    wins"), so a star on an already-opened video — i.e. almost every one — never reached the
+    document; and `mergeAppliedState` returned `null` unless the REMOTE carried an
+    `unwrappedAt`, so a favourite-only entry was discarded on pull. Both now carry the
+    favourite half, and the fold preserves the local position AND a local `giftRank`.
+  - **NO NEW INDEX AND NO `DB_VERSION` BUMP**: the ⭐ folder is derived from the profile's
+    state map, which `loadGiftStates` already holds in memory for every render. `db.setFavourite`
+    is a read-modify-write on ONE row so it cannot disturb the gift/unwrap/resume fields.
+  - **ORDER IS `favAt` ASCENDING — a new star is APPENDED** (the user's decision). A
+    5-year-old navigates by POSITION, not by title; newest-first would move every video they
+    already know each time they add one.
+  - ⭐ is pushed SECOND in `buildFolders`, right after 🎁, and hidden at zero (a tile that
+    opens an empty grid is the v1.0.21 bug). Both `pageAnyFolder` AND `nextAfter` learn the
+    kind — the existing invariant that they cover the same set now includes `'fav'`, so the
+    chain can never disagree with the grid. ⭐ IS chained (unlike 🎁): watching favourites
+    one after another is the point of the folder.
+  - The ⭐ pager's self-heal clears only the FAVOURITE fields. The gift folder may delete the
+    whole state row (a rank is its whole point); doing that here would erase `unwrappedAt`
+    and RE-GIFT a video the child already opened.
+  - The button lives in `.watch-top` next to 🏠, **OUTSIDE `player-wrap`** — the HUD's tap
+    model (centre tap = pause, double tap = seek) has been broken more than once, and a real
+    `<button>` there is also what the TV remote reaches. No PIN and no confirm: it is not
+    destructive in either direction.
+  - **A SIBLING'S STAR PROTECTS TOO** (`protectedWindowKeys({ statesByProfile })` +
+    `db.loadVideoStates`): on a legacy shared library one child's window must never prune the
+    other child's favourite — the same cross-profile rule `db.deleteVideoStates` follows.
+  - ⚠️ **NO CAP, by the user's decision** (2026-08-11) after the consequence was stated: a
+    child who stars a great many videos narrows what the rolling window can ever propose. A
+    channel whose whole over-window set is starred simply produces no notice, which is the
+    honest outcome — there is nothing to offer.
+  - Verified end-to-end in the browser: ☆ → ⭐ → ☆ → ⭐ with the stored LWW timestamps, the
+    home ordering 🎁 → ⭐ → 📺, the video present in BOTH ⭐ and its channel folder, and a
+    window of 1 over 8 videos proposing seven — never the starred one. 8 unit tests + 4
+    wiring invariants, every guard proven red on a planted regression (one of them caught
+    VACUOUS on its first plant and sharpened).
 - v1.0.39 — **THE ROLLING WINDOW: the library stops growing forever, and NOTHING is ever
   deleted without the parent answering** (user request 2026-08-09: "I want to stay up to
   date with the newest videos" → their own conditions: *tell me which channel, let me mark

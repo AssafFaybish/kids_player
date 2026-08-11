@@ -11,7 +11,8 @@ import {
   resolveWatchContext, planSyncDispatch, channelAddOutcome, planEntryRefresh,
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
   planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
-  effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText
+  effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText,
+  favActive, mergeFavState, favouriteKeys
 } from '../www/js/plan.js';
 
 import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
@@ -1666,4 +1667,80 @@ test('pruneConfirmText: names the hidden rows, the emptying, and does not PROMIS
     const r = pruneConfirmText(bad || undefined);
     assert.ok(!/NaN|undefined/.test(r.title + r.text), JSON.stringify(bad));
   }
+});
+
+/* ---------------- favourites (v1.0.40) ---------------- */
+// The child marks a video with ⭐; it appears in its own folder at the top of the home AND
+// stays where it lives, and it is NEVER deleted automatically. The user's decisions
+// (2026-08-11): no cap, the star sits next to 🏠, new favourites APPEND, nothing in the
+// parent screen.
+
+test('favActive: an LWW-element set, because UN-favouriting has to travel too (v1.0.40)', () => {
+  // With a single `favAt`, removing a star on the tablet would be undone by the phone's
+  // stale copy on the next pull — the child takes a video out of ⭐ and watches it walk
+  // back in. So a removal is its own event and the LATER one wins (the deny-list rule).
+  assert.equal(favActive({ favAt: 100 }), true);
+  assert.equal(favActive({ favAt: 100, favOffAt: 200 }), false, 'a later removal must win');
+  assert.equal(favActive({ favAt: 300, favOffAt: 200 }), true, 'a later re-star must win');
+  // a TIE is NOT a favourite: a star the child taps again is a shrug, a video that refuses
+  // to leave ⭐ is the app disobeying them
+  assert.equal(favActive({ favAt: 100, favOffAt: 100 }), false);
+  for (const junk of [null, undefined, {}, { favOffAt: 5 }, { favAt: 0 }, { favAt: 'x' }]) {
+    assert.equal(favActive(junk), false, JSON.stringify(junk));
+  }
+});
+
+test('mergeFavState is commutative and idempotent — two devices, no server (v1.0.40)', () => {
+  const a = { favAt: 100, favOffAt: 0 };
+  const b = { favAt: 0, favOffAt: 250 };
+  assert.deepEqual(mergeFavState(a, b), mergeFavState(b, a));
+  assert.equal(favActive(mergeFavState(a, b)), false, 'the later removal survives the merge');
+  const m = mergeFavState(a, b);
+  assert.deepEqual(mergeFavState(m, m), m, 'idempotent');
+  // a re-star after that removal wins on either side
+  assert.equal(favActive(mergeFavState(m, { favAt: 900 })), true);
+  assert.deepEqual(mergeFavState(null, undefined), {}, 'nothing in, nothing out');
+});
+
+test('favouriteKeys: STABLE order — a new star is APPENDED (v1.0.40)', () => {
+  // A 5-year-old navigates by POSITION, not by title. Newest-first would move every video
+  // they already know, every time they add one (the user's decision).
+  const states = new Map([
+    ['yt:c', { favAt: 300 }],
+    ['yt:a', { favAt: 100 }],
+    ['yt:gone', { favAt: 200, favOffAt: 400 }], // un-starred
+    ['yt:b', { favAt: 200 }],
+    ['yt:none', { posSec: 12 }]
+  ]);
+  assert.deepEqual(favouriteKeys(states), ['yt:a', 'yt:b', 'yt:c']);
+  // the plain-object shape works too, and garbage never throws inside a render
+  assert.deepEqual(favouriteKeys({ 'yt:x': { favAt: 5 } }), ['yt:x']);
+  for (const bad of [null, undefined, 0, 'x', []]) assert.deepEqual(favouriteKeys(bad), [], JSON.stringify(bad));
+});
+
+test('a favourite is protected from the rolling window, including a SIBLING\'s (v1.0.40)', () => {
+  // This is the feature's central promise: "מועדפים לא יימחקו אוטומטית לעולם".
+  const records = [{ key: 'yt:a' }, { key: 'yt:b' }, { key: 'yt:c' }];
+  const mine = new Map([['yt:a', { favAt: 5 }]]);
+  const sibling = new Map([['yt:b', { favAt: 7 }]]);
+  const guarded = protectedWindowKeys({ records, states: mine, statesByProfile: [sibling] });
+  assert.ok(guarded.has('yt:a'), 'the child\'s own star is unprotected');
+  assert.ok(guarded.has('yt:b'), 'a SIBLING\'s star is unprotected — a shared library would eat it');
+  assert.ok(!guarded.has('yt:c'));
+  // an UN-starred video is not protected by its dead favAt
+  const off = protectedWindowKeys({ records, states: new Map([['yt:c', { favAt: 5, favOffAt: 9 }]]) });
+  assert.ok(!off.has('yt:c'), 'a removed star still protects — the window can never prune again');
+  // and the window itself must then leave them alone
+  const live = [
+    { key: 'yt:a', state: 'live', folderId: 'ch:' + CH, sortKey: 1 },
+    { key: 'yt:b', state: 'live', folderId: 'ch:' + CH, sortKey: 2 },
+    { key: 'yt:c', state: 'live', folderId: 'ch:' + CH, sortKey: 3 }
+  ];
+  // a window of 1 over 3 videos: without the stars it would propose TWO deletions…
+  const bare = planChannelWindow({ records: live, keep: 1 });
+  assert.equal(bare.total, 2, 'the contrast case must actually propose something');
+  // …and with them, nothing is proposed at all (no proposal ⇒ no entry for the channel)
+  const tight = planChannelWindow({ records: live, keep: 1, protectedKeys: guarded });
+  assert.equal(tight.total, 0, 'a favourite was proposed for deletion');
+  assert.deepEqual(tight.byChannel, {});
 });

@@ -329,7 +329,8 @@ test('every grid pages through pageAnyFolder — including the 🎁 folder', () 
   // other means the chain silently disagrees with the grid the child is looking at —
   // stopping early, or worse, playing something that is not the next tile.
   const nextBody = lines.slice(nextFn, afterNext + 1).join('\n');
-  for (const kind of ["'new'", "'grp:'", "'sheet'", "'ch:'"]) {
+  // v1.0.40: 'fav' (⭐) joins the list — another folder that no record carries.
+  for (const kind of ["'new'", "'fav'", "'grp:'", "'sheet'", "'ch:'"]) {
     assert.ok(body.includes(kind), `pageAnyFolder no longer handles ${kind}`);
     assert.ok(nextBody.includes(kind),
       `nextAfter does not handle ${kind} — continuous play would disagree with the grid`);
@@ -1870,4 +1871,63 @@ test('only ONE window review can be open at a time (v1.0.39)', () => {
   assert.match(body, /windowReviewOpening \|\| nav\.isActive\('pick'\)/,
     'a second review can open over a live one again');
   assert.match(body, /finally/, 'the in-flight flag is not released on every path');
+});
+
+/* ---------------- favourites (v1.0.40) ---------------- */
+
+test('⭐ sits directly after 🎁 at the top of the home, and hides at zero (v1.0.40)', () => {
+  // The user's explicit requirement: "בראש כל התיקיות, אחרי התיקיה של החדשים". And a tile
+  // that opens an empty grid is the v1.0.21 bug, so a count of 0 gets no tile at all.
+  const app = MODULES.get('www/js/app.js');
+  const gift = app.indexOf("out.push({ id: 'new'");
+  const fav = app.indexOf("out.push({ id: 'fav'");
+  const firstChannel = app.indexOf("id: prefix + lc.channelId");
+  assert.ok(gift > 0 && fav > gift, '⭐ must be pushed AFTER 🎁');
+  assert.ok(fav < firstChannel, '⭐ must come before the channel folders');
+  const line = app.slice(app.lastIndexOf('\n', fav), fav);
+  assert.match(app.slice(fav - 200, fav), /favCount > 0/, '⭐ renders a tile at zero favourites');
+});
+
+test('the ⭐ toggle has ONE write path, and no gate (v1.0.40)', () => {
+  // It is the CHILD's button: no PIN, no confirm — it is not destructive in either
+  // direction (the video stays where it lives; ⭐ is an additional place to find it).
+  const app = MODULES.get('www/js/app.js');
+  assert.equal((app.match(/db\.setFavourite\(/g) || []).length, 2,
+    'db.setFavourite must have exactly two callers: the toggle and the ⭐ folder self-heal');
+  const at = app.indexOf('async function toggleFavourite(');
+  assert.ok(at > 0, 'the toggle is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.ok(!/startPin\(|confirmKid\(/.test(body), 'the child\'s own star must not be gated');
+  assert.match(body, /maybeSchedulePush\(\)/, 'a star is a child decision and must reach the other devices');
+  // the in-memory mirror must be restored when the write fails, or the button lies
+  assert.match(body, /catch \{[\s\S]*giftStates\.set\(key, st\)/, 'a failed write leaves the button showing a star that was never saved');
+});
+
+test('the ⭐ folder self-heal clears only the FAVOURITE fields (v1.0.40)', () => {
+  // The state row also carries gift/unwrap/resume. The gift folder may delete the whole row
+  // (a rank IS the whole point there); doing that here would erase `unwrappedAt` and
+  // RE-GIFT a video the child already opened.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function pageFavFolder(');
+  assert.ok(at > 0, 'the ⭐ pager is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /db\.setFavourite\(activeProfileId, key, false\)/,
+    'the self-heal no longer un-stars the missing video');
+  assert.ok(!/deleteVideoState\(/.test(body),
+    'the self-heal deletes the whole state row — that would re-gift an opened video');
+});
+
+test('a favourite is protected from the window, including a sibling\'s (v1.0.40)', () => {
+  // The feature's central promise. The pure half is unit-tested; this pins the WIRING,
+  // which the node suite cannot execute (it reads IndexedDB per profile).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function channelsOverWindow(');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  // pin the CALL, not the mere mention: the first version of this guard matched the array's
+  // construction, so dropping it from the protectedWindowKeys arguments passed vacuously —
+  // the exact trap CLAUDE.md documents.
+  assert.match(body, /protectedWindowKeys\(\{ records, states: giftStates, statesByProfile \}\)/,
+    'the siblings\' stars are built but not passed — a shared library eats the sibling\'s favourite');
+  assert.match(body, /src\.libraryId !== scope/, 'the sibling scan no longer filters to THIS library');
+  assert.match(body, /loadVideoStates\(/, 'the siblings\' state is never read');
 });

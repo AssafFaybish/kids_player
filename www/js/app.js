@@ -30,7 +30,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
-  pruneConfirmText } from './plan.js';
+  pruneConfirmText, favActive, favouriteKeys } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -1205,6 +1205,11 @@ async function buildFolders() {
   if (!pid) return out;
   const giftCount = await db.countGifts(pid);
   if (giftCount > 0) out.push({ id: 'new', title: 'חדשים', emoji: '🎁', count: giftCount, isNew: true });
+  // v1.0.40 — ⭐ SECOND, immediately after 🎁 (the user's request: at the top of all the
+  // folders, after "חדשים"). Hidden at zero, exactly like the gift folder: a tile that
+  // opens an empty grid is the v1.0.21 bug.
+  const favCount = favouriteKeys(giftStates).length;
+  if (favCount > 0) out.push({ id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true });
 
   const src = await db.getSources(pid);
   const lib = (src && src.libraryId) || null;
@@ -1378,6 +1383,36 @@ async function pageGiftFolder({ offset, limit }) {
 }
 
 /**
+ * v1.0.40 — the child's ⭐ folder. Same shape as the gift folder above and for the same
+ * reason: no record carries `folderId:'fav'`, so this is derived from the profile's state.
+ *
+ * Order is `favAt` ASCENDING — a new star is APPENDED (the user's decision). A pre-reader
+ * navigates by POSITION, so putting the newest first would move every video they know.
+ *
+ * The self-heal drops only the FAVOURITE fields when the video is gone everywhere: the row
+ * also carries gift/unwrap/resume state, and deleting it wholesale (as the gift folder may,
+ * because a rank IS the whole point there) would re-gift a video the child already opened.
+ */
+async function pageFavFolder({ offset, limit }) {
+  const keys = favouriteKeys(giftStates);
+  const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  const items = [];
+  const slice = keys.slice(offset, offset + limit);
+  for (const key of slice) {
+    const rec = await db.findLiveByKey(key, prefer);
+    if (rec) items.push(rec);
+    else {
+      try {
+        await db.setFavourite(activeProfileId, key, false);
+        const st = giftStates.get(key);
+        if (st) giftStates.set(key, { ...st, favOffAt: Date.now() });
+      } catch {}
+    }
+  }
+  return { items, total: keys.length };
+}
+
+/**
  * One pagination entry point for every folder kind (v1.0.12):
  *   new      — 🎁 "חדשים": the sparse gift index, resolved to live records (v1.0.21);
  *   grp:<id> — a virtual folder of loose singles sharing a channel (array slice);
@@ -1395,6 +1430,7 @@ async function pageGiftFolder({ offset, limit }) {
 async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {}) {
   const slice = (arr) => ({ items: arr.slice(offset, offset + limit), total: arr.length });
   if (fid === 'new') return pageGiftFolder({ offset, limit });
+  if (fid === 'fav') return pageFavFolder({ offset, limit });
   if (String(fid).startsWith('grp:')) return slice(singleGroups.get(String(fid).slice(4)) || []);
   if (fid === 'sheet' && looseSingles.length) return slice(looseSingles);
 
@@ -1423,6 +1459,15 @@ async function nextAfter(scope, fid, current) {
   // 🎁 is never chained (planAutoplay stops first); it is also not a stored folder, so
   // there is no cursor to advance here even if it were.
   if (fid === 'new') return null;
+  // ⭐ IS chained: it is an ordinary list of live videos, and "watch my favourites one
+  // after another" is the whole point of the folder. Derived from the same ordered keys
+  // the grid renders, so the chain can never disagree with what is on screen.
+  if (fid === 'fav') {
+    const keys = favouriteKeys(giftStates);
+    const at = keys.indexOf(current.key);
+    if (at < 0 || at + 1 >= keys.length) return null;
+    return db.findLiveByKey(keys[at + 1], [libScope, db.profScope(activeProfileId)].filter(Boolean));
+  }
   if (String(fid).startsWith('grp:')) return nextInOrder(singleGroups.get(String(fid).slice(4)) || [], current.key);
   if (fid === 'sheet' && looseSingles.length) return nextInOrder(looseSingles, current.key);
 
@@ -1531,7 +1576,7 @@ async function openFolder(fid) {
   folderPage = 0;
   const f = folders.find((x) => x.id === fid)
     || (searchIndex && searchIndex.folders.find((x) => x.id === fid)); // opened from search
-  $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.title) : '';
+  $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.isFav ? 'מועדפים ⭐' : f.title) : '';
   // v1.0.4: the channel's logo (or the folder emoji) next to the name — the child
   // always sees WHICH channel they're inside.
   const logoTop = $('folder-logo-top');
@@ -1718,6 +1763,56 @@ function enterPlayerFullscreen() {
   } catch { /* embedded webviews may deny — playing inline is a fine fallback */ }
 }
 
+/* ---------------- favourites (v1.0.40) ---------------- */
+/**
+ * The ⭐ button's two states. `giftStates` mirrors the whole per-video state store, so this
+ * is a synchronous lookup — the button must be correct in the same frame the video opens,
+ * or the child sees an empty star over a video they already starred.
+ */
+function paintFavButton(key) {
+  const btn = $('watch-fav');
+  if (!btn) return;
+  const on = favActive(giftStates.get(key));
+  btn.textContent = on ? '⭐' : '☆';
+  btn.classList.toggle('is-fav', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.setAttribute('aria-label', on ? 'להסיר מהמועדפים' : 'להוסיף למועדפים');
+}
+
+/**
+ * The child's own toggle — no PIN, no confirm. It is not destructive in either direction:
+ * the video stays exactly where it lives, ⭐ is an ADDITIONAL place to find it (the user's
+ * request), and a second tap removes it again.
+ *
+ * The write goes through `db.setFavourite`, which records a REMOVAL as its own timestamp
+ * rather than clearing the field — see plan.favActive for why an un-favourite has to be an
+ * event that can travel between devices.
+ */
+async function toggleFavourite() {
+  if (!activeProfileId || !currentWatch || !currentWatch.key) return;
+  const key = currentWatch.key;
+  const now = Date.now();
+  const on = !favActive(giftStates.get(key));
+  // mirror in memory FIRST so the button and the home agree immediately; the IDB write
+  // and the render follow (the same order tileEl's gift state relies on)
+  const st = giftStates.get(key) || { profileId: activeProfileId, key };
+  giftStates.set(key, on ? { ...st, favAt: now } : { ...st, favOffAt: now });
+  paintFavButton(key);
+  try {
+    await db.setFavourite(activeProfileId, key, on, now);
+    maybeSchedulePush(); // a star is a child decision and belongs on every device
+  } catch {
+    giftStates.set(key, st); // put the memory back — the button must not lie
+    paintFavButton(key);
+    toast('לא הצלחנו לשמור. אפשר לנסות שוב');
+    return;
+  }
+  toast(on ? 'נוסף למועדפים ⭐' : 'הוסר מהמועדפים');
+  // the ⭐ folder's count and existence change with this, and the child may be looking at
+  // the home behind the player (the under-player grid renders from the same folders)
+  renderWatchGrid(currentWatch);
+}
+
 async function openWatch(item) {
   // v1.0.32: switching video→video — bank the OLD video's stop point BEFORE playItem
   // reuses or tears down the player (the clock goes with it).
@@ -1754,6 +1849,7 @@ async function openWatch(item) {
   status.classList.add('hidden');
   status.textContent = '';
   setWatchTitle(item);
+  paintFavButton(item.key); // v1.0.40 — ⭐ on/off for THIS video
   renderWatchGrid(item);
 
   // v1.0.32: resume — the pure decision; 0 whenever the setting is off, nothing usable
@@ -2950,7 +3046,17 @@ async function channelsOverWindow() {
   // Object.entries, so the "the child watched it" half of the protection matched NOTHING
   // and nothing but the parent's own ticks was ever safe. The browser caught it; the pure
   // helper is what makes it testable.
-  const guarded = protectedWindowKeys({ records, states: giftStates });
+  // v1.0.40 — the SIBLINGS' stars count too. A legacy shared library (`lib:<hash>`) is read
+  // by several profiles, so pruning under child A's window would otherwise delete a video
+  // child B had starred — the same cross-profile rule db.deleteVideoStates follows.
+  const statesByProfile = [];
+  for (const p of await getProfiles()) {
+    if (p.id === activeProfileId) continue; // the active one is `giftStates`, already loaded
+    const src = await db.getSources(p.id).catch(() => null);
+    if (!src || src.libraryId !== scope) continue;
+    statesByProfile.push(await db.loadVideoStates(p.id).catch(() => null));
+  }
+  const guarded = protectedWindowKeys({ records, states: giftStates, statesByProfile });
   const plan = planChannelWindow({ records, keep, protectedKeys: guarded });
   return { keep, ...plan };
 }
@@ -4961,6 +5067,7 @@ function wire() {
     return !!r && (r.status === 'added' || r.status === 'exists');
   }));
   $('watch-home').addEventListener('click', goGallery);
+  $('watch-fav').addEventListener('click', () => { toggleFavourite().catch(() => {}); });
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
     const el = $('player-wrap');

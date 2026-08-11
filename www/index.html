@@ -279,6 +279,11 @@
            going home requires exiting fullscreen first, then tapping home). -->
       <div class="watch-top">
         <button id="watch-home" class="round-btn" type="button" aria-label="בית">🏠</button>
+        <!-- v1.0.40 — the child's ⭐. OUTSIDE player-wrap, next to 🏠, deliberately: the HUD
+             inside owns a delicate tap model (centre tap = pause, double tap = seek) that
+             has been broken more than once, and a real <button> here is also what the TV
+             remote can reach. Tapping again removes the star. -->
+        <button id="watch-fav" class="round-btn watch-fav" type="button" aria-label="סרטון מועדף">☆</button>
         <!-- v1.0.5: small, deliberately dim delete — every tap requires the parent
              PIN again, then an explicit confirm (user-specified order). -->
         <button id="watch-delete" class="round-btn watch-delete" type="button" aria-label="מחיקת הסרטון">🗑️</button>

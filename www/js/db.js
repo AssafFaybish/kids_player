@@ -515,6 +515,55 @@ export async function deleteVideoStates(profileIds, keys) {
   return list.length * pids.length;
 }
 
+/**
+ * v1.0.40 — one profile's whole per-video state, as a Map keyed by video key.
+ *
+ * The same range scan `app.loadGiftStates` does for the ACTIVE child, exposed so the rolling
+ * window can also read a SIBLING's stars: on a legacy shared library one child's window must
+ * never prune the other child's favourite.
+ */
+export async function loadVideoStates(profileId) {
+  const out = new Map();
+  if (!profileId) return out;
+  const db = await openDb();
+  await new Promise((resolve) => {
+    const range = IDBKeyRange.bound([profileId, ''], [profileId, '￿']);
+    const req = db.transaction('profileVideoState').objectStore('profileVideoState').openCursor(range);
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) return resolve();
+      out.set(cur.value.key, cur.value);
+      cur.continue();
+    };
+    req.onerror = () => resolve();
+  });
+  return out;
+}
+
+/**
+ * v1.0.40 — the child's ⭐. Read-modify-write on ONE state row, so it cannot disturb the
+ * gift/unwrap/resume fields sharing it.
+ *
+ * A removal writes `favOffAt` rather than clearing `favAt`: un-favouriting has to travel
+ * between devices, and a deleted field carries no information for a union to merge (the
+ * same reason the deny-list revokes instead of deleting, and the v1.0.36 channel lesson).
+ * `plan.favActive` decides which of the two timestamps is current.
+ *
+ * NO NEW INDEX and therefore no DB_VERSION bump: the ⭐ folder is derived from the profile's
+ * state map, which `app.loadGiftStates` already holds in memory for every render.
+ */
+export async function setFavourite(profileId, key, on, at = Date.now()) {
+  if (!profileId || !key) return false;
+  await tx(['profileVideoState'], 'readwrite', (s) => {
+    const r = s.get([profileId, key]);
+    r.onsuccess = () => {
+      const cur = r.result || { profileId, key };
+      s.put(on ? { ...cur, favAt: at } : { ...cur, favOffAt: at });
+    };
+  });
+  return true;
+}
+
 /** Unwrap: set unwrappedAt, DELETE giftRank (drops out of by_gift automatically). */
 export async function unwrapGift(profileId, key) {
   await tx(['profileVideoState', 'opLog'], 'readwrite', (s, ops) => {
