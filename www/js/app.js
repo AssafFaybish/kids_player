@@ -505,14 +505,11 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   }
   if (activeProfileId !== id) return;
   // v1.0.38 — THE SHEET SUNSET, between the pull and the sync, AWAITED. Between, because a
-  // restored profile's sheetUrl arrives from the pull and the sunset must see it in the same
   // launch; before the sync, because the fold writes libraryChannels rows and video records
   // that the launch's forced pass then enriches (RSS, titles, gifts). Serialized for the
   // pullThenSync reason: all three write the same records, and a detached .then() here would
   // be the v1.0.25 race re-introduced. Silent and best-effort — it covers EVERY profile, not
   // just this one, so a child nobody opens on this device is not left behind.
-  // ⚠️ DELETE THIS CALL WITH sunset.js AFTER 2026-09-10 (test/sunset.test.mjs says so).
-  try { await (await import('./sunset.js')).runSheetSunset(); } catch { /* never blocks a launch */ }
   if (activeProfileId !== id) return;
   if (!forceSync && !(await shouldSync(id))) return;
   await syncLibrary(id, { force: forceSync, onProgress: (p) => loading.progress(p) });

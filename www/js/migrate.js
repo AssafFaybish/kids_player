@@ -97,9 +97,7 @@ export function planMigration({ profileId, items, source, now = Date.now() }) {
     // install's `source.mode === 'remote'` row is the only pointer it has to that family's
     // sheet. Do NOT clean them up before sunset.js goes (2026-09-10); migrate.test.mjs
     // pins them, and test/sunset.test.mjs's checklist names this file.
-    sheetUrl: (source && source.mode === 'remote' && source.url) ? source.url : null,
     libraryId: (source && source.mode === 'remote' && source.url) ? libraryIdFor(source.url) : null,
-    sheetHash: null,
     sheetFetchedAt: null,
     shareIntent: { enabled: true, requireApproval: true },
     defaultAutoApprove: false,
