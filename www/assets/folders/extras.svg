@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="סרטונים נוספים">
+  <!-- v1.0.41 — the art for the LOOSE-SINGLES folder ("סרטונים נוספים"). The favourites
+       folder keeps its ⭐; this is the mixed-bag folder, so the picture is a mixed bag too:
+       a rainbow, a rocket, a horse and two children (user request).
+       CONSTRAINTS: it renders in a 104px circle (72px under 560px) and the circular clip
+       cuts past ~52 units from the centre, so shapes are large, layered and shaded rather
+       than outlined — flat circles with dot eyes read as blobs at this size (the v1.0.40
+       draft's mistake). Self-contained: gradients only, no external refs. -->
+  <defs>
+    <clipPath id="ex-round"><circle cx="60" cy="60" r="60"/></clipPath>
+    <linearGradient id="ex-sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a5bb8"/>
+      <stop offset="0.45" stop-color="#8fb6e8"/>
+      <stop offset="0.78" stop-color="#cfe8ff"/>
+    </linearGradient>
+    <linearGradient id="ex-hill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#96dd8a"/>
+      <stop offset="1" stop-color="#5fb85a"/>
+    </linearGradient>
+    <linearGradient id="ex-rocket" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#cfd6e6"/>
+    </linearGradient>
+    <linearGradient id="ex-horse" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c98a4e"/>
+      <stop offset="1" stop-color="#9a6234"/>
+    </linearGradient>
+    <linearGradient id="ex-flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd93d"/>
+      <stop offset="1" stop-color="#ff6b3d"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#ex-round)">
+    <rect width="120" height="120" fill="url(#ex-sky)"/>
+
+    <!-- stars: 4-point sparkles, not dots -->
+    <g fill="#fff" opacity="0.9">
+      <path d="M22 14l1.6 4.2 4.2 1.6-4.2 1.6L22 25.6l-1.6-4.2-4.2-1.6 4.2-1.6z"/>
+      <path d="M96 12l1.2 3.2 3.2 1.2-3.2 1.2L96 20.8l-1.2-3.2-3.2-1.2 3.2-1.2z"/>
+      <path d="M39 6l1 2.6 2.6 1-2.6 1L39 13.2l-1-2.6-2.6-1 2.6-1z" opacity="0.7"/>
+    </g>
+
+    <!-- rainbow, lower-left of the sky: layered bands with soft ends -->
+    <g fill="none" stroke-linecap="round" stroke-width="5.5" opacity="0.95">
+      <path d="M4 84a44 44 0 0 1 60-41" stroke="#ff6b6b"/>
+      <path d="M11 84a37 37 0 0 1 50-34.5" stroke="#ffa94d"/>
+      <path d="M18 84a30 30 0 0 1 40.5-28" stroke="#ffd93d"/>
+      <path d="M25 84a23 23 0 0 1 31-21.5" stroke="#6bcb77"/>
+      <path d="M32 84a16 16 0 0 1 21.5-15" stroke="#63a9ff"/>
+    </g>
+
+    <!-- rocket, upper-right: body, nose, window, fins, flame, smoke -->
+    <g transform="rotate(-28 84 42)">
+      <path d="M84 22c6 6 9 15 9 24H75c0-9 3-18 9-24z" fill="url(#ex-rocket)"/>
+      <path d="M84 22c3 3 5 7 6.5 12h-13C79 29 81 25 84 22z" fill="#ff6b6b"/>
+      <rect x="75" y="46" width="18" height="9" rx="3" fill="url(#ex-rocket)"/>
+      <circle cx="84" cy="37" r="4.6" fill="#7fd3ff" stroke="#5a7fa8" stroke-width="1.6"/>
+      <path d="M75 46c-5 2-7 6-7 10l7-4zM93 46c5 2 7 6 7 10l-7-4z" fill="#ff8f5a"/>
+      <path d="M79 55h10c-1 6-3 10-5 12-2-2-4-6-5-12z" fill="url(#ex-flame)"/>
+    </g>
+    <g fill="#fff" opacity="0.55">
+      <circle cx="66" cy="66" r="4"/><circle cx="60" cy="72" r="2.8"/><circle cx="55" cy="77" r="1.9"/>
+    </g>
+
+    <!-- meadow -->
+    <path d="M0 88c18-7 34-8 52-4s44 5 68-3v39H0z" fill="url(#ex-hill)"/>
+    <path d="M0 92c18-5 34-6 52-2s44 3 68-2" fill="none" stroke="#b6ecab" stroke-width="2.5" opacity="0.8"/>
+
+    <!-- horse, left: body, neck, head with muzzle, mane, tail, legs, hooves -->
+    <g>
+      <path d="M12 100c0-8 5-13 12-13h16c7 0 11 5 11 12v4h-5v-4H24v5h-6v-4h-6z" fill="url(#ex-horse)"/>
+      <path d="M40 88l8-15 8 4-6 14z" fill="url(#ex-horse)"/>
+      <path d="M46 76c3-4 8-5 11-2s2 8-2 10-8 1-10-2z" fill="#c98a4e"/>
+      <path d="M55 78c3 0 5 1 5 3s-2 3-5 3-4-1-4-3 1-3 4-3z" fill="#8a5a30"/>
+      <path d="M47 70l-1-7 6 4zM55 69l4-6 1 6z" fill="#9a6234"/>
+      <path d="M44 74c-3-3-3-8 0-11 2 3 3 7 3 11z" fill="#5c3a1f"/>
+      <path d="M12 89c-5-3-8-8-8-13 4 3 7 8 9 13z" fill="#5c3a1f"/>
+      <g fill="#8a5a30">
+        <rect x="19" y="99" width="6" height="13" rx="2.6"/>
+        <rect x="30" y="99" width="6" height="13" rx="2.6"/>
+        <rect x="40" y="99" width="6" height="13" rx="2.6"/>
+      </g>
+      <g fill="#3d2716">
+        <rect x="19" y="109" width="6" height="3.5" rx="1.4"/>
+        <rect x="30" y="109" width="6" height="3.5" rx="1.4"/>
+        <rect x="40" y="109" width="6" height="3.5" rx="1.4"/>
+      </g>
+      <circle cx="53" cy="76" r="1.5" fill="#2b1a0e"/>
+    </g>
+
+    <!-- two children, right: shaped hair, bodies, raised arms, real smiles -->
+    <g>
+      <!-- child A -->
+      <path d="M78 116v-16c0-5 4-9 9-9s9 4 9 9v16z" fill="#ff8fa3"/>
+      <path d="M78 104l-7-9 3-3 7 8zM96 104l7-9 3 3-7 8z" fill="#ffd9b3" stroke="#e0a878" stroke-width="1.4" stroke-linejoin="round"/>
+      <circle cx="87" cy="83" r="11" fill="#ffd9b3"/>
+      <path d="M76 82a11 11 0 0 1 22 0c0-4-3-6-5-8-3 2-9 2-12 0-3 2-5 4-5 8z" fill="#4a2f18"/>
+      <path d="M74 80c-2-6 3-11 8-11s8 2 9 5c-4-1-13 0-17 6z" fill="#4a2f18"/>
+      <ellipse cx="82.6" cy="84" rx="1.6" ry="2" fill="#2b1a0e"/>
+      <ellipse cx="91.4" cy="84" rx="1.6" ry="2" fill="#2b1a0e"/>
+      <path d="M83 89q4 4 8 0q-1 4-4 4t-4-4z" fill="#c0485a"/>
+      <circle cx="78" cy="87" r="2.4" fill="#ff9db0" opacity="0.7"/>
+      <circle cx="96" cy="87" r="2.4" fill="#ff9db0" opacity="0.7"/>
+      <!-- child B, slightly behind -->
+      <path d="M100 116v-12c0-4 3-7 7-7s7 3 7 7v12z" fill="#7fd3ff"/>
+      <circle cx="107" cy="92" r="8.5" fill="#f6c9a0"/>
+      <path d="M98.5 91a8.5 8.5 0 0 1 17 0c0-4-4-7-8.5-7s-8.5 3-8.5 7z" fill="#2f2f3a"/>
+      <ellipse cx="104" cy="93" rx="1.3" ry="1.7" fill="#2b1a0e"/>
+      <ellipse cx="110" cy="93" rx="1.3" ry="1.7" fill="#2b1a0e"/>
+      <path d="M104 97q3 3 6 0q-1 3-3 3t-3-3z" fill="#c0485a"/>
+    </g>
+  </g>
+</svg>

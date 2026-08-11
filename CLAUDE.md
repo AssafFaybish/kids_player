@@ -335,10 +335,11 @@ pins that the consumers follow the config and that every address is well-formed.
     child who stars a great many videos narrows what the rolling window can ever propose. A
     channel whose whole over-window set is starred simply produces no notice, which is the
     honest outcome — there is nothing to offer.
-  - **THE FOLDER ART** (user request, same release): the ⭐ folder carries a hand-authored
-    SVG scene (rainbow + horse + two laughing children) instead of a bare emoji, and the
-    loose "סרטונים נוספים" list moved ⭐ → **🎬** — it was wearing the favourites folder's
-    star. Two constraints decided the drawing and the first draft broke both: it renders in a
+  - **THE FOLDER ART** (user request; corrected in v1.0.42 — I had it backwards). **⭐ STAYS
+    THE FAVOURITES FOLDER'S MARK**: a star IS the universal "favourite" sign and was never
+    what collided. The hand-authored SVG scene belongs to the LOOSE-SINGLES folder
+    ("סרטונים נוספים"), which is what used to wear that star — a mixed-bag folder gets a
+    mixed-bag picture (rainbow, rocket, horse, two children), with 🎬 as its fallback. Two constraints decided the drawing and the first draft broke both: it renders in a
     104px circle (72px under 560px), so a shape must be ~35 of 120 units to read at all (the
     draft's 22-unit faces came out ~7px, i.e. mud); and the circular clip cuts anything past
     ~52 units from the centre (the draft's sun and second child were sliced). `mountFolderArt`

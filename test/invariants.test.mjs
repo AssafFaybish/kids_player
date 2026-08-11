@@ -1964,14 +1964,17 @@ test('a tap on a video reaches fullscreen SYNCHRONOUSLY (v1.0.2 rule, pinned v1.
     'openWatch awaits something BEFORE going fullscreen — the tap\'s user activation is spent');
 });
 
-test('the ⭐ folder\'s illustration ships, is self-contained, and has an emoji fallback (v1.0.40)', () => {
+test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {
   // Same rule the guide slides follow: an asset named in code must EXIST in www/, or the
   // child gets an empty circle where their folder should be. And it must be self-contained
   // — the app runs from file:// inside a WebView with no network guarantee, so an external
   // font/image/filter reference would silently render nothing.
   const app = MODULES.get('www/js/app.js');
   const m = app.match(/art: '([^']+)'/);
-  assert.ok(m, 'the ⭐ folder no longer names an illustration');
+  assert.ok(m, 'no folder names an illustration any more');
+  // v1.0.41: the drawing belongs to the LOOSE-SINGLES folder; ⭐ keeps its plain star
+  const favPush = app.slice(app.indexOf("id: 'fav', title:") - 40, app.indexOf("id: 'fav', title:") + 140);
+  assert.ok(!/art:/.test(favPush), 'the favourites folder took the drawing back — ⭐ is its mark');
   const rel = m[1];
   const svg = readFileSync(join(ROOT, 'www', rel), 'utf8'); // throws if it is not shipped
   assert.match(svg, /^<svg/, `${rel} is not an SVG`);

@@ -1228,15 +1228,10 @@ async function buildFolders() {
   // folders, after "חדשים"). Hidden at zero, exactly like the gift folder: a tile that
   // opens an empty grid is the v1.0.21 bug.
   const favCount = favouriteKeys(giftStates).length;
-  if (favCount > 0) {
-    out.push({
-      id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true,
-      // v1.0.40 (user request): a drawn kids' scene rather than a bare emoji — and the
-      // emoji stays as the FALLBACK, so a missing/blocked asset degrades to ⭐ instead of
-      // an empty circle (the noteLogoFailure lesson, applied to a bundled file).
-      art: 'assets/folders/favourites.svg'
-    });
-  }
+  // v1.0.41 (user correction): ⭐ stays the favourites folder's mark — a star IS the
+  // universal "favourite" sign, and it was never what collided. The DRAWING belongs to the
+  // mixed-bag folder below, which is what used to wear this star.
+  if (favCount > 0) out.push({ id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true });
 
   const src = await db.getSources(pid);
   const lib = (src && src.libraryId) || null;
@@ -1311,9 +1306,14 @@ async function buildFolders() {
     ]);
     loose = sheetRecords.filter((r) => !claimed.has(r.key)).sort(compareForDisplay);
     if (loose.length) {
-      // v1.0.40: was ⭐, which now reads as the FAVOURITES folder — 🎬 keeps it distinct
-      // from every other folder kind (📺 channel, 🎞️ collection, 🎵 playlist, 🎁 new, ⭐ fav).
-      out.push({ id: 'sheet', scope: lib, title: 'סרטונים נוספים', emoji: '🎬', count: loose.length });
+      // v1.0.41 (user request): the mixed-bag folder gets a drawn scene — rainbow, rocket,
+      // horse, children. It used to wear ⭐, which now reads as the favourites folder; 🎬 is
+      // the FALLBACK if the asset ever fails to load, and is distinct from every other kind
+      // (📺 channel, 🎞️ collection, 🎵 playlist, 🎁 new, ⭐ fav).
+      out.push({
+        id: 'sheet', scope: lib, title: 'סרטונים נוספים', emoji: '🎬', count: loose.length,
+        art: 'assets/folders/extras.svg'
+      });
     }
   }
   // legacy safety: pre-absorb profile-scope items (e.g. before the first sync creates
@@ -1611,7 +1611,7 @@ async function openFolder(fid) {
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
   if (f && f.art) { // v1.0.40 — the ⭐ folder's drawn scene, same art as its tile
-    mountFolderArt(logoTop, f.art, f.emoji || '⭐');
+    mountFolderArt(logoTop, f.art, f.emoji || '🎬');
     logoTop.classList.remove('hidden');
   } else if (f && (f.logoUrl || f.channelId)) { // v1.0.32: cached bytes render even URL-less
     mountChannelLogo(logoTop, f.logoUrl, f.channelId, f.emoji || '📺');
