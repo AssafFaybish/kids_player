@@ -266,6 +266,24 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.43 — **LEAVING FULLSCREEN LANDS ON THE TOP OF THE WATCH PAGE** (user request). Exiting
+  fullscreen is NOT a navigation: `nav.handleBack` answers `'exit-fullscreen'` and returns,
+  and the HUD's ⛶ does the same — so nothing ever scrolled, and the child came back to
+  wherever they had scrolled to, usually the under-player grid with the small player
+  off-screen above. `nav.go` has guaranteed a top landing since the F4 fix; this is the one
+  way out that never goes through nav.
+  - The scroll runs **TWICE, and both are load-bearing**: immediately, because
+    `requestAnimationFrame` callbacks are **SUSPENDED while the document is hidden**
+    (measured — fullscreen exiting as the app backgrounds would otherwise leave the page
+    scrolled), and again after `nav.transition`'s proven double rAF, because the reflow as
+    the element leaves fullscreen lands after an immediate scroll and would undo it.
+  - `nav.isActive('watch')` is checked at event time AND inside the deferred callback:
+    `leaveWatch` (a video that ENDED) exits fullscreen and then `nav.back()`s into the
+    folder, restoring its scroll — a late scroll-to-top would drop the child at the top of a
+    folder they were half-way down. Verified in the browser: scrolled to 280 → exit →
+    top; and a LATE event after the navigation left the folder's position alone.
+  - Both vendor event names are bound (older WebViews fire only `webkitfullscreenchange`).
+
 ## Verification workflow
 
 **Full guide: [docs/TESTING.md](docs/TESTING.md)** — including what a green suite does NOT

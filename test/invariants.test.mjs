@@ -2003,3 +2003,34 @@ test('emptying ⭐ from the watch screen falls back to the real folder (v1.0.40)
   assert.match(body, /current && \(current\.homeFolderId \|\| current\.folderId\)/,
     'the fallback must be where the video actually LIVES');
 });
+
+test('leaving fullscreen lands on the TOP of the watch page (v1.0.43)', () => {
+  // Exiting fullscreen is NOT a navigation: nav.handleBack answers 'exit-fullscreen' and
+  // returns, and the HUD's ⛶ does the same — so nothing scrolled, and the child came back
+  // to wherever they had scrolled to (usually the grid, with the small player off-screen
+  // above). nav.go has guaranteed a top landing since the F4 fix; this is the one way out
+  // that never goes through nav.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('const onFullscreenChange = () => {');
+  assert.ok(at > 0, 'the fullscreen-exit scroll handler is gone');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  // entering fullscreen must do nothing
+  assert.match(body, /if \(document\.fullscreenElement \|\| document\.webkitFullscreenElement\) return;/,
+    'the handler also fires when ENTERING fullscreen');
+  // and it must not fight a navigation that already restored a scroll position: `leaveWatch`
+  // (a video that ended) exits fullscreen and then nav.back()s into the folder.
+  assert.equal((body.match(/nav\.isActive\('watch'\)/g) || []).length, 2,
+    'the watch guard must be checked at event time AND inside the deferred callback');
+  // TWICE: immediate (rAF callbacks are SUSPENDED while the document is hidden — measured)
+  // and deferred (the reflow as the element leaves fullscreen would undo an immediate one).
+  assert.equal((body.match(/window\.scrollTo\(0, 0\)/g) || []).length, 2,
+    'the scroll must be both immediate and deferred');
+  assert.match(body, /requestAnimationFrame\(\(\) => requestAnimationFrame\(/,
+    'the deferred scroll no longer uses the double rAF nav.transition relies on');
+  // registered on BOTH vendor names, once, in wire()
+  const wireAt = app.indexOf('function wire()');
+  const wireBody = app.slice(wireAt);
+  assert.match(wireBody, /document\.addEventListener\('fullscreenchange', onFullscreenChange\)/);
+  assert.match(wireBody, /document\.addEventListener\('webkitfullscreenchange', onFullscreenChange\)/,
+    'older WebViews fire only the webkit-prefixed event');
+});

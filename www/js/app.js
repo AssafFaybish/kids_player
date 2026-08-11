@@ -5109,6 +5109,37 @@ function wire() {
     return !!r && (r.status === 'added' || r.status === 'exists');
   }));
   $('watch-home').addEventListener('click', goGallery);
+  // v1.0.43 (user request) — LEAVING FULLSCREEN LANDS ON THE TOP OF THE PAGE.
+  //
+  // Exiting fullscreen is NOT a navigation: `nav.handleBack` answers 'exit-fullscreen' and
+  // returns, and the HUD's ⛶ does the same — so nothing ever scrolled, and the child came
+  // back to wherever they had scrolled to (usually the grid below, with the small player
+  // off-screen above). The F4 fix gave that guarantee to nav.go; this gives it to the one
+  // way out that never goes through nav.
+  //
+  // Reuses nav.transition's proven DOUBLE rAF: the layout reflows as the element leaves
+  // fullscreen, and a scroll issued in the same frame is undone by that reflow.
+  //
+  // The `isActive('watch')` check is re-tested INSIDE the rAF on purpose: `leaveWatch`
+  // (a video that ended) exits fullscreen and THEN calls nav.back(), which restores the
+  // folder's scroll — scrolling to the top after that would clobber it and drop the child
+  // at the top of a folder they were half-way down.
+  const onFullscreenChange = () => {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return; // entering
+    if (!nav.isActive('watch')) return;
+    // TWICE, and both are load-bearing. The immediate call is what makes this correct when
+    // rAF cannot run — callbacks are SUSPENDED while the document is hidden (measured), so
+    // fullscreen exiting as the app goes to the background would otherwise leave the page
+    // scrolled. The deferred pair is what makes it STICK: the reflow as the element leaves
+    // fullscreen lands after the immediate scroll and would undo it on its own.
+    window.scrollTo(0, 0);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (nav.isActive('watch')) window.scrollTo(0, 0);
+    }));
+  };
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
   $('watch-fav').addEventListener('click', () => { toggleFavourite().catch(() => {}); });
   $('watch-delete').addEventListener('click', onDeleteWatch);
   $('ctl-fs').addEventListener('click', () => {
