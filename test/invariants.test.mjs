@@ -1985,3 +1985,18 @@ test('the ⭐ folder\'s illustration ships, is self-contained, and has an emoji 
   assert.match(body, /addEventListener\('error'/, 'a failed illustration leaves an EMPTY circle');
   assert.match(body, /fallbackEmoji/, 'the fallback emoji is no longer used');
 });
+
+test('emptying ⭐ from the watch screen falls back to the real folder (v1.0.40)', () => {
+  // ⭐ is a VIEW, not a folder, and the child can empty it from the very screen that pages
+  // it: un-starring the video they are watching removes it from the list. With one favourite
+  // that leaves an EMPTY under-player grid and then an empty folder screen — the same shape
+  // the 🎁 folder needed fixing for in v1.0.21 (a gift leaves 🎁 the instant it is unwrapped).
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function renderWatchGrid(');
+  assert.ok(at > 0, 'renderWatchGrid is gone');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /fid === 'fav' && !favouriteKeys\(giftStates\)\.length/,
+    'an emptied ⭐ no longer falls back — the child is left with an empty grid');
+  assert.match(body, /current && \(current\.homeFolderId \|\| current\.folderId\)/,
+    'the fallback must be where the video actually LIVES');
+});

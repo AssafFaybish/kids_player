@@ -1648,8 +1648,18 @@ async function renderWatchGrid(current) {
   // Same-folder browsing (user decision): the grid pages the folder the child came
   // from. A gift opened from "חדשים" browses its ORIGIN folder (rec.folderId).
   const scope = watchCtx.scope;
-  const fid = watchCtx.folderId;
+  let fid = watchCtx.folderId;
   if (!scope || !fid) { grid.innerHTML = ''; watchPager.update(0, 1); return; }
+  // v1.0.40 — ⭐ IS A VIEW, NOT A FOLDER, and the child can empty it from this very screen:
+  // un-starring the video they are watching removes it from the list the grid is paging. If
+  // that leaves ⭐ with nothing, fall back to where the video actually LIVES, so the child
+  // keeps a populated grid instead of staring at an empty one. Exactly the fix the 🎁 folder
+  // needed for the same reason (v1.0.21, resolveWatchContext) — a gift leaves 🎁 the moment
+  // it is unwrapped.
+  if (fid === 'fav' && !favouriteKeys(giftStates).length) {
+    fid = (current && (current.homeFolderId || current.folderId)) || fid;
+    watchCtx = { scope, folderId: fid };
+  }
 
   const res = await pageAnyFolder(scope, fid, { offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH });
   const total = Math.max(1, Math.ceil(res.total / PAGE_WATCH));

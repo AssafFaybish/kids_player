@@ -346,6 +346,13 @@ pins that the consumers follow the config and that every address is well-formed.
     to an empty circle. An invariants test pins that the asset SHIPS, that it is
     self-contained (no xlink/image/remote url/font/script — the app runs from file://), and
     that the fallback exists.
+  - **⭐ IS A VIEW THE CHILD CAN EMPTY FROM INSIDE IT**, which nothing else in the app can do:
+    un-starring the video they are watching removes it from the very list the under-player
+    grid is paging, and with one favourite that left an EMPTY grid and then an empty folder
+    screen. `renderWatchGrid` falls back to where the video actually LIVES
+    (`homeFolderId || folderId`) when ⭐ runs dry — the same fix 🎁 needed in v1.0.21, for the
+    same reason (a gift leaves 🎁 the instant it is unwrapped). Verified in the browser: the
+    grid went 1 → 3 tiles (the channel) instead of 1 → 0.
   - **TAP → FULLSCREEN IS NOW PINNED** (the v1.0.2 rule had no test for 38 releases). Every
     feature since has added lines to `openWatch` and to the tile handler, and ONE `await` in
     front of either silently costs the child fullscreen — a symptom node cannot see. The guard
