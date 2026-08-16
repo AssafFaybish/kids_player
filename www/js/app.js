@@ -20,7 +20,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
-  KEEP_NEWEST_SUGGESTED } from './config.js';
+  KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -1202,7 +1202,7 @@ async function refreshSitesLauncher() {
 const siteIconUrls = new Map();   // entryId -> objUrl
 const siteIconFetching = new Set();
 
-async function resolveSiteIcon(entryId, iconUrl, img, host, emoji) {
+async function resolveSiteIcon(entryId, iconUrl, img, host) {
   if (!entryId) return;
   let objUrl = siteIconUrls.get(entryId);
   if (!objUrl) {
@@ -1242,7 +1242,7 @@ function mountSiteIcon(host, rec, emoji = '🌐') {
   const cached = siteIconUrls.get(rec.entryId);
   if (cached) { img.src = cached; host.appendChild(img); }
   else host.textContent = emoji;
-  resolveSiteIcon(rec.entryId, rec.iconUrl || null, img, host, emoji).catch(() => {});
+  resolveSiteIcon(rec.entryId, rec.iconUrl || null, img, host).catch(() => {});
 }
 
 function siteTile(rec) {
@@ -1302,6 +1302,15 @@ async function openSiteForKid(rec) {
   if (ok) siteViewerOpen = true;
 }
 
+/** Reopen a page for the CHILD with the current rules — used after a parent approval. */
+async function reopenForKid(url) {
+  if (!siteViewerAvailable()) return;
+  await loadSiteEntries();           // the rule was just written; open with it in hand
+  idleLastInputAt = Date.now();
+  const ok = await openSiteViewer({ url, rules: siteRulePayload(), title: '', parentMode: false });
+  if (ok) siteViewerOpen = true;
+}
+
 /** Open for the PARENT: navigation unrestricted, so an SSO login can complete. */
 async function openSiteForParent(url, title) {
   if (!siteViewerAvailable()) {
@@ -1322,7 +1331,10 @@ async function onSiteAddRequest(url) {
   await closeSiteViewer();
   siteViewerOpen = false;
   const cands = ruleCandidatesFor(url);
-  if (!cands.ok) { await alertKid('🚫', 'כתובת לא נתמכת', 'האפליקציה תומכת רק בכתובות https.'); return; }
+  if (!cands.ok) {
+    await alertKid({ emoji: '🚫', title: 'כתובת לא נתמכת', text: 'האפליקציה תומכת רק בכתובות https.' });
+    return;
+  }
   startPin((await hasPin()) ? 'verify' : 'setup', {
     replace: true, title: 'קוד הורים כדי לאשר את הדף',
     onSuccess: () => { askSiteRuleGrain(url, cands).catch(() => {}); }
@@ -1356,7 +1368,12 @@ async function askSiteRuleGrain(url, cands) {
   await refreshSitesPanel();
   // Straight back to the page they were on — a fix that dumps the parent somewhere else
   // makes them redo the navigation just to check it worked.
-  if (res.ok) await openSiteForParent(url, '');
+  //
+  // ⚠️ IN CHILD MODE. This flow STARTS on the child's blocked page: the parent leans over,
+  // types the code, approves, and hands the tablet back. Reopening in parent mode would
+  // leave that child holding an unrestricted browser — the whole feature undone by the
+  // very act of fixing it. The parent's own unrestricted door is the panel's "בדיקה".
+  if (res.ok) await reopenForKid(url);
 }
 
 /* --- writes (all three add doors funnel through these two) --- */
@@ -1395,7 +1412,6 @@ async function addSiteShortcut(url, { title = '', iconUrl = '' } = {}) {
   await loadSiteEntries();
   const ruleId = ruleIdFor(canon);
   if (!siteEntries.some((e) => e.entryId === ruleId)) await addSiteRule(canon);
-  else await loadSiteEntries();
   maybeSchedulePush();
   return { ok: true, canon };
 }
@@ -1430,7 +1446,11 @@ async function probeSite(rawUrl) {
   const start = canon.display;
   try {
     const { httpRequest } = await import('./platform.js');
-    const res = await httpRequest({ url: start, responseType: 'text' });
+    const res = await Promise.race([
+      httpRequest({ url: start, responseType: 'text' }),
+      new Promise((r) => setTimeout(() => r(null), SITE_PROBE_TIMEOUT_MS))
+    ]);
+    if (!res) return { ok: true, canon, url: start, title: '', iconUrl: '' };
     const finalUrl = (res && res.url) || start;
     const finalCanon = canonicalSitePrefix(finalUrl);
     const html = typeof res?.data === 'string' ? res.data : '';
@@ -2687,8 +2707,7 @@ function siteRow({ title, sub, onDelete, buttons = [], icon = null }) {
   li.className = 'parent-row';
   if (icon) {
     const host = document.createElement('span');
-    host.className = 'li-thumb';
-    host.style.cssText = 'width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#fff;overflow:hidden;font-size:22px';
+    host.className = 'li-thumb li-site-icon';
     mountSiteIcon(host, icon);
     li.appendChild(host);
   }
@@ -2821,13 +2840,29 @@ async function refreshSitesPanel() {
 }
 
 /** The shared add flow: probe → normalize → show what will REALLY be saved → confirm. */
+let siteAddBusy = false;
+
 async function addSiteFromInput(kind) {
+  if (siteAddBusy) return;
   const inputId = kind === 'shortcut' ? 'site-sc-url' : 'site-rule-url';
+  const btnId = kind === 'shortcut' ? 'site-sc-add' : 'site-rule-add';
   const msgId = kind === 'shortcut' ? 'site-sc-msg' : 'site-rule-msg';
   const raw = ($(inputId).value || '').trim();
   const msg = $(msgId);
   const canon = canonicalSitePrefix(raw);
   if (!canon.ok) { msg.textContent = siteUrlError(canon.reason); msg.className = 'form-msg err'; return; }
+  siteAddBusy = true;
+  $(btnId).disabled = true;
+  try {
+    await runSiteAdd(kind, raw, inputId, msg);
+  } finally {
+    siteAddBusy = false;
+    $(btnId).disabled = false;
+  }
+}
+
+async function runSiteAdd(kind, raw, inputId, msg) {
+  const canon = canonicalSitePrefix(raw);
   msg.textContent = 'בודקים את הכתובת…';
   msg.className = 'form-msg';
   const probe = await probeSite(raw);

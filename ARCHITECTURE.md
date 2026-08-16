@@ -53,7 +53,8 @@ Native (android/, canonical copies in native-reference/): `MainActivity.java`
 (YouTube-nav blocking, real fullscreen, popups, share onNewIntent, and the site-viewer
 back/pause/resume hooks), `KidsNativePlugin.java` (keepAwake, share inbox, APK installer),
 `GoogleAuthPlugin.java` (AuthorizationClient drive.file), `KidsWebPlugin.java` (v1.0.45 —
-the restricted site viewer: the ONLY place a child's web navigation is enforced).
+the restricted site viewer: the ONLY place a child's web navigation is enforced; see
+[docs/WEBSITES.md](docs/WEBSITES.md)).
 `release/android-release.gradle` = versioning + signing + play-services dep + `.dev` debug suffix.
 
 ## IndexedDB schema (`kidsplayer` v2)

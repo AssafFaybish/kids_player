@@ -106,3 +106,8 @@ export const AVATARS = [
   { e: '🐯', c: '#ffcf6b' }, { e: '🦄', c: '#e4c1f9' }, { e: '🐙', c: '#ff9aa2' },
   { e: '🐧', c: '#a0c4ff' }, { e: '🐨', c: '#d7d7d7' }, { e: '🐬', c: '#8fd0e0' }
 ];
+
+/** v1.0.45 — how long the add flow waits for a site to answer before giving up on its
+ *  title and icon. The address is still addable; only the niceties are skipped. Without
+ *  a bound a hanging host leaves the parent on "בודקים את הכתובת…" with no way out. */
+export const SITE_PROBE_TIMEOUT_MS = 8000;

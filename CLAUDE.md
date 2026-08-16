@@ -267,7 +267,9 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   anywhere in the order.
 
 - v1.0.45 — **APPROVED WEBSITES: a restricted browser inside the app** (user request).
-  Full record: **[docs/V1045.md](docs/V1045.md)**. Until now every item a child could see
+  Full record: **[docs/V1045.md](docs/V1045.md)**; the maintainer's map (what lives where,
+  how to extend it, the five things that break in silence): **[docs/WEBSITES.md](docs/WEBSITES.md)**
+  — read that one BEFORE touching `weblock.js` or `KidsWebPlugin.java`. Until now every item a child could see
   passed `classifyLink`, one narrow boundary; this puts a BROWSER on a 5-year-old's
   tablet, so most of the work is what gets BLOCKED.
   - **TWO LISTS, AND THE SPLIT IS THE FEATURE.** One store, `siteEntries`, discriminated

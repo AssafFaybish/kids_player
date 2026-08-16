@@ -272,3 +272,62 @@ test('extractSiteIconFromHtml: truncated or hostile HTML returns a string, never
     assert.equal(typeof extractSiteIconFromHtml(junk, base), 'string');
   }
 });
+
+// ── the shapes this app actually meets ─────────────────────────────────────────────
+
+test('a Hebrew path matches whether it arrives encoded or decoded', () => {
+  // Not hypothetical: Hebrew sites routinely use Hebrew paths, and a parent pastes the
+  // form their browser showed them while the WebView navigates the other form. If the
+  // two did not compare equal the site would open and then block its own links.
+  const decoded = 'https://site.co.il/ילדים/';
+  const encoded = 'https://site.co.il/%D7%99%D7%9C%D7%93%D7%99%D7%9D/';
+  const a = canonicalSitePrefix(decoded);
+  const b = canonicalSitePrefix(encoded);
+  assert.ok(a.ok && b.ok);
+  assert.deepEqual(a.segments, b.segments, 'the two spellings must canonicalize alike');
+  assert.equal(ruleIdFor(a), ruleIdFor(b), 'and must therefore be ONE stored rule');
+
+  const rules = [ruleFor(encoded)];
+  assert.equal(navAllowed(rules, decoded), true);
+  assert.equal(navAllowed(rules, encoded + 'abc'), true);
+  assert.equal(navAllowed(rules, 'https://site.co.il/מבוגרים/'), false,
+    'a different Hebrew section must still be blocked');
+});
+
+test('a malformed rule row can neither throw nor match everything', () => {
+  // Rows arrive from a peer's document and from an imported snapshot, so a missing or
+  // junk field is reachable. Failing OPEN here would hand over the whole web.
+  const good = ruleFor('https://example.com/kids/');
+  for (const bad of [
+    {}, { host: '' }, { host: 'example.com', segments: null },
+    { host: 'example.com', segments: 'kids' }, { host: 'example.com', port: 'x', segments: [] },
+    null, undefined, 'nonsense', 42
+  ]) {
+    const only = navAllowed([bad], 'https://example.com/kids/x');
+    assert.equal(typeof only, 'boolean', `rule ${JSON.stringify(bad)} must not throw`);
+    assert.notEqual(only && bad && bad.host === '', true);
+  }
+  // a junk row beside a real one must not disturb it
+  assert.equal(navAllowed([null, good, {}], 'https://example.com/kids/x'), true);
+  assert.equal(navAllowed([null, good, {}], 'https://elsewhere.com/'), false);
+  // a rule with NO segments is the whole site — that is legitimate, and only for ITS host
+  const whole = ruleFor('https://example.com/');
+  assert.equal(navAllowed([whole], 'https://example.com/anything/deep'), true);
+  assert.equal(navAllowed([whole], 'https://other.com/'), false);
+});
+
+test('an unusual but legal address survives normalization', () => {
+  const cases = [
+    ['https://EXAMPLE.com/Kids/', 'https://example.com/Kids/'],   // host folds, PATH DOES NOT
+    ['https://example.com/a b/', 'https://example.com/a b/'],      // a space, already decoded
+    ['https://example.com/%D7%90/', 'https://example.com/א/']
+  ];
+  for (const [input, display] of cases) {
+    const c = canonicalSitePrefix(input);
+    assert.ok(c.ok, `${input} should normalize`);
+    assert.equal(c.display, display);
+  }
+  // Path case is significant on most servers, so folding it would silently widen a rule.
+  assert.equal(navAllowed([ruleFor('https://example.com/Kids/')], 'https://example.com/kids/'), false,
+    'the path must stay case-SENSITIVE — folding it widens the rule');
+});

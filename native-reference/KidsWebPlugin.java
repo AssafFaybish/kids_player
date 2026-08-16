@@ -75,6 +75,9 @@ public class KidsWebPlugin extends Plugin {
     private final List<Rule> rules = new ArrayList<>();
     private boolean parentMode = false;
     private long lastActivityPing = 0L;
+    private long pausedAt = 0L;
+    /** How long parent mode may sit backgrounded before it is abandoned rather than paused. */
+    private static final long PARENT_MODE_GRACE_MS = 60_000L;
     /** The page the child was refused, so the parent's approval knows what it is approving. */
     private String lastBlockedUrl = "";
 
@@ -82,8 +85,6 @@ public class KidsWebPlugin extends Plugin {
     public void load() { instance = this; }
 
     /* ---------------- lifecycle hooks called by MainActivity ---------------- */
-
-    static boolean overlayVisible() { return instance != null && instance.overlay != null; }
 
     /** Hardware back: walk the site's own history first, then close. */
     static boolean handleBack() {
@@ -103,13 +104,28 @@ public class KidsWebPlugin extends Plugin {
      */
     static void onActivityPause() {
         if (instance == null || instance.web == null) return;
+        instance.pausedAt = System.currentTimeMillis();
         instance.web.onPause();
         instance.web.pauseTimers();
         flushCookies();
     }
 
+    /**
+     * PARENT MODE DOES NOT SURVIVE AN ABSENCE. It navigates without restriction, so a
+     * tablet put down mid-login and picked up by the child would be a free browser.
+     *
+     * Closing on pause would be wrong: the commonest thing a parent does mid-login is hop
+     * to a password manager, which is a few seconds. So the session is abandoned on RESUME
+     * after a grace period — long enough for that hop, far shorter than "left on the
+     * sofa". Child mode is untouched; there is nothing to protect it from.
+     */
     static void onActivityResume() {
         if (instance == null || instance.web == null) return;
+        if (instance.parentMode && instance.pausedAt > 0
+                && System.currentTimeMillis() - instance.pausedAt > PARENT_MODE_GRACE_MS) {
+            instance.closeOverlay();
+            return;
+        }
         instance.web.resumeTimers();
         instance.web.onResume();
     }
@@ -132,6 +148,11 @@ public class KidsWebPlugin extends Plugin {
 
         a.runOnUiThread(() -> {
             try {
+                // The bar's colour and label are the only signal that navigation is
+                // unrestricted. They are decided when the overlay is BUILT, so a reopen
+                // that changes the mode must rebuild — otherwise parent mode can wear the
+                // child's colours and the one visual cue about it is a lie.
+                if (overlay != null && parentMode != parent) closeOverlay();
                 rules.clear();
                 rules.addAll(parsed);
                 parentMode = parent;

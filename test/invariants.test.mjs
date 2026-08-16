@@ -2200,3 +2200,69 @@ test('the native pair is byte-identical (v1.0.45)', () => {
     assert.equal(readRepo(a), readRepo(b), `${a} and ${b} have drifted — disaster recovery would ship the wrong app`);
   }
 });
+
+/* ---- v1.0.45 review findings, each pinned so it cannot come back ---- */
+
+test('a parent approval from the CHILD\'s blocked page reopens in CHILD mode (v1.0.45)', () => {
+  // The severe one. That flow starts on the child's screen: the parent leans over, types
+  // the code, approves, and hands the tablet back. Reopening in parentMode — which
+  // navigates WITHOUT restriction — left that child holding a free browser, i.e. the
+  // feature undone by the act of fixing it.
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf('async function askSiteRuleGrain');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.ok(!/openSiteForParent\(/.test(body),
+    'the blocked-page approval reopens in PARENT mode — the child gets an unrestricted browser');
+  assert.match(body, /reopenForKid\(/, 'the approval must hand the page back in child mode');
+  const reopen = app.slice(app.indexOf('async function reopenForKid'), app.indexOf('async function openSiteForParent'));
+  assert.match(reopen, /parentMode: false/, 'reopenForKid must be explicit about the mode');
+});
+
+test('parent mode does not survive an absence (v1.0.45)', () => {
+  // It navigates unrestricted, so a tablet put down mid-login and picked up by the child
+  // would be a free browser. Closing on PAUSE would be wrong (hopping to a password
+  // manager is the commonest thing a parent does mid-login), so it expires on resume.
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    assert.match(body, /PARENT_MODE_GRACE_MS/, `${p}: parent mode never expires`);
+    const at = body.indexOf('static void onActivityResume');
+    const fn = body.slice(at, body.indexOf('\n    }', at));
+    assert.match(fn, /parentMode/, `${p}: resume does not consider parent mode`);
+    assert.match(fn, /closeOverlay\(\)/, `${p}: an abandoned parent session is never closed`);
+  }
+});
+
+test('the modal helpers are never called positionally (v1.0.45)', () => {
+  // confirmKid/askKid/alertKid take an OPTIONS object. A positional call is not a syntax
+  // error and not a crash — it silently renders the default dialog: "❓", no title, no
+  // text. One shipped in this feature's own error path and only a read caught it.
+  for (const [k, b] of CODE.entries()) {
+    const bad = [...b.matchAll(/\b(alertKid|confirmKid|askKid)\(\s*['"`]/g)].map((m) => m[1]);
+    assert.deepEqual(bad, [],
+      `${k}: ${bad.join(', ')} called with a string — the dialog renders EMPTY`);
+  }
+});
+
+test('the site probe is bounded, and the constant has a consumer (v1.0.45)', () => {
+  // "A constant with no consumer is a lie" (v1.0.37). And without the bound a hanging
+  // host leaves the parent on "בודקים את הכתובת…" with no way out — httpRequest has no
+  // timeout of its own. Measured in the browser: the flow now completes in ~8s.
+  const cfg = CODE.get('www/js/config.js');
+  assert.match(cfg, /SITE_PROBE_TIMEOUT_MS/, 'the timeout constant is gone');
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /SITE_PROBE_TIMEOUT_MS/, 'nothing consumes the probe timeout');
+  const at = app.indexOf('async function probeSite');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /Promise\.race/, 'probeSite awaits the network with no bound');
+});
+
+test('one site add at a time (v1.0.45)', () => {
+  // Two taps ran two probes and raised two confirms; the modal swallows the second and
+  // reports it as a cancel, so the parent's second tap silently did nothing.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /siteAddBusy/, 'the add button is not latched against a double tap');
+  const at = app.indexOf('async function addSiteFromInput');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /if \(siteAddBusy\) return;/, 'the latch is not checked');
+  assert.match(body, /finally/, 'a throw would leave the add button disabled forever');
+});
