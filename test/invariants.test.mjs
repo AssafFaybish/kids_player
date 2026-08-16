@@ -2300,3 +2300,31 @@ test('nothing touches the WebView from the off-thread request hook (v1.0.45)', (
       `${p}: rules is mutated in place — the off-thread reader can see it half-swapped`);
   }
 });
+
+test('the site viewer implements HTML5 fullscreen, and back leaves it first (v1.0.45)', () => {
+  // A bare WebView does not implement fullscreen AT ALL — without onShowCustomView the
+  // fullscreen button on an embedded player does nothing whatsoever, which is how this
+  // shipped: it fails SILENTLY, with no error and no log. Reported from the device.
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    assert.match(body, /public void onShowCustomView\(/,
+      `${p}: no onShowCustomView — a video's fullscreen button does nothing at all`);
+    assert.match(body, /public void onHideCustomView\(/, `${p}: fullscreen can be entered but never left`);
+    assert.match(body, /setKeepScreenOn\(true\)/,
+      `${p}: a playing video is USE — without this the screen sleeps mid-video`);
+    // The idle timer counts an open viewer and is fed only by page loads, so a video with
+    // nobody touching the glass would look idle and the viewer would close mid-playback.
+    const show = body.slice(body.indexOf('public void onShowCustomView('), body.indexOf('public void onHideCustomView('));
+    assert.match(show, /fsPing|webActivity/,
+      `${p}: nothing reports activity while fullscreen — the idle timer closes the video`);
+    // back: fullscreen before history before close
+    const back = body.slice(body.indexOf('static boolean handleBack()'), body.indexOf('\n    }', body.indexOf('static boolean handleBack()')));
+    const fs = back.indexOf('customView');
+    const goBack = back.indexOf('canGoBack');
+    assert.ok(fs > 0 && fs < goBack,
+      `${p}: back must leave FULLSCREEN before it walks history, or the child lands on a black screen`);
+    // and closing the viewer must not leak a detached surface
+    assert.match(body.slice(body.indexOf('private void closeOverlay')), /exitFullscreen\(\)/,
+      `${p}: closing while fullscreen leaves the video surface attached`);
+  }
+});
