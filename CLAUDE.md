@@ -266,6 +266,89 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.45 — **APPROVED WEBSITES: a restricted browser inside the app** (user request).
+  Full record: **[docs/V1045.md](docs/V1045.md)**; the maintainer's map (what lives where,
+  how to extend it, the five things that break in silence): **[docs/WEBSITES.md](docs/WEBSITES.md)**
+  — read that one BEFORE touching `weblock.js` or `KidsWebPlugin.java`. Until now every item a child could see
+  passed `classifyLink`, one narrow boundary; this puts a BROWSER on a 5-year-old's
+  tablet, so most of the work is what gets BLOCKED.
+  - **TWO LISTS, AND THE SPLIT IS THE FEATURE.** One store, `siteEntries`, discriminated
+    by `kind`: a **`shortcut`** (url+title+icon) is what the child sees as a tile; a
+    **`rule`** (a canonical prefix) is where they may navigate and is **NEVER rendered** —
+    a rule is often a sub-path or a different site entirely. Navigation is checked against
+    ALL rules, so one approved site may link to another. **Adding a shortcut auto-creates
+    the matching rule**, or the first link tap inside it is blocked and the site reads as
+    broken rather than as an unmade setting. Scope is the PROFILE (`prof:<id>`).
+  - **[weblock.js](www/js/weblock.js) IS THE SAFETY BOUNDARY** — the `classifyLink` of this
+    feature, pure, one module, invariant-pinned. A `startsWith` is NOT a prefix check:
+    `example.com/kids/` would admit `example.com/kids-adult/`, `good.com` would admit
+    `good.com.evil.com` and `good.com@evil.com` (userinfo). So https ONLY, userinfo
+    refused, host lower-cased sans `www.`, port normalized, **path compared BY SEGMENT**,
+    each segment `decodeURIComponent`-ed and THEN `.`/`..` refused — that order because
+    `Uri.getPathSegments()` decodes on its own, so `%2e%2e` reaches Java already as `..`.
+    `matchRule` returns the LONGEST match, so a broad rule added later cannot loosen a
+    section the parent kept strict.
+  - **THE RULE LIVES IN TWO LANGUAGES, SO JS NORMALIZES AND JAVA ONLY COMPARES.**
+    Enforcement is `shouldOverrideUrlLoading`, which the node suite cannot execute; JS
+    hands over `{host, port, segments[]}` already canonical and `KidsWebPlugin` must never
+    parse a prefix itself.
+  - **AN `<iframe>` CANNOT ENFORCE THIS** (same-origin blocks reading `location` or
+    intercepting navigation, and much of the web sends `X-Frame-Options: DENY`), and
+    Custom Tabs has no hooks. Hence a native WebView — added to the decor view, NOT a
+    second Activity, so lock-task (the kiosk lock) and immersive mode are unaffected.
+  - **NINE DOORS, EACH A ONE-GESTURE ESCAPE**, all pinned in BOTH java copies: non-https
+    schemes (`intent://` `market://` `tel:` `mailto:` open ANOTHER APP), subresources
+    (ads/trackers/embedded players), downloads (an APK), `onCreateWindow`, camera/mic/
+    geolocation, the long-press menu, `startActionMode` (text selection → "Web search"),
+    `file://`, and mixed content. **Third-party content is STRICT by default** — same host
+    or subdomain, or another approved rule's host — with a per-RULE opt-out behind a
+    warning.
+  - **THE PASSWORD IS TYPED ONCE**: cookies + DOM storage persist, and
+    **`CookieManager.flush()`** runs on close and on `onPause` — without it the login dies
+    with the process and "once" silently becomes "every time". ⚠️ SSO to another host is
+    blocked by the rules, so the login door is **parent mode**: `parentMode:true` navigates
+    UNRESTRICTED, behind the PIN, with a differently-coloured bar; the child inherits the
+    session. Not a new capability — the parent screen already opens any URL via
+    `openExternal`. An invariants guard pins that no child path can reach it.
+  - **A BLOCKED PAGE IS A FIX, NOT A DEAD END**: a calm message plus a discreet "הורים"
+    button → `webAddRequest` → **`startPin` in JS** → pick the grain (whole site / this
+    section / this page, defaulting to the SECTION, never the whole site) → reopen on the
+    blocked page. **THE PIN IS NEVER VERIFIED IN JAVA** — that would be a second
+    implementation of the one check guarding the whole parent surface; an invariant bans
+    the word.
+  - ⚠️ **`DB_VERSION` 1 → 2, AND THE UPGRADE HANDLER WOULD HAVE BRICKED EVERY INSTALL.**
+    It created all 9 stores UNCONDITIONALLY — harmless only while the version never moved.
+    Measured in the browser: an unguarded bump throws `ConstraintError`, aborts the
+    version-change transaction, and the app cannot open its database AT ALL. Every
+    `createObjectStore` now sits inside `if (ev.oldVersion < N)`, pinned by a test.
+  - ⚠️ **`buildLocalDoc` HAS TWO BRANCHES AND THE SECOND IS THINNER.** Sites are
+    profile-scoped, and the `prof:<id>` pseudo-library is built separately (it already
+    omitted `deletedChannels`) **and only `if (pv.length)`** — so a child with approved
+    sites and no personal videos would have synced NOTHING, silently, while every local
+    screen looked right. Both branches carry the collection now; guard-pinned.
+  - Deletion is a **tombstone written FIRST** (`meta['siteDel:<scope>']`, max-merge, strict
+    outlives, **tie = deleted**) — the v1.0.36 lesson: absence alone is re-added by any
+    peer that has not pulled. `purgeProfile`'s `metaKeys` loop was filtered to `lib:`
+    scopes and would have stranded these; fixed.
+  - **SCREEN TIME, or the browser is a hole in it**: `armScheduledLock()` on site open;
+    **`showLockedScreen` closes the viewer BEFORE `nav.reset('locked')`** (a native overlay
+    would otherwise hide the lock while the child kept browsing); taps inside a native
+    WebView never reach `window`, so the plugin emits a throttled `webActivity` that feeds
+    `idleLastInputAt`; `tickIdleSleep` counts `siteViewerOpen`. There is deliberately NO
+    "עדיין צופים?" prompt for a site — it lives inside `#player-wrap`, under the WebView —
+    so the idle path just closes the viewer and hands control back to the app.
+  - `sitesEnabled` is per-profile and synced, **ON unless written** (tie → off). The
+    launcher shows only when it is on AND at least one shortcut exists (v1.0.21), and never
+    on TV — a remote cannot drive an arbitrary website. `refreshSitesLauncher` RE-READS
+    rather than trusting a cache: measured in the browser, a peer's change was otherwise
+    invisible until the profile was switched.
+  - **THE VIEWER IS DEVICE-ONLY AND THE BROWSER SAYS SO** rather than half-working with an
+    iframe. All the chrome is browser-verifiable; the viewer is a device-checklist item.
+  - The links file is deliberately untouched (its promise is "no second parser, no second
+    safety boundary"). 18 weblock unit tests + 8 Drive/snapshot tests + 13 wiring
+    invariants; every guard proven red on a planted regression — and the first three fired
+    on their own COMMENTS, so the Java guards read comment-stripped source.
+
 - v1.0.43 — **LEAVING FULLSCREEN LANDS ON THE TOP OF THE WATCH PAGE** (user request). Exiting
   fullscreen is NOT a navigation: `nav.handleBack` answers `'exit-fullscreen'` and returns,
   and the HUD's ⛶ does the same — so nothing ever scrolled, and the child came back to
@@ -1352,7 +1435,7 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **Release records: [docs/V1038.md](docs/V1038.md), [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
+- **Release records: [docs/V1045.md](docs/V1045.md), [docs/V1038.md](docs/V1038.md), [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
   [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what changed in each
   and why, including which features ALREADY EXISTED and were broken. The per-feature
   invariants stay below; those files are the map.

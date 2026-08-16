@@ -454,3 +454,59 @@ test('a snapshot restore keeps the parent\'s keep-forever marks (v1.0.39)', () =
     assert.ok(!('keepForever' in r), `a non-boolean must not protect: ${JSON.stringify(junk)}`);
   }
 });
+
+/* ================= approved websites in the snapshot (v1.0.45) ================= */
+
+test('sanitizeSnapshotSite: the safety boundary is RE-RUN, never trusted from the file', async () => {
+  const { sanitizeSnapshotSite } = await import('../www/js/snapshot.js');
+  const { ruleIdFor, shortcutIdFor, canonicalSitePrefix } = await import('../www/js/weblock.js');
+  const scopeId = 'prof:p1';
+
+  const rid = ruleIdFor(canonicalSitePrefix('https://a.com/kids/'));
+  const rule = sanitizeSnapshotSite(
+    { entryId: rid, kind: 'rule', display: 'https://www.a.com/kids', host: 'HACKED', port: 9, segments: ['anything'], allowExternal: true },
+    { scopeId }
+  );
+  // host/port/segments are REBUILT from the display string — a hand-edited file cannot
+  // widen a rule past what the current parser would accept.
+  assert.equal(rule.host, 'a.com');
+  assert.equal(rule.port, 443);
+  assert.deepEqual(rule.segments, ['kids']);
+  assert.equal(rule.allowExternal, true, 'the parent\'s own toggle is still honoured');
+
+  const sid = shortcutIdFor('https://a.com/kids/');
+  const sc = sanitizeSnapshotSite({ entryId: sid, kind: 'shortcut', url: 'https://a.com/kids/', title: 'א' }, { scopeId });
+  assert.equal(sc.kind, 'shortcut');
+  assert.equal(sc.scopeId, scopeId);
+});
+
+test('sanitizeSnapshotSite: refuses a row whose id does not match what it permits', async () => {
+  const { sanitizeSnapshotSite } = await import('../www/js/snapshot.js');
+  const scopeId = 'prof:p1';
+  // A mismatched id is how a doctored file would smuggle a broad rule in under the id of
+  // a narrow one the parent recognizes in the list.
+  assert.equal(sanitizeSnapshotSite({ entryId: 'rl:dead', kind: 'rule', display: 'https://a.com/' }, { scopeId }), null);
+  assert.equal(sanitizeSnapshotSite({ entryId: 'sc:dead', kind: 'shortcut', url: 'https://a.com/' }, { scopeId }), null);
+  // and everything the boundary itself refuses stays refused
+  assert.equal(sanitizeSnapshotSite({ entryId: 'rl:x', kind: 'rule', display: 'http://a.com/' }, { scopeId }), null);
+  assert.equal(sanitizeSnapshotSite({ entryId: 'x', kind: 'nonsense' }, { scopeId }), null);
+  assert.equal(sanitizeSnapshotSite({ kind: 'rule', display: 'https://a.com/' }, { scopeId }), null);
+  for (const junk of [null, undefined, 42, 'x', []]) {
+    assert.equal(sanitizeSnapshotSite(junk, { scopeId }), null);
+  }
+});
+
+test('sanitizeSnapshotSite: a junk `order` can never produce an unindexable row', async () => {
+  const { sanitizeSnapshotSite } = await import('../www/js/snapshot.js');
+  const { shortcutIdFor } = await import('../www/js/weblock.js');
+  const url = 'https://a.com/kids/';
+  const entryId = shortcutIdFor(url);
+  // by_scope is ['scopeId','order']; a string or NaN order stores fine and then appears
+  // in NO range scan — the row exists and is invisible forever (the sortKey lesson).
+  for (const bad of ['abc', NaN, Infinity, null, undefined, {}]) {
+    const r = sanitizeSnapshotSite({ entryId, kind: 'shortcut', url, title: 'א', order: bad }, { scopeId: 'prof:p1' });
+    assert.ok(Number.isFinite(r.order), `order ${String(bad)} must coerce to a finite number`);
+  }
+  const good = sanitizeSnapshotSite({ entryId, kind: 'shortcut', url, title: 'א', order: 7 }, { scopeId: 'prof:p1' });
+  assert.equal(good.order, 7);
+});

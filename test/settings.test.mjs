@@ -190,3 +190,24 @@ test('keepNewest ties resolve to the LARGER window, and stay commutative (v1.0.3
   assert.equal(s.v, mergeSettingEntry('lockAfterMin', { v: 200, at: 7 }, { v: 9, at: 7 }).v,
     'every tie-break must be commutative, whichever rule applies');
 });
+
+test('sitesEnabled: ON unless written, OFF once written, and ties go OFF (v1.0.45)', async () => {
+  store.clear();
+  // The parent asked for the websites button to be there by default, so a family that
+  // never opens the tab must still see it. `getSetting`'s fallback fires only when the
+  // key was NEVER written, which is exactly the semantics that gives us that.
+  assert.equal(await getSetting('p1', 'sitesEnabled', true), true, 'unwritten must read as ON');
+  await putSetting('p1', 'sitesEnabled', false);
+  assert.equal(await getSetting('p1', 'sitesEnabled', true), false, 'a written OFF must stick');
+  await putSetting('p1', 'sitesEnabled', true);
+  assert.equal(await getSetting('p1', 'sitesEnabled', true), true);
+  // and it is per child, like every other profile-scoped setting
+  assert.equal(await getSetting('p2', 'sitesEnabled', true), true);
+
+  // A tie is the only case recency cannot decide; it must be deterministic AND narrow.
+  const on = { profiles: { p1: { sitesEnabled: e(true, 500) } } };
+  const off = { profiles: { p1: { sitesEnabled: e(false, 500) } } };
+  assert.equal(mergeSettings(on, off).profiles.p1.sitesEnabled.v, false);
+  assert.equal(mergeSettings(off, on).profiles.p1.sitesEnabled.v, false,
+    'a tie must not depend on argument order');
+});

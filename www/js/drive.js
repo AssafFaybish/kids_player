@@ -25,6 +25,7 @@ import {
   openDb, getMeta, putMeta, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel, deleteLibraryChannel,
   getDeletedChannels, putDeletedChannels,
+  listSiteEntries, putSiteEntry, deleteSiteEntry, getDeletedSiteEntries, putDeletedSiteEntries,
   loadDenyRecords, denyActive, tx, profScope, putVideoStates, getVideoState, purgeProfile
 } from './db.js';
 import { getAllSettings, putAllSettings, mergeSettings } from './settings.js';
@@ -242,7 +243,12 @@ export function serializeDb({ profiles, libraries, profileState, profileSources,
       // v1.0.36: channel-deletion tombstones — additive, an older app ignores the key.
       // Without them a deletion is pure ABSENCE, the union below can only re-add, and
       // every peer resurrected the subscription the parent threw out (field report).
-      deletedChannels: lib.deletedChannels || {}
+      deletedChannels: lib.deletedChannels || {},
+      // v1.0.45: approved websites + their tombstones. Also additive. These live on
+      // PROFILE scopes, so the thinner `prof:` branch of buildLocalDoc must carry them
+      // too — that branch is the only place they ever appear for most families.
+      siteEntries: lib.siteEntries || [],
+      deletedSiteEntries: lib.deletedSiteEntries || {}
     };
   }
   return JSON.stringify({
@@ -345,6 +351,63 @@ export function planChannelApply({ localRows, remoteRows, localTombs, remoteTomb
   };
 }
 
+/* ---------------- approved websites (v1.0.45) ----------------
+   Deliberately a line-for-line mirror of the libraryChannels trio above: one LWW record
+   merge, one max-merge tombstone map, one strict-outlives test, one apply plan. Same
+   shape, same reasoning, same tie rule — a second pattern here would be a second set of
+   bugs to find. */
+
+/**
+ * PURE: two copies of one site entry. Later `updatedAt` wins (stamped inside
+ * `db.putSiteEntry`, never at the call sites).
+ *
+ * On an exact tie the tie-break is the SAFE direction, which for this feature means the
+ * MORE restrictive row: a rule that does NOT allow external content beats one that does.
+ * Deterministic, so the merge stays commutative, and the worst it can do is make a page
+ * render plainly until the parent flips the toggle again.
+ */
+export function mergeSiteEntry(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ta = a.updatedAt || 0;
+  const tb = b.updatedAt || 0;
+  if (ta !== tb) return tb > ta ? b : a;
+  if (!!a.allowExternal !== !!b.allowExternal) return a.allowExternal ? b : a;
+  return a;
+}
+
+/** PURE: union of two site-deletion tombstone maps ({entryId: deletedAt}); latest wins. */
+export function mergeDeletedSiteEntries(a, b) {
+  const out = {};
+  for (const src of [a, b]) {
+    for (const [id, at] of Object.entries(src || {})) {
+      const t = Number(at) || 0;
+      out[id] = id in out ? Math.max(out[id], t) : t;
+    }
+  }
+  return out;
+}
+
+/**
+ * PURE: does a site row outlive a deletion tombstone? STRICTLY newer wins; a TIE is a
+ * deletion. Showing a child a site the parent removed is the betrayal; making them re-add
+ * one is a complaint.
+ */
+export function siteEntryOutlivesTombstone(row, at) {
+  return ((row && row.updatedAt) || 0) > (Number(at) || 0);
+}
+
+/** PURE: the siteEntries half of applying a remote doc (the planChannelApply twin). */
+export function planSiteApply({ localRows, remoteRows, localTombs, remoteTombs }) {
+  const tombs = mergeDeletedSiteEntries(localTombs, remoteTombs);
+  const survives = (e) => !(e.entryId in tombs) || siteEntryOutlivesTombstone(e, tombs[e.entryId]);
+  return {
+    tombs,
+    puts: (remoteRows || []).filter((e) => e && e.entryId && survives(e)),
+    deletes: (localRows || []).filter((e) => e && e.entryId && !survives(e)).map((e) => e.entryId)
+  };
+}
+
 /** Commutative + idempotent (tested): merge(a,b) ≡ merge(b,a); merge(a,a) ≡ a. */
 export function mergeDbFiles(a, b) {
   if (!a) return b;
@@ -399,13 +462,27 @@ export function mergeDbFiles(a, b) {
       if (row && !channelOutlivesTombstone(row, at)) libCh.delete(chId);
     }
 
+    // v1.0.45 — approved websites, same union-then-filter shape as the channels above.
+    const sites = new Map();
+    for (const e of [...(la.siteEntries || []), ...(lb.siteEntries || [])]) {
+      if (!e || !e.entryId) continue;
+      sites.set(e.entryId, mergeSiteEntry(sites.get(e.entryId), e));
+    }
+    const siteDel = mergeDeletedSiteEntries(la.deletedSiteEntries, lb.deletedSiteEntries);
+    for (const [entryId, at] of Object.entries(siteDel)) {
+      const row = sites.get(entryId);
+      if (row && !siteEntryOutlivesTombstone(row, at)) sites.delete(entryId);
+    }
+
     out.libraries[id] = {
       sheetUrl: la.sheetUrl || lb.sheetUrl || null,
       videos: [...vids.values()],
       denylist: [...deny.values()],
       channels: [...chans.values()],
       libraryChannels: [...libCh.values()],
-      deletedChannels: chDel
+      deletedChannels: chDel,
+      siteEntries: [...sites.values()],
+      deletedSiteEntries: siteDel
     };
   }
 
@@ -531,17 +608,28 @@ async function buildLocalDoc(profiles) {
         denylist: await loadDenyRecords(lib),
         channels: chans, libraryChannels: libCh,
         // v1.0.36: the deletion tombstones travel with the library they guard
-        deletedChannels: await getDeletedChannels(lib)
+        deletedChannels: await getDeletedChannels(lib),
+        // v1.0.45: sites are profile-scoped, so a library scope never has any — but the
+        // key must still be present and empty, or a merge against a peer would read this
+        // side as "unknown" rather than "none".
+        siteEntries: [], deletedSiteEntries: {}
       };
     }
     // profile-scope manual items ride inside a pseudo-library keyed by the prof scope
     const pScope = profScope(p.id);
     const pv = [...(await loadMergeIndex(pScope)).values()];
-    if (pv.length) {
+    // v1.0.45 — approved websites live HERE, on the profile scope, and this blob used to
+    // exist only when the profile had personal VIDEOS. A child with three approved sites
+    // and no manually-added video would have produced no entry at all, so the sites would
+    // have synced nowhere while every screen looked correct locally.
+    const pSites = await listSiteEntries(pScope);
+    const pSiteDel = await getDeletedSiteEntries(pScope);
+    if (pv.length || pSites.length || Object.keys(pSiteDel).length) {
       libraries[pScope] = {
         sheetUrl: null, videos: pv,
         denylist: await loadDenyRecords(pScope),
-        channels: [], libraryChannels: []
+        channels: [], libraryChannels: [],
+        siteEntries: pSites, deletedSiteEntries: pSiteDel
       };
     }
     const states = {};
@@ -630,6 +718,22 @@ async function applyRemoteDoc(doc) {
     // overwrite each other forever instead of converging.
     for (const lc of chPlan.puts) {
       await putLibraryChannel({ ...lc, libraryId: libId }, { preserveTimestamp: true });
+    }
+    // v1.0.45 — approved websites, through pure planSiteApply, same order and same
+    // reasoning as the channels above: tombstones first, then the local losers, then the
+    // remote survivors with their own timestamps preserved.
+    const sitePlan = planSiteApply({
+      localRows: await listSiteEntries(libId),
+      remoteRows: lib.siteEntries || [],
+      localTombs: await getDeletedSiteEntries(libId),
+      remoteTombs: lib.deletedSiteEntries
+    });
+    await putDeletedSiteEntries(libId, sitePlan.tombs);
+    for (const entryId of sitePlan.deletes) {
+      await deleteSiteEntry(libId, entryId, { tombstone: false });
+    }
+    for (const e of sitePlan.puts) {
+      await putSiteEntry({ ...e, scopeId: libId }, { preserveTimestamp: true });
     }
   }
   // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the library data

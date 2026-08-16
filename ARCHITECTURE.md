@@ -50,12 +50,14 @@ live and how does data flow".
 | `pin.js` | SHA-256 parent PIN. v1.0.25: the hash lives in the SYNCED settings channel, so one family code opens the parent screen on every device; an existing Preferences hash is lifted across on first read (the other settings deliberately do NOT migrate) | platform, settings |
 
 Native (android/, canonical copies in native-reference/): `MainActivity.java`
-(YouTube-nav blocking, real fullscreen, popups, share onNewIntent),
-`KidsNativePlugin.java` (keepAwake, share inbox, APK installer),
-`GoogleAuthPlugin.java` (AuthorizationClient drive.file).
+(YouTube-nav blocking, real fullscreen, popups, share onNewIntent, and the site-viewer
+back/pause/resume hooks), `KidsNativePlugin.java` (keepAwake, share inbox, APK installer),
+`GoogleAuthPlugin.java` (AuthorizationClient drive.file), `KidsWebPlugin.java` (v1.0.45 —
+the restricted site viewer: the ONLY place a child's web navigation is enforced; see
+[docs/WEBSITES.md](docs/WEBSITES.md)).
 `release/android-release.gradle` = versioning + signing + play-services dep + `.dev` debug suffix.
 
-## IndexedDB schema (`kidsplayer` v1)
+## IndexedDB schema (`kidsplayer` v2)
 
 | Store | keyPath | Notes |
 |---|---|---|
@@ -68,11 +70,17 @@ Native (android/, canonical copies in native-reference/): `MainActivity.java`
 | `sources` | `profileId` | `{libraryId, shareIntent.requireApproval, defaultAutoApprove, caps…}`. `sheetUrl`/`sheetHash`/`sheetFolderId` are LEGACY fields the migration clears and never writes again — `libraryId` is the one field that must never change. |
 | `meta` | `id` | migration flag, sync timestamps, handleMap, quota:<date>, drive:{dbFileId…}, gift baselines, dedupe reports |
 | `opLog` | autoInc | mutation ops (deny/undeny/unwrap) for future merge use |
+| `siteEntries` | `[scopeId, entryId]` | v1.0.45 — approved websites, on a PROFILE scope (`prof:<id>`). ONE store, two kinds: `kind:'shortcut'` `{url,title,iconUrl}` is what the CHILD sees as a tile; `kind:'rule'` `{display,host,port,segments[],allowExternal}` is where they may navigate and is NEVER shown. `by_scope` `[scopeId,order]`. Deletion writes a tombstone FIRST into `meta['siteDel:<scope>']`. Icons ride the `thumbs` store as `siteicon:<entryId>`. |
 
 Video record: `{scopeId,key,type,id,url,srcUrl,driveId,title,titleSource(api>rss>sheet>oembed),
 normTitle,folderId,homeFolderId?,channelId,sortKey,publishedAt,rowIndex,origin(channel|sheet-row|
 manual|share-intent|legacy),state(live|pending),addedAt,approvedAt,thumbId,thumbUrl,localPath,
 mergedFrom?,updatedAt}` — ~400B, NO base64.
+
+⚠️ **The upgrade handler is version-guarded** (`if (ev.oldVersion < N)`). It ran
+unconditionally for the whole life of v1, which was harmless only while the version never
+moved: an unguarded `createObjectStore` on an existing install throws `ConstraintError`,
+aborts the version-change transaction, and the app cannot open its database at all.
 
 ## Sync pipeline (sync2.syncLibrary — one in-flight per profile)
 

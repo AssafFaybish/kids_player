@@ -1236,17 +1236,31 @@ test('a channel deletion writes its tombstone FIRST, and a move never writes one
   assert.ok(tombAt > 0, 'deleteLibraryChannel no longer writes a tombstone — deletions resurrect on the next pull');
   assert.ok(rowDelAt > tombAt,
     'the tombstone must be written BEFORE the row delete (a crash in between must keep the intent)');
-  // v1.0.38: moveScope was the other `tombstone: false` caller and is gone. The ONLY
-  // remaining one is drive.applyRemoteDoc, applying a peer's tombstone whose own `at` must
-  // be preserved — a parental deletion must never reach that branch.
+  // v1.0.38: moveScope was the other `tombstone: false` caller and is gone.
+  // v1.0.45: snapshot.js joined, DELIBERATELY — importing a snapshot applies an external
+  // document's tombstones, exactly like a Drive pull, and restamping them with Date.now()
+  // there would make this device's copy instantly newer than the peer's and the two would
+  // bump each other forever. What must never reach this branch is a PARENTAL deletion,
+  // which is why each caller is also required to write the merged map first.
   const drive = MODULES.get('www/js/drive.js');
   // CALLERS only: db.js is where the parameter is DECLARED (`{ tombstone = true }`) and
   // documented, which is not a call site.
   const falseCallers = [...CODE.entries()]
     .filter(([k, b2]) => k !== 'www/js/db.js' && /tombstone: false/.test(b2)).map(([k]) => k);
-  assert.deepEqual(falseCallers.sort(), ['www/js/drive.js'],
-    `tombstone:false must have exactly one caller (drive.applyRemoteDoc), found: ${falseCallers.join(', ')}`);
+  assert.deepEqual(falseCallers.sort(), ['www/js/drive.js', 'www/js/snapshot.js'],
+    `tombstone:false is only for APPLYING an external doc's tombstones, found: ${falseCallers.join(', ')}`);
   assert.match(drive, /tombstone: false/, 'the apply path no longer preserves a peer tombstone');
+  // Every such caller must persist the merged tombstone map BEFORE it deletes anything —
+  // otherwise "the tombstone already exists" is a claim the code does not actually honour.
+  for (const mod of falseCallers) {
+    const body = CODE.get(mod);
+    for (const [put, del] of [['putDeletedChannels(', 'tombstone: false'], ['putDeletedSiteEntries(', 'tombstone: false']]) {
+      const p = body.indexOf(put);
+      if (p < 0) continue;
+      assert.ok(p < body.indexOf(del, p) || body.indexOf(del) > p,
+        `${mod}: the merged tombstone map must be written before a ${del} delete`);
+    }
+  }
 });
 
 test('applyRemoteDoc routes libraryChannels through planChannelApply (v1.0.36)', () => {
@@ -1962,4 +1976,293 @@ test('nothing reads a Google Sheet, and nothing deletes a Drive file (v1.0.44)',
   }
   // …and the module itself must not come back
   assert.ok(!MODULES.has('www/js/sunset.js'), 'sunset.js is back — the migration was deleted on purpose');
+});
+
+/* ================= approved websites (v1.0.45) =================
+   This feature puts a BROWSER on a 5-year-old's tablet. Almost everything below pins a
+   door closed rather than a feature working — a broken feature is visible, an open door
+   is not. Each guard names what gets through if it fails. */
+
+const JAVA_PAIRS = [
+  'android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java',
+  'native-reference/KidsWebPlugin.java'
+];
+const readRepo = (p) => readFileSync(join(ROOT, p), 'utf8');
+/** Java source with comments stripped. Every positional/absence guard below MUST use
+ *  this: the comments deliberately NAME what they forbid ("verifying a PIN in Java
+ *  would be…", "MUST run before super.onCreate()"), so a guard reading raw text trips
+ *  on its own documentation. All three of these fired on comments the first time. */
+const readRepoCode = (p) => stripComments(readRepo(p));
+
+test('the URL-prefix rule lives in ONE module (v1.0.45)', () => {
+  // The whole feature's safety is one comparison. A second copy of it anywhere — an
+  // inline startsWith in a click handler, a "quick check" in the parent panel — is a
+  // second answer to "may the child go here", and the two will disagree.
+  const owners = [...CODE.entries()]
+    .filter(([k, b]) => k !== 'www/js/weblock.js' && /\b(navAllowed|subresourceAllowed|canonicalSitePrefix)\s*\(/.test(b))
+    .filter(([, b]) => !/from '\.\/weblock\.js'/.test(b) === true);
+  assert.deepEqual(owners.map(([k]) => k), [],
+    'the prefix rule is implemented outside weblock.js');
+  // and nobody may hand-roll a host/prefix comparison instead of importing it
+  for (const [k, b] of CODE.entries()) {
+    if (k === 'www/js/weblock.js') continue;
+    assert.ok(!/\.startsWith\(\s*['"]https:\/\//.test(b),
+      `${k}: a raw startsWith on an https URL is not a prefix check — use weblock`);
+  }
+});
+
+test('a site deletion writes its tombstone FIRST (v1.0.45)', () => {
+  // Absence carries no information: every Drive merge is a union, so a removed site that
+  // left only a missing row is re-added by the first peer that has not pulled yet.
+  const db = MODULES.get('www/js/db.js');
+  const at = db.indexOf('export async function deleteSiteEntry(');
+  assert.ok(at > 0, 'deleteSiteEntry not found');
+  const body = db.slice(at, db.indexOf('\n}\n', at));
+  const tomb = body.indexOf('putDeletedSiteEntries');
+  const del = body.indexOf('s.delete([scopeId, entryId])');
+  assert.ok(tomb > 0, 'deleteSiteEntry writes no tombstone — removed sites come back on the next pull');
+  assert.ok(del > tomb, 'the tombstone must be written BEFORE the row delete');
+});
+
+test('applyRemoteDoc routes site entries through planSiteApply (v1.0.45)', () => {
+  const drive = CODE.get('www/js/drive.js');
+  assert.match(drive, /planSiteApply\(\{/, 'the apply path no longer uses the pure planner');
+  assert.match(drive, /putDeletedSiteEntries\(libId, sitePlan\.tombs\)/,
+    'the merged tombstone map must be adopted, or an interrupted apply forgets it');
+  assert.match(drive, /preserveTimestamp: true/,
+    'an applied remote row must keep the winner\'s timestamp or two devices ping-pong');
+});
+
+test('EVERY createObjectStore sits behind an oldVersion guard (v1.0.45)', () => {
+  // An unguarded store creation on a bumped DB_VERSION throws ConstraintError, aborts the
+  // version-change transaction and leaves the app unable to open its database AT ALL —
+  // on every installed device. Verified in the browser: it really does throw.
+  const db = MODULES.get('www/js/db.js');
+  const at = db.indexOf('req.onupgradeneeded');
+  const end = db.indexOf('req.onsuccess', at);
+  const body = db.slice(at, end);
+  assert.match(body, /\(ev\)\s*=>/, 'the upgrade handler must receive the event to read oldVersion');
+  const guards = [...body.matchAll(/if \(from < (\d+)\)/g)].map((m) => Number(m[1]));
+  assert.ok(guards.length >= 2, 'expected one oldVersion block per schema version');
+  // every createObjectStore must come AFTER the first guard opens
+  const firstGuard = body.indexOf('if (from <');
+  for (const m of body.matchAll(/createObjectStore\(/g)) {
+    assert.ok(m.index > firstGuard,
+      'a createObjectStore sits outside an oldVersion guard — this BRICKS every existing install');
+  }
+});
+
+test('the site collection travels in BOTH buildLocalDoc branches (v1.0.45)', () => {
+  // Sites are PROFILE-scoped, and the prof: pseudo-library is built by a separate, thinner
+  // branch that already omits deletedChannels. Carrying the collection in only the library
+  // branch means the sites sync NOWHERE, silently, while every local screen looks right.
+  const drive = CODE.get('www/js/drive.js');
+  const at = drive.indexOf('async function buildLocalDoc');
+  const body = drive.slice(at, drive.indexOf('\n}\n', at));
+  const hits = [...body.matchAll(/siteEntries:/g)];
+  assert.ok(hits.length >= 2,
+    'only one buildLocalDoc branch carries siteEntries — the profile-scoped ones would never sync');
+  assert.match(body, /listSiteEntries\(pScope\)/, 'the prof: branch must read the real rows');
+  // and the blob must be built even when the profile has no personal VIDEOS
+  assert.match(body, /pv\.length \|\| pSites\.length/,
+    'the prof: blob is gated on videos alone — a child with only websites would sync nothing');
+});
+
+test('the scheduled lock CLOSES the site viewer before it renders (v1.0.45)', () => {
+  // The viewer is a native view over the whole app, so nav.reset('locked') would swap the
+  // screen UNDERNEATH it and the child would keep browsing with the lock invisible.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function showLockedScreen()');
+  const body = stripComments(app.slice(at, app.indexOf('\n}\n', at)));
+  const close = body.indexOf('closeSiteViewer()');
+  const reset = body.indexOf("nav.reset('locked')");
+  assert.ok(close > 0, 'the lock no longer closes the site viewer — screen time stops applying to browsing');
+  assert.ok(reset > close, 'the viewer must be closed BEFORE the locked view is shown');
+});
+
+test('the idle timer counts while a site is open, and its input comes from native (v1.0.45)', () => {
+  // Taps inside a native WebView never reach this window, so without the bridge event the
+  // idle timer either never fires (viewer not counted) or fires on an active child.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /playing: !!\(st && st\.playing\) \|\| siteViewerOpen/,
+    'tickIdleSleep ignores an open site viewer — the screen-off timer is off while browsing');
+  assert.match(app, /onSiteEvent\('webActivity'/,
+    'nothing feeds idleLastInputAt from the viewer — a browsing child looks idle');
+  assert.match(app, /onSiteEvent\('webClosed'/,
+    'siteViewerOpen would stay true forever after the viewer closes');
+});
+
+test('the child sees SHORTCUTS only, never the navigation rules (v1.0.45)', () => {
+  // A rule may be a sub-path or a different site entirely. Rendering rules as tiles would
+  // put things on the child's screen the parent never pictured them opening.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /kind === 'shortcut'/, 'siteShortcuts no longer filters by kind');
+  const at = app.indexOf('function renderSitesView()');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /siteShortcuts\(\)/,
+    'the child grid must render siteShortcuts(), not the whole entry list');
+  assert.ok(!/siteRules\(\)/.test(body), 'the child grid renders navigation rules as tiles');
+});
+
+test('the launcher is gated on the setting AND a shortcut AND not-TV (v1.0.45)', () => {
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf('async function refreshSitesLauncher()');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /sitesEnabledCache/, 'the parent toggle no longer hides the button');
+  assert.match(body, /siteShortcuts\(\)\.length > 0/,
+    'a button that opens an empty grid is the v1.0.21 bug');
+  assert.match(body, /classList\.contains\('tv'\)/, 'the feature must stay hidden on Android TV');
+  assert.match(body, /await loadSiteEntries\(\)/,
+    'reading a cache here means a peer\'s change is invisible until the profile is switched');
+});
+
+test('parent mode is unreachable from anything the child can touch (v1.0.45)', () => {
+  // parentMode navigates WITHOUT restriction. It exists so a parent can complete an SSO
+  // login behind the PIN; a path to it from the child's side would be the whole feature
+  // undone in one tap.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /parentMode: false/, 'the child path must pass parentMode: false explicitly');
+  const kid = app.slice(app.indexOf('async function openSiteForKid'), app.indexOf('async function openSiteForParent'));
+  assert.ok(!/parentMode: true/.test(kid), 'the CHILD path can open an unrestricted viewer');
+  // and the only caller of the parent path is the parent panel row
+  const parentCalls = (app.match(/openSiteForParent\(/g) || []).length - 1;
+  assert.ok(parentCalls <= 2, `openSiteForParent has ${parentCalls} call sites — each one must be behind the PIN`);
+});
+
+test('the PIN is never verified in Java (v1.0.45)', () => {
+  // A second implementation of the one check that guards the whole parent surface. The
+  // native side asks JS to take over (webAddRequest) and JS runs the real startPin.
+  for (const p of JAVA_PAIRS) {
+    const code = readRepoCode(p);
+    assert.ok(!/\bpin\b/i.test(code.replace(/kidsweb/gi, '')),
+      `${p}: the native side must not know anything about the parent code`);
+    assert.match(code, /webAddRequest/, `${p}: no way to hand a blocked page back to the parent`);
+  }
+});
+
+test('the site viewer closes every escape, in BOTH java copies (v1.0.45)', () => {
+  // Each of these is a one-gesture way out of the approved set for a child who is simply
+  // exploring. They are listed with the door they close.
+  const required = [
+    ['shouldOverrideUrlLoading', 'navigation outside the approved rules'],
+    ['shouldInterceptRequest', 'ads, trackers and embedded third-party players'],
+    ['setDownloadListener', 'downloading an APK'],
+    ['onCreateWindow', 'target=_blank and window.open'],
+    ['onPermissionRequest', 'camera and microphone'],
+    ['onGeolocationPermissionsShowPrompt', 'location'],
+    ['setOnLongClickListener', 'the long-press "open in new tab" menu'],
+    ['startActionMode', 'text selection → "Web search" (launches another app)'],
+    ['setAllowFileAccess(false)', 'file:// browsing'],
+    ['MIXED_CONTENT_NEVER_ALLOW', 'http content inside an https page'],
+    ['setAcceptThirdPartyCookies', 'cross-site tracking cookies'],
+    ['CookieManager.getInstance().flush', 'losing the parent\'s login on every process kill']
+  ];
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    for (const [needle, door] of required) {
+      assert.ok(body.includes(needle), `${p}: ${needle} is gone — ${door} is open`);
+    }
+    // https ONLY: intent:// market:// tel: mailto: all leave the app entirely
+    assert.match(body, /"https"\.equals\(u\.getScheme\(\)\)/,
+      `${p}: the scheme gate is gone — intent:// would launch another app`);
+    assert.match(body, /getUserInfo\(\) != null/,
+      `${p}: https://good.com@evil.com/ defeats a host check without this`);
+    assert.match(body, /"\.\.".equals\(seg\)/,
+      `${p}: %2e%2e arrives DECODED and would climb out of the allowed section`);
+  }
+});
+
+test('MainActivity wires the viewer into back and the lifecycle, in BOTH copies (v1.0.45)', () => {
+  for (const p of [
+    'android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java',
+    'native-reference/MainActivity.java'
+  ]) {
+    const body = readRepoCode(p);
+    assert.match(body, /registerPlugin\(KidsWebPlugin\.class\)/, `${p}: the plugin is not registered`);
+    const reg = body.indexOf('registerPlugin(KidsWebPlugin.class)');
+    const sup = body.indexOf('super.onCreate(');
+    assert.ok(reg < sup, `${p}: plugins must register BEFORE super.onCreate()`);
+    assert.match(body, /KidsWebPlugin\.handleBack\(\)/,
+      `${p}: hardware back would navigate the app hidden UNDER the site`);
+    assert.match(body, /KidsWebPlugin\.onActivityPause\(\)/,
+      `${p}: a site's audio would keep playing after the screen-off button (v1.0.32)`);
+  }
+});
+
+test('the native pair is byte-identical (v1.0.45)', () => {
+  // The manifest drifted for three releases because no test compared a pair; a rebuild
+  // from native-reference would have shipped an APK with no Android TV support.
+  for (const [a, b] of [
+    ['android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java', 'native-reference/KidsWebPlugin.java'],
+    ['android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java', 'native-reference/MainActivity.java'],
+    ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']
+  ]) {
+    assert.equal(readRepo(a), readRepo(b), `${a} and ${b} have drifted — disaster recovery would ship the wrong app`);
+  }
+});
+
+/* ---- v1.0.45 review findings, each pinned so it cannot come back ---- */
+
+test('a parent approval from the CHILD\'s blocked page reopens in CHILD mode (v1.0.45)', () => {
+  // The severe one. That flow starts on the child's screen: the parent leans over, types
+  // the code, approves, and hands the tablet back. Reopening in parentMode — which
+  // navigates WITHOUT restriction — left that child holding a free browser, i.e. the
+  // feature undone by the act of fixing it.
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf('async function askSiteRuleGrain');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.ok(!/openSiteForParent\(/.test(body),
+    'the blocked-page approval reopens in PARENT mode — the child gets an unrestricted browser');
+  assert.match(body, /reopenForKid\(/, 'the approval must hand the page back in child mode');
+  const reopen = app.slice(app.indexOf('async function reopenForKid'), app.indexOf('async function openSiteForParent'));
+  assert.match(reopen, /parentMode: false/, 'reopenForKid must be explicit about the mode');
+});
+
+test('parent mode does not survive an absence (v1.0.45)', () => {
+  // It navigates unrestricted, so a tablet put down mid-login and picked up by the child
+  // would be a free browser. Closing on PAUSE would be wrong (hopping to a password
+  // manager is the commonest thing a parent does mid-login), so it expires on resume.
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    assert.match(body, /PARENT_MODE_GRACE_MS/, `${p}: parent mode never expires`);
+    const at = body.indexOf('static void onActivityResume');
+    const fn = body.slice(at, body.indexOf('\n    }', at));
+    assert.match(fn, /parentMode/, `${p}: resume does not consider parent mode`);
+    assert.match(fn, /closeOverlay\(\)/, `${p}: an abandoned parent session is never closed`);
+  }
+});
+
+test('the modal helpers are never called positionally (v1.0.45)', () => {
+  // confirmKid/askKid/alertKid take an OPTIONS object. A positional call is not a syntax
+  // error and not a crash — it silently renders the default dialog: "❓", no title, no
+  // text. One shipped in this feature's own error path and only a read caught it.
+  for (const [k, b] of CODE.entries()) {
+    const bad = [...b.matchAll(/\b(alertKid|confirmKid|askKid)\(\s*['"`]/g)].map((m) => m[1]);
+    assert.deepEqual(bad, [],
+      `${k}: ${bad.join(', ')} called with a string — the dialog renders EMPTY`);
+  }
+});
+
+test('the site probe is bounded, and the constant has a consumer (v1.0.45)', () => {
+  // "A constant with no consumer is a lie" (v1.0.37). And without the bound a hanging
+  // host leaves the parent on "בודקים את הכתובת…" with no way out — httpRequest has no
+  // timeout of its own. Measured in the browser: the flow now completes in ~8s.
+  const cfg = CODE.get('www/js/config.js');
+  assert.match(cfg, /SITE_PROBE_TIMEOUT_MS/, 'the timeout constant is gone');
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /SITE_PROBE_TIMEOUT_MS/, 'nothing consumes the probe timeout');
+  const at = app.indexOf('async function probeSite');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /Promise\.race/, 'probeSite awaits the network with no bound');
+});
+
+test('one site add at a time (v1.0.45)', () => {
+  // Two taps ran two probes and raised two confirms; the modal swallows the second and
+  // reports it as a cancel, so the parent's second tap silently did nothing.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /siteAddBusy/, 'the add button is not latched against a double tap');
+  const at = app.indexOf('async function addSiteFromInput');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /if \(siteAddBusy\) return;/, 'the latch is not checked');
+  assert.match(body, /finally/, 'a throw would leave the add button disabled forever');
 });

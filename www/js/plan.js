@@ -1417,7 +1417,7 @@ export function attentionDot({ pending = 0, updateReady = false } = {}) {
 }
 
 /** The parent screen's tabs, in order. app.js renders from this list. */
-export const PARENT_TAB_IDS = ['about', 'approve', 'add', 'sources', 'settings'];
+export const PARENT_TAB_IDS = ['about', 'approve', 'add', 'sources', 'sites', 'settings'];
 
 /**
  * v1.0.24 — PURE: which parent-screen tab opens?
