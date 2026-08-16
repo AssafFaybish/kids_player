@@ -1398,7 +1398,7 @@ async function addSiteRule(canon, { allowExternal = false } = {}) {
  * and then block the first link the child taps, which reads as a broken site rather than
  * as a setting they never made.
  */
-async function addSiteShortcut(url, { title = '', iconUrl = '' } = {}) {
+async function addSiteShortcut(url, { title = '', iconUrl = '', allowExternal = false } = {}) {
   const scope = siteScope();
   if (!scope) return { ok: false, message: 'אין פרופיל פעיל' };
   const canon = canonicalSitePrefix(url);
@@ -1411,7 +1411,10 @@ async function addSiteShortcut(url, { title = '', iconUrl = '' } = {}) {
   });
   await loadSiteEntries();
   const ruleId = ruleIdFor(canon);
-  if (!siteEntries.some((e) => e.entryId === ruleId)) await addSiteRule(canon);
+  // The auto-created rule inherits the parent's answer — otherwise they would say "yes,
+  // allow external content" and the rule that actually governs the page would still be
+  // strict, which reads as the answer being ignored.
+  if (!siteEntries.some((e) => e.entryId === ruleId)) await addSiteRule(canon, { allowExternal });
   maybeSchedulePush();
   return { ok: true, canon };
 }
@@ -2871,19 +2874,35 @@ async function runSiteAdd(kind, raw, inputId, msg) {
   // section → its index) otherwise saves a rule that matches nothing the child reaches,
   // and the feature looks broken for a reason the parent cannot see.
   const changed = finalCanon.display !== canon.display;
-  const ok = await confirmKid({
+  // ONE dialog, three answers (the v1.0.23 three-way pattern). The external-content
+  // decision is asked HERE rather than left to a toggle further down the panel, because
+  // it is decided per site and the parent is thinking about that site right now — and
+  // because a site whose videos will not play looks broken long before anyone goes
+  // hunting for a switch. Embedded players are named explicitly: they are third-party
+  // resources, so the strict answer is precisely what stops a YouTube embed loading.
+  //
+  // The SAFE answer is the primary button; an accidental dismiss adds nothing at all.
+  const answer = await askKid({
     emoji: kind === 'shortcut' ? '🌐' : '🔒',
     title: kind === 'shortcut' ? 'להוסיף את האתר?' : 'לאשר את הכתובת?',
     text: (changed ? 'הכתובת מפנה אל:\n' : '') + finalCanon.display
       + (kind === 'shortcut' ? '\n\nהילד יוכל לגלוש בכל הכתובות שמתחילות כך.' : '')
+      + '\n\nתוכן חיצוני = סרטונים מוטמעים, תמונות ופרסומות מאתרים אחרים.'
+      + '\nבלעדיו בטוח יותר, אבל ייתכן שסרטונים לא יתנגנו וחלקים מהדף יחסרו.'
+      + '\nאפשר לשנות בכל רגע ברשימת האתרים המורשים.',
+    ok: 'הוספה — בלי תוכן חיצוני',
+    third: 'הוספה — עם תוכן חיצוני',
+    cancel: 'ביטול'
   });
-  if (!ok) { msg.textContent = ''; return; }
+  if (answer !== 'ok' && answer !== 'third') { msg.textContent = ''; return; }
+  const allowExternal = answer === 'third';
   const res = kind === 'shortcut'
-    ? await addSiteShortcut(probe.url, { title: probe.title, iconUrl: probe.iconUrl })
-    : await addSiteRule(finalCanon);
+    ? await addSiteShortcut(probe.url, { title: probe.title, iconUrl: probe.iconUrl, allowExternal })
+    : await addSiteRule(finalCanon, { allowExternal });
   if (!res.ok) { msg.textContent = res.message; msg.className = 'form-msg err'; return; }
   $(inputId).value = '';
-  msg.textContent = kind === 'shortcut' ? 'האתר נוסף ✅' : 'הכתובת אושרה ✅';
+  msg.textContent = (kind === 'shortcut' ? 'האתר נוסף ✅' : 'הכתובת אושרה ✅')
+    + (allowExternal ? ' (עם תוכן חיצוני)' : ' (בלי תוכן חיצוני)');
   msg.className = 'form-msg ok';
   await refreshSitesPanel();
   await refreshSitesLauncher();
