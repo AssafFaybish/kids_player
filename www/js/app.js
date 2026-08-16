@@ -11,7 +11,10 @@ import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, putSetting } from './settings.js';
 import { playItem, stop, playbackState, pauseCurrent } from './player.js';
 import { clearCache } from './media.js';
-import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove } from './platform.js';
+import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
+  siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent } from './platform.js';
+import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
+  extractSiteIconFromHtml } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
@@ -230,6 +233,11 @@ async function tickScheduledLock() {
 async function showLockedScreen() {
   const e = await evalActiveLock();
   if (e.phase !== 'locked') return;
+  // v1.0.45 — CLOSE THE SITE VIEWER FIRST. It is a native view laid OVER the whole app,
+  // so `nav.reset('locked')` below would swap the screen underneath it and the child
+  // would keep browsing with the lock invisible behind them. This is the one wiring step
+  // that decides whether the browser respects screen time at all.
+  if (siteViewerOpen) { await closeSiteViewer(); siteViewerOpen = false; }
   // v1.0.31: NEVER slam the lock over the parent mid-configuration. The parent screen and
   // its PIN sit behind the code, so a child is not there — and locking a parent out of the
   // very screen where they set the timer would be absurd. The next tick (or their return to
@@ -320,11 +328,25 @@ async function tickIdleSleep() {
   const afterMin = screenOffMinutes(
     await getSetting(pid, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN);
   const st = playbackState();
+  // v1.0.45 — a browsing session counts as "in use" too, or the idle timer is simply off
+  // for the whole time a child sits in a website. The viewer reports activity through the
+  // `webActivity` event, since its taps never reach this window's capture listeners.
   const phase = evalIdleSleep({
     lastInputAt: idleLastInputAt, promptAt: idlePromptAt, afterMin,
-    playing: !!(st && st.playing), promptSec: SCREEN_OFF_PROMPT_SEC
+    playing: !!(st && st.playing) || siteViewerOpen, promptSec: SCREEN_OFF_PROMPT_SEC
   });
   if (phase === 'prompt') {
+    // The "עדיין צופים?" overlay lives inside #player-wrap, i.e. UNDER the native site
+    // view — asking a question nobody can see would just be a silent countdown. For a
+    // site we skip straight to closing it: after this long with no touch at all the child
+    // is not there, and back in the app the usual timers and the device's own display
+    // timeout take over.
+    if (siteViewerOpen) {
+      await closeSiteViewer();
+      siteViewerOpen = false;
+      idleLastInputAt = Date.now();
+      return;
+    }
     if (!idlePromptAt) { idlePromptAt = Date.now(); $('idle-prompt').classList.remove('hidden'); }
     return;
   }
@@ -785,6 +807,9 @@ function registerViews() {
   // same scroll (nav restores it after the double-rAF).
   nav.register('folder', { onEnter: () => { if (folderId) renderFolderView().catch(() => {}); } });
   nav.register('search', {}); // default pop → home; watch pushed on top returns here
+  // v1.0.45: the websites grid re-renders on entry so a site removed in the parent screen
+  // (or arriving from another device) is gone the moment the child comes back to it.
+  nav.register('sites', { onEnter: () => { renderSitesView(); } });
   nav.register('watch', {
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
@@ -1114,6 +1139,315 @@ function mountFolderArt(host, src, fallbackEmoji) {
   host.appendChild(img);
 }
 
+/* ==================== approved websites (v1.0.45) ====================
+ * The child taps a SHORTCUT tile and the site opens in a native WebView laid over the
+ * app; where they may navigate from there is decided by the RULES, which are never shown
+ * as tiles (a rule is often a sub-path, or a different site entirely).
+ *
+ * Everything is scoped to the PROFILE, so two children on one account never inherit each
+ * other's browsing surface. The whole viewer is device-only: the enforcement point is
+ * `shouldOverrideUrlLoading` in the native plugin, and no browser API can stand in for it.
+ */
+let siteEntries = [];      // the active profile's rows (both kinds)
+let siteViewerOpen = false;
+let siteBlockedRecent = []; // {url, at} — surfaced in the parent panel, newest first
+let sitesEnabledCache = true;
+
+const siteScope = () => (activeProfileId ? db.profScope(activeProfileId) : null);
+const siteShortcuts = () => siteEntries.filter((e) => e && e.kind === 'shortcut')
+  .sort((a, b) => (a.order || 0) - (b.order || 0));
+const siteRules = () => siteEntries.filter((e) => e && e.kind === 'rule');
+/** The shape the native side enforces on — already canonical, never re-parsed there. */
+const siteRulePayload = () => siteRules().map((r) => ({
+  host: r.host, port: r.port || 443, segments: r.segments || [], allowExternal: !!r.allowExternal
+}));
+
+async function loadSiteEntries() {
+  const scope = siteScope();
+  siteEntries = scope ? await db.listSiteEntries(scope) : [];
+  try {
+    sitesEnabledCache = activeProfileId
+      ? (await getSetting(activeProfileId, 'sitesEnabled', true)) !== false
+      : true;
+  } catch { sitesEnabledCache = true; }
+  return siteEntries;
+}
+
+/**
+ * The home launcher is shown only when the parent left the setting ON *and* there is at
+ * least one shortcut — a button that opens an empty grid is the v1.0.21 bug — and never
+ * on TV, where a remote cannot drive an arbitrary website (the parent tab still can).
+ *
+ * It RE-READS rather than trusting the cache, because both inputs travel: the setting and
+ * the entries sync, so a parent who turns the button off (or adds a site) on the phone
+ * must see the tablet agree on its next home render. Measured in the browser: with the
+ * cached version a peer's change did not take effect until the profile was switched.
+ * Fire-and-forget from renderHome, like refreshGateDot — a few indexed rows, and the grid
+ * must never wait on it.
+ */
+async function refreshSitesLauncher() {
+  const btn = $('sites-open');
+  if (!btn) return;
+  await loadSiteEntries();
+  // `html.tv` is stamped once at boot (init), so this stays a synchronous read.
+  const onTv = document.documentElement.classList.contains('tv');
+  const show = sitesEnabledCache && siteShortcuts().length > 0 && !onTv;
+  btn.classList.toggle('hidden', !show);
+}
+
+/* --- the icon byte-cache: the v1.0.32 channel-logo mechanism, own keyspace ---
+   Deliberately NOT resolveLogo: that one stamps `logofail:<id>`, which the channel sync
+   reads to decide whether to re-scrape a YouTube avatar. Feeding it site ids would put
+   rows it will never understand into a channel-only signal. */
+const siteIconUrls = new Map();   // entryId -> objUrl
+const siteIconFetching = new Set();
+
+async function resolveSiteIcon(entryId, iconUrl, img, host, emoji) {
+  if (!entryId) return;
+  let objUrl = siteIconUrls.get(entryId);
+  if (!objUrl) {
+    const rec = await db.getThumbRecord('siteicon:' + entryId);
+    if (rec && rec.blob) {
+      objUrl = URL.createObjectURL(rec.blob);
+      siteIconUrls.set(entryId, objUrl);
+      db.touchThumbs(['siteicon:' + entryId]).catch(() => {}); // used icons never LRU out
+    }
+  }
+  if (objUrl) {
+    // Re-mount when onerror already swapped the emoji in (the showLogo lesson).
+    if (!img.isConnected && host && host.isConnected) { host.textContent = ''; host.appendChild(img); }
+    if (img.isConnected) img.src = objUrl;
+    return;
+  }
+  if (!iconUrl || siteIconFetching.has(entryId)) return;
+  siteIconFetching.add(entryId);
+  try {
+    const { httpGetBlob } = await import('./platform.js');
+    const blob = await httpGetBlob(iconUrl);
+    if (blob && blob.size > 0) {
+      await db.putThumb('siteicon:' + entryId, blob, { origin: 'siteicon', srcUrl: iconUrl });
+      const u = URL.createObjectURL(blob);
+      siteIconUrls.set(entryId, u);
+      if (!img.isConnected && host && host.isConnected) { host.textContent = ''; host.appendChild(img); }
+      if (img.isConnected) img.src = u;
+    }
+  } catch { /* the 🌐 fallback is already on screen */ }
+  finally { siteIconFetching.delete(entryId); }
+}
+
+function mountSiteIcon(host, rec, emoji = '🌐') {
+  const img = document.createElement('img');
+  img.alt = '';
+  img.onerror = () => { img.remove(); if (!host.firstChild) host.textContent = emoji; };
+  const cached = siteIconUrls.get(rec.entryId);
+  if (cached) { img.src = cached; host.appendChild(img); }
+  else host.textContent = emoji;
+  resolveSiteIcon(rec.entryId, rec.iconUrl || null, img, host, emoji).catch(() => {});
+}
+
+function siteTile(rec) {
+  const btn = document.createElement('button');
+  btn.className = 'tile tile-folder tile-site';
+  const logo = document.createElement('span');
+  logo.className = 'folder-logo';
+  mountSiteIcon(logo, rec);
+  btn.appendChild(logo);
+  const name = document.createElement('span');
+  name.className = 'folder-name';
+  name.textContent = rec.title || rec.url || 'אתר';
+  btn.appendChild(name);
+  btn.addEventListener('click', () => { openSiteForKid(rec).catch(() => {}); });
+  return btn;
+}
+
+function renderSitesView() {
+  const grid = $('sites-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const list = siteShortcuts();
+  for (const rec of list) grid.appendChild(siteTile(rec));
+  $('sites-empty').classList.toggle('hidden', list.length > 0);
+}
+
+async function openSitesView() {
+  await loadSiteEntries();
+  renderSitesView();
+  nav.go('sites');
+}
+
+/* The browser preview has no native WebView, and standing in with an <iframe> would be a
+   lie — an iframe cannot enforce the prefix at all. Say so instead of half-working. */
+function siteViewerUnavailableNote() {
+  return alertKid({
+    emoji: '🌐', title: 'אתרי אינטרנט',
+    text: 'פתיחת אתרים עובדת באפליקציה על הטאבלט, לא בתצוגה המקדימה בדפדפן.'
+  });
+}
+
+/** Open one site for the CHILD: every rule applies, and the screen-time clock arms. */
+async function openSiteForKid(rec) {
+  if (!rec || !rec.url) return;
+  if (!siteViewerAvailable()) {
+    // The browser preview has no native WebView, and faking one with an iframe would be
+    // a lie: an iframe cannot enforce the prefix at all. Say so instead.
+    await siteViewerUnavailableNote();
+    return;
+  }
+  // The lock counts a browsing session exactly like a video session (openWatch does this).
+  await armScheduledLock();
+  idleLastInputAt = Date.now();
+  const ok = await openSiteViewer({
+    url: rec.url, rules: siteRulePayload(), title: rec.title || '', parentMode: false
+  });
+  if (ok) siteViewerOpen = true;
+}
+
+/** Open for the PARENT: navigation unrestricted, so an SSO login can complete. */
+async function openSiteForParent(url, title) {
+  if (!siteViewerAvailable()) {
+    await siteViewerUnavailableNote();
+    return;
+  }
+  const ok = await openSiteViewer({ url, rules: siteRulePayload(), title: title || '', parentMode: true });
+  if (ok) siteViewerOpen = true;
+}
+
+/**
+ * A blocked page, turned into a fix. The child sees a calm message and stays put; the
+ * discreet "הורים" button asks the native side to hand control back here, and THIS is
+ * where the code is checked — a PIN must never be verified in Java, because that would
+ * be a second implementation of the one check that protects the whole parent surface.
+ */
+async function onSiteAddRequest(url) {
+  await closeSiteViewer();
+  siteViewerOpen = false;
+  const cands = ruleCandidatesFor(url);
+  if (!cands.ok) { await alertKid('🚫', 'כתובת לא נתמכת', 'האפליקציה תומכת רק בכתובות https.'); return; }
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    replace: true, title: 'קוד הורים כדי לאשר את הדף',
+    onSuccess: () => { askSiteRuleGrain(url, cands).catch(() => {}); }
+  });
+}
+
+/**
+ * Which slice of the site does the parent mean to allow? NEVER guess "the whole site":
+ * the child hit one link, and silently opening a whole domain is more than was asked.
+ * The default is the narrowest grain that still leaves the site usable (its section), and
+ * the whole site is the deliberate second button. A single page can be added by pasting
+ * its exact address in the panel — offering it here would just block the next tap.
+ */
+async function askSiteRuleGrain(url, cands) {
+  const opts = cands.options;
+  const def = opts[cands.defaultIndex];
+  const wide = opts.find((o) => o.label === 'whole-site');
+  const answer = await askKid({
+    emoji: '🔓',
+    title: 'לאשר את הדף לילד?',
+    text: url + '\n\nמה לאשר?',
+    ok: (def.label === 'whole-site' ? 'כל האתר' : def.label === 'section' ? 'החלק הזה באתר' : 'הדף הזה') +
+      ' — ' + def.canon.display,
+    third: (wide && wide !== def) ? 'כל האתר — ' + wide.canon.display : '',
+    cancel: 'ביטול'
+  });
+  const chosen = answer === 'ok' ? def : answer === 'third' ? wide : null;
+  if (!chosen) return;
+  const res = await addSiteRule(chosen.canon);
+  toast(res.ok ? 'האתר אושר ✅' : res.message);
+  await refreshSitesPanel();
+  // Straight back to the page they were on — a fix that dumps the parent somewhere else
+  // makes them redo the navigation just to check it worked.
+  if (res.ok) await openSiteForParent(url, '');
+}
+
+/* --- writes (all three add doors funnel through these two) --- */
+
+async function addSiteRule(canon, { allowExternal = false } = {}) {
+  const scope = siteScope();
+  if (!scope) return { ok: false, message: 'אין פרופיל פעיל' };
+  const entryId = ruleIdFor(canon);
+  if (siteEntries.some((e) => e.entryId === entryId)) return { ok: false, message: 'הכתובת כבר מאושרת' };
+  await db.putSiteEntry({
+    scopeId: scope, entryId, kind: 'rule', display: canon.display, host: canon.host,
+    port: canon.port, segments: canon.segments, allowExternal: !!allowExternal,
+    order: siteEntries.length, addedAt: Date.now()
+  });
+  await loadSiteEntries();
+  maybeSchedulePush();
+  return { ok: true };
+}
+
+/**
+ * Add a shortcut — and the matching RULE with it. Without the rule the tile would open
+ * and then block the first link the child taps, which reads as a broken site rather than
+ * as a setting they never made.
+ */
+async function addSiteShortcut(url, { title = '', iconUrl = '' } = {}) {
+  const scope = siteScope();
+  if (!scope) return { ok: false, message: 'אין פרופיל פעיל' };
+  const canon = canonicalSitePrefix(url);
+  if (!canon.ok) return { ok: false, message: siteUrlError(canon.reason) };
+  const entryId = shortcutIdFor(url);
+  if (siteEntries.some((e) => e.entryId === entryId)) return { ok: false, message: 'האתר כבר ברשימה' };
+  await db.putSiteEntry({
+    scopeId: scope, entryId, kind: 'shortcut', url, title: title || canon.host,
+    iconUrl: iconUrl || '', order: siteEntries.length, addedAt: Date.now()
+  });
+  await loadSiteEntries();
+  const ruleId = ruleIdFor(canon);
+  if (!siteEntries.some((e) => e.entryId === ruleId)) await addSiteRule(canon);
+  else await loadSiteEntries();
+  maybeSchedulePush();
+  return { ok: true, canon };
+}
+
+async function removeSiteEntry(entryId) {
+  const scope = siteScope();
+  if (!scope) return;
+  await db.deleteSiteEntry(scope, entryId);
+  await loadSiteEntries();
+  maybeSchedulePush();
+}
+
+/** The refusal reasons, in the parent's words. */
+function siteUrlError(reason) {
+  if (reason === 'empty') return 'צריך להזין כתובת';
+  if (reason === 'scheme') return 'רק כתובות https נתמכות (מטעמי בטיחות)';
+  if (reason === 'host') return 'הכתובת לא נראית תקינה';
+  if (reason === 'path') return 'הכתובת מכילה תווים שאינם נתמכים';
+  return 'הכתובת לא נראית תקינה';
+}
+
+/**
+ * Follow the address the parent typed to where it ACTUALLY lands, and read the page's
+ * own title and icon on the way. A parent who pastes `example.com/kids/` on a site that
+ * redirects to `www.` or into a different path would otherwise save a rule that matches
+ * nothing the child can reach — the commonest way this feature can look broken.
+ * Best-effort: an unreachable site is still addable, just without a title or a picture.
+ */
+async function probeSite(rawUrl) {
+  const canon = canonicalSitePrefix(rawUrl);
+  if (!canon.ok) return { ok: false, reason: canon.reason };
+  const start = canon.display;
+  try {
+    const { httpRequest } = await import('./platform.js');
+    const res = await httpRequest({ url: start, responseType: 'text' });
+    const finalUrl = (res && res.url) || start;
+    const finalCanon = canonicalSitePrefix(finalUrl);
+    const html = typeof res?.data === 'string' ? res.data : '';
+    const m = html.match(/<title[^>]*>([\s\S]{0,300}?)<\/title>/i);
+    const title = m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    return {
+      ok: true,
+      canon: finalCanon.ok ? finalCanon : canon,
+      url: finalCanon.ok ? finalCanon.display : start,
+      title,
+      iconUrl: extractSiteIconFromHtml(html, finalCanon.ok ? finalCanon.display : start)
+    };
+  } catch {
+    return { ok: true, canon, url: start, title: '', iconUrl: '' };
+  }
+}
+
 function folderTile(f) {
   const btn = document.createElement('button');
   btn.className = 'tile tile-folder' + (f.isNew ? ' folder-new' : '');
@@ -1351,6 +1685,10 @@ async function renderHome() {
 
   refreshGateDot(); // fire-and-forget — the red dot must never delay the grid
   refreshRecoveryBanner(); // same: the grid must never wait on a Preferences read
+  // v1.0.45: BEFORE the empty-library early return below — a family may have approved
+  // websites and no videos at all, and hiding their only content behind "עדיין אין
+  // סרטונים" would be the app forgetting half of what the parent set up.
+  refreshSitesLauncher().catch(() => {});
 
   const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
@@ -2342,6 +2680,180 @@ async function refreshSourcesPanel() {
   await refreshWindowBox().catch(() => {});
 }
 
+/* ---------------- the אתרים tab (v1.0.45) ---------------- */
+
+function siteRow({ title, sub, onDelete, buttons = [], icon = null }) {
+  const li = document.createElement('li');
+  li.className = 'parent-row';
+  if (icon) {
+    const host = document.createElement('span');
+    host.className = 'li-thumb';
+    host.style.cssText = 'width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#fff;overflow:hidden;font-size:22px';
+    mountSiteIcon(host, icon);
+    li.appendChild(host);
+  }
+  const body = document.createElement('div');
+  body.className = 'li-body';
+  const t = document.createElement('div');
+  t.className = 'li-title';
+  t.textContent = title;
+  body.appendChild(t);
+  if (sub) {
+    const s = document.createElement('div');
+    s.className = 'li-note';
+    s.textContent = sub;
+    body.appendChild(s);
+  }
+  li.appendChild(body);
+  const btns = document.createElement('div');
+  btns.className = 'row-btns';
+  for (const b of buttons) {
+    const el = document.createElement('button');
+    el.className = 'btn btn-small';
+    el.type = 'button';
+    el.textContent = b.label;
+    el.addEventListener('click', b.onClick);
+    btns.appendChild(el);
+  }
+  if (onDelete) {
+    const del = document.createElement('button');
+    del.className = 'btn btn-small';
+    del.type = 'button';
+    del.textContent = '🗑️';
+    del.addEventListener('click', onDelete);
+    btns.appendChild(del);
+  }
+  li.appendChild(btns);
+  return li;
+}
+
+async function refreshSitesPanel() {
+  if (!$('panel-sites')) return;
+  await loadSiteEntries();
+  $('sites-enabled').checked = sitesEnabledCache;
+  $('sites-off-note').classList.toggle('hidden', sitesEnabledCache);
+  $('sites-body').classList.toggle('hidden', !sitesEnabledCache);
+
+  const scList = $('sites-shortcuts');
+  scList.innerHTML = '';
+  const shortcuts = siteShortcuts();
+  for (const rec of shortcuts) {
+    scList.appendChild(siteRow({
+      icon: rec,
+      title: rec.title || rec.url,
+      sub: rec.url,
+      buttons: [
+        // The login door. Navigation is UNRESTRICTED here so an SSO round-trip to another
+        // host can complete; the cookies it leaves are what let the child skip the login.
+        { label: 'כניסה / בדיקה', onClick: () => { openSiteForParent(rec.url, rec.title).catch(() => {}); } },
+        { label: 'ניתוק', onClick: async () => {
+          const canon = canonicalSitePrefix(rec.url);
+          if (!canon.ok) return;
+          if (!await confirmKid({ emoji: '🚪', title: 'לנתק מהאתר?', text: 'החיבור והנתונים השמורים של ' + canon.host + ' יימחקו מהמכשיר הזה.' })) return;
+          await clearSiteData(canon.host);
+          toast('הנתונים נמחקו');
+        } }
+      ],
+      onDelete: async () => {
+        if (!await confirmKid({ emoji: '🗑️', title: 'להסיר את האתר?', text: 'האייקון ייעלם מהמסך של הילד. הכתובת תישאר מאושרת לגלישה עד שתסירו אותה גם מהרשימה השנייה.' })) return;
+        await removeSiteEntry(rec.entryId);
+        await refreshSitesPanel();
+        await refreshSitesLauncher();
+      }
+    }));
+  }
+  $('sites-shortcuts-empty').classList.toggle('hidden', shortcuts.length > 0);
+
+  const rlList = $('sites-rules');
+  rlList.innerHTML = '';
+  for (const rec of siteRules()) {
+    const li = siteRow({
+      title: rec.display,
+      sub: rec.allowExternal ? 'תוכן חיצוני מותר באתר הזה' : 'רק תוכן מהאתר עצמו',
+      onDelete: async () => {
+        if (!await confirmKid({ emoji: '🗑️', title: 'להסיר את ההרשאה?', text: rec.display + '\nהילד לא יוכל יותר לגלוש לכתובת הזו.' })) return;
+        await removeSiteEntry(rec.entryId);
+        await refreshSitesPanel();
+      }
+    });
+    // The external-content toggle lives on the RULE, so one strict site stays strict
+    // while another is opened up.
+    const lab = document.createElement('label');
+    lab.className = 'li-toggle';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!rec.allowExternal;
+    cb.addEventListener('change', async () => {
+      if (cb.checked && !await confirmKid({
+        emoji: '⚠️', title: 'לאפשר תוכן חיצוני?',
+        text: 'הדפים באתר הזה יוכלו לטעון פרסומות, סרטונים מוטמעים ותמונות מאתרים אחרים. הילד עלול לראות תוכן שאף אחד לא אישר. להפעיל רק אם האתר נראה שבור.'
+      })) { cb.checked = false; return; }
+      await db.putSiteEntry({ ...rec, allowExternal: cb.checked });
+      await loadSiteEntries();
+      maybeSchedulePush();
+      await refreshSitesPanel();
+    });
+    lab.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = 'תוכן חיצוני';
+    lab.appendChild(span);
+    li.querySelector('.row-btns').prepend(lab);
+    rlList.appendChild(li);
+  }
+
+  // Blocked pages, newest first — each one turns into a fix with a single tap.
+  const blockedBox = $('sites-blocked-box');
+  const blocked = $('sites-blocked');
+  blocked.innerHTML = '';
+  const known = new Set(siteRules().map((r) => r.display));
+  const pending = siteBlockedRecent.filter((b) => {
+    const c = ruleCandidatesFor(b.url);
+    return c.ok && !known.has(c.options[c.defaultIndex].canon.display);
+  });
+  for (const b of pending.slice(0, 8)) {
+    blocked.appendChild(siteRow({
+      title: b.url,
+      sub: 'נחסם',
+      buttons: [{ label: 'לאשר', onClick: () => { askSiteRuleGrain(b.url, ruleCandidatesFor(b.url)).catch(() => {}); } }]
+    }));
+  }
+  blockedBox.classList.toggle('hidden', pending.length === 0);
+}
+
+/** The shared add flow: probe → normalize → show what will REALLY be saved → confirm. */
+async function addSiteFromInput(kind) {
+  const inputId = kind === 'shortcut' ? 'site-sc-url' : 'site-rule-url';
+  const msgId = kind === 'shortcut' ? 'site-sc-msg' : 'site-rule-msg';
+  const raw = ($(inputId).value || '').trim();
+  const msg = $(msgId);
+  const canon = canonicalSitePrefix(raw);
+  if (!canon.ok) { msg.textContent = siteUrlError(canon.reason); msg.className = 'form-msg err'; return; }
+  msg.textContent = 'בודקים את הכתובת…';
+  msg.className = 'form-msg';
+  const probe = await probeSite(raw);
+  const finalCanon = probe.canon;
+  // Say what will actually be stored. A site that redirects (bare domain → www, or a
+  // section → its index) otherwise saves a rule that matches nothing the child reaches,
+  // and the feature looks broken for a reason the parent cannot see.
+  const changed = finalCanon.display !== canon.display;
+  const ok = await confirmKid({
+    emoji: kind === 'shortcut' ? '🌐' : '🔒',
+    title: kind === 'shortcut' ? 'להוסיף את האתר?' : 'לאשר את הכתובת?',
+    text: (changed ? 'הכתובת מפנה אל:\n' : '') + finalCanon.display
+      + (kind === 'shortcut' ? '\n\nהילד יוכל לגלוש בכל הכתובות שמתחילות כך.' : '')
+  });
+  if (!ok) { msg.textContent = ''; return; }
+  const res = kind === 'shortcut'
+    ? await addSiteShortcut(probe.url, { title: probe.title, iconUrl: probe.iconUrl })
+    : await addSiteRule(finalCanon);
+  if (!res.ok) { msg.textContent = res.message; msg.className = 'form-msg err'; return; }
+  $(inputId).value = '';
+  msg.textContent = kind === 'shortcut' ? 'האתר נוסף ✅' : 'הכתובת אושרה ✅';
+  msg.className = 'form-msg ok';
+  await refreshSitesPanel();
+  await refreshSitesLauncher();
+}
+
 async function refreshParent() {
   const src = await db.getSources(activeProfileId);
   await refreshSourcesPanel();
@@ -2377,7 +2889,7 @@ async function refreshParent() {
   refreshDonateUi().catch(() => {});
   refreshDriveStatus();
   runUpdateCheck().catch(() => {});
-  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel()]);
 }
 
 /* refreshSheetWriteStatus (v1.0.6/v1.0.10) lived here until v1.0.38 — it surfaced the
@@ -4916,6 +5428,12 @@ async function activateProfile(id) {
   // (disabled buttons over videos the new child does NOT have). Same profile-identity
   // rule as the buildFolders cache key (v1.0.20).
   resetYtsUi();
+  // v1.0.45: same profile-identity rule — the approved sites and the enable toggle are
+  // per profile, so a sibling must never inherit the previous child's tiles for even one
+  // render. The launcher is repainted from the fresh list by renderHome below.
+  siteEntries = [];
+  siteBlockedRecent = [];
+  await loadSiteEntries();
 
   // HYDRATE first: render whatever IndexedDB has, instantly. Sync runs after.
   await absorbMineIntoShared(id); // v1.0.6: fold personal adds into the shared list
@@ -5054,6 +5572,21 @@ function wire() {
   // v1.0.7: home search
   $('search-open').addEventListener('click', openSearch);
   $('search-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
+  $('sites-open').addEventListener('click', () => { openSitesView().catch(() => {}); });
+  $('sites-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
+  $('sites-enabled').addEventListener('change', async () => {
+    await putSetting(activeProfileId, 'sitesEnabled', $('sites-enabled').checked);
+    await refreshSitesPanel();
+    await refreshSitesLauncher();
+    maybeSchedulePush();
+  });
+  $('site-sc-add').addEventListener('click', () => { addSiteFromInput('shortcut').catch(() => {}); });
+  $('site-rule-add').addEventListener('click', () => { addSiteFromInput('rule').catch(() => {}); });
+  for (const [id, kind] of [['site-sc-url', 'shortcut'], ['site-rule-url', 'rule']]) {
+    $(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addSiteFromInput(kind).catch(() => {}); }
+    });
+  }
   $('search-input').addEventListener('input', () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { renderSearchResults().catch(() => {}); }, 180);
@@ -5652,6 +6185,21 @@ async function init() {
   registerViews();
   wire();
   onBackButton(nav.handleBack);
+
+  /* v1.0.45 — the site viewer's events. Two of these close real holes:
+     - `webActivity`: a tap inside a NATIVE WebView never reaches this window, so the
+       capture listeners that feed `idleLastInputAt` are blind while a site is open and
+       the idle timer would fire on a child who is actively browsing.
+     - `webClosed`: the flag gates tickIdleSleep; leaving it stuck true would make the
+       idle timer count forever against a viewer that is gone. */
+  onSiteEvent('webActivity', () => { idleLastInputAt = Date.now(); });
+  onSiteEvent('webClosed', () => { siteViewerOpen = false; });
+  onSiteEvent('webBlocked', (e) => {
+    const url = e && e.url;
+    if (!url) return;
+    siteBlockedRecent = [{ url, at: Date.now() }, ...siteBlockedRecent.filter((b) => b.url !== url)].slice(0, 20);
+  });
+  onSiteEvent('webAddRequest', (e) => { if (e && e.url) onSiteAddRequest(e.url).catch(() => {}); });
 
   // v1.0.9: Android TV — 10-foot layout + D-pad focus mode. Same APK as the tablet;
   // browser preview can force it with localStorage['tv']='1'.

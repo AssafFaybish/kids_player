@@ -39,6 +39,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(KidsNativePlugin.class);  // MUST run before super.onCreate() (bridge builds there)
         registerPlugin(GoogleAuthPlugin.class);
+        registerPlugin(KidsWebPlugin.class);     // v1.0.45 — the restricted site viewer
         super.onCreate(savedInstanceState);
 
         Bridge bridge = getBridge();
@@ -72,6 +73,37 @@ public class MainActivity extends BridgeActivity {
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) applyImmersive();
+    }
+
+    /**
+     * v1.0.45 — hardware back while the restricted site viewer is up. It is a native view
+     * laid OVER the bridge, so the JS back handler cannot see it: without this branch the
+     * child's back press would navigate the app hidden underneath while the site stayed
+     * on screen. Falls through to super (i.e. Capacitor → nav.handleBack) otherwise.
+     */
+    @Override
+    public void onBackPressed() {
+        if (KidsWebPlugin.handleBack()) return;
+        super.onBackPressed();
+    }
+
+    /**
+     * v1.0.32's lesson, applied to the site viewer: Android does not pause a WebView when
+     * the activity backgrounds, so a site with audio would keep playing behind a dark
+     * screen after the power button — exactly the report that fix exists for. The plugin
+     * also flushes cookies here, which is what makes a parent's login survive a process
+     * kill instead of quietly having to be typed again.
+     */
+    @Override
+    public void onPause() {
+        KidsWebPlugin.onActivityPause();
+        super.onPause();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        KidsWebPlugin.onActivityResume();
     }
 
     // F12b share target. VERIFIED: BridgeActivity.load() ends with

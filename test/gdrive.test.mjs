@@ -2,7 +2,7 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply, resolveRestoredLibraryId } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply, resolveRestoredLibraryId, mergeSiteEntry, mergeDeletedSiteEntries, siteEntryOutlivesTombstone, planSiteApply } from '../www/js/drive.js';
 import { mergeSettings } from '../www/js/settings.js';
 import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
@@ -22,6 +22,16 @@ const docA = {
       denylist: [{ key: 'yt:ddddddddddd', at: 5 }],
       channels: [{ channelId: 'UCabcdefghijklmnopqrstuv', title: 'ערוץ', updatedAt: 10 }],
       libraryChannels: [{ channelId: 'UCabcdefghijklmnopqrstuv', autoApprove: false, updatedAt: 10 }]
+    },
+    // v1.0.45 — approved websites ride the PROFILE pseudo-library, which is the only
+    // place they ever appear in a real document.
+    'prof:p1': {
+      sheetUrl: null, videos: [], denylist: [], channels: [], libraryChannels: [],
+      siteEntries: [
+        { entryId: 'sc:1111', kind: 'shortcut', url: 'https://a.com/kids/', title: 'א', order: 0, updatedAt: 10 },
+        { entryId: 'rl:2222', kind: 'rule', display: 'https://a.com/kids/', host: 'a.com', port: 443, segments: ['kids'], allowExternal: false, order: 1, updatedAt: 10 }
+      ],
+      deletedSiteEntries: {}
     }
   },
   profileState: { p1: { 'yt:aaaaaaaaaaa': { unwrappedAt: 50 } } }
@@ -36,6 +46,14 @@ const docB = {
       denylist: [{ key: 'yt:eeeeeeeeeee', at: 7 }, { key: 'yt:bbbbbbbbbbb', at: 9 }],
       channels: [{ channelId: 'UCabcdefghijklmnopqrstuv', title: 'ערוץ חדש', updatedAt: 20 }],
       libraryChannels: [{ channelId: 'UCabcdefghijklmnopqrstuv', autoApprove: true, updatedAt: 20 }]
+    },
+    'prof:p1': {
+      sheetUrl: null, videos: [], denylist: [], channels: [], libraryChannels: [],
+      siteEntries: [
+        { entryId: 'sc:1111', kind: 'shortcut', url: 'https://a.com/kids/', title: 'א חדש', order: 0, updatedAt: 20 },
+        { entryId: 'sc:3333', kind: 'shortcut', url: 'https://b.org/', title: 'ב', order: 2, updatedAt: 20 }
+      ],
+      deletedSiteEntries: {}
     }
   },
   profileState: { p1: { 'yt:aaaaaaaaaaa': { unwrappedAt: 30 }, 'yt:ccccccccccc': { giftRank: 1 } } }
@@ -46,6 +64,9 @@ const sortAll = (d) => {
   for (const lib of Object.values(d.libraries)) {
     lib.videos.sort((x, y) => x.key < y.key ? -1 : 1);
     lib.denylist.sort((x, y) => x.key < y.key ? -1 : 1);
+    // v1.0.45: a new merged ARRAY must be sorted here too, or the commutativity tests
+    // below compare Map-iteration order and start failing (or, worse, passing by luck).
+    if (lib.siteEntries) lib.siteEntries.sort((x, y) => x.entryId < y.entryId ? -1 : 1);
   }
   d.profiles.sort((x, y) => x.id < y.id ? -1 : 1);
   return d;
@@ -698,4 +719,151 @@ test('mergeAppliedState applies a favourite-only remote, and keeps local state (
   // nothing to apply is still nothing
   assert.equal(mergeAppliedState({ posSec: 5 }, { posSec: 9 }), null);
   assert.equal(mergeAppliedState(null, null), null);
+});
+
+/* ================= approved websites (v1.0.45) =================
+   The libraryChannels tombstone block, mirrored. Each property gets its own test and
+   each runs BOTH argument orders inline rather than leaning on the whole-doc
+   commutativity test above — that is what let the autoApprove bug survive: the shared
+   fixtures carry timestamps, so they pinned the fixture and not the production path. */
+
+const sc = (id, over = {}) => ({
+  entryId: id, kind: 'shortcut', url: 'https://a.com/kids/', title: 'א',
+  order: 0, addedAt: 100, updatedAt: 100, ...over
+});
+const rl = (id, over = {}) => ({
+  entryId: id, kind: 'rule', display: 'https://a.com/kids/', host: 'a.com', port: 443,
+  segments: ['kids'], allowExternal: false, order: 1, addedAt: 100, updatedAt: 100, ...over
+});
+
+test('mergeSiteEntry: later write wins, and it CONVERGES with no timestamps at all', () => {
+  const older = sc('sc:1', { title: 'ישן', updatedAt: 10 });
+  const newer = sc('sc:1', { title: 'חדש', updatedAt: 20 });
+  assert.equal(mergeSiteEntry(older, newer).title, 'חדש');
+  assert.equal(mergeSiteEntry(newer, older).title, 'חדש');
+
+  // The autoApprove trap, replayed: two rows nobody ever stamped. Without a deterministic
+  // tie-break both sides compare 0 > 0 and the FIRST argument wins, so merge(a,b) and
+  // merge(b,a) disagree — the documented commutativity would simply be false.
+  const loose = rl('rl:1', { allowExternal: true, updatedAt: 0 });
+  const strict = rl('rl:1', { allowExternal: false, updatedAt: 0 });
+  assert.equal(mergeSiteEntry(loose, strict).allowExternal, false);
+  assert.equal(mergeSiteEntry(strict, loose).allowExternal, false,
+    'a tie must resolve the SAFE way — and identically in both orders');
+
+  assert.equal(mergeSiteEntry(null, strict), strict);
+  assert.equal(mergeSiteEntry(strict, null), strict);
+});
+
+test('mergeDeletedSiteEntries: latest deletion wins, commutative, idempotent, garbage-safe', () => {
+  const a = { 'sc:1': 100, 'sc:2': 50 };
+  const b = { 'sc:1': 200, 'sc:3': 70 };
+  const want = { 'sc:1': 200, 'sc:2': 50, 'sc:3': 70 };
+  assert.deepEqual(mergeDeletedSiteEntries(a, b), want);
+  assert.deepEqual(mergeDeletedSiteEntries(b, a), want);
+  assert.deepEqual(mergeDeletedSiteEntries(want, want), want);
+  assert.deepEqual(mergeDeletedSiteEntries({ 'sc:1': 'junk' }, null), { 'sc:1': 0 });
+  assert.deepEqual(mergeDeletedSiteEntries(null, undefined), {});
+});
+
+test('siteEntryOutlivesTombstone: a deliberate re-add wins, a TIE stays deleted', () => {
+  assert.equal(siteEntryOutlivesTombstone(sc('sc:1', { updatedAt: 200 }), 100), true);
+  assert.equal(siteEntryOutlivesTombstone(sc('sc:1', { updatedAt: 100 }), 100), false,
+    'a tie must delete — showing a removed site is the betrayal');
+  assert.equal(siteEntryOutlivesTombstone(sc('sc:1', { updatedAt: 50 }), 100), false);
+  assert.equal(siteEntryOutlivesTombstone(null, 100), false);
+  assert.equal(siteEntryOutlivesTombstone(sc('sc:1', { updatedAt: 1 }), 'junk'), true);
+});
+
+test('a removed site STAYS removed through the union — in both merge orders', () => {
+  const withRow = {
+    kind: 'kids-player-db', schema: 1, profiles: [],
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [], siteEntries: [sc('sc:1', { updatedAt: 100 })], deletedSiteEntries: {} } },
+    profileState: {}
+  };
+  const withTomb = {
+    kind: 'kids-player-db', schema: 1, profiles: [],
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [], siteEntries: [], deletedSiteEntries: { 'sc:1': 150 } } },
+    profileState: {}
+  };
+  for (const [x, y] of [[withRow, withTomb], [withTomb, withRow]]) {
+    const m = mergeDbFiles(x, y);
+    assert.deepEqual(m.libraries['prof:p1'].siteEntries, [],
+      'the peer that had not pulled yet re-injected the removed site');
+    assert.equal(m.libraries['prof:p1'].deletedSiteEntries['sc:1'], 150);
+  }
+});
+
+test('a deliberate RE-ADD outlives the tombstone, in both merge orders', () => {
+  const readd = {
+    kind: 'kids-player-db', schema: 1, profiles: [],
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [], siteEntries: [sc('sc:1', { updatedAt: 300 })], deletedSiteEntries: {} } },
+    profileState: {}
+  };
+  const tomb = {
+    kind: 'kids-player-db', schema: 1, profiles: [],
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [], siteEntries: [], deletedSiteEntries: { 'sc:1': 150 } } },
+    profileState: {}
+  };
+  for (const [x, y] of [[readd, tomb], [tomb, readd]]) {
+    assert.equal(mergeDbFiles(x, y).libraries['prof:p1'].siteEntries.length, 1);
+  }
+});
+
+test('a doc from an OLDER app (no site keys) merges exactly as before', () => {
+  const old = {
+    kind: 'kids-player-db', schema: 1, profiles: [],
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [] } },
+    profileState: {}
+  };
+  const fresh = {
+    kind: 'kids-player-db', schema: 1, profiles: [],
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [], siteEntries: [sc('sc:1')], deletedSiteEntries: {} } },
+    profileState: {}
+  };
+  for (const [x, y] of [[old, fresh], [fresh, old]]) {
+    const lib = mergeDbFiles(x, y).libraries['prof:p1'];
+    assert.equal(lib.siteEntries.length, 1, 'a missing key filters nothing and loses nothing');
+    assert.deepEqual(lib.deletedSiteEntries, {});
+  }
+});
+
+test('planSiteApply: a stale doc cannot resurrect, and local losers go', () => {
+  const plan = planSiteApply({
+    localRows: [sc('sc:1', { updatedAt: 100 }), sc('sc:2', { updatedAt: 100 })],
+    remoteRows: [sc('sc:1', { updatedAt: 100 })], // the stale peer still carries it
+    localTombs: { 'sc:1': 150 },
+    remoteTombs: {}
+  });
+  assert.deepEqual(plan.puts, [], 'the remote row lost to our tombstone');
+  assert.deepEqual(plan.deletes, ['sc:1'], 'and the local copy must go too');
+  assert.equal(plan.tombs['sc:1'], 150);
+
+  const back = planSiteApply({
+    localRows: [], remoteRows: [sc('sc:9', { updatedAt: 500 })],
+    localTombs: { 'sc:9': 100 }, remoteTombs: {}
+  });
+  assert.equal(back.puts.length, 1, 'a re-add newer than the tombstone must be adopted');
+
+  const empty = planSiteApply({});
+  assert.deepEqual(empty.puts, []);
+  assert.deepEqual(empty.deletes, []);
+  assert.deepEqual(empty.tombs, {});
+});
+
+test('serializeDb carries the site entries and their tombstones', () => {
+  const doc = JSON.parse(serializeDb({
+    profiles: [], profileState: {}, profileSources: {}, settings: null, deletedProfiles: {},
+    libraries: { 'prof:p1': { videos: [], denylist: [], channels: [], libraryChannels: [], siteEntries: [sc('sc:1')], deletedSiteEntries: { 'sc:9': 42 } } }
+  }));
+  assert.equal(doc.libraries['prof:p1'].siteEntries.length, 1);
+  assert.deepEqual(doc.libraries['prof:p1'].deletedSiteEntries, { 'sc:9': 42 });
+  // A library that has never had a site must still emit the keys, so a merge reads
+  // "none" rather than "unknown".
+  const bare = JSON.parse(serializeDb({
+    profiles: [], profileState: {}, profileSources: {}, settings: null, deletedProfiles: {},
+    libraries: { 'lib:x': { videos: [], denylist: [], channels: [], libraryChannels: [] } }
+  }));
+  assert.deepEqual(bare.libraries['lib:x'].siteEntries, []);
+  assert.deepEqual(bare.libraries['lib:x'].deletedSiteEntries, {});
 });

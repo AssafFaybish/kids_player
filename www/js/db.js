@@ -28,7 +28,7 @@
 // automatically. The "חדשים 🎁" folder is a pure range scan, no filtering.
 
 export const DB_NAME = 'kidsplayer';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const profScope = (profileId) => 'prof:' + profileId;
 
@@ -38,32 +38,57 @@ export function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    /**
+     * EVERY store creation MUST sit inside an `ev.oldVersion <` guard (v1.0.45).
+     *
+     * This handler ran unconditionally for the whole life of version 1, which was
+     * harmless only because the version never moved. The moment it does, an existing
+     * install re-enters here with its 9 stores already present, `createObjectStore`
+     * throws ConstraintError, the version-change transaction ABORTS, and openDb rejects
+     * — the app cannot open its database at all, on every device in the field. Adding a
+     * store without a guard is not a migration bug, it is a bricked install.
+     *
+     * A fresh install arrives with oldVersion 0 and falls through every block in order.
+     */
+    req.onupgradeneeded = (ev) => {
       const db = req.result;
+      const from = (ev && ev.oldVersion) || 0;
 
-      const videos = db.createObjectStore('videos', { keyPath: ['scopeId', 'key'] });
-      videos.createIndex('by_folder_sort', ['scopeId', 'folderId', 'sortKey']);
-      videos.createIndex('by_state', ['scopeId', 'state', 'sortKey']);
-      videos.createIndex('by_channel_title', ['scopeId', 'channelId', 'normTitle']);
-      videos.createIndex('by_key', 'key'); // non-unique: same video in several scopes
+      if (from < 1) {
+        const videos = db.createObjectStore('videos', { keyPath: ['scopeId', 'key'] });
+        videos.createIndex('by_folder_sort', ['scopeId', 'folderId', 'sortKey']);
+        videos.createIndex('by_state', ['scopeId', 'state', 'sortKey']);
+        videos.createIndex('by_channel_title', ['scopeId', 'channelId', 'normTitle']);
+        videos.createIndex('by_key', 'key'); // non-unique: same video in several scopes
 
-      const pvs = db.createObjectStore('profileVideoState', { keyPath: ['profileId', 'key'] });
-      pvs.createIndex('by_gift', ['profileId', 'giftRank']); // sparse — see header
+        const pvs = db.createObjectStore('profileVideoState', { keyPath: ['profileId', 'key'] });
+        pvs.createIndex('by_gift', ['profileId', 'giftRank']); // sparse — see header
 
-      db.createObjectStore('channels', { keyPath: 'channelId' });
+        db.createObjectStore('channels', { keyPath: 'channelId' });
 
-      const libCh = db.createObjectStore('libraryChannels', { keyPath: ['libraryId', 'channelId'] });
-      libCh.createIndex('by_library', ['libraryId', 'order']);
+        const libCh = db.createObjectStore('libraryChannels', { keyPath: ['libraryId', 'channelId'] });
+        libCh.createIndex('by_library', ['libraryId', 'order']);
 
-      const thumbs = db.createObjectStore('thumbs', { keyPath: 'id' });
-      thumbs.createIndex('by_lastUsed', 'lastUsed');
+        const thumbs = db.createObjectStore('thumbs', { keyPath: 'id' });
+        thumbs.createIndex('by_lastUsed', 'lastUsed');
 
-      db.createObjectStore('denylist', { keyPath: ['scopeId', 'key'] });
-      db.createObjectStore('sources', { keyPath: 'profileId' });
-      db.createObjectStore('meta', { keyPath: 'id' });
+        db.createObjectStore('denylist', { keyPath: ['scopeId', 'key'] });
+        db.createObjectStore('sources', { keyPath: 'profileId' });
+        db.createObjectStore('meta', { keyPath: 'id' });
 
-      const ops = db.createObjectStore('opLog', { keyPath: 'seq', autoIncrement: true });
-      ops.createIndex('by_scope', 'scopeId');
+        const ops = db.createObjectStore('opLog', { keyPath: 'seq', autoIncrement: true });
+        ops.createIndex('by_scope', 'scopeId');
+      }
+
+      if (from < 2) {
+        // v1.0.45 — approved websites. Shortcuts (what the child sees) and navigation
+        // rules (what the child may reach) share one store behind a `kind` discriminator:
+        // both are per-profile, ordered, parent-curated rows with the same LWW + tombstone
+        // lifecycle, and nothing outside this feature reads the store, so there is no
+        // pipeline for the other kind to leak into.
+        const sites = db.createObjectStore('siteEntries', { keyPath: ['scopeId', 'entryId'] });
+        sites.createIndex('by_scope', ['scopeId', 'order']);
+      }
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -646,6 +671,56 @@ export async function putDeletedChannels(libraryId, map) {
   await putMeta(chDelKey(libraryId), map && typeof map === 'object' ? map : {});
 }
 
+/* ---------------- approved websites (v1.0.45) ----------------
+   ONE store, two kinds:
+     kind:'shortcut' — {url, title, iconId}   the tiles the CHILD sees
+     kind:'rule'     — {display, host, port, segments[], allowExternal}   where they may go
+   A rule may be a sub-path or an entirely different site, which is exactly why it is not
+   shown as a tile. Scope is a PROFILE scope ('prof:<id>'), so two children on one account
+   never inherit each other's browsing surface. */
+
+export async function listSiteEntries(scopeId) {
+  const db = await openDb();
+  const idx = db.transaction('siteEntries').objectStore('siteEntries').index('by_scope');
+  const r = await preq(idx.getAll(IDBKeyRange.bound([scopeId, -Infinity], [scopeId, Infinity])));
+  return r || [];
+}
+
+/**
+ * The `updatedAt` STAMP LIVES HERE, not at the call sites — the v1.0.22 putLibraryChannel
+ * lesson. `drive.mergeSiteEntry` resolves two devices by this timestamp; a field nobody
+ * stamps makes every comparison 0 > 0, so the FIRST document wins and the merge becomes
+ * order-dependent, which is the same as saying it is broken.
+ * `preserveTimestamp` is for the one caller applying an already-merged remote record.
+ */
+export async function putSiteEntry(rec, { preserveTimestamp = false } = {}) {
+  const out = preserveTimestamp && rec.updatedAt ? rec : { ...rec, updatedAt: Date.now() };
+  await tx(['siteEntries'], 'readwrite', (s) => { s.put(out); });
+}
+
+/* Deletion tombstones, mirroring chDel: exactly — see the v1.0.36 note above. A removed
+   site must STAY removed: every Drive merge is a union, so absence alone is re-added by
+   any peer that has not pulled yet. */
+const siteDelKey = (scopeId) => 'siteDel:' + scopeId;
+export async function getDeletedSiteEntries(scopeId) {
+  const raw = await getMeta(siteDelKey(scopeId));
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+export async function putDeletedSiteEntries(scopeId, map) {
+  await putMeta(siteDelKey(scopeId), map && typeof map === 'object' ? map : {});
+}
+
+export async function deleteSiteEntry(scopeId, entryId, { tombstone = true, tombstoneAt } = {}) {
+  // TOMBSTONE FIRST — a crash between the two writes must leave the intent recorded.
+  if (tombstone) {
+    const map = await getDeletedSiteEntries(scopeId);
+    const at = tombstoneAt || Date.now();
+    map[entryId] = Math.max(Number(map[entryId]) || 0, at);
+    await putDeletedSiteEntries(scopeId, map);
+  }
+  await tx(['siteEntries'], 'readwrite', (s) => { s.delete([scopeId, entryId]); });
+}
+
 export async function deleteLibraryChannel(libraryId, channelId, { tombstone = true, tombstoneAt } = {}) {
   // TOMBSTONE FIRST: a crash between the two writes must leave the intent recorded, or
   // the interrupted deletion resurrects silently.
@@ -873,18 +948,25 @@ export async function purgeProfile(profileId, scopes = null) {
   // re-alert about a mirror divergence for content that no longer exists.
   const metaKeys = [];
   for (const s of list) {
+    // v1.0.45: the site tombstones live on PROFILE scopes, so this key is collected for
+    // every scope. The library-only keys below stay gated — asking for
+    // 'sheetMirrorAlert:prof:x' would just delete a row that never existed, but the
+    // site key genuinely lives there, and leaving it behind means a profile deleted and
+    // recreated with the same id inherits tombstones that silently swallow its new sites.
+    metaKeys.push(siteDelKey(s));
     if (!String(s).startsWith('lib:')) continue;
     metaKeys.push('sync:' + s + ':lastFullSyncAt', 'sheetMirrorAlert:' + s,
       'sheetMirrorIgnoredSig:' + s, 'dedupe:' + s, chDelKey(s));
   }
-  await tx(['videos', 'denylist', 'libraryChannels', 'profileVideoState', 'sources', 'meta', 'opLog'], 'readwrite',
-    (videos, deny, libCh, pvs, sources, meta, ops) => {
+  await tx(['videos', 'denylist', 'libraryChannels', 'siteEntries', 'profileVideoState', 'sources', 'meta', 'opLog'], 'readwrite',
+    (videos, deny, libCh, sites, pvs, sources, meta, ops) => {
       for (const s of list) {
         videos.delete(range(s));
         deny.delete(range(s));
         // libraryChannels is keyed [libraryId, channelId] — a purged library's
         // subscriptions are orphans the moment its videos are gone.
         libCh.delete(range(s));
+        sites.delete(range(s));
       }
       for (const k of metaKeys) meta.delete(k);
       pvs.delete(IDBKeyRange.bound([profileId, ''], [profileId, '￿']));

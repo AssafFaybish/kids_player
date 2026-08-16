@@ -17,10 +17,13 @@ import { sortKeyFor } from './order.js';
 // plan/sync2/drive tier — importing the deny LWW merge from drive.js creates no cycle
 // (drive.js never imports this module; the invariants cycle test pins the graph).
 // Replicating the rule here instead would be the drift CLAUDE.md bans.
-import { mergeDenyRecord } from './drive.js';
+import { mergeDenyRecord, mergeSiteEntry, planSiteApply } from './drive.js';
+import { canonicalSitePrefix, ruleIdFor, shortcutIdFor } from './weblock.js';
 import {
   openDb, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
+  listSiteEntries, putSiteEntry, deleteSiteEntry,
+  getDeletedSiteEntries, putDeletedSiteEntries,
   loadDenyRecords, tx, profScope, putVideoStates
 } from './db.js';
 
@@ -66,10 +69,59 @@ export async function exportProfileSnapshot(profileId, profileMeta = null) {
     req.onerror = () => resolve();
   });
 
+  // v1.0.45 — approved websites. The TOMBSTONES travel from day one: `deletedChannels`
+  // was left out of the snapshot when it was introduced, so a restore can still resurrect
+  // a deleted subscription locally and then push it, and there is no reason to repeat that.
+  const pScope = profScope(profileId);
+  const siteEntries = await listSiteEntries(pScope);
+  const deletedSiteEntries = await getDeletedSiteEntries(pScope);
+
   return JSON.stringify({
     schema: 2, kind: 'kids-player-snapshot', exportedAt: Date.now(),
-    profile: profileMeta, profileId, sources, videos, denylist, channels, libraryChannels, states
+    profile: profileMeta, profileId, sources, videos, denylist, channels, libraryChannels, states,
+    siteEntries, deletedSiteEntries
   });
+}
+
+/**
+ * PURE: sanitize ONE exported site entry.
+ *
+ * The safety boundary is re-run, never trusted: a rule's host/port/segments are REBUILT
+ * from its own display string with `canonicalSitePrefix`, exactly as sanitizeSnapshotVideo
+ * rebuilds a video's key from its link. A file that has been hand-edited (or written by a
+ * future build) must not be able to inject a rule the current parser would refuse.
+ *
+ * `order` goes through the same Number.isFinite gate as sortKey: a string or NaN stores
+ * fine and then appears in NO range scan over `by_scope`, i.e. a row that exists and is
+ * invisible forever.
+ */
+export function sanitizeSnapshotSite(row, { scopeId, now = Date.now() } = {}) {
+  if (!row || typeof row !== 'object') return null;
+  const entryId = typeof row.entryId === 'string' ? row.entryId : '';
+  if (!entryId) return null;
+  const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : null);
+  const order = num(row.order) ?? 0;
+  const addedAt = num(row.addedAt) ?? now;
+  const updatedAt = num(row.updatedAt) ?? addedAt;
+  const base = { scopeId, entryId, order, addedAt, updatedAt };
+
+  if (row.kind === 'rule') {
+    const canon = canonicalSitePrefix(row.display);
+    if (!canon.ok) return null;
+    if (ruleIdFor(canon) !== entryId) return null; // the id must match what it permits
+    return {
+      ...base, kind: 'rule', display: canon.display, host: canon.host,
+      port: canon.port, segments: canon.segments, allowExternal: !!row.allowExternal
+    };
+  }
+  if (row.kind === 'shortcut') {
+    const url = typeof row.url === 'string' ? row.url.trim() : '';
+    if (!canonicalSitePrefix(url).ok) return null;
+    if (shortcutIdFor(url) !== entryId) return null;
+    const title = typeof row.title === 'string' ? row.title.slice(0, 120) : '';
+    return { ...base, kind: 'shortcut', url, title };
+  }
+  return null; // an unknown kind is not a thing this app knows how to show
 }
 
 const inScope = (validScopes, id) => Array.isArray(validScopes)
@@ -277,6 +329,35 @@ export async function importProfileSnapshot(profileId, text) {
       if (!ch || !/^UC[A-Za-z0-9_-]{22}$/.test(ch.channelId || '')) continue;
       const prev = await getChannel(ch.channelId);
       if (!prev) await putChannel({ ...ch, backfillCursor: null });
+    }
+  }
+
+  // v1.0.45 — approved websites. MERGED, never blind-put: the same lesson as the deny
+  // rows above. A snapshot is one device's old copy, so a stale entry must not clobber a
+  // newer local one, and a site the parent has since REMOVED must not walk back in — the
+  // tombstones are applied first, through the same pure planner the Drive pull uses.
+  {
+    const pScope = profScope(profileId);
+    const snapRows = [];
+    for (const row of Array.isArray(snap.siteEntries) ? snap.siteEntries : []) {
+      const clean = sanitizeSnapshotSite(row, { scopeId: pScope });
+      if (clean) snapRows.push(clean);
+    }
+    const remoteTombs = (snap.deletedSiteEntries && typeof snap.deletedSiteEntries === 'object'
+      && !Array.isArray(snap.deletedSiteEntries)) ? snap.deletedSiteEntries : {};
+    if (snapRows.length || Object.keys(remoteTombs).length) {
+      const localRows = await listSiteEntries(pScope);
+      const plan = planSiteApply({
+        localRows, remoteRows: snapRows,
+        localTombs: await getDeletedSiteEntries(pScope), remoteTombs
+      });
+      await putDeletedSiteEntries(pScope, plan.tombs);
+      for (const entryId of plan.deletes) await deleteSiteEntry(pScope, entryId, { tombstone: false });
+      const byId = new Map(localRows.map((r) => [r.entryId, r]));
+      for (const e of plan.puts) {
+        // LWW against what is already here, so an older snapshot cannot undo a newer edit.
+        await putSiteEntry(mergeSiteEntry(byId.get(e.entryId), e), { preserveTimestamp: true });
+      }
     }
   }
 

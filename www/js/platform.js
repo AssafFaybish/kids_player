@@ -56,6 +56,11 @@ async function browserFetchText(url) {
  * request body WITHOUT an explicit Content-Type header is silently discarded — a Drive
  * multipart upload would return 200 and create an EMPTY file. Always pass Content-Type
  * when body != null.
+ *
+ * v1.0.45 — also returns `url`: the FINAL address after redirects (both transports follow
+ * them silently). The approved-websites add flow needs it, because a parent who pastes
+ * `example.com/kids/` on a site that redirects to `www.` or to a different path would
+ * otherwise save a rule that never matches anything the child can reach.
  */
 export async function httpRequest({ method = 'GET', url, headers = {}, body = null, responseType = 'text' } = {}) {
   const CH = plugin('CapacitorHttp');
@@ -64,9 +69,9 @@ export async function httpRequest({ method = 'GET', url, headers = {}, body = nu
       const opts = { method, url, headers, responseType };
       if (body != null) opts.data = body;
       const res = await CH.request(opts);
-      return { status: res.status || 0, headers: res.headers || {}, data: res.data };
+      return { status: res.status || 0, headers: res.headers || {}, data: res.data, url: res.url || url };
     } catch (e) {
-      return { status: 0, headers: {}, data: null, error: String((e && e.message) || e) };
+      return { status: 0, headers: {}, data: null, url, error: String((e && e.message) || e) };
     }
   }
   try {
@@ -74,9 +79,9 @@ export async function httpRequest({ method = 'GET', url, headers = {}, body = nu
     const data = responseType === 'json' ? await r.json().catch(() => null) : await r.text();
     const h = {};
     r.headers.forEach((v, k) => { h[k.toLowerCase()] = v; });
-    return { status: r.status, headers: h, data };
+    return { status: r.status, headers: h, data, url: r.url || url };
   } catch (e) {
-    return { status: 0, headers: {}, data: null, error: String((e && e.message) || e) };
+    return { status: 0, headers: {}, data: null, url, error: String((e && e.message) || e) };
   }
 }
 
@@ -374,6 +379,61 @@ export async function openExternal(url) {
     try { await kids.openUrl({ url }); return true; } catch { return false; }
   }
   try { return !!window.open(url, '_blank', 'noopener'); } catch { return false; }
+}
+
+/* ---------------- the restricted site viewer (v1.0.45) ----------------
+ * A NATIVE WebView laid over the bridge, because nothing else can enforce where the child
+ * may go: an <iframe> cannot be navigation-controlled from the parent document (same-origin
+ * policy) and half the web refuses to frame at all (X-Frame-Options), while Custom Tabs is
+ * a real browser with no hooks. `shouldOverrideUrlLoading` in KidsWebPlugin is the only
+ * enforcement point, so the whole feature is device-only by construction.
+ *
+ * The rules handed over are ALREADY canonical (weblock.canonicalSitePrefix); the native
+ * side does a dumb comparison of pre-normalized parts and never re-parses a prefix.
+ */
+export function siteViewerAvailable() {
+  return !!plugin('KidsWeb');
+}
+
+/** Opens the viewer. Resolves as soon as it is up — closing arrives via onSiteEvent. */
+export async function openSiteViewer({ url, rules = [], title = '', parentMode = false }) {
+  const kw = plugin('KidsWeb');
+  if (!kw || !kw.open) return false;
+  try {
+    await kw.open({ url, rules, title, parentMode: !!parentMode });
+    return true;
+  } catch { return false; }
+}
+
+export async function closeSiteViewer() {
+  const kw = plugin('KidsWeb');
+  if (kw && kw.close) { try { await kw.close(); } catch {} }
+}
+
+export async function isSiteViewerOpen() {
+  const kw = plugin('KidsWeb');
+  if (kw && kw.isOpen) {
+    // `=== true` on purpose (the canDeviceAuth rule): a missing or throwing bridge must
+    // never read as "open", or the screen-time timers would wait on a viewer that is gone.
+    try { return (await kw.isOpen()).value === true; } catch {}
+  }
+  return false;
+}
+
+/** Sign out of one site: its cookies and its DOM storage. Parent-facing. */
+export async function clearSiteData(host) {
+  const kw = plugin('KidsWeb');
+  if (kw && kw.clearSiteData) { try { await kw.clearSiteData({ host }); return true; } catch {} }
+  return false;
+}
+
+/**
+ * Subscribe to the viewer's events: 'webClosed', 'webBlocked' ({url}),
+ * 'webAddRequest' ({url}) and 'webActivity'. A no-op without the plugin.
+ */
+export function onSiteEvent(name, fn) {
+  const kw = plugin('KidsWeb');
+  if (kw && kw.addListener) { try { kw.addListener(name, fn); } catch {} }
 }
 
 /* ---------------- exit lock / screen pinning (v1.0.11) ---------------- */

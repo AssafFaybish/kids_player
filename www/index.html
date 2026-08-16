@@ -187,8 +187,15 @@
         <button id="recovery-banner-cancel" class="btn btn-small" type="button">ביטול הבקשה</button>
       </div>
 
-      <!-- v1.0.7: kid-friendly search — opens the search view with the keyboard up -->
-      <button id="search-open" class="search-launcher" type="button">🔍 חיפוש סרטון…</button>
+      <!-- v1.0.7: kid-friendly search — opens the search view with the keyboard up.
+           v1.0.45: the websites launcher shares the row. It is hidden unless the parent
+           left the setting on AND approved at least one shortcut — a button that opens an
+           empty grid is the v1.0.21 bug — and always hidden on TV, where a remote cannot
+           drive an arbitrary website. -->
+      <div class="home-actions">
+        <button id="search-open" class="search-launcher" type="button">🔍 חיפוש סרטון…</button>
+        <button id="sites-open" class="search-launcher hidden" type="button">🌐 אתרי אינטרנט</button>
+      </div>
 
       <main id="grid" class="grid" aria-label="רשימת סרטונים"></main>
 
@@ -232,6 +239,24 @@
       </header>
       <main id="folder-grid" class="grid" aria-label="סרטוני התיקייה"></main>
       <nav id="folder-pager" class="pager" aria-label="דפדוף"></nav>
+    </section>
+
+    <!-- ===================== WEBSITES (kids, v1.0.45) =====================
+         Only SHORTCUTS are rendered here. The navigation rules that decide where the
+         child may go are never shown: a rule is often a sub-path or a different site
+         entirely, so it would be a tile that opens something the parent never pictured.
+         `class="grid"` is load-bearing on TV — ui/dpad.js focusFirst prefers it — even
+         though the launcher itself is hidden there. -->
+    <section id="view-sites" class="view">
+      <header class="top-bar search-bar">
+        <button id="sites-back" class="round-btn" type="button" aria-label="חזרה">🏠</button>
+        <div class="brand">
+          <span class="brand-logo">🌐</span>
+          <span class="brand-title">אתרי אינטרנט</span>
+        </div>
+      </header>
+      <main id="sites-grid" class="grid" aria-label="אתרי אינטרנט"></main>
+      <p id="sites-empty" class="search-empty hidden">עדיין אין אתרים 🌐</p>
     </section>
 
     <!-- ===================== SEARCH (kids, v1.0.7) ===================== -->
@@ -406,6 +431,7 @@
         <button id="tab-approve" class="mode-btn" type="button">ממתינים <span id="pending-badge" class="tab-badge hidden">0</span></button>
         <button id="tab-add" class="mode-btn" type="button">הוספה</button>
         <button id="tab-sources" class="mode-btn" type="button">מקורות</button>
+        <button id="tab-sites" class="mode-btn" type="button">אתרים</button>
         <button id="tab-settings" class="mode-btn" type="button">הגדרות</button>
       </div>
 
@@ -598,6 +624,56 @@
         <div class="list-head" style="margin-top:18px"><span class="list-count">🧹 פינוי מקום</span></div>
         <div class="row-btns">
           <button id="clear-cache" class="btn btn-small" type="button">ניקוי קבצי וידאו שהורדו (פינוי מקום)</button>
+        </div>
+      </div>
+
+      <!-- Approved websites (v1.0.45).
+           TWO lists, and the split is the whole feature: a SHORTCUT is what the child
+           sees and taps; a RULE is where they may navigate, and may be a sub-path or a
+           different site entirely. Adding a shortcut also adds the matching rule, or the
+           first link tap inside it would be blocked. -->
+      <div id="panel-sites" class="panel hidden">
+        <label class="li-toggle" style="margin-bottom:6px">
+          <input id="sites-enabled" type="checkbox" />
+          <span id="sites-enabled-label">להציג לילד את כפתור אתרי האינטרנט</span>
+        </label>
+        <p id="sites-off-note" class="form-msg hidden">
+          הכפתור מוסתר. הילד לא יראה אתרים כלל.
+        </p>
+
+        <div id="sites-body">
+          <p class="form-msg">
+            הילד רואה רק את האתרים שברשימה הראשונה, ויכול לגלוש רק בכתובות שברשימה השנייה.
+          </p>
+
+          <!-- 1) what the child sees -->
+          <div class="list-head" style="margin-top:14px"><span class="list-count">🌐 מוצג לילד</span></div>
+          <div class="field">
+            <input id="site-sc-url" class="input" type="url" inputmode="url" dir="ltr"
+                   placeholder="https://example.com/kids/" autocomplete="off" />
+            <button id="site-sc-add" class="btn btn-primary" type="button">הוספה</button>
+          </div>
+          <p id="site-sc-msg" class="form-msg"></p>
+          <ul id="sites-shortcuts" class="parent-list"></ul>
+          <p id="sites-shortcuts-empty" class="form-msg hidden">
+            עדיין אין אתרים. אחרי שתוסיפו אתר ראשון יופיע לילד הכפתור במסך הבית.
+          </p>
+
+          <!-- 2) where the child may go -->
+          <div class="list-head" style="margin-top:18px"><span class="list-count">🔒 אתרים מורשים</span></div>
+          <div class="field">
+            <input id="site-rule-url" class="input" type="url" inputmode="url" dir="ltr"
+                   placeholder="https://example.com/" autocomplete="off" />
+            <button id="site-rule-add" class="btn" type="button">הוספה</button>
+          </div>
+          <p id="site-rule-msg" class="form-msg"></p>
+          <ul id="sites-rules" class="parent-list"></ul>
+
+          <!-- blocked pages the child ran into — one tap turns each into a fix -->
+          <div id="sites-blocked-box" class="hidden">
+            <div class="list-head" style="margin-top:18px"><span class="list-count">🚫 נחסמו לאחרונה</span></div>
+            <ul id="sites-blocked" class="parent-list"></ul>
+          </div>
         </div>
       </div>
 

@@ -80,7 +80,11 @@ const SAFE_ON_TIE = {
   exitLock: true,       // stay in kiosk mode
   shareApproval: true,  // keep asking before a shared video reaches the child
   autoplay: false,      // stop at the end of the video
-  resume: false         // start from the beginning (v1.0.32 — today's behaviour)
+  resume: false,        // start from the beginning (v1.0.32 — today's behaviour)
+  // v1.0.45: hide the websites button. Note this is the TIE rule, not the default — an
+  // unwritten `sitesEnabled` reads as ON (the parent asked for it on by default), while
+  // two devices disagreeing at the same millisecond resolve to the narrower surface.
+  sitesEnabled: false
 };
 
 /**

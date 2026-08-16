@@ -261,7 +261,7 @@ test('parentLandingTab: a waiting queue overrides the sticky tab, EVERY visit (v
   // the tab list is the one app.js renders from — a second hand-kept copy could name a
   // tab that does not exist
   assert.ok(PARENT_TAB_IDS.includes('approve'));
-  assert.deepEqual(PARENT_TAB_IDS, ['about', 'approve', 'add', 'sources', 'settings']);
+  assert.deepEqual(PARENT_TAB_IDS, ['about', 'approve', 'add', 'sources', 'sites', 'settings']);
 });
 
 test('pendingBulkAction: the button SAYS what it is about to act on (v1.0.24)', () => {

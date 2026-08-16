@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Android TV (v1.0.9): leanback declared OPTIONAL so ONE APK serves tablet + TV;
+         touchscreen optional so TV devices (no touch) accept the install. -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
     <!-- allowBackup=false: Auto Backup can't restore a sideloaded app anyway (adb install /
          tapped APK never restores), and false blocks adb-backup extraction of the PIN hash.
          The full-state export in the parent screen is the real backup mechanism. -->
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
+        android:banner="@drawable/tv_banner"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
@@ -23,6 +29,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <!-- v1.0.9: appear in the Android TV launcher too -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
             <!-- F12b: share a video from the YouTube app straight into the library -->
             <intent-filter android:label="@string/share_target_label">
