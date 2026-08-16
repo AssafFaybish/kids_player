@@ -94,6 +94,12 @@ public class KidsWebPlugin extends Plugin {
     private volatile List<Rule> rules = new ArrayList<>();
     private volatile String currentPageUrl = "";
     private volatile boolean parentMode = false;
+    /** The column holding the bar + the page; hidden while a video is fullscreen. */
+    private LinearLayout chromeCol;
+    private View customView;                                  // the fullscreen video surface
+    private WebChromeClient.CustomViewCallback customCallback;
+    private final android.os.Handler fsHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastActivityPing = 0L;
     private long pausedAt = 0L;
     /** How long parent mode may sit backgrounded before it is abandoned rather than paused. */
@@ -109,6 +115,9 @@ public class KidsWebPlugin extends Plugin {
     /** Hardware back: walk the site's own history first, then close. */
     static boolean handleBack() {
         if (instance == null || instance.overlay == null) return false;
+        // A fullscreen video is what back means FIRST — leaving the page from under a
+        // fullscreen surface strands the child on a black screen.
+        if (instance.customView != null) { instance.exitFullscreen(); return true; }
         if (instance.web != null && instance.web.canGoBack()) { instance.web.goBack(); return true; }
         instance.closeOverlay();
         return true;
@@ -242,6 +251,7 @@ public class KidsWebPlugin extends Plugin {
 
         LinearLayout col = new LinearLayout(a);
         col.setOrientation(LinearLayout.VERTICAL);
+        chromeCol = col;
 
         LinearLayout bar = new LinearLayout(a);
         bar.setOrientation(LinearLayout.HORIZONTAL);
@@ -254,11 +264,25 @@ public class KidsWebPlugin extends Plugin {
         // transiently-revealed status bar instead of hiding under it.
         bar.setPadding(pad, pad + statusBarInset(a), pad, pad);
 
+        // THE WAY OUT, drawn for a pre-reading child: a bright pill that contrasts with
+        // the bar instead of flat text on it, a big bold label, and 🏠 — the SAME sign the
+        // app already uses for "back to where you belong" on the watch screen and in the
+        // websites grid. A door (🚪) was rejected: in this app it means leaving the APP
+        // entirely, and teaching one child two meanings for one picture is how a 5-year-old
+        // learns to ignore both.
         Button back = new Button(a);
-        back.setText("← חזרה");
+        back.setText("🏠  חזרה");
         back.setAllCaps(false);
-        back.setTextColor(Color.WHITE);
-        back.setBackgroundColor(Color.TRANSPARENT);
+        back.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+        back.setTextColor(parentMode ? Color.parseColor("#6b5200") : Color.parseColor("#4b41d6"));
+        android.graphics.drawable.GradientDrawable pill = new android.graphics.drawable.GradientDrawable();
+        pill.setColor(Color.WHITE);
+        pill.setCornerRadius(dp(a, 22));
+        back.setBackground(pill);
+        back.setPadding(dp(a, 18), dp(a, 6), dp(a, 18), dp(a, 6));
+        back.setMinimumHeight(dp(a, 48));   // a child's finger, not a cursor
+        back.setElevation(dp(a, 2));
         back.setOnClickListener(v -> closeOverlay());
         bar.addView(back);
 
@@ -331,6 +355,7 @@ public class KidsWebPlugin extends Plugin {
 
     private void closeOverlay() {
         if (overlay == null) return;
+        exitFullscreen();                   // never leave a detached video surface behind
         try {
             flushCookies();                 // the login must survive the close
             web.stopLoading();
@@ -411,7 +436,57 @@ public class KidsWebPlugin extends Plugin {
         public void onReceivedTitle(WebView view, String title) {
             if (titleView != null && title != null && !title.isEmpty()) titleView.setText(title);
         }
+
+        /**
+         * HTML5 FULLSCREEN. A bare WebView does not implement it: without these two the
+         * fullscreen button on an embedded YouTube player does NOTHING AT ALL — reported
+         * from the device. The video element hands us its own surface and we are expected
+         * to place it; the same contract MainActivity already honours for the app's own
+         * WebView, which is why fullscreen works there and did not work here.
+         */
+        @Override
+        public void onShowCustomView(View view, CustomViewCallback callback) {
+            if (customView != null) { callback.onCustomViewHidden(); return; }
+            customView = view;
+            customCallback = callback;
+            if (chromeCol != null) chromeCol.setVisibility(View.GONE);
+            overlay.addView(customView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            // A video is USE, even with nobody touching the glass: hold the screen on, and
+            // keep telling JS the child is here. Otherwise the idle timer — which counts an
+            // open viewer and is fed only by page loads — closes the viewer mid-video.
+            overlay.setKeepScreenOn(true);
+            fsHandler.removeCallbacks(fsPing);
+            fsHandler.post(fsPing);
+        }
+
+        @Override
+        public void onHideCustomView() { exitFullscreen(); }
     }
+
+    /** Tear the fullscreen surface down. Safe to call when there is none. */
+    private void exitFullscreen() {
+        if (customView == null) return;
+        fsHandler.removeCallbacks(fsPing);
+        try { overlay.removeView(customView); } catch (Exception ignored) {}
+        customView = null;
+        if (chromeCol != null) chromeCol.setVisibility(View.VISIBLE);
+        if (overlay != null) overlay.setKeepScreenOn(false);
+        if (customCallback != null) {
+            try { customCallback.onCustomViewHidden(); } catch (Exception ignored) {}
+            customCallback = null;
+        }
+    }
+
+    /** While a video is fullscreen, report activity so the idle timer does not close it. */
+    private final Runnable fsPing = new Runnable() {
+        @Override
+        public void run() {
+            if (customView == null) return;
+            notifyListeners("webActivity", new JSObject());
+            fsHandler.postDelayed(this, 30000);
+        }
+    };
 
     /** THE navigation decision. Pre-normalized parts only — no prefix parsing here. */
     private boolean allowed(Uri u) {
