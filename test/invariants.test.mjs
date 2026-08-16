@@ -2328,3 +2328,26 @@ test('the site viewer implements HTML5 fullscreen, and back leaves it first (v1.
       `${p}: closing while fullscreen leaves the video surface attached`);
   }
 });
+
+test('the add flow ASKS about external content, and the answer reaches the rule (v1.0.48)', () => {
+  // Asked at add time, not left to a toggle further down the panel: it is a per-site
+  // decision the parent is already thinking about, and a site whose embedded videos will
+  // not play looks broken long before anyone goes hunting for a switch.
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf('async function runSiteAdd');
+  const body = app.slice(at, app.indexOf('\n}\n', at));
+  assert.match(body, /askKid\(/, 'the add confirm is not a three-way question any more');
+  assert.match(body, /third:/, 'there is no "with external content" answer');
+  assert.match(body, /answer !== 'ok' && answer !== 'third'/,
+    'an accidental dismiss must add NOTHING — the v1.0.23 rule');
+  assert.match(body, /allowExternal = answer === 'third'/, 'the answer is not read');
+  assert.match(body, /addSiteShortcut\([^)]*allowExternal/s, 'the shortcut door drops the answer');
+  assert.match(body, /addSiteRule\(finalCanon, \{ allowExternal \}\)/, 'the rule door drops the answer');
+  // and the rule a shortcut auto-creates must inherit it, or saying yes changes nothing
+  const sc = app.slice(app.indexOf('async function addSiteShortcut'), app.indexOf('async function removeSiteEntry'));
+  assert.match(sc, /addSiteRule\(canon, \{ allowExternal \}\)/,
+    'the auto-created rule ignores the answer — the parent says yes and the page stays strict');
+  // the SAFE answer must be the primary button
+  const okIdx = body.indexOf("ok: 'הוספה — בלי");
+  assert.ok(okIdx > 0, 'the primary button is no longer the strict one');
+});
