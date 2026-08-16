@@ -72,8 +72,28 @@ public class KidsWebPlugin extends Plugin {
     private FrameLayout overlay;
     private WebView web;
     private TextView titleView;
-    private final List<Rule> rules = new ArrayList<>();
-    private boolean parentMode = false;
+    /**
+     * ⚠️ THESE THREE ARE READ FROM A BACKGROUND THREAD.
+     *
+     * `shouldInterceptRequest` is documented to run OFF the UI thread — it is called once
+     * per subresource, from the WebView's own worker. Everything it touches must therefore
+     * be safe to read there:
+     *
+     *  • `rules` is REPLACED wholesale, never mutated in place. `clear()` + `addAll()`
+     *    would let the worker observe an empty (or half-filled) list mid-swap and refuse
+     *    resources the parent had approved.
+     *  • `currentPageUrl` exists because `web.getUrl()` MAY NOT be called off the UI
+     *    thread. Doing so throws "A WebView method was called on thread
+     *    'WebViewCoreThread'" and KILLS the app — and because the fatal exception
+     *    surfaces from inside the WebView implementation, Android blames the WebView
+     *    package and offers to uninstall its updates. Field-reported on a real phone:
+     *    parent mode was fine (it returns before this code) and child mode crashed on
+     *    the first page. Written on the UI thread only, in onPageStarted /
+     *    doUpdateVisitedHistory / open().
+     */
+    private volatile List<Rule> rules = new ArrayList<>();
+    private volatile String currentPageUrl = "";
+    private volatile boolean parentMode = false;
     private long lastActivityPing = 0L;
     private long pausedAt = 0L;
     /** How long parent mode may sit backgrounded before it is abandoned rather than paused. */
@@ -153,8 +173,8 @@ public class KidsWebPlugin extends Plugin {
                 // that changes the mode must rebuild — otherwise parent mode can wear the
                 // child's colours and the one visual cue about it is a lie.
                 if (overlay != null && parentMode != parent) closeOverlay();
-                rules.clear();
-                rules.addAll(parsed);
+                rules = parsed;              // replace, never mutate (see the field's note)
+                currentPageUrl = url;        // before the first subresource can be requested
                 parentMode = parent;
                 if (overlay == null) buildOverlay(a);
                 if (titleView != null) titleView.setText(title == null || title.isEmpty() ? hostOf(url) : title);
@@ -322,6 +342,7 @@ public class KidsWebPlugin extends Plugin {
         overlay = null;
         web = null;
         titleView = null;
+        currentPageUrl = "";
         notifyListeners("webClosed", new JSObject());
     }
 
@@ -359,7 +380,14 @@ public class KidsWebPlugin extends Plugin {
 
         @Override
         public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+            currentPageUrl = url;   // UI thread — the background reader only ever reads it
             pingActivity();
+        }
+
+        /** Also fires for same-document navigations (pushState), which onPageStarted misses. */
+        @Override
+        public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+            currentPageUrl = url;
         }
     }
 
@@ -448,7 +476,10 @@ public class KidsWebPlugin extends Plugin {
         if ("data".equals(scheme) || "blob".equals(scheme) || "about".equals(scheme)) return true;
         if (!"https".equals(scheme)) return false;
 
-        Uri page = web != null && web.getUrl() != null ? Uri.parse(web.getUrl()) : null;
+        // The tracked URL, NOT web.getUrl(): this method runs off the UI thread and any
+        // WebView call from here is a fatal "called on thread 'WebViewCoreThread'".
+        final String pageUrl = currentPageUrl;
+        Uri page = (pageUrl != null && !pageUrl.isEmpty()) ? Uri.parse(pageUrl) : null;
         Rule gov = governing(page);
         if (gov != null && gov.allowExternal) return true;
 

@@ -2266,3 +2266,37 @@ test('one site add at a time (v1.0.45)', () => {
   assert.match(body, /if \(siteAddBusy\) return;/, 'the latch is not checked');
   assert.match(body, /finally/, 'a throw would leave the add button disabled forever');
 });
+
+test('nothing touches the WebView from the off-thread request hook (v1.0.45)', () => {
+  // FIELD-REPORTED CRASH. `shouldInterceptRequest` is documented to run OFF the UI
+  // thread, once per subresource. Any WebView method called from there throws
+  // "A WebView method was called on thread 'WebViewCoreThread'" and kills the app — and
+  // since the fatal exception surfaces from inside the WebView implementation, Android
+  // blames the WebView package and offers the user to uninstall its updates.
+  //
+  // It only ever hit CHILD mode: parent mode returns on the hook's first line, so the
+  // phone showed a working parent preview and a crash the moment the child opened the
+  // same site. The state that hook reads must be plain fields, and volatile.
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    const slice = (needle, close) => {
+      const at = body.indexOf(needle);
+      assert.ok(at > 0, `${p}: ${needle} not found`);
+      return body.slice(at, body.indexOf(close, at));
+    };
+    const hook = slice('public WebResourceResponse shouldInterceptRequest', '\n        }');
+    const helper = slice('private boolean subresourceAllowed', '\n    }');
+    for (const [name, code] of [['shouldInterceptRequest', hook], ['subresourceAllowed', helper]]) {
+      assert.ok(!/\bweb\s*\./.test(code),
+        `${p}: ${name} calls a WebView method, but it runs OFF the UI thread — that is a fatal crash`);
+    }
+    // and the cross-thread state must actually be safe to read there
+    for (const field of ['rules', 'currentPageUrl', 'parentMode']) {
+      assert.match(body, new RegExp(`volatile\\s+[\\w<>.]+\\s+${field}\\b`),
+        `${p}: ${field} is read from the request hook's thread and must be volatile`);
+    }
+    // `rules` must be REPLACED, never mutated in place, or the worker can observe it empty
+    assert.ok(!/rules\.clear\(\)/.test(body),
+      `${p}: rules is mutated in place — the off-thread reader can see it half-swapped`);
+  }
+});
