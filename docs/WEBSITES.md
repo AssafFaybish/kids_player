@@ -74,7 +74,15 @@ url + title + iconUrl         host + port + segments[] + allowExternal
    מסך-מלא של נגן מוטמע **לא עושה כלום** — בלי שגיאה ובלי לוג. כך זה נשלח. אם נוגעים
    ב-`RestrictedChromeClient`, אל תסירו אותם. ובזמן מסך מלא צריך גם `setKeepScreenOn`
    ופינג פעילות, אחרת סרטון של 20 דקות בלי נגיעה נראה כמו חוסר פעילות והמציג נסגר באמצע.
-7. **`shouldInterceptRequest` רץ מחוץ ל-UI thread** — היחיד מבין ה-callbacks של
+7. **אל תקראו את `siteEntries` דרך אינדקס.** `by_scope` הוא `['scopeId','order']`, ו-
+   IndexedDB **משמיט רשומה מאינדקס** כשחסר רכיב במפתח שלה. שורה בלי `order` קיימת ב-store
+   ובלתי-נראית לכל קורא, לנצח ובשקט — נמדד: `getAll()` החזיר שתי שורות ו-`listSiteEntries`
+   אפס, כלומר משגר מוסתר ופאנל ריק מעל מסד מלא. קוראים לפי **המפתח הראשי**, ו-
+   `putSiteEntry` חותם `order` בעצמו.
+8. **פול שנוחת לא מרענן רק את הבית.** ההורה נמצא במסך ההורים בדיוק כשהוא בודק אם מה
+   שהוסיף בטלפון הגיע. `renderAfterRemoteChange` מצייר את המסך שפעיל — ו**לא** קורא
+   ל-`refreshParent()`, שמנקה שורות הודעה ומחזיר את הטאב.
+9. **`shouldInterceptRequest` רץ מחוץ ל-UI thread** — היחיד מבין ה-callbacks של
    `WebViewClient`. קריאה ל-`web.` כלשהו משם היא **קריסה קטלנית**
    (`"called on thread 'WebViewCoreThread'"`), ואנדרואיד יאשים את ה-WebView ויציע
    למשתמש להסיר את עדכוניו. זה קרה בשטח, ורק במצב ילד — מצב הורה חוזר בשורה הראשונה של
@@ -117,6 +125,7 @@ url + title + iconUrl         host + port + segments[] + allowExternal
 | למה הכתובת נחסמה? | `sites-blocked-box` בפאנל ההורים; ו-`adb logcat` ל-`webBlocked` |
 | למה הכפתור לא מופיע? | `sitesEnabled`, ספירת ה-shortcuts, ו-`html.tv` — שלושתם ב-`refreshSitesLauncher` |
 | למה האתר לא מסונכרן? | האם הבלוב `prof:<id>` נבנה בכלל (§4.3) |
+| השורה ב-DB אבל לא על המסך | האם `getActiveProfile()` מחזיר פרופיל — בלי פרופיל פעיל `siteScope()` הוא null והרשימה ריקה |
 | הכלל לא תופס? | `canonicalSitePrefix(url)` בקונסול — השוו `display` לזה ששמור |
 | האייקון 🌐 במקום תמונה | `db.getThumbRecord('siteicon:<entryId>')`; `iconUrl` ריק = ה-probe לא הצליח |
 
