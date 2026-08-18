@@ -5749,9 +5749,32 @@ function wire() {
   // (a video that ended) exits fullscreen and THEN calls nav.back(), which restores the
   // folder's scroll — scrolling to the top after that would clobber it and drop the child
   // at the top of a folder they were half-way down.
+  // v1.0.51 — the landing must also SURVIVE the platform's own scroll restore.
+  // Field report ("בגירסה האחרונה", 2026-08-18): the child exits fullscreen and lands
+  // mid-page again. The double rAF below beats the REFLOW, but Android's WebView also
+  // RESTORES the pre-fullscreen scroll offset as the native custom view tears down, and
+  // that restore can land well after two rAFs on a real tablet. The scenario that banks a
+  // non-zero offset: the child taps the NEXT video from halfway down the under-player
+  // grid — fullscreen banks that offset at entry (nav.replace scrolls to 0 underneath,
+  // invisibly), and the exit restore drops them back at the grid with the playing video
+  // off-screen above. A longer timer would just be a slower bet on the same race; the fix
+  // is a PIN: for a short window after the exit, any scroll away from the top while still
+  // watching is snapped back by the 'scroll' listener — it fires exactly when the restore
+  // lands, whenever that is. Passive and permanently registered: outside the window it is
+  // one timestamp compare per scroll event.
+  const FS_EXIT_PIN_MS = 700;
+  let fsExitPinUntil = 0;
+  const onFsExitPinScroll = () => {
+    if (Date.now() > fsExitPinUntil) return;                                    // not pinned
+    if (document.fullscreenElement || document.webkitFullscreenElement) return; // re-entered
+    if (!nav.isActive('watch')) return; // leaveWatch → nav.back restores the FOLDER's scroll
+    if ((window.scrollY || 0) !== 0) window.scrollTo(0, 0);
+  };
+  window.addEventListener('scroll', onFsExitPinScroll, { passive: true });
   const onFullscreenChange = () => {
     if (document.fullscreenElement || document.webkitFullscreenElement) return; // entering
     if (!nav.isActive('watch')) return;
+    fsExitPinUntil = Date.now() + FS_EXIT_PIN_MS;
     // TWICE, and both are load-bearing. The immediate call is what makes this correct when
     // rAF cannot run — callbacks are SUSPENDED while the document is hidden (measured), so
     // fullscreen exiting as the app goes to the background would otherwise leave the page

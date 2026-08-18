@@ -366,6 +366,12 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     folder they were half-way down. Verified in the browser: scrolled to 280 → exit →
     top; and a LATE event after the navigation left the folder's position alone.
   - Both vendor event names are bound (older WebViews fire only `webkitfullscreenchange`).
+  - **v1.0.51: the double rAF was NOT enough on device** — Android's WebView RESTORES the
+    pre-fullscreen scroll offset as the native custom view tears down, after both rAFs.
+    A `scroll` listener now PINS the top for `FS_EXIT_PIN_MS` (700ms) after the exit
+    (same three guards: window expired / re-entered fullscreen / left the watch view).
+    Never fix this class of race with a longer timer — the pin reacts to the restore
+    whenever it lands. See docs/V1045.md §18.
 
 - v1.0.44 — **THE SHEET SUNSET IS DELETED, a month before its deadline** (user request). The
   v1.0.38 migration's whole job was one final read of the family's sources sheet plus the
