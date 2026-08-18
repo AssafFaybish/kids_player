@@ -486,8 +486,20 @@ test('the home entry PULLS before it SYNCS, and nothing else pulls (v1.0.25)', (
   assert.match(body, /await maybePullDrive\(\)/, 'the pull is not awaited — that IS the race');
 
   // ONE puller on the entry path. A second call site is how the race got in.
+  // v1.0.49: THREE, deliberately. The third is the parent's own "רענון נתונים" button,
+  // which never pulled at all — so a site or an approval made on another device could not
+  // arrive through the one control whose whole promise is "fetch what is new". Raise this
+  // only for another deliberate surface, never to silence a break.
   const callers = (app.match(/maybePullDrive\(/g) || []).length - 1; // minus the definition
-  assert.ok(callers <= 2, `maybePullDrive has ${callers} call sites — entry + resume only`);
+  assert.ok(callers <= 3, `maybePullDrive has ${callers} call sites — entry + resume + the refresh button`);
+  const dsr = app.slice(app.indexOf('async function doSyncAndRefresh'));
+  const dsrBody = dsr.slice(0, dsr.indexOf('\n}\n') + 1);
+  assert.match(dsrBody, /maybePullDrive\(\{ force: true \}\)/,
+    'the parent\'s refresh button does not pull — it cannot bring anything from another device');
+  assert.ok(dsrBody.indexOf('maybePullDrive(') < dsrBody.indexOf('syncLibrary('),
+    'the refresh button syncs before it pulls — both write the same records');
+  assert.match(dsrBody, /refreshSitesPanel\(\)/,
+    'the refresh button leaves the sites tab stale — the tab the parent is standing in');
   // Call shapes only, like the search.list guard: the comment above entryRefresh NAMES the
   // function it replaced, and a doc comment must never read as a violation.
   assert.doesNotMatch(app, /function pullThenSync\b/, 'the old parallel pipeline is back');
@@ -2350,4 +2362,54 @@ test('the add flow ASKS about external content, and the answer reaches the rule 
   // the SAFE answer must be the primary button
   const okIdx = body.indexOf("ok: 'הוספה — בלי");
   assert.ok(okIdx > 0, 'the primary button is no longer the strict one');
+});
+
+test('a landed pull redraws the surface the parent is ON, not just the home (v1.0.49)', () => {
+  // FIELD-REPORTED. A pull lands wherever the parent is standing, and the parent screen is
+  // exactly where they go to check that what they added on the other device arrived. Both
+  // entryRefresh branches re-rendered the gallery ALONE, so every parent surface kept
+  // showing pre-pull data and the parent pressed "רענון" to reveal rows already in the DB.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /async function renderAfterRemoteChange\(/, 'the shared post-pull render is gone');
+  const fn = app.slice(app.indexOf('async function renderAfterRemoteChange('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+
+  assert.match(body, /nav\.isActive\('gallery'\)/, 'the child home is no longer redrawn');
+  assert.match(body, /nav\.isActive\('parent'\)/, 'the PARENT screen is not redrawn — the reported bug');
+  for (const r of ['refreshPendingList', 'refreshChannelsList', 'refreshSitesPanel']) {
+    assert.ok(body.includes(r), `${r} is missing — that list stays stale after a pull`);
+  }
+  // refreshParent() also clears the status lines, re-applies the tab and re-runs the
+  // update check: a SILENT background pull must not wipe a message the parent is reading.
+  assert.ok(!/\brefreshParent\(\)/.test(body),
+    'a background pull must not run refreshParent() — it clobbers the parent mid-action');
+
+  // and BOTH branches must go through it, or they drift apart exactly as they did before
+  const er = app.slice(app.indexOf('async function entryRefresh('));
+  const erBody = er.slice(0, er.indexOf('\n}\n') + 1);
+  const calls = (erBody.match(/renderAfterRemoteChange\(\)/g) || []).length;
+  assert.equal(calls, 2, `entryRefresh calls the shared render ${calls}× — the pull and sync branches must BOTH use it`);
+  assert.ok(!/nav\.isActive\('gallery'\)\)\s*(await\s*)?renderHome\(\)/.test(erBody),
+    'entryRefresh renders the gallery directly again — the parent screen goes stale');
+});
+
+test('site entries are read by PRIMARY KEY, never the by_scope index (v1.0.49)', () => {
+  // MEASURED IN THE BROWSER. `by_scope` is ['scopeId','order'], and IndexedDB leaves a
+  // record OUT of an index entirely when any component of its key is undefined. A row
+  // written without `order` — a peer on another version, a hand-edited snapshot, any
+  // future writer — therefore EXISTED in the store and was invisible to every reader,
+  // permanently and silently: getAll() on the store returned two rows while
+  // listSiteEntries returned none, so the child's launcher stayed hidden and the parent
+  // panel stayed empty over a full database. It presents as "the sync is broken" and
+  // cannot be diagnosed from any screen.
+  const db = CODE.get('www/js/db.js');
+  const fn = db.slice(db.indexOf('export async function listSiteEntries'));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.ok(!/index\('by_scope'\)/.test(body),
+    'listSiteEntries reads the by_scope index again — a row missing `order` becomes invisible');
+  assert.match(body, /objectStore\('siteEntries'\)/, 'it no longer range-scans the store itself');
+  // and the writer must guarantee the field, so no row can be malformed in the first place
+  const put = db.slice(db.indexOf('export async function putSiteEntry'));
+  const putBody = put.slice(0, put.indexOf('\n}\n') + 1);
+  assert.match(putBody, /order/, 'putSiteEntry no longer defaults `order` — the nine call sites must not own it');
 });

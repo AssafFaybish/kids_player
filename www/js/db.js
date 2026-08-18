@@ -87,6 +87,9 @@ export function openDb() {
         // lifecycle, and nothing outside this feature reads the store, so there is no
         // pipeline for the other kind to leak into.
         const sites = db.createObjectStore('siteEntries', { keyPath: ['scopeId', 'entryId'] });
+        // NOT read any more (see listSiteEntries): an index key with an undefined
+        // component silently omits the record. Kept because dropping an index costs a
+        // DB_VERSION bump, and an unread index is harmless.
         sites.createIndex('by_scope', ['scopeId', 'order']);
       }
     };
@@ -681,8 +684,19 @@ export async function putDeletedChannels(libraryId, map) {
 
 export async function listSiteEntries(scopeId) {
   const db = await openDb();
-  const idx = db.transaction('siteEntries').objectStore('siteEntries').index('by_scope');
-  const r = await preq(idx.getAll(IDBKeyRange.bound([scopeId, -Infinity], [scopeId, Infinity])));
+  // ⚠️ THE PRIMARY KEY, NOT THE by_scope INDEX. IndexedDB leaves a record OUT of an index
+  // entirely when any component of its index key is undefined — and `by_scope` is
+  // ['scopeId', 'order']. So a row written without `order` (a peer on another version, a
+  // hand-edited snapshot, any future writer) EXISTS in the store and is invisible to every
+  // reader, permanently and silently. Measured in the browser: getAll() on the store
+  // returned both rows while this function returned none. That failure mode presents as
+  // "the sync is broken" and cannot be diagnosed from any screen.
+  //
+  // The keyPath is ['scopeId', 'entryId'] and both are always present — a row without them
+  // cannot be stored at all — so this range can never hide anything. The index bought
+  // nothing: every caller sorts by `order` in JS anyway (see app.siteShortcuts).
+  const store = db.transaction('siteEntries').objectStore('siteEntries');
+  const r = await preq(store.getAll(IDBKeyRange.bound([scopeId, ''], [scopeId, '\uffff'])));
   return r || [];
 }
 
@@ -694,7 +708,11 @@ export async function listSiteEntries(scopeId) {
  * `preserveTimestamp` is for the one caller applying an already-merged remote record.
  */
 export async function putSiteEntry(rec, { preserveTimestamp = false } = {}) {
-  const out = preserveTimestamp && rec.updatedAt ? rec : { ...rec, updatedAt: Date.now() };
+  const base = preserveTimestamp && rec.updatedAt ? rec : { ...rec, updatedAt: Date.now() };
+  // `order` is what the tile order is sorted by, and a row missing it used to be dropped
+  // from the by_scope index outright. Defaulted HERE, not at the nine call sites — the
+  // v1.0.22 putLibraryChannel lesson — so no writer can produce a malformed row again.
+  const out = Number.isFinite(Number(base.order)) ? base : { ...base, order: 0 };
   await tx(['siteEntries'], 'readwrite', (s) => { s.put(out); });
 }
 

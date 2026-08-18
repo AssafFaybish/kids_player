@@ -519,11 +519,38 @@ function homeEntryRefresh() {
  * There is now exactly one caller (the gallery's onEnter) and one promise; activation
  * awaits that promise for its loading screen instead of starting a second pipeline.
  */
+/**
+ * Draw whatever the family's shared state just landed UNDER — not only the home.
+ *
+ * A pull lands wherever the parent happens to be standing, and the parent screen is
+ * exactly where they go to check that what they added on the other device arrived. Both
+ * branches of entryRefresh used to re-render the gallery alone, so every parent surface
+ * kept showing pre-pull data and the parent pressed "רענון" to reveal rows that were
+ * ALREADY in the database. Field-reported for approved websites; the pending queue, the
+ * channel list and the library list had the same hole.
+ *
+ * ⚠️ The parent branch refreshes the LISTS ONLY — never `refreshParent()`. That one also
+ * clears the status lines, re-applies the tab and re-runs the update check, so a silent
+ * background pull would wipe a message the parent is still reading and could yank them
+ * out of the tab they are working in. `refreshSitesPanel` carries the launcher with it.
+ *
+ * The folder view is deliberately NOT re-rendered: a child mid-browse would have the grid
+ * redrawn under their thumb, and the folder's own onEnter already refreshes on the way in.
+ */
+async function renderAfterRemoteChange() {
+  if (nav.isActive('gallery') || nav.isActive('loading')) { await renderHome(); return; }
+  if (!nav.isActive('parent')) return;
+  await Promise.all([
+    refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel()
+  ]);
+  await refreshGateDot();
+}
+
 async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   if (pull && await maybePullDrive()) {
     if (activeProfileId !== id) return; // switched profile under us — that render owns it
     await loadGiftStates();
-    if (nav.isActive('gallery')) await renderHome();
+    await renderAfterRemoteChange();
   }
   if (activeProfileId !== id) return;
   // v1.0.38 — THE SHEET SUNSET, between the pull and the sync, AWAITED. Between, because a
@@ -538,7 +565,7 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   if (activeProfileId !== id) return;
   await absorbMineIntoShared(id); // the first sync may have just created sources
   await loadGiftStates();
-  if (nav.isActive('gallery') || nav.isActive('loading')) await renderHome();
+  await renderAfterRemoteChange();
   maybeSchedulePush();
 }
 
@@ -5120,6 +5147,15 @@ async function doSyncAndRefresh() {
   // full-screen view is what carries the wait itself.
   loading.show({ title: 'בודקים את רשימת הסרטונים', step: 'טוען…', pct: 0 });
   try {
+    // v1.0.49 — PULL FIRST, FORCED. This button says "רענון נתונים" and the parent presses
+    // it meaning "fetch whatever is new", but it only ever ran the local sync: a site, an
+    // approval or a channel added on another device could not arrive through it at all.
+    // Reported from the field as "I had to press רענון to get the sites" — which worked
+    // only because the button ends in a re-render of data an earlier pull had already
+    // landed. Forced, because the parent asked explicitly; SERIALIZED before the sync for
+    // the pullThenSync reason (both write the same records).
+    loading.setStep('בודקים מה חדש במכשירים האחרים…');
+    await maybePullDrive({ force: true });
     const res = await syncLibrary(activeProfileId, {
       force: true,
       onProgress: (p) => { status.textContent = p.label || 'טוען…'; loading.progress(p); }
@@ -5138,7 +5174,12 @@ async function doSyncAndRefresh() {
   try {
     loading.setStep('מרעננים את הרשימות…');
     await loadGiftStates();
-    await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList()]);
+    // refreshSitesPanel belongs here too: without it the button whose whole job is
+    // "fetch what is new" pulled the family's sites and then left the sites tab —
+    // the tab the parent is most likely standing in — showing the old rows.
+    await Promise.all([
+      refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel()
+    ]);
     renderHome();
   } finally {
     await loading.hide(); // the caller must ALWAYS reach hide()
@@ -6314,11 +6355,16 @@ async function init() {
     // the phone and then hands the tablet to the child, and resume does not re-fire the
     // gallery's onEnter. Same guards as the resync below (never mid-video, home only),
     // and serialized before it so the two never write the same records at once.
-    if (activeProfileId && isGalleryActive()) {
+    // v1.0.49: the PULL also runs when the parent screen is up. It used to share the
+    // resync's "home only" gate, but the parent screen is where a parent resumes TO in
+    // order to check that what they added on the phone arrived — and nothing else on that
+    // screen pulls, so they were stuck pressing a button that could not help them.
+    // Still never mid-video (the watch view is neither).
+    if (activeProfileId && (isGalleryActive() || nav.isActive('parent'))) {
       try {
         if (await maybePullDrive()) {
           await loadGiftStates();
-          if (isGalleryActive()) await renderHome();
+          await renderAfterRemoteChange();
         }
       } catch {}
     }
