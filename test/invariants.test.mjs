@@ -1971,6 +1971,49 @@ test('leaving fullscreen lands on the TOP of the watch page (v1.0.43)', () => {
     'older WebViews fire only the webkit-prefixed event');
 });
 
+test('the fullscreen-exit top landing SURVIVES the WebView scroll restore (v1.0.51)', () => {
+  // Field report (2026-08-18, "בגירסה האחרונה"): the child exits fullscreen and lands
+  // mid-page again. v1.0.43's double rAF beats the REFLOW — but Android's WebView also
+  // RESTORES the pre-fullscreen scroll offset when the native custom view tears down,
+  // and that restore lands after two rAFs on a real tablet. The scenario: the child taps
+  // a video from halfway down the under-player grid (fullscreen banks that offset;
+  // nav.replace scrolls to 0 underneath, invisibly), watches, exits — and the restore
+  // drops them back at the grid with the playing video off-screen above.
+  // The fix is a PIN, not a longer timer: for a short window after the exit, any scroll
+  // away from the top while still watching is snapped back.
+  const app = MODULES.get('www/js/app.js');
+
+  // the pin window is armed in the EXIT path, after the watch guard
+  const fsAt = app.indexOf('const onFullscreenChange = () => {');
+  const fsBody = app.slice(fsAt, app.indexOf('\n  };', fsAt));
+  assert.match(fsBody, /fsExitPinUntil = Date\.now\(\) \+ FS_EXIT_PIN_MS/,
+    'the exit path no longer arms the scroll pin');
+
+  const at = app.indexOf('const onFsExitPinScroll = () => {');
+  assert.ok(at > 0, 'the fullscreen-exit scroll pin listener is gone');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+  // every guard is load-bearing: expired window (the child scrolling normally), a
+  // re-entered fullscreen, and a navigation that left the watch view (leaveWatch →
+  // nav.back restores the FOLDER's scroll — the pin must never fight that).
+  assert.match(body, /Date\.now\(\) > fsExitPinUntil/, 'the pin never expires — it would fight the child\'s own scrolling forever');
+  assert.match(body, /document\.fullscreenElement \|\| document\.webkitFullscreenElement/,
+    'the pin keeps scrolling a page that re-entered fullscreen');
+  assert.match(body, /nav\.isActive\('watch'\)/,
+    'the pin fights nav.back()\'s folder-scroll restore after leaveWatch');
+  assert.match(body, /window\.scrollTo\(0, 0\)/, 'the pin does not actually scroll');
+
+  // registered once, on window, passive (it runs on every scroll of the app's life)
+  assert.match(app, /window\.addEventListener\('scroll', onFsExitPinScroll, \{ passive: true \}\)/,
+    'the pin listener is not registered (or not passive)');
+
+  // the window must outlast a real tablet's custom-view teardown (~300ms measured class
+  // of delay) yet stay short enough that a child's deliberate scroll is not eaten.
+  const msMatch = app.match(/const FS_EXIT_PIN_MS = (\d+)/);
+  assert.ok(msMatch, 'FS_EXIT_PIN_MS is gone');
+  const ms = Number(msMatch[1]);
+  assert.ok(ms >= 500 && ms <= 1500, `FS_EXIT_PIN_MS=${ms} — must cover the WebView restore (>=500) without eating the child's own scroll (<=1500)`);
+});
+
 /* ---------------- the sheet sunset is GONE (v1.0.44) ---------------- */
 
 test('nothing reads a Google Sheet, and nothing deletes a Drive file (v1.0.44)', () => {
