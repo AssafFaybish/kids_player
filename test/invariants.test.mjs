@@ -2413,3 +2413,32 @@ test('site entries are read by PRIMARY KEY, never the by_scope index (v1.0.49)',
   const putBody = put.slice(0, put.indexOf('\n}\n') + 1);
   assert.match(putBody, /order/, 'putSiteEntry no longer defaults `order` — the nine call sites must not own it');
 });
+
+test('the document can always grow, so it can always scroll (v1.0.50)', () => {
+  // Field report: two Samsung tablets, SAME app version — one scrolled the long screens
+  // and one could not. CSS is not node-testable, so these are the three properties the fix
+  // rests on, pinned as text.
+  const css = readRepoCode('www/css/styles.css');
+  const body = css.slice(css.indexOf('\nbody {'), css.indexOf('}', css.indexOf('\nbody {')));
+
+  // `height: 100%` pins the body box to the viewport and leaves a taller page depending on
+  // the overflow PROPAGATING to the viewport to be scrollable at all — which is exactly
+  // the kind of thing two WebView versions disagree about.
+  assert.ok(!/(?<!min-)height:\s*100%/.test(body),
+    'body is height-pinned again — a page taller than the screen may not scroll at all');
+  assert.match(body, /min-height:\s*100%/, 'body no longer grows with its content');
+
+  // `overscroll-behavior: none` also suppresses the local overscroll some WebViews use to
+  // START a touch scroll; `contain` blocks the chaining (pull-to-refresh) and keeps it.
+  assert.ok(!/overscroll-behavior:\s*none/.test(body),
+    'overscroll-behavior:none is back — it can suppress the gesture that starts a scroll');
+  assert.match(body, /overscroll-behavior-y:\s*contain/, 'the pull-to-refresh guard is gone');
+
+  const app = css.slice(css.indexOf('\n#app {'), css.indexOf('}', css.indexOf('\n#app {')));
+  // A percentage min-height against an auto-height body silently computes to nothing.
+  assert.match(app, /min-height:\s*100dvh/, '#app must not size itself off an auto-height ancestor');
+  // The last row must clear Android's bottom gesture strip: a swipe starting inside it is
+  // claimed by the SYSTEM (immersive + swipe-to-reveal), so the page does not scroll.
+  assert.match(app, /padding-bottom:\s*calc\(16px \+ env\(safe-area-inset-bottom/,
+    '#app lost its bottom inset — the last row sits under the gesture strip');
+});
