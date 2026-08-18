@@ -14,17 +14,39 @@
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { height: 100%; }
+/* v1.0.50 — THE DOCUMENT MUST ALWAYS BE ABLE TO GROW.
+   `body { height: 100% }` pins the body box to exactly the viewport, and a page taller than
+   it then depends on the overflow PROPAGATING from body to the viewport to be scrollable at
+   all. Chrome does that; Android WebViews have not always agreed — which is how two Samsung
+   tablets on the SAME app version could differ, one scrolling and one stuck. `min-height`
+   removes the dependency: the box grows with its content, so a scrollable document is a
+   structural fact rather than a propagation quirk. */
+html { height: 100%; }
 body {
+  min-height: 100%;
   margin: 0;
   font-family: "Varela Round", "Heebo", "Assistant", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
   background: var(--bg);
   color: var(--ink);
-  overscroll-behavior: none;
+  /* `contain`, not `none`: both stop pull-to-refresh and the glow from chaining to the
+     host, but `none` also suppresses the local overscroll some WebViews use to START a
+     touch scroll. `contain` keeps the gesture and still blocks the chaining. */
+  overscroll-behavior-y: contain;
   -webkit-user-select: none;
   user-select: none;
 }
-#app { min-height: 100%; }
+#app {
+  /* dvh, not a percentage: against an auto-height body a percentage min-height resolves
+     against `auto` and silently computes to nothing. */
+  min-height: 100dvh;
+  /* The last row must clear Android's bottom gesture strip. This is not only clipping: an
+     upward swipe STARTING inside that strip is claimed by the SYSTEM (the app runs
+     immersive with swipe-to-reveal), so the page does not scroll and the tablet looks
+     stuck — and a device using 3-button navigation has no such strip, exactly the kind of
+     difference that makes one tablet work and another not. The 16px floor matters because
+     immersive mode often reports the inset as 0. */
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
 
 .view { display: none; }
 .view.active { display: block; }
