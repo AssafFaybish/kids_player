@@ -223,8 +223,15 @@ body {
 .player-host { position: absolute; inset: 0; }
 .player-host iframe, .player-host video { width: 100%; height: 100%; border: 0; display: block; }
 /* Transparent layer over the player: blocks YouTube's own overlay/logo/end-cards;
-   taps drive the HUD (reveal / play-pause / double-tap seek). */
-.tap-shield { position: absolute; inset: 0; z-index: 2; background: transparent; touch-action: none; }
+   taps drive the HUD (reveal / play-pause / double-tap seek).
+   v1.0.52 — `pan-y`, NEVER `none`: in LANDSCAPE the player is most of the viewport
+   (64vh tall, centered), so with `none` the area a finger naturally swipes could not
+   scroll the page at all — the field report was "יוצאים ממסך מלא ואי אפשר לגלול", and
+   v1.0.50/51 could not fix it because the document COULD scroll, just not from here.
+   `pan-y` hands vertical swipes to the page and keeps taps/double-taps with the shield
+   (a swipe the browser claims ends in pointercancel, so it can never read as a tap).
+   In fullscreen nothing is scrollable, so the shield behaves exactly as before there. */
+.tap-shield { position: absolute; inset: 0; z-index: 2; background: transparent; touch-action: pan-y; }
 /* v1.0.25 continuous-play countdown. z-index ABOVE the tap-shield (2): the shield covers
    the whole player and swallows taps to drive the HUD, so an overlay underneath it would
    render a stop button the child could see and never press. Unlike the HUD bars this DOES
@@ -736,11 +743,24 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   .load-scene *, .load-dots span { animation: none !important; }
 }
 
-/* ---------- Kid modal ---------- */
-.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
-.modal-scrim { position: absolute; inset: 0; background: rgba(45, 42, 74, 0.45); }
+/* ---------- Kid modal ----------
+   v1.0.52 — the modal is position:fixed, so unlike every view it CANNOT grow with its
+   content: on a short LANDSCAPE viewport a tall card (three wrapped Hebrew buttons +
+   a long question) was clipped at BOTH ends by the centering and nothing could scroll
+   it — the buttons were simply unreachable. Same lesson as .tour-wrap: the container
+   scrolls, the card centers by margin:auto (align-items:center clips an overflowing
+   flex item's top). overscroll-behavior keeps the scroll from chaining to the page
+   behind the scrim; the scrim is FIXED so scrolling never uncovers the background. */
+.modal {
+  position: fixed; inset: 0; z-index: 50; display: flex;
+  overflow-y: auto; overscroll-behavior: contain;
+  /* real gaps even when the card overflows (auto margins collapse to 0 there) */
+  padding: 14px;
+}
+.modal-scrim { position: fixed; inset: 0; background: rgba(45, 42, 74, 0.45); }
 .modal-card {
   position: relative;
+  margin: auto;
   background: #fff; border-radius: 28px; box-shadow: var(--shadow);
   padding: 26px 26px 24px; width: min(92vw, 420px); text-align: center;
   animation: modalPop 0.18s ease-out;
@@ -924,11 +944,18 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   top: calc(12px + env(safe-area-inset-top, 0px));
   inset-inline-end: 12px;
   width: min(420px, calc(100vw - 24px));
+  /* v1.0.52: fixed like the modal, so it too cannot grow — on a short landscape
+     viewport the action row fell below the screen with no way to reach it. */
+  max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px));
   background: var(--bg-2); border-radius: 18px;
   box-shadow: 0 14px 40px rgba(45, 42, 74, 0.34);
   overflow: hidden;
+  overflow-y: auto;
   display: flex; flex-direction: column;
 }
+/* keep natural sizes when the bubble is height-capped: flex children would otherwise
+   SHRINK (squishing the video) instead of letting the bubble scroll */
+.preview-bubble > * { flex: 0 0 auto; }
 .pv-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; }
 .pv-title {
   flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 800; color: var(--ink);

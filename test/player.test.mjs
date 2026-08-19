@@ -3,10 +3,10 @@
 // bug these cover was found by reading it, not by the suite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampSeek, fractionFromX, formatTime, progressPct, shouldFinishNearEnd, tvKeyIntent,
+import { clampSeek, fractionFromX, formatTime, isTapGesture, progressPct, shouldFinishNearEnd, tvKeyIntent,
   planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction } from '../www/js/playerlogic.js';
-import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY,
+import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY, TAP_SLOP_PX,
   AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS,
   RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from '../www/js/config.js';
 
@@ -98,6 +98,29 @@ test('the tap constants still make a slow double-tap unambiguous', () => {
   // double-tap would BOTH pause and seek.
   assert.ok(TAP_SINGLE_DELAY >= TAP_DOUBLE_MS, `${TAP_SINGLE_DELAY} < ${TAP_DOUBLE_MS}`);
   assert.ok(SEEK_STEP > 0);
+});
+
+test('isTapGesture: a swipe releasing over the shield is NOT a tap (v1.0.52)', () => {
+  // The shield acts on pointerup with no threshold, so a swipe that ended over it read as
+  // a tap — and a center release PAUSED the video the child was trying to scroll past.
+  // touch-action:pan-y removes the vertical case (pointercancel), but a horizontal swipe
+  // and every swipe while FULLSCREEN (nothing to scroll) still end in a pointerup here.
+  assert.equal(isTapGesture(100, 100, 100, 100), true, 'a perfectly still press is a tap');
+  assert.equal(isTapGesture(100, 100, 100 + TAP_SLOP_PX, 100), true, 'wobble on the boundary still counts');
+  assert.equal(isTapGesture(100, 100, 100 + TAP_SLOP_PX + 1, 100), false, 'past the slop it is a swipe');
+  assert.equal(isTapGesture(100, 100, 100, 180), false, 'a vertical drag is a swipe');
+  assert.equal(isTapGesture(100, 100, 30, 100), false, 'direction does not matter');
+  // the diagonal must not slip through an axis-only check: 12px on each axis is ~17px
+  const d = Math.ceil(TAP_SLOP_PX * 0.9);
+  assert.equal(isTapGesture(100, 100, 100 + d, 100 + d), false, 'a diagonal past the slop is a swipe');
+});
+
+test('isTapGesture: missing coordinates fail OPEN — the tap must survive an odd WebView', () => {
+  // Refusing would make every tap dead on a device whose pointer events carry no
+  // coordinates; accepting is the pre-v1.0.52 status quo, the recoverable direction.
+  assert.equal(isTapGesture(NaN, NaN, 100, 100), true);
+  assert.equal(isTapGesture(undefined, undefined, 100, 100), true);
+  assert.equal(isTapGesture(100, 100, undefined, undefined), true);
 });
 
 /* ---------------- continuous play (v1.0.25) ---------------- */

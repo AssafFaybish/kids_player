@@ -55,6 +55,13 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - HUD bar CONTAINERS are `pointer-events:none` ALWAYS (only buttons/seek take events, only while
   `.hud-on`) — interactive bars swallow the center-tap/double-tap on small players.
 - Tap model: hidden→tap only reveals; visible→center-50% tap toggles play. Paused pins the HUD.
+  **A tap is a press that did not MOVE** (v1.0.52, `playerlogic.isTapGesture`, `TAP_SLOP_PX`):
+  `onTap` fires on pointerup with no threshold, so a swipe releasing over the shield used to
+  read as a tap and a center release PAUSED the video. And the shield is
+  **`touch-action: pan-y`, NEVER `none`** — in LANDSCAPE the player is most of the viewport,
+  so `none` meant the surface a finger naturally swipes could not scroll the page at all
+  ("יוצאים ממסך מלא ואי אפשר לגלול", the bug v1.0.50/51 could not fix because the document
+  COULD scroll, just not from there). Both invariant-pinned.
 - A video that ENDS calls `leaveWatch()` (v1.0.16): exit fullscreen, then `nav.back()` —
   the child returns to the FOLDER / search results they came from, never unconditionally
   home (`goGallery()` there was the bug). Works after video→video switches too because
@@ -349,6 +356,44 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     invariants; every guard proven red on a planted regression — and the first three fired
     on their own COMMENTS, so the Java guards read comment-stripped source.
 
+- v1.0.52 — **LANDSCAPE CAN FINALLY SCROLL THE WATCH PAGE** (field report, the THIRD scroll
+  fix: "מסך מאוזן, יוצאים ממסך מלא, אי אפשר לגלול מטה"). v1.0.50 made the document able to
+  grow and v1.0.51 landed the fullscreen exit at the top — and the report came back anyway,
+  because in LANDSCAPE the player (64vh tall, centered) IS most of the screen, and the
+  `.tap-shield` covering it said `touch-action: none`: the surface a finger naturally swipes
+  scrolled NOTHING (portrait never showed it — the player is ~35% there and the grid below
+  is the natural swipe area). Worse, the swipe's pointerup on the shield read as a TAP —
+  no movement threshold existed — so a center release PAUSED the video mid-attempt.
+  - **The shield is `touch-action: pan-y` now**: vertical swipes over the player scroll the
+    page; taps/double-taps stay with the shield (a pan the browser claims ends in
+    pointercancel, which can never reach `onTap`). In fullscreen nothing is scrollable, so
+    behaviour there is unchanged.
+  - **A tap is a press that did not move** — pure `playerlogic.isTapGesture` (`TAP_SLOP_PX`
+    14, Euclidean, not per-axis: a diagonal must not slip through), consulted FIRST in
+    `onTap`. Missing coordinates fail OPEN (an odd WebView must not lose every tap; a
+    wrongly accepted tap is just the old status quo). Kills the horizontal-swipe and
+    in-fullscreen-swipe pause class too.
+  - **The child's finger disarms the v1.0.51 pin**: the pin exists to defeat the WebView's
+    PROGRAMMATIC scroll restore, which arrives with no pointer event — but for 700ms it
+    also snapped the child's own scroll back to the top ("I swipe and it bounces back").
+    Any `pointerdown` (window, capture, passive) zeroes the window; every gesture that can
+    trigger the exit itself (⛶, system back) completes before `fullscreenchange` fires, so
+    a pointerdown seen while pinned is always a NEW, deliberate gesture.
+  - **Fixed overlays got the .tour-wrap treatment** — every VIEW grows with its content
+    (v1.0.50) but `position:fixed` cannot: a `.modal` card taller than a short landscape
+    viewport was clipped at BOTH ends by the flex centering, buttons unreachable. `.modal`
+    scrolls (`overflow-y:auto`, `overscroll-behavior:contain`, 14px padding), the card
+    centers by `margin:auto`, the scrim went `position:fixed` so scrolling never uncovers
+    the page behind. `.preview-bubble` is height-capped (`100dvh`-based) with
+    `overflow-y:auto`, its children `flex: 0 0 auto` so the video is not squished instead.
+  - Verified in the browser at 1280×800, 767×500 and 500×767 against the LIVE player: the
+    shield computes `pan-y`; tap toggles play, vertical/horizontal swipes never pause,
+    double-tap still seeks +10; a 613px modal on a 500px viewport keeps its top visible and
+    scrolls to its buttons; every screen (home/folder/watch/pin/parent×3/profiles/search/
+    guide) either fits or scrolls fully in BOTH orientations. Gesture-level pan and the
+    on-device fullscreen exit remain device-checklist items (docs/TESTING.md). 5 unit tests
+    + 2 config pins + 2 invariants tests, every guard proven red on a planted regression
+    (8 plants).
 - v1.0.43 — **LEAVING FULLSCREEN LANDS ON THE TOP OF THE WATCH PAGE** (user request). Exiting
   fullscreen is NOT a navigation: `nav.handleBack` answers `'exit-fullscreen'` and returns,
   and the HUD's ⛶ does the same — so nothing ever scrolled, and the child came back to

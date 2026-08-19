@@ -2485,3 +2485,65 @@ test('the document can always grow, so it can always scroll (v1.0.50)', () => {
   assert.match(app, /padding-bottom:\s*calc\(16px \+ env\(safe-area-inset-bottom/,
     '#app lost its bottom inset — the last row sits under the gesture strip');
 });
+
+test('landscape can scroll: vertical swipes over the player reach the page (v1.0.52)', () => {
+  // Field report ("מסך מאוזן, יוצאים ממסך מלא, אי אפשר לגלול מטה"): in LANDSCAPE the
+  // player is most of the viewport (64vh tall, centered), so the surface a finger
+  // naturally swipes is the tap-shield — and `touch-action: none` there meant those
+  // swipes scrolled NOTHING. v1.0.50 made the document able to grow and v1.0.51 landed
+  // the fullscreen exit at the top; this is the remaining structural piece.
+  const css = readRepoCode('www/css/styles.css');
+  const shield = css.slice(css.indexOf('.tap-shield'), css.indexOf('}', css.indexOf('.tap-shield')));
+  assert.match(shield, /touch-action:\s*pan-y/,
+    'the shield no longer lets vertical pans through — a landscape tablet cannot scroll the watch page');
+  assert.ok(!/touch-action:\s*none/.test(shield),
+    'touch-action:none is back on the shield — swipes over the player scroll nothing');
+
+  // The slop guard: with pan-y a vertical swipe the page claims ends in pointercancel,
+  // but a HORIZONTAL swipe — and every swipe while FULLSCREEN, where nothing scrolls —
+  // still ends in a pointerup on the shield, and with no threshold a center release
+  // PAUSED the video the child was trying to scroll past.
+  const player = CODE.get('www/js/player.js');
+  assert.match(player, /const onTap = \(e\) => \{\s*if \(!isTapGesture\(downX, downY, e\.clientX, e\.clientY\)\) return;/,
+    'onTap no longer asks isTapGesture FIRST — a swipe releasing over the shield reads as a tap');
+  assert.match(player, /downX = e\.clientX; downY = e\.clientY;/,
+    'onAnyTouch no longer records the press coordinates the slop check compares against');
+
+  // The child's own finger disarms the v1.0.51 pin. The pin exists to defeat the
+  // WebView's PROGRAMMATIC scroll restore, which arrives with no pointer event; without
+  // the disarm it snapped the child's own scroll back to the top for 700ms after every
+  // exit — the "cannot scroll" half of the report the shield fix alone does not cover.
+  const app = CODE.get('www/js/app.js');
+  assert.match(app,
+    /window\.addEventListener\('pointerdown', \(\) => \{ fsExitPinUntil = 0; \}, \{ capture: true, passive: true \}\)/,
+    'a pointerdown no longer disarms the fullscreen-exit pin — it eats the child\'s own scroll');
+});
+
+test('fixed overlays can always reach their buttons on a short landscape screen (v1.0.52)', () => {
+  // Every VIEW grows with its content (v1.0.50), but a position:fixed overlay CANNOT —
+  // a modal card taller than a short landscape viewport was clipped at BOTH ends by the
+  // flex centering, and nothing could scroll it: the buttons were simply unreachable.
+  // Same lesson as .tour-wrap — the card centers by margin:auto (align-items:center
+  // clips an overflowing flex item's TOP), and the CONTAINER scrolls.
+  const css = readRepoCode('www/css/styles.css');
+  const modal = css.slice(css.indexOf('.modal {'), css.indexOf('}', css.indexOf('.modal {')));
+  assert.match(modal, /overflow-y:\s*auto/,
+    'the modal container no longer scrolls — a tall card strands its buttons off-screen');
+  assert.ok(!/align-items:\s*center/.test(modal),
+    'align-items:center is back on .modal — it clips an overflowing card\'s top, unreachably');
+  const card = css.slice(css.indexOf('.modal-card {'), css.indexOf('}', css.indexOf('.modal-card {')));
+  assert.match(card, /margin:\s*auto/,
+    'the card lost margin:auto — the overflow-safe centering (the .tour-wrap lesson)');
+  const scrim = css.slice(css.indexOf('.modal-scrim'), css.indexOf('}', css.indexOf('.modal-scrim')));
+  assert.match(scrim, /position:\s*fixed/,
+    'the scrim is absolute again — scrolling a tall card uncovers the page behind it');
+
+  // The parent's preview bubble is fixed too: height-capped so the approve/reject row
+  // stays reachable on a short screen, and its children must keep their natural size —
+  // flex children SHRINK by default, squishing the video instead of letting it scroll.
+  const bubble = css.slice(css.indexOf('.preview-bubble {'), css.indexOf('}', css.indexOf('.preview-bubble {')));
+  assert.match(bubble, /max-height:\s*calc\(100dvh/, 'the preview bubble can outgrow a short landscape screen');
+  assert.match(bubble, /overflow-y:\s*auto/, 'a height-capped bubble must scroll');
+  assert.match(css, /\.preview-bubble > \* \{ flex: 0 0 auto; \}/,
+    'the bubble\'s children shrink again — the video squishes instead of the bubble scrolling');
+});

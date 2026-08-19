@@ -7,7 +7,7 @@
 //
 // Imports NOTHING but config.js (which imports nothing), so this sits safely in the
 // `store/classify/csv/util` band and can be imported by player.js and ui/dpad.js alike.
-import { SEEK_STEP, AUTOPLAY_MAX_FAILURES,
+import { SEEK_STEP, AUTOPLAY_MAX_FAILURES, TAP_SLOP_PX,
   RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from './config.js';
 
 /**
@@ -29,6 +29,26 @@ export function clampSeek(target, duration, { endGuard = 0.5 } = {}) {
   const d = Number(duration);
   if (!Number.isFinite(d) || d <= 0) return lo;
   return Math.min(lo, Math.max(0, d - endGuard));
+}
+
+/**
+ * v1.0.52 — PURE: is a press-and-release still a TAP, or did the finger travel?
+ *
+ * WHY: the shield acts on `pointerup` and never asked. With `touch-action: pan-y`
+ * (the landscape-scroll fix) a VERTICAL swipe the page claims ends in pointercancel
+ * and can no longer look like a tap — but a horizontal swipe, and every swipe while
+ * FULLSCREEN (nothing to scroll, so the browser never takes the gesture), still ends
+ * in a pointerup on the shield, and a release in the center half PAUSED the video.
+ *
+ * Missing coordinates (an old WebView handing NaN/undefined) count as "did not move":
+ * refusing the tap would make every tap dead on that device, and a wrongly accepted
+ * tap is the pre-v1.0.52 status quo — the recoverable direction.
+ */
+export function isTapGesture(downX, downY, upX, upY, { slop = TAP_SLOP_PX } = {}) {
+  const dx = Number(upX) - Number(downX);
+  const dy = Number(upY) - Number(downY);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return true;
+  return (dx * dx + dy * dy) <= slop * slop;
 }
 
 /** Fraction along the seek bar for a pointer x. Zero-width rect ⇒ 0, never NaN. */
