@@ -317,6 +317,18 @@
         <div id="player-host" class="player-host"></div>
         <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
         <div id="seek-feedback" class="seek-feedback"></div>
+        <!-- v1.0.53 — now-playing overlay, FULLSCREEN ONLY (user decision 2026-08-19):
+             the title already sits under the player everywhere else, but in fullscreen
+             nothing says what is playing. INSIDE player-wrap (the fullscreen element),
+             fades with .hud-on, and pointer-events:none ALWAYS — the HUD-container
+             invariant: text over the video must never swallow the shield's taps. -->
+        <div id="player-topbar" class="player-topbar" aria-hidden="true">
+          <div id="np-title" class="np-title" dir="auto"></div>
+          <div id="np-channel-row" class="np-channel-row hidden">
+            <span id="np-logo-host" class="np-logo-host"></span>
+            <span id="np-channel" class="np-channel" dir="auto"></span>
+          </div>
+        </div>
         <!-- v1.0.25 continuous play. INSIDE player-wrap on purpose: that is the element
              that goes fullscreen, and anything outside it is invisible while a video
              plays. It is the child's only visible way to stop a chain, so the stop button

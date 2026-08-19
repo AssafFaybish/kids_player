@@ -124,6 +124,11 @@ for anything destructive, and purge it afterwards.
       The swipe must NOT pause the video; a clean tap still toggles pause and a double
       tap still seeks. Try immediately after the exit too (the first ~700ms used to be
       snapped back to the top by the v1.0.51 pin — a finger now disarms it).
+- [ ] **Fullscreen now-playing overlay** (v1.0.53): enter fullscreen, tap the screen —
+      the video's title (and for channel content the channel line, logo included when
+      the family is subscribed) fades in at the TOP with the HUD and out with it.
+      Taps / double-taps still work through it, and in the SMALL player it must never
+      appear. *(Embedded browser panes deny fullscreen, so only a device can show it.)*
 - [ ] Keep-awake during playback.
 - [ ] **Physical power button mid-video** (v1.0.32): the soundtrack STOPS with the screen;
       screen back on → the video is waiting, PAUSED, at the same second — not gone, not

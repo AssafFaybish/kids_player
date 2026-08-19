@@ -2547,3 +2547,48 @@ test('fixed overlays can always reach their buttons on a short landscape screen 
   assert.match(css, /\.preview-bubble > \* \{ flex: 0 0 auto; \}/,
     'the bubble\'s children shrink again — the video squishes instead of the bubble scrolling');
 });
+
+test('the now-playing overlay is fullscreen-only and can never swallow a tap (v1.0.53)', () => {
+  // User decision 2026-08-19: the title/channel overlay shows ONLY in fullscreen — the
+  // title already sits under the player everywhere else. And it is a HUD CONTAINER, so
+  // the standing invariant applies: pointer-events:none ALWAYS, or the top of the video
+  // stops taking the shield's taps (the exact bug class the HUD bars once had).
+  const css = readRepoCode('www/css/styles.css');
+  const bar = css.slice(css.indexOf('.player-topbar {'), css.indexOf('}', css.indexOf('.player-topbar {')));
+  assert.match(bar, /pointer-events:\s*none/, 'the topbar takes pointer events — taps on the top of the video die');
+  assert.match(bar, /opacity:\s*0/, 'the topbar no longer starts hidden');
+  // visible ONLY under fullscreen (+hud-on), on BOTH vendor pseudo-classes — older
+  // WebViews match only the -webkit- form (the v1.0.43 dual-event lesson, in CSS)
+  assert.match(css, /\.player-wrap:fullscreen\.hud-on \.player-topbar,\s*\.player-wrap:-webkit-full-screen\.hud-on \.player-topbar \{ opacity: 1; \}/,
+    'the fullscreen+hud-on gate is gone or lost a vendor form');
+  assert.ok(!/\.player-wrap\.hud-on \.player-topbar/.test(css),
+    'a bare .hud-on rule shows the overlay in the SMALL player too — the user chose fullscreen only');
+  // the empty logo host must not render as a ghost circle; bytes un-hide it by arriving
+  assert.match(css, /\.np-logo-host:empty \{ display: none; \}/,
+    'an empty logo host renders as a blank circle next to the channel name');
+
+  // markup: inside #player-wrap (the fullscreen element) — outside it the overlay is
+  // simply invisible in fullscreen, which is the one place it exists to be seen
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  const wrap = html.indexOf('id="player-wrap"');
+  const barAt = html.indexOf('id="player-topbar"');
+  const hud = html.indexOf('class="player-hud"');
+  assert.ok(wrap >= 0 && barAt > wrap && hud > barAt, 'the topbar left #player-wrap');
+
+  // wiring: driven from openWatch (runs on every open AND every video→video switch,
+  // including the YouTube reuse path that never re-runs setupHud) — never from player.js
+  const app = CODE.get('www/js/app.js');
+  const ow = app.slice(app.indexOf('async function openWatch'), app.indexOf('\n}', app.indexOf('async function openWatch')));
+  assert.match(ow, /setWatchChannel\(item\)/, 'openWatch no longer sets the overlay channel line');
+  const swt = app.slice(app.indexOf('function setWatchTitle'), app.indexOf('\n}', app.indexOf('function setWatchTitle')));
+  assert.match(swt, /np-title/, 'setWatchTitle no longer mirrors the title into the overlay');
+  assert.match(swt, /const setBoth/, 'the async oEmbed fallback writes only one of the two titles');
+  const swc = app.slice(app.indexOf('function setWatchChannel'), app.indexOf('\n}', app.indexOf('function setWatchChannel')));
+  assert.match(swc, /host\.textContent = ''/, 'the previous video\'s logo leaks into the next video\'s overlay');
+  assert.match(swc, /delete host\.dataset\.logoChannel/,
+    'a stale dataset.logoChannel lets planLogoDelivery deliver video A\'s logo into video B');
+  assert.match(swc, /nowPlayingChannel\(item, folders\)/, 'the channel line no longer goes through the pure resolver');
+  // player.js stays out of it: the reuse path must keep working without re-running setupHud
+  assert.ok(!CODE.get('www/js/player.js').includes('np-title'),
+    'player.js writes the overlay — the reuse path and setupHud lifecycles will fight over it');
+});
