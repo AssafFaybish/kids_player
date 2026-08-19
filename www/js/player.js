@@ -19,7 +19,7 @@
 import { prepareStreamSrc, downloadAndCache, captureFrame } from './media.js';
 import { stripTimeHints } from './classify.js';
 import { HUD_HIDE_MS, SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY } from './config.js';
-import { clampSeek, fractionFromX, formatTime, shouldFinishNearEnd, tvKeyIntent } from './playerlogic.js';
+import { clampSeek, fractionFromX, formatTime, isTapGesture, shouldFinishNearEnd, tvKeyIntent } from './playerlogic.js';
 import * as wake from './wake.js';
 
 const $id = (id) => document.getElementById(id);
@@ -179,7 +179,14 @@ function setupHud(ctl) {
   // Any touch anywhere in the player (buttons included — capture phase) reveals the
   // HUD and re-arms the timer. wasVisible is captured HERE, before reveal(), so the
   // tap handler below knows whether this tap started on a hidden HUD.
-  const onAnyTouch = () => { wasVisible = wrap.classList.contains('hud-on'); reveal(); };
+  // v1.0.52: the press coordinates are captured here too — onTap must know whether the
+  // finger TRAVELED (a swipe releasing over the shield must never read as a tap).
+  let downX = NaN, downY = NaN;
+  const onAnyTouch = (e) => {
+    downX = e.clientX; downY = e.clientY;
+    wasVisible = wrap.classList.contains('hud-on');
+    reveal();
+  };
 
   // Seek bar (LTR timeline): tap or drag anywhere on it to jump. Dragging pins the HUD.
   const fracFrom = (e) => { const r = seek.getBoundingClientRect(); return fractionFromX(e.clientX, r.left, r.width); };
@@ -199,6 +206,11 @@ function setupHud(ctl) {
   let lastTap = 0;
   let tapTimer = null;
   const onTap = (e) => {
+    // v1.0.52: a press that moved is a SWIPE, not a tap. touch-action:pan-y already
+    // hands vertical page-scrolls to the browser (they end in pointercancel), but a
+    // horizontal swipe — and any swipe while fullscreen, where nothing scrolls — still
+    // releases here, and a center release used to PAUSE the video mid-scroll-attempt.
+    if (!isTapGesture(downX, downY, e.clientX, e.clientY)) return;
     const now = Date.now();
     const r = shield.getBoundingClientRect();
     const x = e.clientX - r.left;

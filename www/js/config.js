@@ -11,6 +11,12 @@ export const SEEK_STEP = 10;         // double-tap seek, seconds (YouTube muscle
 // INVARIANT: TAP_SINGLE_DELAY >= TAP_DOUBLE_MS, or a slow double-tap both pauses AND seeks.
 export const TAP_DOUBLE_MS = 260;
 export const TAP_SINGLE_DELAY = 280;
+// v1.0.52 — a "tap" is a press that did not MOVE. The shield acts on pointerup with no
+// threshold, so any swipe that ended over it (horizontal ones, and every swipe while
+// fullscreen, where there is nothing to scroll and the browser never claims the gesture)
+// read as a tap — and a center release PAUSED the video. Big enough for a child's wobbly
+// finger (~2mm), far below a deliberate swipe.
+export const TAP_SLOP_PX = 14;
 
 /* Continuous play (v1.0.25) — OFF by default, per profile, synced.
    The countdown is the child's only visible way out of a chain: it must be long enough

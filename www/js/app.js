@@ -5771,6 +5771,14 @@ function wire() {
     if ((window.scrollY || 0) !== 0) window.scrollTo(0, 0);
   };
   window.addEventListener('scroll', onFsExitPinScroll, { passive: true });
+  // v1.0.52 — THE CHILD'S OWN FINGER DISARMS THE PIN. The pin exists to defeat the
+  // WebView's PROGRAMMATIC scroll restore, which arrives with no pointer event; a child
+  // who starts scrolling inside the 700ms window was having their gesture snapped back
+  // to the top ("יוצאים ממסך מלא ואי אפשר לגלול"). Every touch that could arm the exit
+  // (the HUD's ⛶, the system back gesture) completes BEFORE fullscreenchange fires, so
+  // any pointerdown seen while pinned is a NEW, deliberate gesture — and it wins.
+  // Capture phase: no handler's stopPropagation may keep the pin alive.
+  window.addEventListener('pointerdown', () => { fsExitPinUntil = 0; }, { capture: true, passive: true });
   const onFullscreenChange = () => {
     if (document.fullscreenElement || document.webkitFullscreenElement) return; // entering
     if (!nav.isActive('watch')) return;

@@ -118,6 +118,12 @@ for anything destructive, and purge it afterwards.
       cannot appear under lock-task, the wait is the only route there and the UI must still
       reach it rather than dead-ending.
 - [ ] Real fullscreen on tap, and 🏠 only after leaving fullscreen.
+- [ ] **Landscape scroll after leaving fullscreen** (v1.0.52): hold the tablet SIDEWAYS,
+      play a video, exit fullscreen, then swipe up ON THE VIDEO ITSELF — the page must
+      scroll down to the grid and the pager (the shield is `touch-action: pan-y` now).
+      The swipe must NOT pause the video; a clean tap still toggles pause and a double
+      tap still seeks. Try immediately after the exit too (the first ~700ms used to be
+      snapped back to the top by the v1.0.51 pin — a finger now disarms it).
 - [ ] Keep-awake during playback.
 - [ ] **Physical power button mid-video** (v1.0.32): the soundtrack STOPS with the screen;
       screen back on → the video is waiting, PAUSED, at the same second — not gone, not
