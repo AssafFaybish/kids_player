@@ -25,7 +25,7 @@ import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/moda
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
-  resumeStartAt, resumeSaveDecision, watchedFraction } from './playerlogic.js';
+  resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -2276,6 +2276,7 @@ async function openWatch(item) {
   status.classList.add('hidden');
   status.textContent = '';
   setWatchTitle(item);
+  setWatchChannel(item); // v1.0.53 — the fullscreen overlay's channel line
   paintFavButton(item.key); // v1.0.40 — ⭐ on/off for THIS video
   renderWatchGrid(item);
 
@@ -2324,20 +2325,44 @@ async function persistThumb(item, dataUrl) {
   } catch {}
 }
 
-/* F5: the playing video's title under the player, YouTube-style. */
+/* F5: the playing video's title under the player, YouTube-style.
+   v1.0.53: the fullscreen now-playing overlay (#np-title) mirrors every write — driven
+   from HERE, not from the player, because openWatch runs on every open AND every
+   video→video switch (including the YouTube reuse path, which never re-runs setupHud),
+   and the async oEmbed fallback below already carries the stale-fetch guard both need. */
 function setWatchTitle(item) {
   const el = $('watch-title');
-  el.textContent = item.title || '';
+  const np = $('np-title');
+  const setBoth = (t) => { el.textContent = t; np.textContent = t; };
+  setBoth(item.title || '');
   el.classList.toggle('hidden', !item.title);
   if (!item.title && item.type === 'youtube') {
-    el.textContent = '…';
+    setBoth('…');
     el.classList.remove('hidden');
     fetchYouTubeTitle(item.id).then((t) => {
       if (!currentWatch || currentWatch.key !== item.key) return; // stale fetch
-      if (t) { el.textContent = t; persistTitle(item, t); }
-      else { el.textContent = ''; el.classList.add('hidden'); }
+      if (t) { setBoth(t); persistTitle(item, t); }
+      else { setBoth(''); el.classList.add('hidden'); }
     });
   }
+}
+
+/* v1.0.53 — the overlay's channel line (fullscreen only; the CSS owns WHEN it shows).
+   Pure nowPlayingChannel decides WHAT: the family's own folder title (ch:/grp:) first,
+   then srcChannelTitle, or nothing — a video that belongs to no channel shows no line.
+   The logo rides the existing byte cache: mountChannelLogo sets dataset.logoChannel so
+   planLogoDelivery's guard keeps a slow video-A fetch out of video B's overlay, and an
+   empty host stays hidden (CSS :empty) until real bytes actually paint. */
+function setWatchChannel(item) {
+  const row = $('np-channel-row');
+  const host = $('np-logo-host');
+  const info = nowPlayingChannel(item, folders);
+  row.classList.toggle('hidden', !info);
+  host.textContent = '';                 // never leak the previous video's logo
+  delete host.dataset.logoChannel;
+  if (!info) return;
+  $('np-channel').textContent = info.name;
+  if (info.id) mountChannelLogo(host, info.logoUrl, info.id, '');
 }
 
 async function persistTitle(item, title) {

@@ -356,6 +356,39 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     invariants; every guard proven red on a planted regression — and the first three fired
     on their own COMMENTS, so the Java guards read comment-stripped source.
 
+- v1.0.53 — **THE FULLSCREEN PLAYER SAYS WHAT IS PLAYING** (user request: like YouTube —
+  tap the screen and see the video's name, and beneath it the channel it comes from).
+  Two user decisions shaped it (2026-08-19): **FULLSCREEN ONLY** — everywhere else the
+  title already sits under the player (`.watch-title`, F5) and covering the video twice
+  buys nothing — and **logo + name** for the channel line (the avatar bytes are already
+  cached device-side since v1.0.32; a child who cannot read gets more from the picture).
+  - `#player-topbar` lives INSIDE `#player-wrap` (the fullscreen element), fades with
+    `.hud-on`, and is `pointer-events:none` ALWAYS — the HUD-container invariant. The
+    visibility gate is CSS-only: BOTH vendor fullscreen pseudo-classes + `.hud-on`. A
+    bare `.hud-on` rule is banned by the invariants test — it would show the overlay in
+    the small player too, against the decision.
+  - **Driven from `openWatch`/`setWatchTitle`, never from player.js**: openWatch runs on
+    every open AND every video→video switch — including the YouTube reuse path, which
+    never re-runs setupHud — and the async oEmbed title fallback already carries the
+    stale-fetch guard both titles need (`setBoth`). player.js touching `np-title` is
+    invariant-banned.
+  - **Pure `playerlogic.nowPlayingChannel(rec, folders)`** decides the channel line: the
+    family's OWN folder title first (`ch:`/`grp:` folders both carry `channelId`), then
+    `srcChannelTitle`, else NO line ("במידה והוא חלק מערוץ" — the user's own condition).
+    **No name ⇒ no line, even with an id**: an unlabeled logo tells the child nothing.
+    A playlist video names its OWNER (the v1.0.26 channelId rule); the `pl:` folder can
+    never match because its channelId slot holds the playlist id, not a UC id.
+  - **The logo rides the v1.0.32 byte cache** (`mountChannelLogo`): `dataset.logoChannel`
+    + `planLogoDelivery` keep a slow video-A fetch out of video B's overlay, and
+    `setWatchChannel` empties the host AND deletes the dataset before every mount (the
+    leak guard, test-pinned). CSS `.np-logo-host:empty { display:none }` hides the circle
+    until real bytes paint — late IDB/network delivery un-hides it by re-mounting.
+  - Verified in the browser: both titles mirror and update through the REUSE path
+    (Baby Shark → Number song, channel line followed), opacity 0 outside fullscreen, and
+    `elementFromPoint` over the overlay area answers `tap-shield` — hit-transparency
+    proven, not assumed. The overlay VISIBLE in real fullscreen is a device-checklist
+    item (embedded panes deny fullscreen). 3 unit tests + 1 invariants test, every guard
+    proven red on a planted regression (5 plants).
 - v1.0.52 — **LANDSCAPE CAN FINALLY SCROLL THE WATCH PAGE** (field report, the THIRD scroll
   fix: "מסך מאוזן, יוצאים ממסך מלא, אי אפשר לגלול מטה"). v1.0.50 made the document able to
   grow and v1.0.51 landed the fullscreen exit at the top — and the report came back anyway,

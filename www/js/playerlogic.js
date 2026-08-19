@@ -51,6 +51,34 @@ export function isTapGesture(downX, downY, upX, upY, { slop = TAP_SLOP_PX } = {}
   return (dx * dx + dy * dy) <= slop * slop;
 }
 
+/**
+ * v1.0.53 — PURE: which channel line does the now-playing overlay show, if any?
+ *
+ * The user's rule: the channel appears only "when the video belongs to a channel".
+ * Resolution order for the NAME — the family's own folder title first (a subscribed
+ * channel, or a 🎞️ virtual group of singles; both carry `channelId` on the folder),
+ * then the record's enrichment (`srcChannelTitle`). No name ⇒ no line at all: an id
+ * alone could only render an unlabeled logo, which tells the child nothing.
+ *
+ * A playlist video keeps its OWNER in `channelId` (the v1.0.26 rule), so the line names
+ * the actual creator — and the `pl:` folder can never match here because its folder
+ * `channelId` slot holds the playlist id, and only `ch:`/`grp:` folders are consulted.
+ * `id` may be null while a name exists (legacy enrichment): the logo just stays hidden.
+ */
+export function nowPlayingChannel(rec, folders) {
+  if (!rec || typeof rec !== 'object') return null;
+  const fid = typeof rec.folderId === 'string' ? rec.folderId : '';
+  const derived = (fid.startsWith('ch:') || fid.startsWith('grp:'))
+    ? fid.slice(fid.indexOf(':') + 1) : null;
+  const id = rec.channelId || rec.srcChannelId || derived || null;
+  const list = Array.isArray(folders) ? folders : [];
+  const folder = id ? list.find((f) => f && f.channelId === id && typeof f.id === 'string'
+    && (f.id.startsWith('ch:') || f.id.startsWith('grp:'))) : null;
+  const name = (folder && folder.title) || rec.srcChannelTitle || null;
+  if (!name) return null;
+  return { id, name, logoUrl: (folder && folder.logoUrl) || null };
+}
+
 /** Fraction along the seek bar for a pointer x. Zero-width rect ⇒ 0, never NaN. */
 export function fractionFromX(clientX, rectLeft, rectWidth) {
   const w = Number(rectWidth);

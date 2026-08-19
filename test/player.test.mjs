@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clampSeek, fractionFromX, formatTime, isTapGesture, progressPct, shouldFinishNearEnd, tvKeyIntent,
   planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
-  resumeStartAt, resumeSaveDecision, watchedFraction } from '../www/js/playerlogic.js';
+  resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY, TAP_SLOP_PX,
   AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS,
   RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from '../www/js/config.js';
@@ -113,6 +113,48 @@ test('isTapGesture: a swipe releasing over the shield is NOT a tap (v1.0.52)', (
   // the diagonal must not slip through an axis-only check: 12px on each axis is ~17px
   const d = Math.ceil(TAP_SLOP_PX * 0.9);
   assert.equal(isTapGesture(100, 100, 100 + d, 100 + d), false, 'a diagonal past the slop is a swipe');
+});
+
+/* ---------------- the fullscreen now-playing overlay (v1.0.53) ---------------- */
+
+test('nowPlayingChannel: the family\'s own folder name outranks the record\'s enrichment', () => {
+  const folders = [
+    { id: 'ch:UC1', channelId: 'UC1', title: 'ערוץ שירים', logoUrl: 'https://x/logo.jpg' },
+    { id: 'grp:UC3', channelId: 'UC3', title: 'אוסף בלוני', logoUrl: '' },
+    { id: 'pl:PL9', channelId: 'PL9', title: 'רשימת השמעה' }
+  ];
+  // a subscribed channel's video: the folder title + its logo url
+  assert.deepEqual(nowPlayingChannel({ channelId: 'UC1', folderId: 'ch:UC1', srcChannelTitle: 'stale' }, folders),
+    { id: 'UC1', name: 'ערוץ שירים', logoUrl: 'https://x/logo.jpg' });
+  // a 🎞️ virtual group single: the group carries channelId too
+  assert.deepEqual(nowPlayingChannel({ srcChannelId: 'UC3', folderId: 'sheet' }, folders),
+    { id: 'UC3', name: 'אוסף בלוני', logoUrl: null });
+  // a legacy record with no channelId of its own: the id derives from its ch: folder
+  assert.deepEqual(nowPlayingChannel({ folderId: 'ch:UC1' }, folders),
+    { id: 'UC1', name: 'ערוץ שירים', logoUrl: 'https://x/logo.jpg' });
+});
+
+test('nowPlayingChannel: a playlist video names its OWNER, never the playlist', () => {
+  // v1.0.26: a playlist video keeps the creator in channelId; the pl: folder's channelId
+  // slot holds the PLAYLIST id, so it can never match a UC owner here.
+  const folders = [
+    { id: 'pl:PL9', channelId: 'PL9', title: 'רשימת השמעה' },
+    { id: 'ch:UC1', channelId: 'UC1', title: 'הערוץ האמיתי' }
+  ];
+  assert.equal(nowPlayingChannel({ channelId: 'UC1', folderId: 'pl:PL9' }, folders).name, 'הערוץ האמיתי');
+  // owner NOT subscribed: fall back to the enrichment name, logo url unknown
+  assert.deepEqual(nowPlayingChannel({ channelId: 'UC2', srcChannelTitle: 'Pinkfong', folderId: 'pl:PL9' }, folders),
+    { id: 'UC2', name: 'Pinkfong', logoUrl: null });
+});
+
+test('nowPlayingChannel: no name means NO line — never an unlabeled logo', () => {
+  // an id with no resolvable name would render a logo that tells the child nothing
+  assert.equal(nowPlayingChannel({ channelId: 'UC9', folderId: 'ch:UC9' }, []), null);
+  // a personal/file video belongs to no channel at all
+  assert.equal(nowPlayingChannel({ folderId: 'mine' }, []), null);
+  assert.equal(nowPlayingChannel(null, []), null);
+  // junk folders input must not throw mid-watch
+  assert.equal(nowPlayingChannel({ folderId: 'mine' }, null), null);
 });
 
 test('isTapGesture: missing coordinates fail OPEN — the tap must survive an odd WebView', () => {
