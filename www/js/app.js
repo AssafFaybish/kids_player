@@ -12,7 +12,8 @@ import { getSetting, putSetting } from './settings.js';
 import { playItem, stop, playbackState, pauseCurrent } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
-  siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent } from './platform.js';
+  siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
+  setOrientation } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -25,7 +26,8 @@ import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/moda
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
-  resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel } from './playerlogic.js';
+  resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
+  fullscreenOrientation } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -5805,7 +5807,20 @@ function wire() {
   // Capture phase: no handler's stopPropagation may keep the pin alive.
   window.addEventListener('pointerdown', () => { fsExitPinUntil = 0; }, { capture: true, passive: true });
   const onFullscreenChange = () => {
-    if (document.fullscreenElement || document.webkitFullscreenElement) return; // entering
+    // v1.0.54 — a fullscreen video plays LANDSCAPE, always (user request: like YouTube;
+    // decision 2026-08-25: every handheld device — all content is 16:9 long-form). The
+    // activity-level request is what overrides the SYSTEM rotation lock; hooked HERE so
+    // every door is covered by one line: the tile tap's auto-fullscreen, the ⛶ button,
+    // hardware back, and a video that ends. Pure fullscreenOrientation returns null on
+    // TV (no sensor, landscape by construction) — then nothing is touched.
+    const entering = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    const want = fullscreenOrientation({ fullscreen: entering,
+      tv: document.documentElement.classList.contains('tv') });
+    if (want) setOrientation(want).catch(() => {});
+    if (entering) return; // the scroll pin below is exit-only
+    // NOTE: the 'auto' restore above deliberately ran BEFORE this watch guard —
+    // leaveWatch (a video that ENDED) exits fullscreen and then navigates away, and a
+    // restore gated on "still watching" would leave the whole app stuck sideways.
     if (!nav.isActive('watch')) return;
     fsExitPinUntil = Date.now() + FS_EXIT_PIN_MS;
     // TWICE, and both are load-bearing. The immediate call is what makes this correct when

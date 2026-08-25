@@ -124,6 +124,12 @@ for anything destructive, and purge it afterwards.
       The swipe must NOT pause the video; a clean tap still toggles pause and a double
       tap still seeks. Try immediately after the exit too (the first ~700ms used to be
       snapped back to the top by the v1.0.51 pin — a finger now disarms it).
+- [ ] **Fullscreen forces landscape** (v1.0.54): on a PHONE with auto-rotate OFF, tap a
+      video → the screen rotates to landscape by itself, and flipping the phone 180°
+      follows (SENSOR_LANDSCAPE); exit fullscreen → back to portrait. Let a video PLAY
+      TO ITS END → the app returns to the folder in PORTRAIT — never stuck sideways
+      (the restore-before-guard invariant). Same behavior on the tablet; on TV nothing
+      changes. *(An activity-level request the browser cannot exercise at all.)*
 - [ ] **Fullscreen now-playing overlay** (v1.0.53): enter fullscreen, tap the screen —
       the video's title (and for channel content the channel line, logo included when
       the family is subscribed) fades in at the TOP with the HUD and out with it.

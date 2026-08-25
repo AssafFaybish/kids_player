@@ -1950,9 +1950,12 @@ test('leaving fullscreen lands on the TOP of the watch page (v1.0.43)', () => {
   const at = app.indexOf('const onFullscreenChange = () => {');
   assert.ok(at > 0, 'the fullscreen-exit scroll handler is gone');
   const body = app.slice(at, app.indexOf('\n  };', at));
-  // entering fullscreen must do nothing
-  assert.match(body, /if \(document\.fullscreenElement \|\| document\.webkitFullscreenElement\) return;/,
-    'the handler also fires when ENTERING fullscreen');
+  // entering fullscreen must not run the scroll code (v1.0.54 reshaped the branch: the
+  // entering path now requests landscape first, but it must still end in a bare return)
+  assert.match(body, /const entering = !!\(document\.fullscreenElement \|\| document\.webkitFullscreenElement\)/,
+    'the entering/exiting split is gone');
+  assert.match(body, /if \(entering\) return;/,
+    'the handler also runs the scroll code when ENTERING fullscreen');
   // and it must not fight a navigation that already restored a scroll position: `leaveWatch`
   // (a video that ended) exits fullscreen and then nav.back()s into the folder.
   assert.equal((body.match(/nav\.isActive\('watch'\)/g) || []).length, 2,
@@ -2591,4 +2594,52 @@ test('the now-playing overlay is fullscreen-only and can never swallow a tap (v1
   // player.js stays out of it: the reuse path must keep working without re-running setupHud
   assert.ok(!CODE.get('www/js/player.js').includes('np-title'),
     'player.js writes the overlay — the reuse path and setupHud lifecycles will fight over it');
+});
+
+test('fullscreen video forces landscape, and the app can NEVER get stuck sideways (v1.0.54)', () => {
+  // User request (phone report): with the system rotation lock on, fullscreen played in
+  // portrait — a WebView cannot override that lock; only an activity-level request can
+  // (it is exactly what YouTube does). Decision 2026-08-25: every handheld device.
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf('const onFullscreenChange = () => {');
+  const body = app.slice(at, app.indexOf('\n  };', at));
+
+  // one hook covers every door (tile tap, ⛶, hardware back, a video that ends):
+  // the fullscreenchange handler asks the PURE helper and applies its answer
+  assert.match(body, /fullscreenOrientation\(\{ fullscreen: entering,/,
+    'the orientation decision left the pure helper');
+  assert.match(body, /tv: document\.documentElement\.classList\.contains\('tv'\)/,
+    'the TV gate is gone — a television has no sensor and must not be touched');
+  assert.match(body, /setOrientation\(want\)/, 'the decision is computed but never applied');
+
+  // THE STUCK-LANDSCAPE TRAP: the 'auto' restore must run BEFORE the watch guard.
+  // leaveWatch (a video that ENDED) exits fullscreen and then navigates away; a restore
+  // gated on nav.isActive('watch') would leave the whole app sideways after every
+  // finished video, on every rotation-locked phone.
+  const applyAt = body.indexOf('setOrientation(want)');
+  const guardAt = body.indexOf("nav.isActive('watch')");
+  assert.ok(applyAt >= 0 && guardAt > applyAt,
+    'the orientation restore sits after the watch guard — the app stays stuck sideways after a video ends');
+
+  // the platform wrapper is native-first and can never throw at the player
+  const platform = CODE.get('www/js/platform.js');
+  const fnAt = platform.indexOf('export async function setOrientation');
+  assert.ok(fnAt > 0, 'platform.setOrientation is gone');
+  const fn = platform.slice(fnAt, platform.indexOf('\n}', fnAt));
+  assert.match(fn, /kids && kids\.setOrientation/, 'the wrapper no longer gates on the bridge (browser dev would throw)');
+  assert.match(fn, /catch/, 'a rotation hiccup takes the player down with it');
+
+  // BOTH java copies carry the method, sensor-landscape (both ways of holding the
+  // device), the UNSPECIFIED restore, and the UI-thread hop — the parity rule
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                   'native-reference/KidsNativePlugin.java']) {
+    const java = readRepoCode(p);
+    assert.ok(java.includes('public void setOrientation'), `${p}: setOrientation missing`);
+    assert.ok(java.includes('SCREEN_ORIENTATION_SENSOR_LANDSCAPE'),
+      `${p}: not SENSOR_LANDSCAPE — a child holding the phone the "wrong" way up gets an upside-down video`);
+    assert.ok(java.includes('SCREEN_ORIENTATION_UNSPECIFIED'),
+      `${p}: no UNSPECIFIED restore — leaving fullscreen would keep the whole app landscape`);
+    assert.ok(/runOnUiThread[\s\S]{0,400}setRequestedOrientation/.test(java),
+      `${p}: setRequestedOrientation must run on the UI thread`);
+  }
 });
