@@ -356,6 +356,36 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     invariants; every guard proven red on a planted regression — and the first three fired
     on their own COMMENTS, so the Java guards read comment-stripped source.
 
+- v1.0.54 — **A FULLSCREEN VIDEO PLAYS LANDSCAPE, ALWAYS** (user request, phone report:
+  with the system rotation lock on — the common phone default — fullscreen played
+  PORTRAIT. Browsing not rotating on that phone is the SAME system lock and is left
+  alone deliberately: the app has rotated freely since v1.0.2, and fighting the system
+  outside the player would be a regression, not a feature). Decision 2026-08-25: every
+  handheld device, phone and tablet alike — all content is 16:9 long-form (Shorts are
+  excluded by design), so landscape is always the video's shape. A TV is excluded (no
+  sensor, landscape by construction; pure helper answers null and nothing is touched).
+  - **The WebView cannot override the system rotation lock; only the ACTIVITY can** —
+    new `KidsNative.setOrientation`: `setRequestedOrientation(SENSOR_LANDSCAPE)` (both
+    ways of holding the device) entering fullscreen, `UNSPECIFIED` (back to the system's
+    own rule) leaving it — exactly what YouTube itself does. The manifest's
+    `configChanges` already includes `orientation|screenSize`, so the rotation resizes
+    the live WebView without recreating the activity mid-video.
+  - **ONE hook covers every door**: the existing `fullscreenchange` listener (both vendor
+    names) — the tile tap's auto-fullscreen, ⛶, hardware back, and a video that ENDS.
+    The decision is pure `playerlogic.fullscreenOrientation({ fullscreen, tv })` →
+    `'landscape' | 'auto' | null`.
+  - ⚠️ **THE 'auto' RESTORE RUNS BEFORE THE WATCH GUARD, and that ORDER is the
+    invariant** (index-pinned in the handler): `leaveWatch` (a video that ended) exits
+    fullscreen and then navigates away, so a restore gated on `nav.isActive('watch')`
+    would leave the WHOLE APP stuck sideways after every finished video, on every
+    rotation-locked phone.
+  - Exiting on a rotation-locked phone lands back in portrait — the system's rule, like
+    every other app. Both java copies carry the method (parity-pinned: SENSOR_LANDSCAPE,
+    UNSPECIFIED, runOnUiThread); `platform.setOrientation` is bridge-gated and never
+    throws (browser dev = silent no-op; embedded panes deny fullscreen anyway, so the
+    visible behavior is a device-checklist item). Java proven to COMPILE (debug apk
+    built) — the text-parity tests cannot see a syntax error. 1 unit + 1 invariants test
+    + the reshaped v1.0.43 pin, every guard proven red on a planted regression (5).
 - v1.0.53 — **THE FULLSCREEN PLAYER SAYS WHAT IS PLAYING** (user request: like YouTube —
   tap the screen and see the video's name, and beneath it the channel it comes from).
   Two user decisions shaped it (2026-08-19): **FULLSCREEN ONLY** — everywhere else the

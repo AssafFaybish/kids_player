@@ -52,6 +52,24 @@ export function isTapGesture(downX, downY, upX, upY, { slop = TAP_SLOP_PX } = {}
 }
 
 /**
+ * v1.0.54 — PURE: what should the device orientation be after a fullscreen change?
+ *
+ * 'landscape' entering fullscreen, 'auto' (the system's own rule) leaving it, and null —
+ * touch nothing — on TV: a television has no sensor and is landscape by construction, so
+ * even a harmless request is a bridge call with no meaning there. The user's decision
+ * (2026-08-25): every handheld device, phone and tablet alike — all content is 16:9
+ * long-form (Shorts are excluded by design), so landscape is always the video's shape.
+ *
+ * The 'auto' branch deliberately does NOT depend on which view is active: leaveWatch (a
+ * video that ENDED) exits fullscreen and then navigates away, and a restore gated on
+ * "still watching" would leave the whole app stuck sideways after every finished video.
+ */
+export function fullscreenOrientation({ fullscreen = false, tv = false } = {}) {
+  if (tv) return null;
+  return fullscreen ? 'landscape' : 'auto';
+}
+
+/**
  * v1.0.53 — PURE: which channel line does the now-playing overlay show, if any?
  *
  * The user's rule: the channel appears only "when the video belongs to a channel".

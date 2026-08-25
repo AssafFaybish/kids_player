@@ -61,6 +61,34 @@ public class KidsNativePlugin extends Plugin {
         });
     }
 
+    /* ---------------- fullscreen orientation (v1.0.54) ---------------- */
+
+    /**
+     * v1.0.54 — a fullscreen video plays LANDSCAPE, always (user request: like YouTube).
+     * The WebView cannot override the SYSTEM rotation lock; only an activity-level
+     * request can, and it is exactly what YouTube itself does on fullscreen entry.
+     * 'landscape' = SENSOR_LANDSCAPE (both ways of holding the device); anything else
+     * restores UNSPECIFIED — back to the system's own rule, so leaving fullscreen on a
+     * rotation-locked phone returns to portrait like every other app. configChanges in
+     * the manifest already includes orientation|screenSize, so the request rotates the
+     * live WebView without recreating the activity.
+     */
+    @PluginMethod
+    public void setOrientation(PluginCall call) {
+        String mode = call.getString("mode", "auto");
+        Activity a = getActivity();
+        if (a != null) {
+            a.runOnUiThread(() -> {
+                try {
+                    a.setRequestedOrientation("landscape".equals(mode)
+                            ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                } catch (Exception ignored) { /* never take the player down over rotation */ }
+            });
+        }
+        call.resolve();
+    }
+
     /* ---------------- TV detection (v1.0.9) ---------------- */
 
     /** Are we on Android TV / Google TV? Drives the 10-foot layout + D-pad focus mode. */

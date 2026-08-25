@@ -3,7 +3,7 @@
 // bug these cover was found by reading it, not by the suite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampSeek, fractionFromX, formatTime, isTapGesture, progressPct, shouldFinishNearEnd, tvKeyIntent,
+import { clampSeek, fractionFromX, formatTime, isTapGesture, progressPct, shouldFinishNearEnd, tvKeyIntent, fullscreenOrientation,
   planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY, TAP_SLOP_PX,
@@ -113,6 +113,21 @@ test('isTapGesture: a swipe releasing over the shield is NOT a tap (v1.0.52)', (
   // the diagonal must not slip through an axis-only check: 12px on each axis is ~17px
   const d = Math.ceil(TAP_SLOP_PX * 0.9);
   assert.equal(isTapGesture(100, 100, 100 + d, 100 + d), false, 'a diagonal past the slop is a swipe');
+});
+
+/* ---------------- fullscreen orientation (v1.0.54) ---------------- */
+
+test('fullscreenOrientation: landscape in, system rule out, hands off a TV', () => {
+  assert.equal(fullscreenOrientation({ fullscreen: true, tv: false }), 'landscape');
+  // the restore must NOT depend on any view state: leaveWatch exits fullscreen and then
+  // navigates away, and a conditional restore leaves the whole app stuck sideways
+  assert.equal(fullscreenOrientation({ fullscreen: false, tv: false }), 'auto');
+  // a television has no sensor and is landscape by construction — never touch it
+  assert.equal(fullscreenOrientation({ fullscreen: true, tv: true }), null);
+  assert.equal(fullscreenOrientation({ fullscreen: false, tv: true }), null);
+  // junk input behaves like "not fullscreen, not tv" — the safe restore direction
+  assert.equal(fullscreenOrientation({}), 'auto');
+  assert.equal(fullscreenOrientation(), 'auto');
 });
 
 /* ---------------- the fullscreen now-playing overlay (v1.0.53) ---------------- */

@@ -255,6 +255,21 @@ export async function shareFile(path, { mimeType = 'text/plain', subject = '' } 
   try { await kids.shareFile({ path, mimeType, subject }); return 'native'; } catch { return 'none'; }
 }
 
+/**
+ * v1.0.54 — fullscreen video forces LANDSCAPE ('landscape'), leaving restores the
+ * system's own rule ('auto'). NATIVE ONLY: the activity-level request is what overrides
+ * the SYSTEM rotation lock — the exact reason a phone with auto-rotate off played
+ * fullscreen in portrait, which the WebView alone can never fix. In the browser this is
+ * a silent no-op (embedded panes deny fullscreen anyway, and screen.orientation.lock()
+ * rejects outside it). Never throws — a rotation hiccup must not take the player down.
+ */
+export async function setOrientation(mode) {
+  try {
+    const kids = plugin('KidsNative');
+    if (kids && kids.setOrientation) await kids.setOrientation({ mode: mode === 'landscape' ? 'landscape' : 'auto' });
+  } catch { /* no-op */ }
+}
+
 /** Browser-only rung: an <a download> blob click. -> 'download' | 'none' */
 export async function downloadTextFile(name, text) {
   try {
