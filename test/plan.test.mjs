@@ -12,7 +12,7 @@ import {
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
   planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
   effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText,
-  favActive, mergeFavState, favouriteKeys, pinKeyAction
+  favActive, mergeFavState, favouriteKeys, pinKeyAction, lockScreenContainment
 } from '../www/js/plan.js';
 
 import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
@@ -1762,4 +1762,29 @@ test('pinKeyAction: digits and delete map; every other key keeps its existing ow
   assert.equal(pinKeyAction(5), null);
   assert.equal(pinKeyAction(null), null);
   assert.equal(pinKeyAction(undefined), null);
+});
+
+/* ---------------- full-tablet lock during the break (v1.0.55) ---------------- */
+
+test('lockScreenContainment: all four combinations, junk fails toward today\'s behaviour', () => {
+  // neither lock: today's screen — free exit, no pin, nothing to release
+  assert.deepEqual(lockScreenContainment({}),
+    { hideExit: false, gateExit: false, pinTask: false, unpinOnClear: false });
+  // kiosk only (v1.0.31, unchanged): the door is hidden entirely; the kiosk owns its pin,
+  // so the break must neither pin nor — the v1.0.36 rule — ever release it
+  assert.deepEqual(lockScreenContainment({ kiosk: true }),
+    { hideExit: true, gateExit: false, pinTask: false, unpinOnClear: false });
+  // full-tablet lock only: door visible but code-gated, pinned while shown, released when
+  // the break ends
+  assert.deepEqual(lockScreenContainment({ lockTablet: true }),
+    { hideExit: false, gateExit: true, pinTask: true, unpinOnClear: true });
+  // both: the kiosk wins the door (hidden) AND the release (never) — a kiosk session must
+  // stay pinned after the break, or the break's end unpins the whole kiosk
+  assert.deepEqual(lockScreenContainment({ kiosk: true, lockTablet: true }),
+    { hideExit: true, gateExit: true, pinTask: true, unpinOnClear: false });
+  // junk reads as OFF (the exitLockOn `=== true` precedent): a corrupted value must fall
+  // back to today's behaviour, never lock a tablet the parent never locked
+  assert.deepEqual(lockScreenContainment({ kiosk: 'true', lockTablet: 1 }),
+    { hideExit: false, gateExit: false, pinTask: false, unpinOnClear: false });
+  assert.deepEqual(lockScreenContainment(), lockScreenContainment({}));
 });

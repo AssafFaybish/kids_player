@@ -548,6 +548,49 @@ pins that the consumers follow the config and that every address is well-formed.
     too (a remote cannot walk an invisible pad) — typing is how a TV parent enters the
     code without the child seeing which keys light up.
   1 unit test + 1 invariants test, every guard proven red on a planted regression.
+- v1.0.55 — **THE BREAK CAN LOCK THE WHOLE TABLET** (user request: in the scheduled-lock
+  settings the parent chooses whether the child may leave to OTHER APPS while the app is
+  locked — today's behaviour — or the whole tablet locks until the break ends, and only
+  a parent with the code can exit the app or cancel the wait).
+  - **`lockTablet` — per-profile, SYNCED, OFF unless written**: a family that never opens
+    the settings keeps today's behaviour exactly. Tie → true (`settings.SAFE_ON_TIE`, the
+    exitLock direction — containment errs strict); junk reads as OFF (the exitLockOn
+    `=== true` precedent — a corrupted value must never lock a tablet nobody locked).
+  - **The mechanism is the kiosk's own OS screen pinning**, and pure
+    `plan.lockScreenContainment({ kiosk, lockTablet })` is the ONE place that knows how
+    the two settings interact: `hideExit` (the kiosk hides the door entirely — the
+    v1.0.31 rule, unchanged), `gateExit` (the full lock keeps the door VISIBLE but behind
+    the parent code), `pinTask` (pin while the break screen shows — placed AFTER
+    showLockedScreen's parent-screen guard, so the OS pinning ceremony never runs over a
+    parent mid-configuration), `unpinOnClear` (release when the break ends — **NEVER
+    under the kiosk**, the v1.0.36 rule: a kiosk session stays pinned).
+  - **THE PIN-RELEASE POINTS GREW BY ONE, deliberately** (amends v1.0.36's "exactly
+    three"): `clearScheduledLock` — both end-of-break paths, the timer and the parent
+    code, pass through it — unpins via `unpinOnClear`, i.e. only when the kiosk is off.
+  - **The tick RE-APPLIES containment every 5s while the break screen is up**
+    (`refreshLockContainment` — exit-door visibility AND the pin, one helper, idempotent,
+    gated natively by v1.0.36's `inLockTask`), for two measured reasons: the
+    hold-back+recents gesture unpins WITHOUT backgrounding the app, so the kiosk's
+    resume re-arm never fires and the tick is the only chance (without it that gesture
+    is a one-time permanent escape from the whole break); and the settings SYNC, so a
+    parent flipping them on another device mid-break otherwise leaves a STALE exit door
+    on this screen until the next break — found in the browser when a planted
+    kiosk-flip left the door visible, not by reasoning.
+  - **Two code-gated doors on the break screen** (user decision 2026-08-28):
+    'פתיחה להורים' (code → cancels the break, back to the app) is unchanged; '🚪 יציאה
+    מהאפליקציה' stays FREE when only the app locks (today's families keep their exit)
+    and asks the parent code when the tablet locks — code → unpin → exit, **and the
+    break keeps RUNNING for the child**: the `:until` stamp persists, so reopening the
+    app lands back on the lock. Leaving is the parent's act, not an early release.
+  - ⚠️ Known bounds, stated in the settings hint: unpinning can raise the DEVICE's own
+    lock screen ("ask for PIN before unpinning", a system setting the app cannot read —
+    the askExit consequence, except here it can land with nobody present when the break
+    expires by itself); a REBOOT escapes any screen pinning (Android — the lock
+    re-engages when the app reopens, the same bound the kiosk always had); and turning
+    the toggle OFF mid-break deliberately does NOT unpin (strict direction) — the pin
+    releases at break end or through the code-gated exit.
+  1 unit + 1 settings-tie + 1 invariants test (6 wiring halves); across both v1.0.55
+  features every guard was proven red on a planted regression (8 plants).
 - v1.0.40 — **⭐ מועדפים: THE CHILD'S OWN MARK** (user request 2026-08-11: any video the child
   taps ⭐ on appears in its own folder at the top of the home, IN ADDITION to where it lives,
   and is never deleted automatically; a second tap removes it).
@@ -853,7 +896,10 @@ pins that the consumers follow the config and that every address is well-formed.
     mid-switch; now the session stays pinned and the unlocked profile keeps the exit
     button as its way out — containment errs STRICT, never loose, and unlocked→locked
     still pins immediately. The release points are exactly: `askExit`, the settings
-    toggle, and the native installer.
+    toggle, the native installer — and since v1.0.55 the END OF A SCHEDULED BREAK
+    (`clearScheduledLock` via `lockScreenContainment.unpinOnClear`), which releases only
+    the break's OWN pin: with the kiosk on it stays false, so a kiosk session still never
+    unpins mid-session.
   - Native `lockTask`/`unlockTask` are GATED on `getLockTaskModeState` (one
     `inLockTask()` gate): a redundant unpin keyguards the tablet; a redundant re-pin
     re-runs the pinning ceremony on some OEMs. `isTaskLocked` reads the same gate.
@@ -1210,7 +1256,10 @@ pins that the consumers follow the config and that every address is well-formed.
     - **THE EXIT BUTTON IS GATED ON THE KIOSK LOCK**: shown only when the exit-lock is OFF
       (closing the app is then a legitimate escape); with the kiosk ON the child is fully
       contained. A discreet `פתיחה להורים` tap → parent code → unlock early (and re-arm).
-      Both pinned by an invariants test.
+      Both pinned by an invariants test. **Since v1.0.55 the gating is pure
+      `lockScreenContainment`**: the kiosk still hides the button, and the per-profile
+      `lockTablet` setting keeps it visible but code-gated while pinning the tablet for
+      the break's duration — see the v1.0.55 entry.
     - lockAfter 0 = OFF (the default), so a family that never opens this setting sees nothing.
 - v1.0.29 — **LAUNCH RESUMES THE LAST-USED PROFILE, PER DEVICE** (pure
   `plan.planBootProfile`). The stored id was ALREADY device-local (`prefGet('activeProfile')`

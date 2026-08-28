@@ -707,6 +707,34 @@ export function lockCountdownLabel(msLeft) {
 }
 
 /**
+ * v1.0.55 — PURE: how contained is the scheduled-lock ("הפסקה") screen?
+ *
+ * The parent's new choice (`lockTablet`, per-profile, synced, OFF unless written): during
+ * the break, may the child leave to OTHER APPS, or is the whole tablet locked? The
+ * mechanism is the SAME OS screen pinning the kiosk (`exitLock`) uses — so the two
+ * settings interact, and this helper is the one place that knows how:
+ *
+ *  - hideExit: the kiosk hides the exit door entirely (the v1.0.31 rule, unchanged) —
+ *    under it "exit the app" is never on offer, break or no break.
+ *  - gateExit: full-tablet lock keeps the door VISIBLE but behind the parent code — the
+ *    parent's own way out while the break keeps running for the child (user decision
+ *    2026-08-28: code → unpin → exit; the break is NOT cancelled by leaving).
+ *  - pinTask: pin while the break screen shows. Owned by the break, not by the kiosk —
+ *    applyExitLock keeps owning the kiosk's pin.
+ *  - unpinOnClear: release the pin when the break ends (timer or parent code) — but
+ *    NEVER under the kiosk (v1.0.36: a kiosk session stays pinned; its release points
+ *    are the exits, where leaving is the point).
+ *
+ * Junk values read as false — the exitLockOn precedent (`=== true`): a corrupted setting
+ * must fall back to today's behaviour, never lock a tablet the parent never locked.
+ */
+export function lockScreenContainment({ kiosk = false, lockTablet = false } = {}) {
+  const k = kiosk === true;
+  const t = lockTablet === true;
+  return { hideExit: k, gateExit: t, pinTask: t, unpinOnClear: t && !k };
+}
+
+/**
  * v1.0.55 — PURE: map a KeyboardEvent.key to a PIN-keypad action.
  *
  * The code can be TYPED — a TV remote's digit buttons, a hardware keyboard — instead of

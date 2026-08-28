@@ -1071,15 +1071,20 @@ test('the scheduled lock is device-local timer + synced settings (v1.0.31)', () 
 
 test('the scheduled-lock screen cannot be escaped by the child (v1.0.31)', () => {
   // It swallows hardware-back (like the loading screen), and the ONLY exit is the exit
-  // button — shown solely when the kiosk lock is OFF — or the discreet parent-code tap.
+  // button — hidden entirely under the kiosk, code-gated under the full-tablet lock
+  // (v1.0.55, pure lockScreenContainment) — or the discreet parent-code tap.
   const app = MODULES.get('www/js/app.js');
   assert.match(app, /nav\.register\('locked',\s*\{\s*onBack:\s*\(\)\s*=>\s*true/,
     "the locked view does not swallow back — a child can navigate out of it");
   const fn = app.slice(app.indexOf('async function showLockedScreen('));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /exitLockOn\(\)/, 'the exit button is shown without checking the kiosk lock');
-  assert.match(body, /locked-exit'\)\.classList\.toggle\('hidden', kiosk\)/,
-    'the exit button is not gated on the kiosk lock (must hide when kiosk is ON)');
+  assert.match(body, /refreshLockContainment\(\)/,
+    'showLockedScreen no longer applies containment — the exit button shows regardless of the kiosk');
+  const helperFn = app.slice(app.indexOf('async function refreshLockContainment('));
+  const helper = helperFn.slice(0, helperFn.indexOf('\n}\n'));
+  assert.match(helper, /exitLockOn\(\)/, 'the exit button is shown without checking the kiosk lock');
+  assert.match(helper, /locked-exit'\)\.classList\.toggle\('hidden', contain\.hideExit\)/,
+    'the exit button is not gated through lockScreenContainment (must hide when kiosk is ON)');
 });
 
 test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists and does both halves', () => {
@@ -2686,4 +2691,67 @@ test('the code keypad shows NOTHING when pressed, and the code can be TYPED (v1.
   const ep = app.slice(epAt, app.indexOf('\n}', epAt));
   assert.ok(!ep.includes('isModalOpen'),
     "enterParent bails on an open modal — a correct code entered under an update prompt is silently eaten");
+});
+
+test('the full-tablet break lock: pinned while shown, code-gated exit, released only kiosk-off (v1.0.55)', () => {
+  // User request: the parent chooses whether the break locks only the APP (today) or the
+  // WHOLE TABLET. The mechanism is the kiosk's own OS screen pinning, so every wiring
+  // half below is a containment decision — each proven red on a planted regression.
+  const app = MODULES.get('www/js/app.js');
+
+  // 1) The screen applies containment when it shows, and only AFTER the parent-screen
+  //    guard: pinning under a parent mid-configuration would run the OS ceremony over them.
+  const showFn = app.slice(app.indexOf('async function showLockedScreen('));
+  const show = showFn.slice(0, showFn.indexOf('\n}\n'));
+  const pinAt = show.indexOf('refreshLockContainment');
+  const resetAt = show.indexOf("nav.reset('locked')");
+  assert.ok(pinAt > 0, 'the break screen never applies containment — the full-tablet lock is a no-op');
+  assert.ok(resetAt > 0 && pinAt > resetAt, 'containment runs before the screen is shown/guarded');
+
+  // 2) The 5s tick RE-APPLIES containment while the screen is up. The hold-back+recents
+  //    gesture unpins WITHOUT backgrounding the app, so no resume event re-arms it —
+  //    without this line the gesture is a one-time permanent escape for the whole break.
+  //    (Measured in the browser: it also refreshes the exit door after a settings flip
+  //    from another device — they sync — which a show-time-only read left stale.)
+  const tickFn = app.slice(app.indexOf('async function tickScheduledLock('));
+  const tick = tickFn.slice(0, tickFn.indexOf('\n}\n'));
+  assert.match(tick, /nav\.isActive\('locked'\)\) \{[\s\S]*?refreshLockContainment\(\)/,
+    'the tick no longer re-applies containment — the unpin gesture escapes the whole break');
+
+  // 3) refreshLockContainment asks the PURE helper with both live settings, pins through
+  //    it, and swallows — a pinning hiccup must never take the lock screen down.
+  const armFn = app.slice(app.indexOf('async function refreshLockContainment('));
+  const arm = armFn.slice(0, armFn.indexOf('\n}\n'));
+  assert.match(arm, /lockScreenContainment\(\{ kiosk: await exitLockOn\(\), lockTablet: await lockTabletOn\(\) \}\)/,
+    'refreshLockContainment no longer asks the pure helper — the containment decision moved inline');
+  assert.match(arm, /if \(!contain\.pinTask\) return;/,
+    'refreshLockContainment pins without asking containment — it would pin every family');
+  assert.match(arm, /lockTask/, 'refreshLockContainment never pins at all');
+  assert.match(arm, /catch/, 'refreshLockContainment can throw at the lock screen');
+
+  // 4) The release lives in clearScheduledLock — BOTH end-of-break paths (timer, parent
+  //    code) go through it — and ONLY through unpinOnClear, which is false under the
+  //    kiosk: a break's end must never unpin a kiosk session (the v1.0.36 rule).
+  const clearFn = app.slice(app.indexOf('async function clearScheduledLock('));
+  const clear = clearFn.slice(0, clearFn.indexOf('\n}\n'));
+  assert.match(clear, /if \(contain\.unpinOnClear\)/,
+    'clearScheduledLock unpins unconditionally (or never) — kiosk sessions lose their pin, or the break never releases');
+  assert.match(clear, /unlockTask/, 'the break never releases the pin at all');
+
+  // 5) The exit door: free when only the APP locks (today), behind the parent code when
+  //    the TABLET locks — and the binding routes through the handler, never bare exitApp.
+  const exitFn = app.slice(app.indexOf('async function onLockedExitTap('));
+  const exitBody = exitFn.slice(0, exitFn.indexOf('\n}\n'));
+  assert.match(exitBody, /gateExit/, 'the exit door no longer asks containment — it is either always free or always gated');
+  assert.match(exitBody, /if \(!gate\) \{ exitApp\(\); return; \}/,
+    'the free-exit path is gone — today\'s families lose their exit');
+  assert.match(exitBody, /startPin/, 'the gated exit no longer asks for the parent code');
+  assert.match(exitBody, /unlockTask/, 'the gated exit no longer unpins — Android refuses to leave a pinned task');
+  assert.match(app, /\$\('locked-exit'\)\.addEventListener\('click', \(\) => \{ onLockedExitTap\(\)\.catch/,
+    'locked-exit is bound straight to exitApp again — the code gate is bypassed');
+
+  // 6) The setting rides the synced channel like its siblings (per-profile, tie → locked,
+  //    pinned behaviourally in settings.test.mjs).
+  assert.match(app, /putSetting\(activeProfileId, 'lockTablet'/,
+    'lockTablet is not saved to the synced settings channel');
 });

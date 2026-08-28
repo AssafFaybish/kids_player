@@ -1211,6 +1211,7 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .sched-lock-fields label { font-size: 15px; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; }
 .sched-num { width: 4.5em; text-align: center; font-size: 17px; padding: 6px 4px; }
 .sched-lock-hint { margin: 2px 0 0; }
+.sched-lock-sub { margin-top: 8px; } /* v1.0.55: the full-tablet toggle inside the block */
 /* v1.0.45 — the site icon in a parent-screen list row (square, like the tile). */
 .li-site-icon {
   width: 40px; height: 40px; border-radius: 10px; font-size: 22px;

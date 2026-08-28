@@ -31,7 +31,7 @@ import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel, pinKeyAction,
+  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel, pinKeyAction, lockScreenContainment,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
@@ -124,6 +124,14 @@ async function exitLockOn(pid = activeProfileId) {
   try { return (await getSetting(pid, 'exitLock', false)) === true; } catch { return false; }
 }
 
+// v1.0.55 — full-tablet lock DURING THE SCHEDULED BREAK only (the kiosk above is the
+// always-on variant). Per-profile, synced, OFF unless written: a family that never opens
+// the settings keeps today's behaviour — the app locks, the tablet stays free.
+async function lockTabletOn(pid = activeProfileId) {
+  if (!pid) return false;
+  try { return (await getSetting(pid, 'lockTablet', false)) === true; } catch { return false; }
+}
+
 async function applyExitLockUi() {
   const on = await exitLockOn();
   $('exit-btn').classList.toggle('hidden', on);
@@ -147,11 +155,12 @@ async function applyExitLock() {
     // devices raise the DEVICE keyguard ("lock device when unpinning" — a system setting
     // we can neither read nor change), so switching from a locked child to an unlocked
     // sibling locked the whole TABLET mid-switch (field report). The pin is released only
-    // where leaving the app is the point: askExit, the settings toggle, and the native
-    // installer (installApk unpins itself). Until then an unlocked profile on a
-    // still-pinned session keeps the exit button as its way out — containment may err
-    // STRICT, never loose, and the security direction (unlocked→locked must pin NOW)
-    // still applies immediately.
+    // where leaving the app is the point: askExit, the settings toggle, the native
+    // installer (installApk unpins itself) — and, since v1.0.55, the end of a scheduled
+    // break (clearScheduledLock via unpinOnClear, which stays false under the kiosk).
+    // Until then an unlocked profile on a still-pinned session keeps the exit button as
+    // its way out — containment may err STRICT, never loose, and the security direction
+    // (unlocked→locked must pin NOW) still applies immediately.
     if (on) await lockTask();
   } catch { /* browser preview / plugin absent — the UI half still applies */ }
   await applyExitLockUi();
@@ -208,6 +217,20 @@ async function clearScheduledLock(pid = activeProfileId) {
   if (!pid) return;
   await prefRemove(lockUntilKey(pid)).catch(() => {});
   await prefRemove(lockArmedKey(pid)).catch(() => {});
+  // v1.0.55: the full-tablet pin is released when the break ends — by timer or by the
+  // parent code — and ONLY when the general kiosk is off (pure lockScreenContainment:
+  // a kiosk session stays pinned, the v1.0.36 rule; its release points are the exits).
+  // unlockTask itself is state-gated natively, so a break that never pinned no-ops here.
+  // Known consequence, documented: on devices with the system "lock device when
+  // unpinning" option, a break that expires by itself lands on the DEVICE's own lock
+  // screen — the system's rule, which the app can neither read nor change.
+  try {
+    const contain = lockScreenContainment({ kiosk: await exitLockOn(pid), lockTablet: await lockTabletOn(pid) });
+    if (contain.unpinOnClear) {
+      const { unlockTask } = await import('./platform.js');
+      await unlockTask();
+    }
+  } catch { /* browser preview / plugin absent */ }
 }
 
 /**
@@ -222,7 +245,14 @@ async function tickScheduledLock() {
     if (e.phase === 'due') { await enterScheduledLock(e.pid, e.durationMin); return; }
     if (e.phase === 'locked') {
       if (e.msLeft <= 0) { await clearScheduledLock(e.pid); if (nav.isActive('locked')) leaveLockedScreen(); return; }
-      if (nav.isActive('locked')) $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
+      if (nav.isActive('locked')) {
+        $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
+        // v1.0.55: RE-APPLY containment on every tick while the break screen is up —
+        // re-pin after the hold-back+recents unpin gesture (which never backgrounds the
+        // app, so no resume event fires), and refresh the exit door after a settings
+        // flip from another device (they sync). See refreshLockContainment.
+        await refreshLockContainment();
+      }
       else await showLockedScreen();
       return;
     }
@@ -246,12 +276,34 @@ async function showLockedScreen() {
   // the gallery) shows it once they leave. The lock is stamped either way, so no time is lost.
   if (nav.isActive('parent') || nav.isActive('pin') || nav.isActive('connect') || nav.isActive('tour')) return;
   $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
-  // The exit button appears ONLY when the kiosk exit-lock is OFF. With it ON the child is
-  // fully contained (no exit at all); with it off, closing the app is a legitimate escape.
-  let kiosk = false;
-  try { kiosk = await exitLockOn(); } catch {}
-  $('locked-exit').classList.toggle('hidden', kiosk);
   if (!nav.isActive('locked')) nav.reset('locked');
+  // AFTER the guards above, deliberately: pinning while the parent-screen guard bailed
+  // would run the OS pinning ceremony under a parent who is mid-configuration.
+  await refreshLockContainment();
+}
+
+/**
+ * v1.0.55: apply the break screen's containment — the exit door's visibility AND the
+ * full-tablet pin — from the CURRENT settings (pure lockScreenContainment: the kiosk
+ * hides the door entirely, the v1.0.31 rule; the full-tablet lock keeps it visible but
+ * behind the parent code, onLockedExitTap, and pins the task).
+ *
+ * Runs when the screen shows and AGAIN on every 5s tick while it is up, for two reasons,
+ * both measured in the browser: the hold-back+recents gesture unpins WITHOUT
+ * backgrounding the app, so no resume event ever re-arms the pin and the tick is the
+ * only chance; and the settings SYNC, so a parent flipping them on another device
+ * mid-break would otherwise leave a stale exit door on this screen until the next break.
+ * Idempotent (the native pin is state-gated, v1.0.36) and swallowing — a hiccup must
+ * never take the lock screen down with it.
+ */
+async function refreshLockContainment() {
+  try {
+    const contain = lockScreenContainment({ kiosk: await exitLockOn(), lockTablet: await lockTabletOn() });
+    $('locked-exit').classList.toggle('hidden', contain.hideExit);
+    if (!contain.pinTask) return;
+    const { lockTask } = await import('./platform.js');
+    await lockTask();
+  } catch { /* browser preview / plugin absent */ }
 }
 
 function leaveLockedScreen() {
@@ -264,6 +316,29 @@ async function onLockedParentTap() {
   startPin((await hasPin()) ? 'verify' : 'setup', {
     replace: true, title: 'קוד הורים לפתיחת הנעילה',
     onSuccess: async () => { await clearScheduledLock(); leaveLockedScreen(); }
+  });
+}
+
+/**
+ * v1.0.55: the break screen's exit door. Free when the break locks only the APP (today's
+ * behaviour — closing it is a legitimate escape); behind the parent code when the break
+ * locks the WHOLE TABLET — the exit is then the protected resource, exactly the askExit
+ * kiosk rule, and the break KEEPS RUNNING (user decision 2026-08-28): leaving the app is
+ * the parent's own way out, not the child's early release — reopening the app lands back
+ * on the lock. NOT replace:true — cancelling the code must land back on the lock screen,
+ * never on the gallery behind it.
+ */
+async function onLockedExitTap() {
+  let gate = false;
+  try { gate = lockScreenContainment({ lockTablet: await lockTabletOn() }).gateExit; } catch {}
+  if (!gate) { exitApp(); return; }
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    title: 'קוד הורים ליציאה מהאפליקציה',
+    onSuccess: async () => {
+      const { unlockTask } = await import('./platform.js');
+      await unlockTask();
+      exitApp();
+    }
   });
 }
 
@@ -2682,7 +2757,7 @@ async function refreshDonateUi() {
     const { donateAvailable, shouldShowDonateNudge } = await import('./donate.js');
     const available = donateAvailable();
     $('donate-btn').classList.toggle('hidden', !available);
-    $('help-block').classList.toggle('hidden', false); // free ways to help always apply
+    $('help-block').classList.toggle('hidden', contain.hideExit); // free ways to help always apply
     const show = shouldShowDonateNudge({
       firstSeenAt: Number(await prefGet('install.firstSeenAt')) || 0,
       dismissed: (await prefGet('donate.nudgeDismissed')) === '1'
@@ -2972,6 +3047,8 @@ async function refreshParent() {
   // v1.0.31: scheduled lock — load both numbers (0 after = off)
   $('lock-after-min').value = String(Number(await getSetting(activeProfileId, 'lockAfterMin', 0)) || 0);
   $('lock-duration-min').value = String(Number(await getSetting(activeProfileId, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)) || SCHED_LOCK_DEFAULT_DURATION_MIN);
+  $('lock-tablet-toggle').checked = await lockTabletOn(); // v1.0.55
+
   // v1.0.34: never-written reads as the DEFAULT (10), explicit 0 shows as 0 — the
   // distinction is screenOffMinutes' whole job (Number(null) is 0, the wrong answer).
   $('screen-off-min').value = String(screenOffMinutes(
@@ -5719,7 +5796,7 @@ function wire() {
   $('autoplay-stop').addEventListener('click', () => { resetAutoplayChain(); leaveWatch(); });
   // v1.0.31: scheduled lock — the exit button (only shown when the kiosk lock is off) and
   // the discreet parent-unlock tap.
-  $('locked-exit').addEventListener('click', () => exitApp());
+  $('locked-exit').addEventListener('click', () => { onLockedExitTap().catch(() => {}); });
   $('locked-parent').addEventListener('click', () => { onLockedParentTap().catch(() => {}); });
   /* preview bubble (v1.0.26) */
   $('pv-close').addEventListener('click', closePreview);
@@ -6144,6 +6221,20 @@ function wire() {
   };
   $('lock-after-min').addEventListener('change', () => saveSchedLock().catch(() => {}));
   $('lock-duration-min').addEventListener('change', () => saveSchedLock().catch(() => {}));
+  // v1.0.55: full-tablet lock during the break — per-profile, synced (tie → locked).
+  // Takes effect the next time the break SCREEN shows; a break already on screen picks
+  // it up on the next 5s tick's re-assert. Turning it OFF mid-break deliberately does
+  // NOT unpin (containment errs strict — the v1.0.36 direction): the pin releases when
+  // the break ends, or through the code-gated exit.
+  $('lock-tablet-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'lockTablet', e.target.checked);
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'בזמן ההפסקה כל הטאבלט יינעל 🔒 — יציאה או ביטול רק עם קוד הורים'
+      : 'בזמן ההפסקה אפשר לצאת מהאפליקציה (כמו עד היום)';
+    msg.className = 'form-msg ok';
+  });
   // v1.0.34: idle screen-off minutes — per-profile, synced. A nonsense entry falls back
   // to the DEFAULT (never to a short window); an explicit 0 is a real answer: never off.
   $('screen-off-min').addEventListener('change', async () => {

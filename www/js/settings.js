@@ -78,6 +78,7 @@ export async function getSetting(scope, name, fallback = null) {
  */
 const SAFE_ON_TIE = {
   exitLock: true,       // stay in kiosk mode
+  lockTablet: true,     // v1.0.55: keep the whole tablet locked during the break — containment errs strict
   shareApproval: true,  // keep asking before a shared video reaches the child
   autoplay: false,      // stop at the end of the video
   resume: false,        // start from the beginning (v1.0.32 — today's behaviour)

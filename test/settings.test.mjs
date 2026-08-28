@@ -89,6 +89,9 @@ test('an exact tie resolves the SAFE way, and never by argument order', () => {
   // choice in both orders, or the pair ping-pongs forever.
   assert.equal(mergeSettingEntry('exitLock', e(true, 7), e(false, 7)).v, true, 'stay locked');
   assert.equal(mergeSettingEntry('exitLock', e(false, 7), e(true, 7)).v, true);
+  // v1.0.55: full-tablet lock during the break — containment errs strict, like exitLock
+  assert.equal(mergeSettingEntry('lockTablet', e(true, 7), e(false, 7)).v, true, 'keep the tablet locked');
+  assert.equal(mergeSettingEntry('lockTablet', e(false, 7), e(true, 7)).v, true);
   assert.equal(mergeSettingEntry('shareApproval', e(false, 7), e(true, 7)).v, true, 'keep asking');
   assert.equal(mergeSettingEntry('shareApproval', e(true, 7), e(false, 7)).v, true);
   assert.equal(mergeSettingEntry('autoplay', e(true, 7), e(false, 7)).v, false, 'stop playing');
