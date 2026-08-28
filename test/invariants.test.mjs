@@ -2670,4 +2670,20 @@ test('the code keypad shows NOTHING when pressed, and the code can be TYPED (v1.
     'typed digits are no longer gated on the PIN view — keystrokes anywhere feed the code buffer');
   assert.match(handler, /isModalOpen\(\)/,
     'typed digits are consumed under a stacked modal — the recovery confirms leak into the buffer');
+  // dpad.js's ~30/s lesson: Android TV auto-repeats a HELD key. Without this gate a held
+  // digit types itself four times — and in SETUP mode (a family with no code yet) it fills
+  // step 1 with '7777' and the still-repeating key confirms step 2: the family's parent
+  // code set without anyone choosing it. Review-caught (v1.0.55 hardening pass).
+  assert.match(handler, /if \(e\.repeat\) return;/,
+    'a held remote key types repeated digits — setup mode can silently mint code 7777');
+
+  // AND the gate must never leak into enterParent (review-caught: a global regex revert
+  // once pasted `|| isModalOpen()` into its guard, so a CORRECT code entered while any
+  // modal was up — an update prompt resolving mid-await — stranded the parent on the PIN
+  // screen with the buffer consumed and no message).
+  const epAt = app.indexOf('async function enterParent(');
+  assert.ok(epAt > 0, 'enterParent lost — re-anchor this guard');
+  const ep = app.slice(epAt, app.indexOf('\n}', epAt));
+  assert.ok(!ep.includes('isModalOpen'),
+    "enterParent bails on an open modal — a correct code entered under an update prompt is silently eaten");
 });

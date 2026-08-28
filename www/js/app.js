@@ -2705,7 +2705,7 @@ async function enterParent() {
   let total = 0;
   try { total = await pendingTotal(); } catch {}
   parentTab = parentLandingTab(parentTab, total);
-  if (!nav.isActive('pin') || isModalOpen()) return;
+  if (!nav.isActive('pin')) return;
   refreshParent();
   nav.replace('parent'); // replaces 'pin' on the stack
 }
@@ -5862,6 +5862,10 @@ function wire() {
   // existing owner — the D-pad manager and hardware-back.
   window.addEventListener('keydown', (e) => {
     if (!nav.isActive('pin') || isModalOpen()) return;
+    // A HELD key must not type (dpad.js's ~30/s lesson): in SETUP mode a held remote
+    // digit would fill step 1 with '7777' and the still-repeating key would confirm
+    // step 2 with the same digits — the family's code set without anyone choosing it.
+    if (e.repeat) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
     const act = pinKeyAction(e.key);
