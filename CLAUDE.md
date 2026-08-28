@@ -527,6 +527,27 @@ pins that the consumers follow the config and that every address is well-formed.
 ## Current state pointers
 
 - All 14 overhaul features are implemented (see git log stages 0-7 + fix commits).
+- v1.0.55 — **THE CODE KEYPAD IS SILENT, AND THE CODE CAN BE TYPED** (user request: the
+  child watches the parent enter the code, so no key may change color or stand out when
+  pressed; and on TV the remote's digit buttons should type it directly).
+  - **NO pressed feedback on `.key`, deliberately** — the `.key:active` rule is DELETED
+    and invariant-banned (`:hover` too). The ONLY feedback is the dots row, which says
+    how many digits, never which; `-webkit-tap-highlight-color` was already transparent
+    globally. This is a privacy rule, not styling drift — never re-add it.
+  - **Typed digits ride the SAME `onKey` pipeline** as taps. Pure `plan.pinKeyAction`
+    maps `e.key` (top row AND numpad both arrive as '0'-'9' — that is why it reads
+    `e.key`, never `e.code`), Backspace/Delete → ⌫, and refuses everything else so
+    Enter stays with the D-pad manager (it activates the focused control — accepting it
+    would double-type) and Escape stays the hardware-back stand-in. The listener is
+    gated on `nav.isActive('pin')` AND `!isModalOpen()` — the recovery flow stacks
+    confirm dialogs over the PIN screen, and digits must not leak into the buffer
+    behind them — and never consumes out of a text field.
+  - **The on-screen pad STAYS on TV** (user decision 2026-08-28): many Android TV
+    remotes carry no digit buttons at all, and hiding the pad would lock those parents
+    out of the parent screen forever. The D-pad focus ring on the pad therefore stays
+    too (a remote cannot walk an invisible pad) — typing is how a TV parent enters the
+    code without the child seeing which keys light up.
+  1 unit test + 1 invariants test, every guard proven red on a planted regression.
 - v1.0.40 — **⭐ מועדפים: THE CHILD'S OWN MARK** (user request 2026-08-11: any video the child
   taps ⭐ on appears in its own folder at the top of the home, IN ADDITION to where it lives,
   and is never deleted automatically; a second tap removes it).

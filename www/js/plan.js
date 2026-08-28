@@ -707,6 +707,26 @@ export function lockCountdownLabel(msLeft) {
 }
 
 /**
+ * v1.0.55 — PURE: map a KeyboardEvent.key to a PIN-keypad action.
+ *
+ * The code can be TYPED — a TV remote's digit buttons, a hardware keyboard — instead of
+ * tapped, which is the second half of the discreet-keypad request: on TV, tapping means
+ * D-pad-walking a visible focus ring across the digits, which shows the child the code
+ * one highlight at a time. Typing shows nothing.
+ *
+ * Digit keys arrive as '0'..'9' for both the top row and the numpad (e.key, not e.code —
+ * e.code would be 'Numpad7'/'Digit7' and miss one of them). Backspace/Delete map to the
+ * keypad's own ⌫. EVERYTHING else is null: Enter must stay with the D-pad manager (it
+ * activates whatever is focused), and Escape stays the hardware-back stand-in.
+ */
+export function pinKeyAction(key) {
+  if (typeof key !== 'string') return null;
+  if (/^[0-9]$/.test(key)) return key;
+  if (key === 'Backspace' || key === 'Delete') return 'del';
+  return null;
+}
+
+/**
  * v1.0.26 — PURE: where a "I forgot the parent code" request stands.
  * -> { state: 'none' | 'waiting' | 'ready', msLeft, hoursLeft }
  *

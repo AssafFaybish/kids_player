@@ -110,6 +110,12 @@ for anything destructive, and purge it afterwards.
 - [ ] **Per-profile lock** (v1.0.25): with a locked child active, tapping the profile chip
       asks for the PIN. Switch to an UNLOCKED sibling → the device unpins and the exit button
       returns. Switch back → it re-pins. *(Both directions; the second one is the escape.)*
+- [ ] **Silent keypad** (v1.0.55): on the PIN screen, tap and press-and-HOLD a digit — the
+      key must not change color, scale, or ripple; only the dots fill. *(The suite pins the
+      CSS rule's absence; only a finger on glass proves no OS-level highlight sneaks in.)*
+- [ ] **TV: type the code with the remote's digit buttons** (v1.0.55) — digits fill the dots
+      with NOTHING highlighted on screen; the on-screen pad must STAY walkable with the
+      D-pad (many remotes have no digit buttons — that path is the only one they have).
 - [ ] **Parent-code recovery, device path** (v1.0.26) — NEVER RUN ON HARDWARE. On a device
       WITH a lock screen: "שכחתי את הקוד" must raise the system prompt; success goes straight
       to choosing a new code; cancelling must still offer the 24-hour wait.

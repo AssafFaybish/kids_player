@@ -2643,3 +2643,31 @@ test('fullscreen video forces landscape, and the app can NEVER get stuck sideway
       `${p}: setRequestedOrientation must run on the UI thread`);
   }
 });
+
+test('the code keypad shows NOTHING when pressed, and the code can be TYPED (v1.0.55)', () => {
+  // User request: a parent entering the code with the child on their lap must not have
+  // each digit light up under their finger. The ONLY feedback is the dots row — how many,
+  // never which. The rule is one deleted CSS line, so the guard is textual by necessity.
+  const css = readRepoCode('www/css/styles.css');
+  assert.ok(!css.includes('.key:active'),
+    'a .key:active rule is back — the pressed digit lights up for the watching child');
+  assert.ok(!css.includes('.key:hover'),
+    'a .key:hover rule highlights the digit under the pointer');
+  // The TV focus ring STAYS: a D-pad cannot walk an invisible pad, and many Android TV
+  // remotes carry no digit buttons at all — the typed path is an addition, never a
+  // replacement for the on-screen pad (user decision 2026-08-28).
+  assert.match(css, /html\.tv button:focus/,
+    'the TV focus ring rule is gone — a remote cannot navigate the pad at all');
+
+  // The typed path: remote/keyboard digits reach the SAME onKey pipeline, gated on the
+  // PIN view being the active view and on no modal sitting over it (the recovery flow
+  // stacks confirms there — digits must not leak into the buffer behind them).
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf('pinKeyAction(e.key)');
+  assert.ok(at > 0, 'the typed-code path is gone — a TV remote with digit buttons cannot enter the code');
+  const handler = app.slice(app.lastIndexOf('window.addEventListener', at), at);
+  assert.match(handler, /nav\.isActive\('pin'\)/,
+    'typed digits are no longer gated on the PIN view — keystrokes anywhere feed the code buffer');
+  assert.match(handler, /isModalOpen\(\)/,
+    'typed digits are consumed under a stacked modal — the recovery confirms leak into the buffer');
+});
