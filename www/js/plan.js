@@ -720,10 +720,15 @@ export function lockCountdownLabel(msLeft) {
  *    parent's own way out while the break keeps running for the child (user decision
  *    2026-08-28: code → unpin → exit; the break is NOT cancelled by leaving).
  *  - pinTask: pin while the break screen shows. Owned by the break, not by the kiosk —
- *    applyExitLock keeps owning the kiosk's pin.
- *  - unpinOnClear: release the pin when the break ends (timer or parent code) — but
- *    NEVER under the kiosk (v1.0.36: a kiosk session stays pinned; its release points
- *    are the exits, where leaving is the point).
+ *    applyExitLock keeps owning the kiosk's pin. (gateExit and pinTask are the same bit
+ *    TODAY, named separately because different surfaces consume them; if they ever
+ *    diverge, this function is the only place that changes.)
+ *  - unpinOnClear: may a pin the break is HOLDING be released when the lock clears?
+ *    The kiosk vetoes (v1.0.36: a kiosk session stays pinned; its release points are
+ *    the code-gated exits). Whether the break IS holding one is RUNTIME state
+ *    (app.js `breakPinHeld`), deliberately not this setting: lockTablet can flip
+ *    mid-break — the settings sync — and the release must follow what was actually
+ *    pinned, not what the toggle says at release time (review finding).
  *
  * Junk values read as false — the exitLockOn precedent (`=== true`): a corrupted setting
  * must fall back to today's behaviour, never lock a tablet the parent never locked.
@@ -731,7 +736,7 @@ export function lockCountdownLabel(msLeft) {
 export function lockScreenContainment({ kiosk = false, lockTablet = false } = {}) {
   const k = kiosk === true;
   const t = lockTablet === true;
-  return { hideExit: k, gateExit: t, pinTask: t, unpinOnClear: t && !k };
+  return { hideExit: k, gateExit: t, pinTask: t, unpinOnClear: !k };
 }
 
 /**

@@ -1767,24 +1767,40 @@ test('pinKeyAction: digits and delete map; every other key keeps its existing ow
 /* ---------------- full-tablet lock during the break (v1.0.55) ---------------- */
 
 test('lockScreenContainment: all four combinations, junk fails toward today\'s behaviour', () => {
-  // neither lock: today's screen — free exit, no pin, nothing to release
+  // unpinOnClear answers "MAY a pin the break is HOLDING be released when the lock
+  // clears?" — the kiosk veto. Whether one is held is runtime state (app.js breakPinHeld),
+  // deliberately not the lockTablet setting: it can flip mid-break (settings sync), and
+  // the release must follow what was actually pinned (v1.0.55 review finding).
+  // neither lock: today's screen — free exit, no pin; a held pin (impossible here, the
+  // flag can only be set by pinTask) would be releasable
   assert.deepEqual(lockScreenContainment({}),
-    { hideExit: false, gateExit: false, pinTask: false, unpinOnClear: false });
-  // kiosk only (v1.0.31, unchanged): the door is hidden entirely; the kiosk owns its pin,
-  // so the break must neither pin nor — the v1.0.36 rule — ever release it
+    { hideExit: false, gateExit: false, pinTask: false, unpinOnClear: true });
+  // kiosk only (v1.0.31, unchanged): the door is hidden entirely; the kiosk owns the pin,
+  // so the break must neither pin nor — the v1.0.36 rule — ever release one
   assert.deepEqual(lockScreenContainment({ kiosk: true }),
     { hideExit: true, gateExit: false, pinTask: false, unpinOnClear: false });
-  // full-tablet lock only: door visible but code-gated, pinned while shown, released when
-  // the break ends
+  // full-tablet lock only: door visible but code-gated, pinned while shown, releasable
+  // when the break ends
   assert.deepEqual(lockScreenContainment({ lockTablet: true }),
     { hideExit: false, gateExit: true, pinTask: true, unpinOnClear: true });
-  // both: the kiosk wins the door (hidden) AND the release (never) — a kiosk session must
+  // both: the kiosk wins the door (hidden) AND vetoes the release — a kiosk session must
   // stay pinned after the break, or the break's end unpins the whole kiosk
   assert.deepEqual(lockScreenContainment({ kiosk: true, lockTablet: true }),
     { hideExit: true, gateExit: true, pinTask: true, unpinOnClear: false });
   // junk reads as OFF (the exitLockOn `=== true` precedent): a corrupted value must fall
   // back to today's behaviour, never lock a tablet the parent never locked
   assert.deepEqual(lockScreenContainment({ kiosk: 'true', lockTablet: 1 }),
-    { hideExit: false, gateExit: false, pinTask: false, unpinOnClear: false });
+    { hideExit: false, gateExit: false, pinTask: false, unpinOnClear: true });
   assert.deepEqual(lockScreenContainment(), lockScreenContainment({}));
+});
+
+test('evalScheduledLock: switching the feature OFF beats a leftover lockedUntil', async () => {
+  const { evalScheduledLock } = await import('../www/js/plan.js');
+  // The live case (v1.0.55 review): a parent zeroes lockAfterMin on ANOTHER device while
+  // a break is running here — the phase must read 'off' even though `until` is still
+  // stamped, and the tick's teardown must then run clearScheduledLock (invariant-pinned)
+  // to drop the stale stamp and release the break's pin. Without the stamp-drop, merely
+  // re-enabling the feature later would re-lock the child on the spot.
+  assert.equal(evalScheduledLock({ afterMin: 0, lockedUntil: Date.now() + 9e6 }).phase, 'off');
+  assert.equal(evalScheduledLock({ afterMin: -5, lockedUntil: Date.now() + 9e6 }).phase, 'off');
 });

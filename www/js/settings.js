@@ -68,6 +68,24 @@ export async function getSetting(scope, name, fallback = null) {
 }
 
 /**
+ * v1.0.55 — read SEVERAL settings of one scope with ONE storage read. Each getSetting is
+ * a full Preferences round-trip plus a whole-document parse; the scheduled-lock tick asks
+ * for two flags every 5 seconds while the break screen is up, which made it two of each.
+ * Same never-written-⇒-fallback semantics as getSetting, per name (the entry-shape check
+ * matches mergeSettingEntry's, so a junk entry reads as the fallback instead of throwing).
+ */
+export async function getSettings(scope, names, fallback = null) {
+  const all = await getAllSettings();
+  const bag = scope === ACCOUNT ? all.account : (all.profiles[scope] || {});
+  const out = {};
+  for (const n of names || []) {
+    const entry = bag[n];
+    out[n] = entry && typeof entry === 'object' && 'v' in entry ? entry.v : fallback;
+  }
+  return out;
+}
+
+/**
  * Tie-break table. An exact `at` collision is rare but must be DETERMINISTIC, or
  * merge(A,B) !== merge(B,A) and two devices ping-pong forever — the v1.0.22 bug on
  * libraryChannels, which shipped because the fixtures carried timestamps and so pinned

@@ -126,9 +126,18 @@ for anything destructive, and purge it afterwards.
       device with the system "ask PIN before unpinning" option the DEVICE's own lock screen
       appears — confirm the settings hint matches what the device actually does.
 - [ ] **Gesture-unpin during the break** (hold back+recents) → within ~5 seconds the app
-      re-pins (the tick re-assert; no resume event fires for this gesture).
+      re-pins (the tick re-assert; no resume event fires for this gesture). **Repeat with
+      the 🚪 code screen left open on top of the lock** — the re-assert must keep running
+      there too (the v1.0.55 review's escape: gesture under the code screen, then HOME).
 - [ ] Break lock + KIOSK both on → the break screen shows NO exit button at all, and when
       the break ends the session stays pinned (the kiosk owns the pin).
+- [ ] **Toggle the tablet-lock OFF on a second device DURING a pinned break** → the break
+      screen keeps its pin until the break ends (containment errs strict), and at break
+      end the pin is still RELEASED (ownership, not a setting re-read — the v1.0.55
+      review's stranded-pin case).
+- [ ] **Zero the scheduled lock on a second device DURING a pinned break** → the tablet
+      leaves the break screen within ~5s, unpins, and does NOT re-lock when the feature
+      is later re-enabled (the stale-`until` case).
 - [ ] **Parent-code recovery, device path** (v1.0.26) — NEVER RUN ON HARDWARE. On a device
       WITH a lock screen: "שכחתי את הקוד" must raise the system prompt; success goes straight
       to choosing a new code; cancelling must still offer the 24-hour wait.
