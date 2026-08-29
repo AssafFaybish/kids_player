@@ -30,6 +30,7 @@ live and how does data flow".
 | `ytsearch.js` | **the parent's KEYLESS YouTube search + in-result browsing** (v1.0.33): pure parsers over the youtubei search AND browse endpoints (0 quota, no API key — ANY youtubei literal is guard-pinned to this one module) — videoRenderer/channelRenderer/lockup/officialCard (header-anchored), a channel's Videos tab / a playlist's contents, Shorts + RD-mix filtered, continuation shapes for both (an unparsable CONTINUATION = end-of-list, never the 'parse' alarm); suggestion parser (`oe=utf-8` load-bearing for Hebrew); pinned `searchMessage` texts; thin POST via `platform.httpPostJson` | platform |
 | `keys.js` / `keys.local.js` | API-key resolution; keys.local is GITIGNORED, ships in APK via cap copy | — |
 | `gauth.js` | KidsGoogleAuth JS side; access token in memory only (~55min) | — |
+| `gdrivepub.js` | **PUBLIC Drive metadata** (v1.0.56) — the name/mimeType/size of a file a parent shared "anyone with the link", so a Drive mp3 gets a real caption and is known to be AUDIO. ONE module by rule (the ytsearch precedent): every keyed `drive/v3` call lives here, it never imports gauth, and it never sends an Authorization header — the app's only OAuth scope is `drive.file`, which cannot read a parent's own files and must never grow. Keyed `files.get` first, the public `/view` page scraped second (keyless builds); both parsers TOTAL — an error envelope or a sign-in page answers null, never a caption | platform, keys |
 | `sunset.js` | ⏳ **DELETE AFTER 2026-09-10** (`test/sunset.test.mjs` fails on that date and carries the checklist). The one-time migration off the Google-Sheets sources list: `runSheetSunset` (every profile, silent, 3 attempts across launches), `readFinalSheet` + `interpretSheetResponse` + the id/gid extractors (lifted out of the deleted sheetwrite.js), and exactly ONE Drive `files.delete` — a FILE id, never the folder | platform, gauth, csv, linksfile, plan, store, yt, db |
 | `drive.js` | Drive DB per-LIBRARY: serializeDb/parseDb/mergeDbFiles (pure CRDT), `interpretDriveDoc`/`interpretDriveList`/`decidePush` (an unreadable remote NEVER writes), `stripPerDeviceChannel`/`mergeChannelForApply`, `mergeLibraryChannel` (autoApprove converges; tie → still-requires-approval) + push/pull I/O | platform, gauth, normalize, db, csv |
 | `snapshot.js` | full-state export/import (import re-classifies EVERYTHING) | classify, normalize, order, db |
@@ -71,6 +72,11 @@ the restricted site viewer: the ONLY place a child's web navigation is enforced;
 | `meta` | `id` | migration flag, sync timestamps, handleMap, quota:<date>, drive:{dbFileId…}, gift baselines, dedupe reports |
 | `opLog` | autoInc | mutation ops (deny/undeny/unwrap) for future merge use |
 | `siteEntries` | `[scopeId, entryId]` | v1.0.45 — approved websites, on a PROFILE scope (`prof:<id>`). ONE store, two kinds: `kind:'shortcut'` `{url,title,iconUrl}` is what the CHILD sees as a tile; `kind:'rule'` `{display,host,port,segments[],allowExternal}` is where they may navigate and is NEVER shown. `by_scope` `[scopeId,order]`. Deletion writes a tombstone FIRST into `meta['siteDel:<scope>']`. Icons ride the `thumbs` store as `siteicon:<entryId>`. |
+
+v1.0.56 adds `media:'audio'|'video'|null` to the video record (a direct link's extension, a
+Drive file's fetched mimeType, or null = unknown — the player re-detects it at
+`loadedmetadata` anyway) and `driveMetaTriedAt` (the sync's weekly retry stamp for records
+that arrived without a name: a share, a links-file row).
 
 Video record: `{scopeId,key,type,id,url,srcUrl,driveId,title,titleSource(api>rss>sheet>oembed),
 normTitle,folderId,homeFolderId?,channelId,sortKey,publishedAt,rowIndex,origin(channel|sheet-row|

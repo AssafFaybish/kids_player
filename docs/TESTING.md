@@ -229,6 +229,29 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Drive files + audio (v1.0.56 — the browser proves the scene and the parsers, NOT these)
+- [ ] **A Drive mp3 plays and looks like music**: share an mp3 in Drive as "anyone with the
+      link", paste the link in הוספה → the tile carries its REAL name (from the file's
+      metadata, not "view") and a 🎵 badge; opening it shows the music scene, not a black
+      rectangle, and the HUD/seek/⛶ behave exactly as for a video.
+- [ ] **A Drive mp4 still works** (the regression risk of the same path): name from the
+      file, 🎬 badge, normal picture.
+- [ ] **A NOT-shared Drive file is honest**: paste a link to a private file → the add
+      succeeds but the message says to check the "anyone with the link" sharing. (Playback
+      of that file will legitimately fail — the app cannot read a parent's private files;
+      `drive.file` is the only OAuth scope and must stay that way.)
+- [ ] **The download fallback caches with the right extension**: play a Drive mp3 where the
+      stream fails (airplane mode mid-play, or a large file) → after "טוען את הסרטון…" it
+      plays from `DATA/videos/*.mp3`, and plays again OFFLINE. *(An mp3 cached as `.mp4` is
+      a decode gamble — Android guesses the MIME from the extension. Only a device shows it.)*
+- [ ] **No black thumbnail is ever burned**: after playing an audio file, its tile keeps the
+      placeholder + 🎵 — never a solid black picture. (This is permanent damage when wrong:
+      persistThumb never retries a record that already has a thumb.)
+- [ ] **A keyless build still names Drive files**: build without `keys.local.js` → the name
+      still arrives (the public-page scrape), just slower.
+- [ ] Audio behaves like video by design (v1.0.56 decision): the screen-off/background pause
+      and the "עדיין צופים?" prompt apply to a song exactly as to a video.
+
 ### Links file (v1.0.38 — device only; the suite cannot see any of this)
 - [ ] מקורות → **📤 ייצוא רשימת לינקים**: a real `.txt` lands in
       `Android/data/com.assaf.kidsplayer/files/exports/`, the message NAMES that path, and

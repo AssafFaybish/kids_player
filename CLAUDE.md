@@ -273,6 +273,55 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.56 — **AUDIO (mp3) IS CONTENT, AND A DRIVE FILE KNOWS ITS OWN NAME** (user request:
+  add a Drive link to an audio or video file and it reaches the child). Half of this
+  already existed and was quietly poor: `classifyLink` has accepted Drive links since the
+  beginning, `media.js` streams them and falls back to a download cache — so an mp3 from
+  Drive already played, as a **black rectangle with no caption**.
+  - **`media: 'audio'|'video'|null` RIDES THE RECORD**, and null is a legitimate value —
+    a share, a links-file row and a peer on an older app all produce one. It is set from
+    a direct link's EXTENSION, from a Drive file's fetched `mimeType`, and **corrected at
+    `loadedmetadata` from `videoWidth > 0`, which is the only source that cannot be wrong**.
+    It survives `mergeVideoRecord` (`s.media || l.media` — the `keepForever` lesson: `out =
+    {...s}` drops the enrichment whenever the other copy wins) and the snapshot.
+  - ⚠️ **`captureFrame` BURNED A BLACK JPEG ONTO EVERY AUDIO TILE, PERMANENTLY.** It sized
+    the canvas `video.videoWidth || 320`, and an audio element reports 0 — so it painted
+    nothing onto a 320×180 canvas and `persistThumb` stored the result, which it then
+    **never retries** (`if (item.thumbId || item.thumbUrl) return`). No video track ⇒ no
+    frame ⇒ null. The guard bans a NUMERIC fallback specifically: the correct early-return
+    itself contains `videoWidth ||`, and the first version of that guard tripped on its own
+    fix (caught by running it — the vacuous/self-tripping trap in both directions).
+  - **THE AUDIO SCENE IS A CLASS ON THE SHARED WRAP** (`.is-audio` → `#audio-scene`, CSS
+    only, no assets): `pointer-events:none` ALWAYS (the HUD-container invariant — proven,
+    not assumed: `elementFromPoint` over the scene's centre answers `tap-shield` during
+    real playback) and `z-index:1`, under the HUD and every overlay. **`cleanup()` always
+    clears it** — the wrap is shared with the YouTube engine, which never touches this
+    class, so a file that left it behind would cover the NEXT video.
+  - **A DRIVE LINK CARRIES NO FILENAME**, so `titleFromFileUrl` was captioning tiles with
+    the literal path segment (`"view"`). It now answers `''` for a Drive link, and
+    `titleFromFileName` (new) names a file from its METADATA instead.
+  - **[gdrivepub.js](www/js/gdrivepub.js) IS THE ONE PUBLIC-DRIVE MODULE** (the ytsearch
+    precedent: an undocumented/keyed Google surface gets exactly one blast radius). It
+    **never imports gauth and never sends an Authorization header** — `drive.file` is the
+    only OAuth scope, it cannot read a parent's own files, and it must never grow
+    (v1.0.19). Everything here works ONLY on a file shared "anyone with the link", which
+    playback on the child's tablet already requires — **so an unreadable answer is ALSO
+    the honest signal that the file is probably not shared, and the add says so instead of
+    a reassuring ✅**. Keyed `files.get` first, the public `/view` page scraped second
+    (keyless builds); both parsers TOTAL — an error envelope or a sign-in page answers
+    null, never a caption. ⚠️ The shared API key needs **Google Drive API** added to its
+    API restrictions (GOOGLE_CLOUD_SETUP שלב 5); a YouTube-only key answers 403 and falls
+    back to the scrape — degraded, never broken.
+  - **THE CACHE EXTENSION FOLLOWS THE FILE** (`media.cacheExtFor`): Android guesses a
+    `file://` src's MIME from its extension, so the old hardcoded `.mp4` on an mp3 was a
+    decode gamble. `LOCALPATH_RE` (the snapshot's untrusted-path whitelist) widens in
+    lockstep and stays anchored.
+  - **AUDIO BEHAVES EXACTLY LIKE VIDEO** (user decision 2026-08-29): screen-off/background
+    pauses it, and "עדיין צופים?" applies. True background audio needs a native foreground
+    service and is deliberately a separate future feature, not a silent half-implementation.
+  - 13 unit tests + 2 invariants tests; every guard proven red on a planted regression (10
+    plants, reverted with `git restore` — never a line-global regex).
+
 - v1.0.45 — **APPROVED WEBSITES: a restricted browser inside the app** (user request).
   Full record: **[docs/V1045.md](docs/V1045.md)**; the maintainer's map (what lives where,
   how to extend it, the five things that break in silence): **[docs/WEBSITES.md](docs/WEBSITES.md)**
