@@ -14,6 +14,17 @@ export function extractYouTubeId(url) {
   return m ? m[1] : null;
 }
 
+/**
+ * v1.0.56 — a Drive FOLDER link. Deliberately checked BEFORE driveFileId in
+ * classifySourceRow: the two id spaces look identical, and only the URL shape tells a
+ * folder from a file. A folder is not playable, so it must never reach classifyLink.
+ */
+export function driveFolderId(url) {
+  const s = String(url);
+  const m = s.match(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([A-Za-z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+
 export function driveFileId(url) {
   const s = String(url);
   let m = s.match(/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]+)/); if (m) return m[1];
@@ -158,6 +169,11 @@ export function classifySourceRow(raw) {
     // a removal row is NOT playable content — it only carries a key to deny
     return rm ? { kind: 'removed', key: rm.key, raw: s } : { kind: 'comment', raw: s };
   }
+
+  // v1.0.56 — a Drive FOLDER, before the playable check: it is a SOURCE (many files),
+  // not a video, and its id looks exactly like a file id.
+  const df = driveFolderId(s);
+  if (df) return { kind: 'drivefolder', driveFolderId: df, srcUrl: s };
 
   const video = classifyLink(s);
   if (video) return { kind: 'video', ...video };

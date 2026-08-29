@@ -131,3 +131,121 @@ test('the cache extension follows the real file, not a hardcoded .mp4', () => {
   assert.equal(cacheExtFor({ url: drive }), 'mp4', 'unknown stays the legacy default');
   assert.equal(cacheExtFor({}), 'mp4');
 });
+
+/* ---------------- Drive FOLDERS (v1.0.56) ---------------- */
+
+test('a Drive folder link is a SOURCE, and never a playable file', async () => {
+  const { driveFolderId, classifySourceRow, classifyLink } = await import('../www/js/classify.js');
+  assert.equal(driveFolderId('https://drive.google.com/drive/folders/1FYLaoscxWBV_BU5sFouf7XCrv7cKktBY'),
+    '1FYLaoscxWBV_BU5sFouf7XCrv7cKktBY');
+  // the /u/0/ form a signed-in parent copies
+  assert.equal(driveFolderId('https://drive.google.com/drive/u/0/folders/ABC_123-xyz'), 'ABC_123-xyz');
+  assert.equal(driveFolderId('https://drive.google.com/file/d/ABC/view'), null, 'a FILE is not a folder');
+  assert.equal(driveFolderId('https://example.com/drive/folders/x'), null);
+
+  // file and folder ids look identical — only the URL shape separates them, so the
+  // playable classifier must refuse a folder outright
+  assert.equal(classifyLink('https://drive.google.com/drive/folders/ABC_123-xyz'), null);
+  assert.equal(classifySourceRow('https://drive.google.com/drive/folders/ABC_123-xyz').kind, 'drivefolder');
+});
+
+test('the keyless folder parser reads REAL embedded-view markup, per entry block', async () => {
+  const { parseDriveFolderHtml } = await import('../www/js/gdrivepub.js');
+  // shaped exactly like the live page (measured 2026-08-29)
+  const entry = (id, name, mime) =>
+    `<div class="flip-entry" id="entry-${id}" tabindex="0" role="link"><div class="flip-entry-info">` +
+    `<a href="https://drive.google.com/file/d/${id}/view?usp=drive_web">` +
+    `<div class="flip-entry-list-icon"><img src="https://drive-thirdparty.googleusercontent.com/16/type/${mime}" alt=""/></div>` +
+    `<div class="flip-entry-title">${name}</div></a></div></div>`;
+  const html = '<!DOCTYPE html><html><head><title>שירי ערש</title></head><body>' +
+    entry('1aaaaaaaaaaaaaaaaaaaa', 'פרק 10.mp3', 'audio/mpeg') +
+    entry('1bbbbbbbbbbbbbbbbbbbb', 'Tom &amp; Jerry.mp4', 'video/mp4') +
+    entry('1cccccccccccccccccccc', 'notes.pdf', 'application/pdf') +
+    '</body></html>';
+  const got = parseDriveFolderHtml(html);
+  assert.equal(got.name, 'שירי ערש', 'the page <title> IS the folder name — the tile has no other source');
+  assert.equal(got.files.length, 3, 'non-media is filtered LATER (planDriveFolderImport), not here');
+  assert.deepEqual(got.files[0], { id: '1aaaaaaaaaaaaaaaaaaaa', name: 'פרק 10.mp3', mimeType: 'audio/mpeg', size: null });
+  assert.equal(got.files[1].name, 'Tom & Jerry.mp4', 'entities are decoded');
+  assert.equal(got.files[2].mimeType, 'application/pdf');
+
+  // AN ENTRY MISSING ITS TITLE MUST NOT SHIFT EVERY LATER NAME ONTO THE WRONG FILE —
+  // that is why this parses per block instead of zipping three global matches.
+  const broken = '<html><head><title>f</title></head>' +
+    '<div class="flip-entry" id="entry-1dddddddddddddddddddd"></div>' + entry('1eeeeeeeeeeeeeeeeeeee', 'real.mp3', 'audio/mpeg');
+  const got2 = parseDriveFolderHtml(broken);
+  assert.equal(got2.files.length, 1);
+  assert.equal(got2.files[0].id, '1eeeeeeeeeeeeeeeeeeee', 'the surviving name landed on the wrong file');
+});
+
+test('both folder listers are TOTAL — unreadable is never "empty"', async () => {
+  const { parseDriveFolderHtml, interpretDriveFolderList } = await import('../www/js/gdrivepub.js');
+  for (const bad of [null, undefined, '', 0, {}, []]) {
+    assert.equal(parseDriveFolderHtml(bad), null, 'the HTML parser invented a listing');
+  }
+  // a sign-in page has no entries and no marker: null, NOT an empty folder
+  assert.equal(parseDriveFolderHtml('<html><body>Sign in to continue</body></html>'), null);
+  // …but a genuinely EMPTY folder page IS empty, not unreadable. The two are told apart by
+  // the container the real page always carries (`flip-entries`/`flip-contents`, measured) —
+  // note "flip-entries" does NOT contain "flip-entry", which is what made the first version
+  // of this parser answer null for an empty folder.
+  const empty = parseDriveFolderHtml(
+    '<html><head><title>ריק</title></head><body class="flip-embedded">' +
+    '<div id="flip-contents" class="flip-contents flip-list-view"><div class="flip-entries"></div></div></body></html>');
+  assert.deepEqual(empty.files, []);
+  assert.equal(empty.name, 'ריק', 'an empty folder still names itself');
+
+  for (const bad of [null, undefined, 'x', [], { error: { code: 403 } }, { files: 'nope' }]) {
+    assert.equal(interpretDriveFolderList(bad), null, 'the API parser invented a listing');
+  }
+  const ok = interpretDriveFolderList({ files: [{ id: '1aaaaaaaaaaaaaaaaaaaa', name: 'a.mp3', mimeType: 'audio/mpeg', size: '12' }], nextPageToken: 't' });
+  assert.deepEqual(ok.files[0], { id: '1aaaaaaaaaaaaaaaaaaaa', name: 'a.mp3', mimeType: 'audio/mpeg', size: 12 });
+  assert.equal(ok.nextPageToken, 't');
+});
+
+test('a numbered album imports in HUMAN order, and only media', async () => {
+  const { planDriveFolderImport, naturalCompare } = await import('../www/js/plan.js');
+  assert.deepEqual(['פרק 10', 'פרק 2', 'פרק 1'].sort(naturalCompare), ['פרק 1', 'פרק 2', 'פרק 10']);
+  assert.equal(naturalCompare(null, undefined), 0);
+
+  const f = (id, name) => ({ id, name });
+  const kind = (x) => (/\.mp3$/.test(x.name) ? 'audio' : /\.mp4$/.test(x.name) ? 'video' : null);
+  const plan = planDriveFolderImport({
+    files: [f('1a'.padEnd(20, 'a'), 'פרק 10.mp3'), f('1b'.padEnd(20, 'b'), 'פרק 2.mp3'),
+      f('1c'.padEnd(20, 'c'), 'notes.pdf'), f('1d'.padEnd(20, 'd'), 'seen.mp4')],
+    existingKeys: new Set(['file:drive:' + '1d'.padEnd(20, 'd')]),
+    mediaKindOf: kind
+  });
+  assert.deepEqual(plan.add.map((a) => a.name), ['פרק 2.mp3', 'פרק 10.mp3']);
+  assert.equal(plan.add[0].media, 'audio');
+  assert.deepEqual(plan.skipped, { existing: 1, denied: 0, nonMedia: 1 });
+
+  // a file the parent deleted here before must NOT walk back in on the next refresh
+  const denied = planDriveFolderImport({
+    files: [f('1e'.padEnd(20, 'e'), 'gone.mp3')],
+    denyKeys: new Set(['file:drive:' + '1e'.padEnd(20, 'e')]), mediaKindOf: kind
+  });
+  assert.deepEqual(denied.add, []);
+  assert.equal(denied.skipped.denied, 1);
+
+  // junk in, no throw out
+  assert.deepEqual(planDriveFolderImport({}).add, []);
+  assert.deepEqual(planDriveFolderImport({ files: [null, {}, { id: '' }] }).add, []);
+});
+
+test('the folder outcome NAMES its zero — the v1.0.37 rule', async () => {
+  const { driveFolderOutcome } = await import('../www/js/plan.js');
+  assert.match(driveFolderOutcome({ ok: false }), /משותפת/, 'an unreadable folder must point at SHARING');
+  assert.match(driveFolderOutcome({ added: 3 }), /3 קבצים/);
+  assert.match(driveFolderOutcome({ added: 1 }), /קובץ אחד/);
+  assert.match(driveFolderOutcome({ added: 2, first: false }), /חדשים/);
+  // the four zeroes are four DIFFERENT facts and must not share a sentence
+  const zeros = [
+    driveFolderOutcome({ added: 0, skipped: { nonMedia: 2 } }),
+    driveFolderOutcome({ added: 0, skipped: { denied: 1 } }),
+    driveFolderOutcome({ added: 0, skipped: { existing: 5 } }),
+    driveFolderOutcome({ added: 0, skipped: {} })
+  ];
+  assert.equal(new Set(zeros).size, 4, 'two different zeroes produced the same message');
+  for (const z of zeros) assert.doesNotMatch(z, /undefined|NaN/);
+});

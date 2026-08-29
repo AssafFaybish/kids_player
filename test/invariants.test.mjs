@@ -222,6 +222,41 @@ test('custom folders converge across devices like every other collection (v1.0.5
     'purgeProfile strands the folder tombstones — a recreated profile inherits them');
 });
 
+test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
+  const app = CODE.get('www/js/app.js');
+  const plan = CODE.get('www/js/plan.js');
+
+  // THE decision of this feature (user, 2026-08-29): new files flow in, a file the parent
+  // removed in DRIVE is never removed from the child's library. A "mirror" is the shape
+  // that deleted families' libraries in the sheet era — an unreadable listing reads as an
+  // empty folder and sweeps everything.
+  const imp = fnSlice(app, 'async function importDriveFolder(');
+  assert.match(imp, /planDriveFolderImport\(/, 'the import stopped using its pure decision');
+  for (const banned of [/deleteVideo\(/, /deleteVideoRaw\(/, /deleteVideosWithTombstones\(/]) {
+    assert.doesNotMatch(imp, banned,
+      'the Drive-folder import deletes videos — it is ADDITIVE ONLY (a failed listing must never sweep)');
+  }
+  // an unreadable listing must ABORT, never proceed as "the folder is empty"
+  assert.match(imp, /if \(!listing\.ok\)/, 'an unreadable listing is no longer distinguished from an empty one');
+  assert.match(CODE.get('www/js/gdrivepub.js'), /ok: false, files: \[\]/,
+    'fetchDriveFolder collapsed "could not read" into "nothing there"');
+
+  // the zero must NAME its cause (the v1.0.37 rule) — four different facts, four sentences
+  assert.match(plan, /export function driveFolderOutcome\(/, 'the outcome text is no longer pure');
+  assert.match(imp, /driveFolderOutcome\(/, 'the importer hand-rolls its own message');
+
+  // a Drive folder is a CUSTOM FOLDER that refills itself — no new folder kind anywhere,
+  // which is what let paging/search/deletion/sync stay untouched
+  assert.doesNotMatch(fnSlice(app, 'async function pageAnyFolder('), /driveFolderId/,
+    'paging grew a Drive-folder branch — it should be an ordinary cf: folder');
+  assert.match(imp, /putCustomFolder\(/, 'the Drive folder is no longer stored as a custom folder');
+
+  // the refresh is throttled and silent — it runs inside entryRefresh, before the sync
+  const ref = fnSlice(app, 'async function refreshDriveFolders(');
+  assert.match(ref, /driveSyncedAt/, 'the refresh lost its throttle — every home entry would re-list every folder');
+  assert.match(ref, /catch/, 'a failed listing must never take the entry refresh down with it');
+});
+
 test('folder art is proposed, never installed, and stored as BYTES (v1.0.56)', () => {
   const art = MODULES.get('www/js/folderart.js');
   assert.ok(art, 'folderart.js is gone');
@@ -536,9 +571,14 @@ test('every path that makes a record LIVE forces a refresh', () => {
   // (behind the 'finishing' wait), never one per row — a 300-line file must not fire 300
   // forced syncs, which is exactly why the importer does not route through
   // addClassifiedRow. The count is what would catch that regression.
+  // v1.0.56 DELIBERATE change 8→9: the Drive-FOLDER import. It writes live records like
+  // any other add path, so it needs the same forced refresh — without it the imported
+  // files sit un-enriched and un-gifted until the parent presses "רענון נתונים" (the
+  // v1.0.21 field bug). The periodic refreshDriveFolders does NOT call it: it already runs
+  // inside entryRefresh, immediately before the sync it would otherwise be asking for.
   const sites = (app.match(/refreshAfterAdd\(/g) || []).length - 1;
-  assert.equal(sites, 8,
-    `expected exactly 8 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
+  assert.equal(sites, 9,
+    `expected exactly 9 refreshAfterAdd call sites, found ${sites} — an add path stopped refreshing, or a new one must be pinned here deliberately`);
   // it must FORCE: the 3-min shouldSync throttle is what made the bug invisible
   const fn = app.slice(app.indexOf('function refreshAfterAdd('));
   // `[^}]*` rather than an immediate `}`: v1.0.26 added an `onProgress` option for the one
@@ -2615,8 +2655,12 @@ test('a landed pull redraws the surface the parent is ON, not just the home (v1.
   // and BOTH branches must go through it, or they drift apart exactly as they did before
   const er = app.slice(app.indexOf('async function entryRefresh('));
   const erBody = er.slice(0, er.indexOf('\n}\n') + 1);
+  // v1.0.56 DELIBERATE change 2→3: the Drive-folder refresh is a THIRD branch that can
+  // write records (files the parent added in Drive since), and it must redraw through the
+  // same shared helper — rendering the gallery directly is what left the parent screen
+  // stale in v1.0.49.
   const calls = (erBody.match(/renderAfterRemoteChange\(\)/g) || []).length;
-  assert.equal(calls, 2, `entryRefresh calls the shared render ${calls}× — the pull and sync branches must BOTH use it`);
+  assert.equal(calls, 3, `entryRefresh calls the shared render ${calls}× — the pull, drive-folder and sync branches must ALL use it`);
   assert.ok(!/nav\.isActive\('gallery'\)\)\s*(await\s*)?renderHome\(\)/.test(erBody),
     'entryRefresh renders the gallery directly again — the parent screen goes stale');
 });

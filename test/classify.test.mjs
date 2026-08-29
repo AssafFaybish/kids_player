@@ -75,7 +75,16 @@ test('classifySourceRow: channel / comment / blank / invalid', () => {
   assert.equal(classifySourceRow('https://www.youtube.com/@HebrewKids').kind, 'channel');
   assert.equal(classifySourceRow('# הערה').kind, 'comment');
   assert.equal(classifySourceRow('').kind, 'blank');
-  assert.equal(classifySourceRow('https://drive.google.com/drive/folders/XYZ').kind, 'invalid');
+  // v1.0.56: a Drive FOLDER used to be 'invalid' — a missing feature wearing the costume
+  // of a parse error (the v1.0.26 playlist lesson). It is now a SOURCE.
+  const df = classifySourceRow('https://drive.google.com/drive/folders/XYZabc123_-def');
+  assert.equal(df.kind, 'drivefolder');
+  assert.equal(df.driveFolderId, 'XYZabc123_-def');
+  // …and it must never be mistaken for a playable FILE: the two id spaces are identical
+  // and only the URL shape tells them apart, so classifyLink must still refuse it.
+  assert.equal(classifyLink('https://drive.google.com/drive/folders/XYZabc123_-def'), null);
+  // a genuinely unsupported link is still invalid
+  assert.equal(classifySourceRow('https://example.com/page.html').kind, 'invalid');
 });
 
 test('stripTimeHints removes t/start fragments and params (F3)', () => {
