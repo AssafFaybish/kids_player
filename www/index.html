@@ -739,6 +739,14 @@
               דקות</label>
           </div>
           <p class="hint sched-lock-hint">0 = ללא נעילה. הזמן מתחיל כשהילד מתחיל לצפות, ורץ ברציפות.</p>
+          <!-- v1.0.55: full-tablet lock DURING the break. OFF = today's behaviour (the app
+               locks, the tablet stays free). The mechanism is the same OS screen pinning
+               the kiosk toggle above uses; with the kiosk already ON this adds nothing. -->
+          <label class="switch-row sched-lock-sub">
+            <input id="lock-tablet-toggle" type="checkbox" />
+            <span>בזמן ההפסקה לנעול את כל הטאבלט — בלי לצאת לאפליקציות אחרות</span>
+          </label>
+          <p class="hint sched-lock-hint">כשזה דולק, במהלך ההפסקה המסך מוצמד: יציאה מהאפליקציה או ביטול ההפסקה — רק עם קוד הורים. במכשירים מסוימים, בסיום ההצמדה המכשיר מבקש את קוד הנעילה של המכשיר עצמו (הגדרת מערכת של אנדרואיד).</p>
         </div>
         <!-- v1.0.34: idle screen-off. Per-profile + SYNCED, default ON at 10 minutes
              (user's decision) — 0 = never, the pre-v1.0.34 behavior. The app only stops

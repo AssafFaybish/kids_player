@@ -16,7 +16,7 @@ globalThis.localStorage = {
 };
 
 const {
-  getSetting, putSetting, getAllSettings, putAllSettings, mergeSettings, mergeSettingEntry, ACCOUNT
+  getSetting, getSettings, putSetting, getAllSettings, putAllSettings, mergeSettings, mergeSettingEntry, ACCOUNT
 } = await import('../www/js/settings.js');
 
 const e = (v, at) => ({ v, at });
@@ -89,6 +89,9 @@ test('an exact tie resolves the SAFE way, and never by argument order', () => {
   // choice in both orders, or the pair ping-pongs forever.
   assert.equal(mergeSettingEntry('exitLock', e(true, 7), e(false, 7)).v, true, 'stay locked');
   assert.equal(mergeSettingEntry('exitLock', e(false, 7), e(true, 7)).v, true);
+  // v1.0.55: full-tablet lock during the break — containment errs strict, like exitLock
+  assert.equal(mergeSettingEntry('lockTablet', e(true, 7), e(false, 7)).v, true, 'keep the tablet locked');
+  assert.equal(mergeSettingEntry('lockTablet', e(false, 7), e(true, 7)).v, true);
   assert.equal(mergeSettingEntry('shareApproval', e(false, 7), e(true, 7)).v, true, 'keep asking');
   assert.equal(mergeSettingEntry('shareApproval', e(true, 7), e(false, 7)).v, true);
   assert.equal(mergeSettingEntry('autoplay', e(true, 7), e(false, 7)).v, false, 'stop playing');
@@ -210,4 +213,34 @@ test('sitesEnabled: ON unless written, OFF once written, and ties go OFF (v1.0.4
   assert.equal(mergeSettings(on, off).profiles.p1.sitesEnabled.v, false);
   assert.equal(mergeSettings(off, on).profiles.p1.sitesEnabled.v, false,
     'a tie must not depend on argument order');
+});
+
+/* ---------------- getSettings (v1.0.55) ---------------- */
+
+test('getSettings: several names, one storage read, getSetting semantics per name', async () => {
+  store.clear();
+  await putSetting('p1', 'exitLock', true);
+  await putSetting('p1', 'lockTablet', false);
+  // written values come back, incl. an explicit false (an ANSWER, not an absence)
+  assert.deepEqual(await getSettings('p1', ['exitLock', 'lockTablet'], null),
+    { exitLock: true, lockTablet: false });
+  // a never-written name gets the fallback, per name — not the sibling's value
+  assert.deepEqual(await getSettings('p1', ['exitLock', 'autoplay'], false),
+    { exitLock: true, autoplay: false });
+  // a scope that never wrote anything answers all-fallback instead of throwing
+  assert.deepEqual(await getSettings('p9', ['exitLock', 'lockTablet'], false),
+    { exitLock: false, lockTablet: false });
+  // ACCOUNT scope works like getSetting's
+  await putSetting(ACCOUNT, 'pin', 'h');
+  assert.deepEqual(await getSettings(ACCOUNT, ['pin'], ''), { pin: 'h' });
+  // a JUNK entry (not the {v,at} shape) reads as the fallback, never a throw — the
+  // mergeSettingEntry shape rule; getSetting would throw `'v' in "junk"` here
+  const raw = JSON.parse(store.get('settings'));
+  raw.profiles.p1.exitLock = 'junk';
+  store.set('settings', JSON.stringify(raw));
+  assert.deepEqual(await getSettings('p1', ['exitLock', 'lockTablet'], false),
+    { exitLock: false, lockTablet: false });
+  // empty/missing name lists are harmless
+  assert.deepEqual(await getSettings('p1', [], false), {});
+  assert.deepEqual(await getSettings('p1', undefined, false), {});
 });

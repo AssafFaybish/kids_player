@@ -116,6 +116,28 @@ for anything destructive, and purge it afterwards.
 - [ ] **TV: type the code with the remote's digit buttons** (v1.0.55) — digits fill the dots
       with NOTHING highlighted on screen; the on-screen pad must STAY walkable with the
       D-pad (many remotes have no digit buttons — that path is the only one they have).
+- [ ] **Full-tablet break lock** (v1.0.55): turn on "בזמן ההפסקה לנעול את כל הטאבלט" with a
+      short break → when the break screen shows, the OS pinning engages (toast); HOME and
+      recents are contained; 🚪 asks for the parent code and exits with the break STILL
+      RUNNING (reopening the app lands back on the lock); פתיחה להורים cancels the break
+      and unpins.
+- [ ] The same break with the toggle OFF → 🚪 exits freely, no code (today's behaviour).
+- [ ] Let the break **expire on its own** while pinned → the tablet unpins by itself; on a
+      device with the system "ask PIN before unpinning" option the DEVICE's own lock screen
+      appears — confirm the settings hint matches what the device actually does.
+- [ ] **Gesture-unpin during the break** (hold back+recents) → within ~5 seconds the app
+      re-pins (the tick re-assert; no resume event fires for this gesture). **Repeat with
+      the 🚪 code screen left open on top of the lock** — the re-assert must keep running
+      there too (the v1.0.55 review's escape: gesture under the code screen, then HOME).
+- [ ] Break lock + KIOSK both on → the break screen shows NO exit button at all, and when
+      the break ends the session stays pinned (the kiosk owns the pin).
+- [ ] **Toggle the tablet-lock OFF on a second device DURING a pinned break** → the break
+      screen keeps its pin until the break ends (containment errs strict), and at break
+      end the pin is still RELEASED (ownership, not a setting re-read — the v1.0.55
+      review's stranded-pin case).
+- [ ] **Zero the scheduled lock on a second device DURING a pinned break** → the tablet
+      leaves the break screen within ~5s, unpins, and does NOT re-lock when the feature
+      is later re-enabled (the stale-`until` case).
 - [ ] **Parent-code recovery, device path** (v1.0.26) — NEVER RUN ON HARDWARE. On a device
       WITH a lock screen: "שכחתי את הקוד" must raise the system prompt; success goes straight
       to choosing a new code; cancelling must still offer the 24-hour wait.
