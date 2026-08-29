@@ -351,3 +351,17 @@ node -e "import('./www/js/update.js').then(m=>console.log(m.extractReleaseNotes(
       network → no candidates and the emoji row still works.
 - [ ] TV: the picker's rows, the create form and the emoji row are all reachable with the
       D-pad (they are real `<button>`s), and the folder tile shows its focus ring.
+
+### Drive folders (v1.0.56 — device items; the browser proved the rest)
+- [ ] **A real folder of songs on a device**: share a Drive folder holding mp3/mp4 as
+      "anyone with the link", paste it in הוספה → a folder appears named after the Drive
+      folder, holding the media files in their natural name order, and they PLAY.
+- [ ] **Add a file in Drive, come back later** → it appears by itself (the refresh is
+      throttled to 30 minutes and runs on entering the home).
+- [ ] **Delete a file in Drive** → it must STAY in the app (additive by design). Deleting
+      it in the parent screen is what removes it.
+- [ ] **A folder that is NOT shared** → the add says so and points at the sharing setting,
+      instead of creating an empty folder.
+- [ ] **After the operator adds the Drive API to the key's restrictions**, the keyed
+      listing should take over (it is faster and paginates); the app must behave the same.
+      *(Until then every install uses the public-page path — that is the measured default.)*
