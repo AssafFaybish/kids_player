@@ -137,6 +137,100 @@ test('nothing calls the YouTube search endpoint (100 quota units per call)', () 
   }
 });
 
+test('custom folders: the store is version-guarded and every surface knows them (v1.0.56)', () => {
+  const db = CODE.get('www/js/db.js');
+  const app = CODE.get('www/js/app.js');
+
+  // ⚠️ THE UPGRADE GUARD. An unguarded createObjectStore on an existing install throws
+  // ConstraintError, aborts the version-change transaction, and the app cannot open its
+  // database AT ALL — on every device in the field (the v1.0.45 measurement).
+  assert.match(db, /DB_VERSION = 3\b/, 'the store was added without bumping DB_VERSION');
+  assert.match(db, /if \(from < 3\) \{[\s\S]*?createObjectStore\('customFolders'/,
+    'customFolders is created outside an oldVersion guard — that bricks every install');
+  // EXACT, not a proximity heuristic: walk each guard's real brace range (the `from < 1`
+  // block alone creates nine stores, so any fixed look-behind window is a lie) and assert
+  // every createObjectStore position falls inside one.
+  const guarded = [];
+  for (const g of db.matchAll(/if \(from < \d+\) \{/g)) {
+    let depth = 0;
+    let i = g.index + g[0].length - 1;
+    for (; i < db.length; i++) {
+      if (db[i] === '{') depth++;
+      else if (db[i] === '}' && --depth === 0) break;
+    }
+    guarded.push([g.index, i]);
+  }
+  assert.ok(guarded.length >= 3, 'the version guards vanished');
+  for (const m of db.matchAll(/createObjectStore\(/g)) {
+    assert.ok(guarded.some(([s, e]) => m.index > s && m.index < e),
+      'a createObjectStore call sits outside an `if (from < N)` guard — that bricks every install');
+  }
+
+  // The folder's own row is metadata; MEMBERSHIP is the video's folderId, which is what
+  // lets paging/search/parking work with no new branch. A `cf:` folder must therefore
+  // never need a case in pageAnyFolder — it falls through to db.pageFolder like `pl:`.
+  assert.doesNotMatch(fnSlice(app, 'async function pageAnyFolder('), /cf:/,
+    'pageAnyFolder grew a custom-folder branch — membership should be the record\'s folderId');
+  assert.doesNotMatch(fnSlice(app, 'async function nextAfter('), /cf:/,
+    'nextAfter grew a custom-folder branch — it must stay symmetric with pageAnyFolder');
+
+  // Deletion must ASK about the videos: planOrphanGC never touches a record with no
+  // channelId (every manual single), so a folder deleted without re-homing its contents
+  // leaves them filed under a folder that no longer exists — invisible on every screen.
+  const del = fnSlice(app, 'async function deleteCustomFolderFlow(');
+  assert.match(del, /planFolderDeletion\(/, 'the deletion text is no longer the pure decision');
+  assert.match(del, /moveFolderVideos\(/, 'the default answer no longer re-homes the videos');
+  assert.match(del, /deleteVideosWithTombstones\(/,
+    'the purge answer deletes without tombstones — every Drive merge is a union, so a peer re-pushes them');
+
+  // The picker must settle EXACTLY once, by any exit — the chooseShareProfile lesson.
+  assert.match(app, /nav\.register\('folderpick'[\s\S]{0,200}?onLeave/,
+    'leaving the picker no longer resolves the awaiting add — the caller hangs forever');
+});
+
+test('custom folders converge across devices like every other collection (v1.0.56)', () => {
+  const drive = CODE.get('www/js/drive.js');
+  // the same trio as libraryChannels/siteEntries — a second pattern is a second set of bugs
+  for (const fn of ['mergeCustomFolder', 'mergeDeletedCustomFolders',
+    'customFolderOutlivesTombstone', 'planCustomFolderApply']) {
+    assert.match(drive, new RegExp('export function ' + fn + '\\('), `${fn} is gone`);
+  }
+  // BOTH buildLocalDoc branches must carry the keys — present-and-empty, or a peer's merge
+  // reads this side as "unknown" rather than "none" (the v1.0.45 measurement).
+  const build = fnSlice(drive, 'async function buildLocalDoc(');
+  assert.equal((build.match(/customFolders:/g) || []).length, 2,
+    'exactly one customFolders key per buildLocalDoc branch (library + prof pseudo-library)');
+  assert.equal((build.match(/deletedCustomFolders:/g) || []).length, 2,
+    'a branch is missing its folder tombstones');
+  // the tombstone is written FIRST in the delete (a crash between the two writes must
+  // leave the intent recorded), and the apply path never restamps a peer's record
+  const dbDel = fnSlice(CODE.get('www/js/db.js'), 'export async function deleteCustomFolder(');
+  assert.ok(dbDel.indexOf('putDeletedCustomFolders') < dbDel.indexOf("s.delete("),
+    'the folder row is deleted before its tombstone is written');
+  assert.match(drive, /putCustomFolder\(\{ \.\.\.e, scopeId: libId \}, \{ preserveTimestamp: true \}\)/,
+    'applying a remote folder restamps it — the two devices would ping-pong forever');
+  // and the per-library purge takes the folder tombstones with it (the v1.0.45 metaKeys bug)
+  assert.match(fnSlice(CODE.get('www/js/db.js'), 'export async function purgeProfile('), /cfDelKey\(s\)/,
+    'purgeProfile strands the folder tombstones — a recreated profile inherits them');
+});
+
+test('folder art is proposed, never installed, and stored as BYTES (v1.0.56)', () => {
+  const art = MODULES.get('www/js/folderart.js');
+  assert.ok(art, 'folderart.js is gone');
+  // it is a search over arbitrary images on a 5-year-old's tablet: the parent is the
+  // filter (user decision 2026-08-29), so nothing here may write a folder by itself
+  const deps = [...new Set([...importsOf('www/js/folderart.js'), ...dynamicImportsOf('www/js/folderart.js')])];
+  assert.deepEqual(deps, ['www/js/platform.js'], 'folderart.js reaches beyond its tier: ' + deps);
+  assert.doesNotMatch(CODE.get('www/js/folderart.js'), /putCustomFolder|putThumb|db\.js/,
+    'folderart.js writes to the database — it may only PROPOSE candidates');
+
+  // the picked picture is cached as bytes, like a channel logo (v1.0.32): a stored URL
+  // is exactly what 404s on a rebrand and cannot render offline
+  const create = fnSlice(CODE.get('www/js/app.js'), 'async function createCustomFolder(');
+  assert.match(create, /httpGetBlob\(/, 'the folder picture is no longer fetched as bytes');
+  assert.match(create, /putThumb\(/, 'the folder picture is not stored in the thumb cache');
+});
+
 test('public-Drive access lives in ONE module and never touches OAuth (v1.0.56)', () => {
   // The app's only OAuth scope is drive.file and it must never grow (v1.0.19 — a
   // SENSITIVE scope brings Google's "unverified app" screen back for every family, and

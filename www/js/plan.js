@@ -173,7 +173,7 @@ export function planBootProfile({ storedId, profileIds, hasQueuedShare = false }
  * @param subscriptions the library's `libraryChannels` rows
  * @returns [{ id, title, records }] — never empty groups
  */
-export function groupLibraryByFolder(records, subscriptions = []) {
+export function groupLibraryByFolder(records, subscriptions = [], customFolders = []) {
   const subs = new Map();
   for (const c of subscriptions || []) {
     if (!c || !c.channelId) continue;
@@ -182,6 +182,11 @@ export function groupLibraryByFolder(records, subscriptions = []) {
       title: c.titleOverride || c.title || (c.kind === 'playlist' ? 'רשימת השמעה' : 'ערוץ'),
       order: c.order || 0
     });
+  }
+  // v1.0.56 — the parent's own folders. Their titles live in a store, not on the record.
+  const custom = new Map();
+  for (const f of customFolders || []) {
+    if (f && f.folderId) custom.set(f.folderId, { title: f.title || 'תיקיה', order: f.order || 0 });
   }
   const groups = new Map();
   for (const rec of records || []) {
@@ -192,6 +197,12 @@ export function groupLibraryByFolder(records, subscriptions = []) {
     else if (folder.startsWith('ch:') || folder.startsWith('pl:')) {
       // an unsubscribed leftover — group it, never lose it
       title = rec.srcChannelTitle || (folder.startsWith('pl:') ? 'רשימת השמעה' : 'ערוץ');
+    } else if (isCustomFolder(folder)) {
+      // its own section even when the metadata row is missing (a peer's folder that has
+      // not synced yet): folding it into "סרטונים נוספים" would tell the parent these
+      // videos live somewhere they do not, and the section would silently disagree with
+      // the child's home screen.
+      title = custom.has(folder) ? custom.get(folder).title : 'תיקיה';
     } else if (folder === 'mine') { id = 'mine'; title = 'סרטונים אישיים'; }
     else { id = 'sheet'; title = 'סרטונים נוספים'; }
     if (!groups.has(id)) groups.set(id, { id, title, records: [] });
@@ -204,6 +215,8 @@ export function groupLibraryByFolder(records, subscriptions = []) {
     if (subs.has(g.id)) return subs.get(g.id).order;
     if (g.id === 'sheet') return Number.MAX_SAFE_INTEGER - 1;
     if (g.id === 'mine') return Number.MAX_SAFE_INTEGER;
+    // a parent-created folder sorts by its own creation order, ahead of the leftovers
+    if (custom.has(g.id)) return custom.get(g.id).order;
     return Number.MAX_SAFE_INTEGER - 2;
   };
   return [...groups.values()].sort((a, b) => {
@@ -2027,4 +2040,91 @@ export function linksExportOutcome({ delivery = 'none', name = '', dir = '', cou
     default:
       return { ok: false, text: 'הייצוא נכשל — נסו שוב' };
   }
+}
+
+/* ---------------- custom folders (v1.0.56) ---------------- */
+
+/** The prefix that makes a folder id a parent-created one. `cf:` is deliberately short
+ *  and distinct from `ch:`/`pl:`/`grp:`; `isCustomFolder` is the ONE test everywhere. */
+export const CUSTOM_FOLDER_PREFIX = 'cf:';
+export const isCustomFolder = (folderId) => String(folderId || '').startsWith(CUSTOM_FOLDER_PREFIX);
+
+/** A folder title is drawn at full length on a tile and typed by a parent, so it is
+ *  bounded exactly like a profile name is (v1.0.26): trim, collapse whitespace, cap BY
+ *  CODE POINT (a `.slice` cuts "🦁" in half and stores a lone surrogate forever). */
+export const FOLDER_TITLE_MAX = 24;
+export function normalizeFolderTitle(raw) {
+  const s = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  return [...s].slice(0, FOLDER_TITLE_MAX).join('');
+}
+
+/**
+ * PURE: mint a custom folder id. Random, like a profile id — it is created on ONE device
+ * and travels in the Drive doc, so there is nothing to agree on and nothing to derive
+ * from the title (which the parent may rename, and two folders may legitimately share).
+ */
+export function customFolderId(now = Date.now(), rand = Math.random()) {
+  const t = Math.max(0, Math.floor(Number(now) || 0)).toString(36);
+  const r = Math.floor(Math.abs(Number(rand) || 0) * 1e9).toString(36).padStart(6, '0').slice(0, 6);
+  return CUSTOM_FOLDER_PREFIX + t + r;
+}
+
+/**
+ * PURE: is this title already taken in this library? Compared on the NORMALIZED title
+ * (the same normalizeTitle the dedupe index uses), so "חיות" and "חיות " are one name.
+ * Returns the clashing folder or null — never throws on a junk list.
+ */
+export function customFolderTitleClash(title, folders, { exceptId = null } = {}) {
+  const want = normalizeTitle(normalizeFolderTitle(title));
+  if (!want) return null;
+  for (const f of folders || []) {
+    if (!f || f.folderId === exceptId) continue;
+    if (normalizeTitle(normalizeFolderTitle(f.title)) === want) return f;
+  }
+  return null;
+}
+
+/**
+ * PURE: the destination list for the "where should this go?" picker, in the order it is
+ * shown. The DEFAULT is always first and always 'sheet' ("סרטונים נוספים") — the user's
+ * decision: a parent who just taps the first button gets exactly today's behaviour.
+ * Custom folders follow in their own order; `create` is the last row.
+ */
+export function folderPickOptions(customFolders, { defaultTitle = 'סרטונים נוספים' } = {}) {
+  const rows = [{ folderId: 'sheet', title: defaultTitle, emoji: '🎬', isDefault: true }];
+  for (const f of [...(customFolders || [])].filter(Boolean).sort((a, b) => (a.order || 0) - (b.order || 0))) {
+    if (!isCustomFolder(f.folderId)) continue;
+    rows.push({ folderId: f.folderId, title: f.title || 'תיקיה', emoji: f.emoji || '📁', isDefault: false });
+  }
+  return rows;
+}
+
+/**
+ * PURE: what a folder deletion does, and what the parent must be told before it happens.
+ *  - 'move'  — the folder row goes, its videos land back in "סרטונים נוספים". Reversible
+ *              in the sense that matters: nothing is destroyed.
+ *  - 'purge' — the videos are DELETED with tombstones (the v1.0.39 rule: a raw delete is
+ *              pure absence and every Drive merge is a union, so a peer would re-push
+ *              them). Irreversible, and the text says so.
+ * An empty folder needs no question at all — `needsChoice` is false and 'move' is a no-op.
+ */
+export function planFolderDeletion({ title = '', count = 0, mode = 'move' } = {}) {
+  const n = Math.max(0, Number(count) | 0);
+  const name = String(title || 'התיקיה');
+  if (!n) {
+    return { needsChoice: false, mode: 'move', moves: 0, deletes: 0,
+      text: `למחוק את התיקיה "${name}"? היא ריקה.` };
+  }
+  // The singular/plural phrasing is written out rather than built with hebCount: that
+  // helper appends "אחד" AFTER its noun ("סרטון אחד"), which only reads correctly when the
+  // noun phrase ends there — embedding a verb produced "הסרטון שבתוכה יעבור אחד".
+  if (mode === 'purge') {
+    const what = n === 1 ? 'ואת הסרטון שבתוכה' : `ואת ${n} הסרטונים שבתוכה`;
+    return { needsChoice: true, mode: 'purge', moves: 0, deletes: n,
+      text: `למחוק את התיקיה "${name}" ${what} לצמיתות? ` +
+        'הסרטונים יימחקו בכל המכשירים ולא ניתן יהיה לשחזר אותם — רק להוסיף מחדש.' };
+  }
+  const what = n === 1 ? 'הסרטון שבתוכה יעבור' : `${n} הסרטונים שבתוכה יעברו`;
+  return { needsChoice: true, mode: 'move', moves: n, deletes: 0,
+    text: `למחוק את התיקיה "${name}"? ${what} ל"סרטונים נוספים" — שום סרטון לא יימחק.` };
 }

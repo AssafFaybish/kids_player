@@ -13,7 +13,7 @@ import { playItem, stop, playbackState, pauseCurrent } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
-  setOrientation } from './platform.js';
+  setOrientation, httpGetBlob } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -35,7 +35,9 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
-  pruneConfirmText, favActive, favouriteKeys } from './plan.js';
+  pruneConfirmText, favActive, favouriteKeys,
+  folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
+  isCustomFolder, planFolderDeletion } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -671,7 +673,7 @@ async function renderAfterRemoteChange() {
   if (nav.isActive('gallery') || nav.isActive('loading')) { await renderHome(); return; }
   if (!nav.isActive('parent')) return;
   await Promise.all([
-    refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel()
+    refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel(), refreshFoldersList()
   ]);
   await refreshGateDot();
 }
@@ -964,6 +966,12 @@ function registerViews() {
   // same scroll (nav restores it after the double-rAF).
   nav.register('folder', { onEnter: () => { if (folderId) renderFolderView().catch(() => {}); } });
   nav.register('search', {}); // default pop → home; watch pushed on top returns here
+  // v1.0.56 — the destination picker. Leaving it by ANY route (hardware back, the cancel
+  // button, a navigation from somewhere else) must resolve the awaiting add, or the caller
+  // hangs forever holding a half-finished add — the chooseShareProfile lesson (v1.0.23).
+  nav.register('folderpick', {
+    onLeave: () => { const h = folderPickHandlers; folderPickHandlers = null; if (h) h.cancel(); }
+  });
   // v1.0.45: the websites grid re-renders on entry so a site removed in the parent screen
   // (or arriving from another device) is gone the moment the child comes back to it.
   nav.register('sites', { onEnter: () => { renderSitesView(); } });
@@ -1287,6 +1295,31 @@ function mountChannelLogo(host, url, channelId, emoji) {
  * failed asset copy would otherwise leave an EMPTY circle where the child expects their
  * folder. Same rule as the channel logos (noteLogoFailure) — never show nothing.
  */
+/**
+ * v1.0.56 — a parent-created folder's picture. The bytes live in the thumbs store
+ * (`cfart:<folderId>`), fetched ONCE when the parent picked the image, so the tile renders
+ * offline and cannot be broken later by a dead source URL — the v1.0.32 logo lesson,
+ * where a stored URL was exactly what failed. The emoji shows until the bytes paint, and
+ * stays if they never do (an evicted or missing blob must degrade, never blank).
+ */
+function mountCustomArt(host, thumbId, emoji) {
+  host.textContent = emoji || '📁';
+  if (!thumbId) return;
+  host.dataset.artId = thumbId; // a slow read must not paint into a tile that moved on
+  db.getThumbBlob(thumbId).then((blob) => {
+    if (!blob || host.dataset.artId !== thumbId) return;
+    const img = document.createElement('img');
+    img.className = 'folder-art';
+    img.alt = '';
+    img.decoding = 'async';
+    img.addEventListener('error', () => { img.remove(); if (!host.firstChild) host.textContent = emoji || '📁'; }, { once: true });
+    img.src = URL.createObjectURL(blob);
+    host.textContent = '';
+    host.appendChild(img);
+    db.touchThumbs([thumbId]).catch(() => {}); // a folder in use must never LRU out
+  }).catch(() => {});
+}
+
 function mountFolderArt(host, src, fallbackEmoji) {
   host.innerHTML = '';
   const img = document.createElement('img');
@@ -1640,7 +1673,8 @@ function folderTile(f) {
   logo.className = 'folder-logo';
   // v1.0.32: a channelId alone is enough — cached bytes may exist even when the URL
   // is gone (rebrand) or was never fetched on this device.
-  if (f.art) mountFolderArt(logo, f.art, f.emoji);
+  if (f.custom) mountCustomArt(logo, f.artThumbId, f.emoji);
+  else if (f.art) mountFolderArt(logo, f.art, f.emoji);
   else if (f.logoUrl || f.channelId) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
   else logo.textContent = f.emoji;
   const nm = document.createElement('span');
@@ -1656,10 +1690,11 @@ function folderTile(f) {
   // never mistake a folder for a playable video tile. v1.0.12: grouped singles get
   // their OWN chip (🎞️ אוסף) so the two folder kinds never look alike.
   const fid = String(f.id);
-  if (fid.startsWith('ch:') || fid.startsWith('grp:') || fid.startsWith('pl:')) {
+  if (fid.startsWith('ch:') || fid.startsWith('grp:') || fid.startsWith('pl:') || f.custom) {
     const chip = document.createElement('span');
     chip.className = 'folder-chip';
-    chip.textContent = fid.startsWith('grp:') ? '🎞️ אוסף'
+    chip.textContent = f.custom ? '📁 תיקיה'
+      : fid.startsWith('grp:') ? '🎞️ אוסף'
       : fid.startsWith('pl:') ? '🎵 רשימה' : '📺 ערוץ';
     btn.appendChild(chip);
   }
@@ -1748,6 +1783,27 @@ async function buildFolders() {
 
   const src = await db.getSources(pid);
   const lib = (src && src.libraryId) || null;
+  // v1.0.56 — PARENT-CREATED FOLDERS, third: after 🎁/⭐ (the app's own two views) and
+  // BEFORE the channels, because a parent who made a folder by hand put exactly what they
+  // wanted in it. Ordered among themselves by `order` (creation time, ASCENDING — the ⭐
+  // rule: a 5-year-old navigates by POSITION, so a new folder appends instead of pushing
+  // every known tile sideways). Hidden at zero, like every other folder (v1.0.21) — the
+  // ROW survives, so the parent can still see it, rename it and file videos into it.
+  if (lib) {
+    const custom = (await db.listCustomFolders(lib)).slice()
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    for (const cf of custom) {
+      const count = await db.countFolder(lib, cf.folderId);
+      if (!count) continue;
+      out.push({
+        id: cf.folderId, scope: lib, title: cf.title || 'תיקיה',
+        emoji: cf.emoji || '📁', count, custom: true,
+        // the parent-picked picture rides the thumbs byte cache like a channel logo
+        // (v1.0.32), so it renders offline and survives a dead source URL
+        artThumbId: cf.artThumbId || null
+      });
+    }
+  }
   // ALL grouping state is derived into LOCALS and published together at the very end.
   // A profile without sources used to keep the PREVIOUS profile's looseSingles, and a
   // derivation superseded mid-await by a profile switch used to publish its stale
@@ -2075,7 +2131,10 @@ async function buildSearchIndex() {
       const isGroup = id.startsWith('grp:');
       // v1.0.26: playlist folders are searchable too — a parent looking for "שירי בוקר"
       // must find the playlist by name exactly as they find a channel.
-      if (!isGroup && !id.startsWith('ch:') && !id.startsWith('pl:')) continue;
+      // v1.0.56: and a PARENT-CREATED folder, for the same reason — it is a name on the
+      // home screen, and the one-source-of-truth rule above says anything on the home
+      // screen must be findable by that name.
+      if (!isGroup && !id.startsWith('ch:') && !id.startsWith('pl:') && !f.custom) continue;
       const title = f.title || '';
       if (!title) continue;
       folderEntries.push({
@@ -2083,7 +2142,9 @@ async function buildSearchIndex() {
         key: (isGroup ? 'group:' : 'folder:') + id.slice(id.indexOf(':') + 1),
         title, normTitle: normalizeTitle(title),
         logoUrl: f.logoUrl || '', emoji: f.emoji || (isGroup ? '🎞️' : '📺'),
-        count: f.count || 0
+        count: f.count || 0,
+        // the search result renders through the same tile path as the home
+        custom: !!f.custom, artThumbId: f.artThumbId || null
       });
     }
   }
@@ -2127,7 +2188,10 @@ async function openFolder(fid) {
   // always sees WHICH channel they're inside.
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
-  if (f && f.art) { // v1.0.40 — the ⭐ folder's drawn scene, same art as its tile
+  if (f && f.custom) { // v1.0.56 — the parent's own picture, from the byte cache
+    mountCustomArt(logoTop, f.artThumbId, f.emoji || '📁');
+    logoTop.classList.remove('hidden');
+  } else if (f && f.art) { // v1.0.40 — the ⭐ folder's drawn scene, same art as its tile
     mountFolderArt(logoTop, f.art, f.emoji || '🎬');
     logoTop.classList.remove('hidden');
   } else if (f && (f.logoUrl || f.channelId)) { // v1.0.32: cached bytes render even URL-less
@@ -3129,7 +3193,7 @@ async function refreshParent() {
   refreshDonateUi().catch(() => {});
   refreshDriveStatus();
   runUpdateCheck().catch(() => {});
-  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel()]);
+  await Promise.all([refreshParentList(), refreshPendingList(), refreshChannelsList(), refreshSitesPanel(), refreshFoldersList()]);
 }
 
 /* refreshSheetWriteStatus (v1.0.6/v1.0.10) lived here until v1.0.38 — it surfaced the
@@ -3354,7 +3418,7 @@ async function previewDecide(fn) {
   renderPreview();
 }
 
-function parentRow({ rec, onDelete, onApprove, onPreview = null, note = '', select = null }) {
+function parentRow({ rec, onDelete, onApprove, onPreview = null, onMove = null, note = '', select = null }) {
   const li = document.createElement('li');
   if (select) {
     const cb = document.createElement('input');
@@ -3425,6 +3489,16 @@ function parentRow({ rec, onDelete, onApprove, onPreview = null, note = '', sele
     ok.addEventListener('click', onApprove);
     li.appendChild(ok);
   }
+  // v1.0.56 — "move to a folder", the door for every video that did NOT come through the
+  // add form (a share, a links-file import, a library that predates custom folders).
+  // Same rule as the buttons around it: rendered only when a handler exists.
+  if (onMove) {
+    const mv = document.createElement('button');
+    mv.className = 'btn btn-small'; mv.type = 'button'; mv.textContent = '📁';
+    mv.setAttribute('aria-label', 'העברה לתיקיה');
+    mv.addEventListener('click', onMove);
+    li.appendChild(mv);
+  }
   // v1.0.23: only when there IS a handler. It used to bind `undefined` unconditionally, so
   // a caller that omits onDelete rendered a 🗑️ that looks live and does nothing.
   if (onDelete) {
@@ -3457,7 +3531,9 @@ async function refreshParentList() {
   // globally, so a huge channel can no longer hide the small folders behind the cap.
   const shownLive = all.slice(0, PARENT_LIST_CAP * 4); // preview/delete work over this order
   const subsList = libScope ? await db.listLibraryChannels(libScope) : [];
-  const groups = groupLibraryByFolder(shownLive, subsList);
+  // v1.0.56: the parent's own folders get their own sections, with their real names
+  const cfList = libScope ? await db.listCustomFolders(libScope) : [];
+  const groups = groupLibraryByFolder(shownLive, subsList, cfList);
   const host = $('parent-groups');
   const openIds = new Set([...host.querySelectorAll('details[open]')].map((d) => d.dataset.gid));
   host.innerHTML = '';
@@ -3467,6 +3543,12 @@ async function refreshParentList() {
     // offers DELETE — the one action this list has — after the parent has actually seen
     // what they are about to remove.
     onPreview: () => openPreview(shownLive, shownLive.indexOf(rec), 'library'),
+    // v1.0.56 — only for records that live in a FOLDER OF SINGLES. A channel's video
+    // cannot be filed by hand: the sync owns `ch:<id>` membership and would put it
+    // straight back, so offering the button there would be a lie.
+    onMove: isLooseRecord(rec) || isCustomFolder(rec.homeFolderId || rec.folderId)
+      ? () => { moveVideoToFolder(rec).catch(() => {}); }
+      : null,
     onDelete: async () => {
       await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
       await refreshParentList();
@@ -3705,6 +3787,130 @@ async function decideNewChannel(lc) {
 }
 
 /** One subscription row. `fresh` rows trade the auto-approve toggle for the decision button. */
+/* ---------------- custom folders: the parent's management list (v1.0.56) ------------- */
+
+/**
+ * EVERY folder, including the EMPTY ones. The child's home hides a folder at zero (the
+ * v1.0.21 rule — a tile that opens an empty grid is a bug), so without this list a parent
+ * who emptied a folder could never reach it again to rename, re-picture or delete it.
+ */
+async function refreshFoldersList() {
+  const ul = $('folders-list');
+  ul.innerHTML = '';
+  $('folders-count').textContent = 'תיקיות';
+  if (!libScope) return;
+  const rows = (await db.listCustomFolders(libScope)).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  $('folders-count').textContent = rows.length ? `תיקיות (${rows.length})` : 'תיקיות';
+  for (const cf of rows) ul.appendChild(await customFolderRow(cf));
+}
+
+async function customFolderRow(cf) {
+  const li = document.createElement('li');
+  const ico = document.createElement('span');
+  ico.className = 'fp-ico';
+  mountCustomArt(ico, cf.artThumbId, cf.emoji || '📁');
+  const body = document.createElement('div');
+  body.className = 'li-body';
+  const title = document.createElement('div');
+  title.className = 'li-title';
+  title.textContent = cf.title || 'תיקיה';
+  const sub = document.createElement('div');
+  sub.className = 'li-note';
+  const count = await db.countFolder(libScope, cf.folderId);
+  sub.textContent = count ? `${count} סרטונים` : 'ריקה — לא מוצגת לילד עד שיהיה בה תוכן';
+  body.appendChild(title);
+  body.appendChild(sub);
+
+  const rename = document.createElement('button');
+  rename.className = 'btn btn-small';
+  rename.type = 'button';
+  rename.textContent = '✏️ שם';
+  rename.addEventListener('click', () => renameCustomFolder(cf).catch(() => {}));
+
+  const del = document.createElement('button');
+  del.className = 'li-del';
+  del.type = 'button';
+  del.textContent = '🗑️';
+  del.setAttribute('aria-label', 'מחיקת התיקיה');
+  del.addEventListener('click', () => deleteCustomFolderFlow(cf).catch(() => {}));
+
+  li.appendChild(ico);
+  li.appendChild(body);
+  li.appendChild(rename);
+  li.appendChild(del);
+  return li;
+}
+
+async function renameCustomFolder(cf) {
+  const next = normalizeFolderTitle(window.prompt('שם חדש לתיקיה', cf.title || '') || '');
+  if (!next || next === cf.title) return;
+  const clash = customFolderTitleClash(next, await db.listCustomFolders(libScope), { exceptId: cf.folderId });
+  if (clash) { toast('כבר יש תיקיה בשם הזה'); return; }
+  await db.putCustomFolder({ ...cf, title: next });
+  await refreshFoldersList();
+  renderHome();
+  maybeSchedulePush();
+  toast('השם עודכן ✅');
+}
+
+/**
+ * Deleting a folder asks what happens to what is INSIDE it — the one question the
+ * `siteEntries` precedent could not answer for us, because a site entry holds nothing.
+ * The orphan GC will NOT clean up after a wrong answer here: it never touches records with
+ * no channelId (plan.planOrphanGC), which is every manual single — so a folder deleted
+ * without re-homing its videos would leave them filed under a folder that no longer
+ * exists, invisible on every screen and un-reachable forever. Hence: MOVE by default.
+ */
+async function deleteCustomFolderFlow(cf) {
+  const count = await db.countFolder(libScope, cf.folderId);
+  const plan = planFolderDeletion({ title: cf.title, count });
+  if (!plan.needsChoice) {
+    if (!(await confirmKid({ emoji: '🗑️', title: 'מחיקת תיקיה', text: plan.text, ok: 'מחיקה', cancel: 'ביטול', danger: true }))) return;
+    await db.deleteCustomFolder(libScope, cf.folderId);
+  } else {
+    const answer = await askKid({
+      emoji: '🗑️', title: 'מחיקת תיקיה', text: plan.text,
+      ok: 'העברה ומחיקת התיקיה', cancel: 'ביטול', third: 'מחיקת הכול לצמיתות'
+    });
+    if (answer === 'cancel' || answer === 'dismiss') return;
+    if (answer === 'third') {
+      const purge = planFolderDeletion({ title: cf.title, count, mode: 'purge' });
+      if (!(await confirmKid({ emoji: '⚠️', title: 'למחוק לצמיתות?', text: purge.text, ok: 'כן, למחוק', cancel: 'ביטול', danger: true }))) return;
+      const recs = [...(await db.loadMergeIndex(libScope)).values()]
+        .filter((r) => (r.folderId === '~pending' || r.folderId === '~rejected' ? r.homeFolderId : r.folderId) === cf.folderId);
+      // WITH tombstones (the v1.0.39 rule): a raw delete is pure absence, and every Drive
+      // merge is a union — a peer that has not pulled would re-push every one of them.
+      await db.deleteVideosWithTombstones(libScope, recs.map((r) => r.key), 'folder-delete');
+      await db.deleteCustomFolder(libScope, cf.folderId);
+    } else {
+      await db.moveFolderVideos(libScope, cf.folderId, 'sheet');
+      await db.deleteCustomFolder(libScope, cf.folderId);
+    }
+  }
+  await refreshFoldersList();
+  await refreshParentList();
+  renderHome();
+  maybeSchedulePush();
+  toast('התיקיה נמחקה');
+}
+
+/** Move ONE existing video into a folder — the door for anything that did not arrive
+ *  through the add form (a share from YouTube, a links-file import, an old library). */
+async function moveVideoToFolder(rec) {
+  const chosen = await askFolderDestination({ title: 'להעביר לאיזו תיקיה?', sub: rec.title || '' });
+  if (!chosen) return false;
+  const parked = rec.folderId === '~pending' || rec.folderId === '~rejected';
+  await db.setVideoFields(rec.scopeId, rec.key, parked
+    ? { homeFolderId: chosen }
+    : { folderId: chosen, homeFolderId: rec.homeFolderId ? chosen : rec.homeFolderId });
+  await refreshParentList();
+  await refreshFoldersList();
+  renderHome();
+  maybeSchedulePush();
+  toast('הסרטון הועבר ✅');
+  return true;
+}
+
 async function channelRow(lc, { fresh = false } = {}) {
   const ch = (await db.getChannel(lc.channelId)) || {};
   const li = document.createElement('li');
@@ -4501,6 +4707,247 @@ function pickChannelVideos(channelId, name) {
 
 let pickHandlers = null;
 
+/* ---------------- custom folders: the destination picker (v1.0.56) ---------------- */
+
+let folderPickHandlers = null;   // { resolve, cancel } — see nav.register('folderpick')
+let fpArtChoice = null;          // { thumbUrl } | null — the parent's picked picture
+let fpEmojiChoice = '📁';
+let fpArtSeq = 0;                // a stale image search must never paint over a newer one
+
+const FOLDER_EMOJI = ['📁', '🎵', '🚗', '🦁', '⚽', '🎨', '🚀', '🧸', '🍎', '🌙'];
+
+/**
+ * Ask the parent WHERE a single video should go, and let them create a folder on the spot.
+ * Resolves a folderId ('sheet' = the default mixed list) or null when they backed out.
+ *
+ * It is a VIEW, not a modal: it holds a name field and an image chooser, and the add flows
+ * it is called from already raise modals of their own (modals never stack — ui/modal.js).
+ */
+function askFolderDestination({ title = 'לאיזו תיקיה להוסיף?', sub = '' } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; resolve(v); };
+    folderPickHandlers = {
+      resolve: (fid) => { done(fid); },
+      cancel: () => done(null)
+    };
+    $('fp-title').textContent = title;
+    $('fp-sub').textContent = sub;
+    renderFolderPick().catch(() => {});
+    nav.go('folderpick');
+  });
+}
+
+/** The rows: the default, then the parent's folders, then "＋ תיקיה חדשה". */
+async function renderFolderPick() {
+  const scope = (await ensureSources()).libraryId;
+  const custom = await db.listCustomFolders(scope);
+  const rows = folderPickOptions(custom);
+  const list = $('fp-list');
+  list.innerHTML = '';
+  fpSelected = rows[0] ? rows[0].folderId : 'sheet';
+  fpCreating = false;
+  $('fp-create').classList.add('hidden');
+  $('fp-name').value = '';
+  $('fp-name-msg').textContent = '';
+  $('fp-art-msg').textContent = '';
+  $('fp-art-row').innerHTML = '';
+  fpArtChoice = null;
+  fpEmojiChoice = '📁';
+  renderFolderEmojiRow();
+
+  const counts = new Map();
+  for (const r of rows) {
+    if (r.isDefault) continue;
+    counts.set(r.folderId, await db.countFolder(scope, r.folderId));
+  }
+
+  const mkRow = (r) => {
+    const li = document.createElement('li');
+    li.style.padding = '0';
+    li.style.background = 'transparent';
+    li.style.boxShadow = 'none';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'fp-row' + (r.folderId === fpSelected ? ' is-sel' : '');
+    btn.dataset.fid = r.folderId;
+    const ico = document.createElement('span');
+    ico.className = 'fp-ico';
+    const cf = custom.find((c) => c.folderId === r.folderId);
+    if (cf && cf.artThumbId) mountCustomArt(ico, cf.artThumbId, r.emoji);
+    else ico.textContent = r.emoji;
+    const nm = document.createElement('span');
+    nm.className = 'fp-name';
+    nm.textContent = r.title;
+    btn.appendChild(ico);
+    btn.appendChild(nm);
+    if (!r.isDefault) {
+      const c = document.createElement('span');
+      c.className = 'fp-count';
+      c.textContent = `${counts.get(r.folderId) || 0} סרטונים`;
+      btn.appendChild(c);
+    }
+    btn.addEventListener('click', () => {
+      fpSelected = r.folderId;
+      fpCreating = false;
+      $('fp-create').classList.add('hidden');
+      for (const el of list.querySelectorAll('.fp-row')) el.classList.toggle('is-sel', el.dataset.fid === r.folderId);
+    });
+    li.appendChild(btn);
+    return li;
+  };
+  for (const r of rows) list.appendChild(mkRow(r));
+
+  // …and the create row
+  const li = document.createElement('li');
+  li.style.padding = '0';
+  li.style.background = 'transparent';
+  li.style.boxShadow = 'none';
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'fp-row';
+  add.dataset.fid = '__new__';
+  add.innerHTML = '<span class="fp-ico">＋</span><span class="fp-name">תיקיה חדשה</span>';
+  add.addEventListener('click', () => {
+    fpCreating = true;
+    fpSelected = '__new__';
+    for (const el of list.querySelectorAll('.fp-row')) el.classList.toggle('is-sel', el.dataset.fid === '__new__');
+    $('fp-create').classList.remove('hidden');
+    $('fp-name').focus();
+  });
+  li.appendChild(add);
+  list.appendChild(li);
+}
+
+function renderFolderEmojiRow() {
+  const row = $('fp-emoji-row');
+  row.innerHTML = '';
+  for (const e of FOLDER_EMOJI) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fp-emoji' + (e === fpEmojiChoice && !fpArtChoice ? ' is-sel' : '');
+    b.textContent = e;
+    b.addEventListener('click', () => {
+      fpEmojiChoice = e;
+      fpArtChoice = null; // an emoji REPLACES a picked picture — one folder, one face
+      for (const el of $('fp-art-row').querySelectorAll('.fp-art')) el.classList.remove('is-sel');
+      renderFolderEmojiRow();
+    });
+    row.appendChild(b);
+  }
+}
+
+/**
+ * Search the web for pictures matching the folder's NAME and show them for the parent to
+ * choose (user decision 2026-08-29: never install one automatically — an arbitrary image
+ * search on a 5-year-old's tablet is only safe with a human in the loop).
+ */
+async function searchFolderArt() {
+  const name = normalizeFolderTitle($('fp-name').value);
+  const msg = $('fp-art-msg');
+  if (!name) { msg.textContent = 'קודם כתבו שם לתיקיה'; msg.className = 'form-msg err'; return; }
+  const seq = ++fpArtSeq;
+  msg.textContent = 'מחפשים תמונות…';
+  msg.className = 'form-msg';
+  $('fp-art-row').innerHTML = '';
+  let items = [];
+  try {
+    const { fetchArtCandidates } = await import('./folderart.js');
+    items = await fetchArtCandidates(name);
+  } catch { items = []; }
+  if (seq !== fpArtSeq) return; // a newer search owns the row now (the logoTarget lesson)
+  if (!items.length) {
+    msg.textContent = 'לא נמצאו תמונות לשם הזה — אפשר לבחור אימוג׳י למטה';
+    msg.className = 'form-msg';
+    return;
+  }
+  msg.textContent = 'בחרו תמונה (או אימוג׳י למטה)';
+  msg.className = 'form-msg';
+  const row = $('fp-art-row');
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fp-art';
+    b.title = it.title || '';
+    const img = document.createElement('img');
+    img.alt = it.title || '';
+    img.loading = 'lazy';
+    img.src = it.thumbUrl;
+    // a candidate that will not load must not be offerable — the parent would pick a
+    // picture the folder can never show
+    img.addEventListener('error', () => b.remove(), { once: true });
+    b.appendChild(img);
+    b.addEventListener('click', () => {
+      fpArtChoice = { thumbUrl: it.thumbUrl };
+      for (const el of row.querySelectorAll('.fp-art')) el.classList.toggle('is-sel', el === b);
+      renderFolderEmojiRow(); // the emoji row loses its selection ring
+    });
+    row.appendChild(b);
+  }
+}
+
+/**
+ * Create the folder the parent just described. The PICTURE IS STORED AS BYTES
+ * (`cfart:<folderId>` in the thumbs store, the v1.0.32 channel-logo pattern): a stored URL
+ * is exactly what broke channel logos — it 404s on a rebrand, needs the network on every
+ * render, and cannot work offline. A fetch that fails is not fatal; the emoji stands in.
+ */
+async function createCustomFolder(scope, rawTitle) {
+  const title = normalizeFolderTitle(rawTitle);
+  const now = Date.now();
+  const folderId = customFolderId(now);
+  let artThumbId = null;
+  if (fpArtChoice && fpArtChoice.thumbUrl) {
+    try {
+      const blob = await httpGetBlob(fpArtChoice.thumbUrl);
+      if (blob && blob.size) {
+        artThumbId = 'cfart:' + folderId;
+        await db.putThumb(artThumbId, blob, { origin: 'folder-art', srcUrl: fpArtChoice.thumbUrl });
+      }
+    } catch { artThumbId = null; }
+  }
+  await db.putCustomFolder({
+    scopeId: scope, folderId, title,
+    emoji: fpEmojiChoice || '📁',
+    artThumbId, artSrcUrl: (fpArtChoice && fpArtChoice.thumbUrl) || null,
+    order: now, createdAt: now
+  });
+  maybeSchedulePush();
+  return folderId;
+}
+
+/** OK on the picker: resolve with an existing folder, or create the new one first. */
+async function onFolderPickOk() {
+  const h = folderPickHandlers;
+  if (!h) return;
+  const scope = (await ensureSources()).libraryId;
+  if (!fpCreating) {
+    folderPickHandlers = null;
+    h.resolve(fpSelected === '__new__' ? 'sheet' : fpSelected);
+    nav.back();
+    return;
+  }
+  const title = normalizeFolderTitle($('fp-name').value);
+  const msg = $('fp-name-msg');
+  if (!title) { msg.textContent = 'צריך שם לתיקיה'; msg.className = 'form-msg err'; return; }
+  const clash = customFolderTitleClash(title, await db.listCustomFolders(scope));
+  if (clash) { msg.textContent = 'כבר יש תיקיה בשם הזה'; msg.className = 'form-msg err'; return; }
+  let fid;
+  try {
+    fid = await createCustomFolder(scope, title);
+  } catch {
+    msg.textContent = 'לא הצלחנו ליצור את התיקיה — נסו שוב';
+    msg.className = 'form-msg err';
+    return;
+  }
+  folderPickHandlers = null;
+  h.resolve(fid);
+  nav.back();
+}
+
+let fpSelected = 'sheet';
+let fpCreating = false;
+
 async function ensureSources() {
   let src = await db.getSources(activeProfileId);
   if (!src) {
@@ -4532,7 +4979,7 @@ async function ensureSources() {
  *
  * -> { status: 'added'|'exists'|'error'|'unsupported', message, subscribed? }
  */
-async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
+async function addClassifiedRow(row, { title = '', onNote = () => {}, askFolder = false } = {}) {
   if (row && row.kind === 'video') {
     // v1.0.6: manual adds live in the SHARED library folder (single list for the
     // whole family) and are appended to the sheet — one master list, everywhere.
@@ -4578,11 +5025,22 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     } else if (!display && row.type === 'file') {
       display = (await import('./classify.js')).titleFromFileUrl(row.srcUrl || row.url);
     }
+    // v1.0.56 — WHERE SHOULD THIS GO? Asked only on the paths where the parent is
+    // standing right here (paste / search / a single Drive file), and only after every
+    // refusal above has passed — a duplicate or a denied key must never make someone
+    // choose a folder for a video that is not going to be added. Backing out of the
+    // picker CANCELS the add: it is a question, and "no answer" is not "the default".
+    let destFolder = 'sheet';
+    if (askFolder) {
+      const chosen = await askFolderDestination({ sub: display || '' });
+      if (!chosen) return { status: 'cancelled', message: 'ההוספה בוטלה' };
+      destFolder = chosen;
+    }
     const rec = {
       scopeId: scope, key: row.key, type: row.type, id: row.id ?? null, url: row.url ?? null,
       srcUrl: row.srcUrl, driveId: row.driveId ?? null, media,
       title: display, titleSource: display ? 'sheet' : null, normTitle: normalizeTitle(display),
-      folderId: 'sheet', channelId: null,
+      folderId: destFolder, channelId: null,
       sortKey: (await import('./order.js')).sortKeyFor({ origin: 'manual', addedAt: now }),
       publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
       addedAt: now, approvedAt: now,
@@ -4672,6 +5130,7 @@ async function parentAdd() {
   const { classifySourceRow } = await import('./classify.js');
   const row = classifySourceRow(url);
   const r = await addClassifiedRow(row, {
+    askFolder: true, // v1.0.56 — pasting is one of the three "the parent is here" paths
     onNote: (text, ok) => { msg.textContent = text; msg.className = ok ? 'form-msg ok' : 'form-msg'; }
   });
   // the input clears once something was actually stored (a video record or a
@@ -5154,6 +5613,7 @@ async function ytsAdd(item) {
   try {
     r = await addClassifiedRow(row, {
       title: item.title,
+      askFolder: true, // v1.0.56 — adding a search result asks too (the user's request)
       onNote: (t, ok) => ytsMsg(t, ok ? 'ok' : '')
     });
   } finally {
@@ -6190,6 +6650,22 @@ function wire() {
   $('pick-cancel').addEventListener('click', () => { if (nav.isActive('pick')) nav.back(); }); // onLeave cancels
   $('pick-all').addEventListener('click', () => pickHandlers && pickHandlers.all());
   $('pick-none').addEventListener('click', () => pickHandlers && pickHandlers.none());
+
+  // v1.0.56 — the destination picker. Cancel just navigates; the view's own onLeave is
+  // what resolves the awaiting add with null, so EVERY way out (button, hardware back,
+  // a navigation from elsewhere) settles it exactly once.
+  $('fp-ok').addEventListener('click', () => { onFolderPickOk().catch(() => {}); });
+  // The sources tab's "＋ תיקיה חדשה": the SAME picker, opened straight on its create
+  // form. It resolves a folderId nothing is filed into — creating a folder up front is a
+  // legitimate act (fill it later from any video's 📁 button).
+  $('folder-new').addEventListener('click', async () => {
+    const fid = await askFolderDestination({
+      title: 'תיקיה חדשה', sub: 'אפשר להוסיף אליה סרטונים אחר כך מכפתור 📁 שליד כל סרטון'
+    });
+    if (fid && fid !== 'sheet') { await refreshFoldersList(); renderHome(); }
+  });
+  $('fp-cancel').addEventListener('click', () => { if (nav.isActive('folderpick')) nav.back(); });
+  $('fp-art-search').addEventListener('click', () => { searchFolderArt().catch(() => {}); });
 
   // v1.0.38: both snapshot buttons moved to the SETTINGS tab, so they report into
   // #backup-msg — #add-msg belongs to the add form and is no longer on screen with them.
