@@ -1276,3 +1276,19 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 }
 .fp-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .fp-art.is-sel, .fp-emoji.is-sel { border-color: var(--brand); }
+
+/* v1.0.56 — the containment padlock and its duration dialog. The button sits in the
+   top bar like every other round control, and turns solid when a lock is engaged. */
+.lock-btn { font-size: 20px; }
+.lock-btn.is-locked { background: var(--brand); color: #fff; }
+#view-locksetup { min-height: 100dvh; }
+#view-locksetup.active { display: flex; align-items: center; justify-content: center; }
+.ls-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.ls-preset {
+  border: 2px solid transparent; background: #fff; border-radius: 12px;
+  padding: 10px 14px; font: inherit; font-weight: 700; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(45, 42, 74, 0.08);
+}
+.ls-preset.is-sel { border-color: var(--brand); }
+/* the countdown chip on the child's home while a timed lock runs */
+.lock-left { font-size: 12px; color: var(--muted); margin-inline-start: 6px; }

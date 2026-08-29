@@ -351,3 +351,35 @@ node -e "import('./www/js/update.js').then(m=>console.log(m.extractReleaseNotes(
       network → no candidates and the emoji row still works.
 - [ ] TV: the picker's rows, the create form and the emoji row are all reachable with the
       D-pad (they are real `<button>`s), and the folder tile shows its focus ring.
+
+### Drive folders (v1.0.56 — device items; the browser proved the rest)
+- [ ] **A real folder of songs on a device**: share a Drive folder holding mp3/mp4 as
+      "anyone with the link", paste it in הוספה → a folder appears named after the Drive
+      folder, holding the media files in their natural name order, and they PLAY.
+- [ ] **Add a file in Drive, come back later** → it appears by itself (the refresh is
+      throttled to 30 minutes and runs on entering the home).
+- [ ] **Delete a file in Drive** → it must STAY in the app (additive by design). Deleting
+      it in the parent screen is what removes it.
+- [ ] **A folder that is NOT shared** → the add says so and points at the sharing setting,
+      instead of creating an empty folder.
+- [ ] **After the operator adds the Drive API to the key's restrictions**, the keyed
+      listing should take over (it is faster and paginates); the app must behave the same.
+      *(Until then every install uses the public-page path — that is the measured default.)*
+
+### Containment lock (v1.0.56 — the browser proved the chrome; these need a device)
+- [ ] **Folder lock on a device**: open a folder → padlock → code → 15 min → the child is
+      inside that folder, the OS pinning confirmation appears, HOME and recents are
+      contained, and 🏠 / the profile chip / search are gone.
+- [ ] **Force-close and relaunch** → the app comes back INSIDE the locked folder, still
+      locked. (A child who kills the app must not walk out of it.)
+- [ ] **The timer expires by itself** → the lock releases, the tablet unpins, and every
+      control returns. On a device with the system "ask PIN before unpinning" option this
+      lands on the DEVICE's own lock screen — the same bound the kiosk always had.
+- [ ] **Release by hand**: padlock → code → released, and the exit button comes back for a
+      family whose kiosk is OFF.
+- [ ] **Lock + KIOSK together**: releasing the containment lock must NOT unpin the session
+      (the kiosk owns it) and must not raise the keyguard.
+- [ ] **A scheduled break during a folder lock** → when the break ends the child returns to
+      the LOCKED FOLDER, not the gallery.
+- [ ] TV: the padlock is reachable with the D-pad on both the home and a folder, and the
+      duration presets are focusable.

@@ -222,6 +222,80 @@ test('custom folders converge across devices like every other collection (v1.0.5
     'purgeProfile strands the folder tombstones — a recreated profile inherits them');
 });
 
+test('the containment lock cannot be escaped, and releases only what it took (v1.0.56)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1. EVERY door out is closed by the same helper — the child must not reach the exit
+  //    button, another profile, or (in folder mode) any other folder.
+  const ui = fnSlice(app, 'async function refreshContainUi(');
+  for (const [el, why] of [
+    ["'exit-btn'", 'the child could leave the app'],
+    ["'profile-chip'", 'the child could switch to an unlocked sibling profile'],
+    ["'folder-back'", 'the child could walk out of the locked folder'],
+    ["'search-open'", 'search reaches other folders'],
+    ["'watch-home'", 'the watch screen 🏠 goes straight to the gallery']
+  ]) {
+    assert.ok(ui.includes(el), `containment no longer hides ${el} — ${why}`);
+  }
+
+  // 2. HIDING THE BUTTON IS NOT ENOUGH: hardware back (and its Escape stand-in) must be
+  //    swallowed in the locked folder, and must not offer the exit dialog on the home.
+  // ANCHORED to the registration's own body, and it must consult CONTAINMENT — merely
+  // asserting that an `onBack` exists is vacuous: `onBack: () => false` kept the substring
+  // alive and this guard green on a planted regression (proven, then sharpened).
+  const folderAt = app.indexOf("nav.register('folder'");
+  assert.ok(folderAt > 0, "lost nav.register('folder') — re-anchor this guard");
+  const folderReg = app.slice(folderAt, app.indexOf('nav.register(', folderAt + 10));
+  assert.match(folderReg, /onBack: \(\) => \(containState\.active && containState\.mode === 'folder'/,
+    'the folder view no longer swallows back under a lock — hardware back leaves the locked folder');
+  const galleryReg = app.slice(app.indexOf("nav.register('gallery'"));
+  assert.match(galleryReg.slice(0, galleryReg.indexOf('nav.register(', 10)), /containState\.active/,
+    'the home offers askExit under containment — the exit button is hidden but back is not');
+
+  // 3. THE PIN RELEASE FOLLOWS OWNERSHIP, NEVER A SETTING RE-READ (the v1.0.55 lesson:
+  //    a mid-break toggle flip stranded the pin), and it NEVER unpins a kiosk session
+  //    (v1.0.36 — stopLockTask raises the device keyguard).
+  const clear = fnSlice(app, 'async function clearContainment(');
+  assert.match(clear, /containPinHeld/, 'the release stopped following the pin it actually took');
+  assert.match(clear, /exitLockOn\(/, 'the release ignores the kiosk veto — it would unpin a kiosk session');
+  assert.match(clear, /containPinHeld = false/, 'the ownership flag is never dropped');
+
+  // 4. It must SURVIVE A RESTART and a background: the state is read on boot/activation
+  //    and on resume, and the 5s tick re-asserts the pin (the hold-back+recents gesture
+  //    unpins with no lifecycle event at all — the v1.0.55 measurement).
+  assert.match(app, /await applyContainment\(\);/, 'containment is not re-applied on profile activation/boot');
+  const tick = fnSlice(app, 'async function tickContainment(');
+  assert.match(tick, /lockTask\(\)/, 'the tick no longer re-asserts the pin');
+  assert.match(tick, /expired/, 'a timed lock never expires by itself');
+
+  // 4b. HIDING A TILE IS NOT ENFORCEMENT: the OPEN itself must refuse another folder.
+  //     A relaunch renders the home for an instant, the TV remote reaches a tile, and a
+  //     search result carries a folder id — all measured ways in.
+  assert.match(fnSlice(app, 'async function openFolder('), /containState\.mode === 'folder'/,
+    'openFolder no longer refuses a folder other than the locked one');
+
+  // 4c. The exit button must be restored in BOTH directions. Only ever ADDING the class
+  //     left a kiosk-off family with no exit button once a lock had been used (measured).
+  assert.match(ui, /classList\.toggle\('hidden', chrome\.hideExit \|\| kiosk\)/,
+    'the exit button is hidden one-way again — it never comes back after a release');
+
+  // 4d. Releasing must LEAVE the code screen. startPin's default onSuccess navigates by
+  //     itself, so a handler that only does work strands the parent on the keypad.
+  const tap = fnSlice(app, 'async function onLockTap(');
+  assert.match(tap, /nav\.back\(\)/, 'releasing the lock leaves the parent stranded on the PIN screen');
+
+  // 5. The break screen must not become a way OUT of a folder lock.
+  const leave = fnSlice(app, 'function leaveLockedScreen(');
+  assert.match(leave, /containState\.active/,
+    'the break screen returns to the gallery under a folder lock — that is an escape');
+
+  // 6. The state is DEVICE-LOCAL: syncing "locked until X" would lock a sibling's tablet.
+  //    (Same rule the scheduled break's keys follow.)
+  for (const mod of ['www/js/drive.js', 'www/js/settings.js', 'www/js/snapshot.js']) {
+    assert.doesNotMatch(CODE.get(mod), /contain:/, `${mod} carries containment state — it must stay device-local`);
+  }
+});
+
 test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
   const app = CODE.get('www/js/app.js');
   const plan = CODE.get('www/js/plan.js');
