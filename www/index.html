@@ -315,6 +315,18 @@
       </div>
       <div id="player-wrap" class="player-wrap hud-on">
         <div id="player-host" class="player-host"></div>
+        <!-- v1.0.56 — audio (mp3) plays through the same <video>, which is a black
+             rectangle. This CSS-only music scene covers it while `.is-audio` is on the
+             wrap (player.js toggles it — record's media kind, corrected at runtime).
+             pointer-events:none ALWAYS — the HUD-container invariant: nothing over the
+             video may swallow the shield's taps. Self-contained, no assets. -->
+        <div id="audio-scene" class="audio-scene" aria-hidden="true">
+          <span class="audio-note n1">🎵</span>
+          <span class="audio-note n2">🎶</span>
+          <span class="audio-disc">📻</span>
+          <span class="audio-note n3">🎵</span>
+          <span class="audio-note n4">🎶</span>
+        </div>
         <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
         <div id="seek-feedback" class="seek-feedback"></div>
         <!-- v1.0.53 — now-playing overlay, FULLSCREEN ONLY (user decision 2026-08-19):

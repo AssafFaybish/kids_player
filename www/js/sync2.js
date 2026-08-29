@@ -572,6 +572,44 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     }
   }
 
+  /* ---------- stage: Drive-file metadata (v1.0.56) ---------- */
+  // A Drive link carries NO filename, so a record that did not come through the parent's
+  // add form (a SHARE from the Drive app, a links-file import) has no title and no media
+  // kind: the child sees an uncaptioned tile and an mp3 plays as a black rectangle.
+  // Bounded per run and retried weekly through the SAME `srcChannelTriedAt`-style stamp
+  // the enrichment below uses, so an unshared file cannot cost a fetch every sync.
+  try {
+    const DRIVE_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+    const need = [];
+    for (const rec of (await loadMergeIndex(scope)).values()) {
+      if (rec.type !== 'file' || !rec.driveId) continue;
+      if (rec.title && rec.media) continue;
+      if (rec.driveMetaTriedAt && Date.now() - rec.driveMetaTriedAt < DRIVE_RETRY_MS) continue;
+      need.push(rec);
+      if (need.length >= 25) break; // a page fetch each when keyless — keep the run short
+    }
+    if (need.length) {
+      report('titles', 86, 'קוראים פרטי קבצים מדרייב…');
+      const { fetchDriveFileMeta } = await import('./gdrivepub.js');
+      const { titleFromFileName, mediaKindFromMime, mediaKindFromName } = await import('./classify.js');
+      for (const rec of need) {
+        const meta = await fetchDriveFileMeta(rec.driveId);
+        const fields = { driveMetaTriedAt: Date.now() };
+        if (meta) {
+          const title = rec.title || titleFromFileName(meta.name);
+          if (title && title !== rec.title) {
+            fields.title = title;
+            fields.titleSource = rec.titleSource || 'sheet';
+            fields.normTitle = normalizeTitle(title);
+          }
+          const media = mediaKindFromMime(meta.mimeType) || mediaKindFromName(meta.name);
+          if (media && media !== rec.media) fields.media = media;
+        }
+        await setVideoFields(scope, rec.key, fields);
+      }
+    }
+  } catch {}
+
   /* ---------- stage: source-channel enrichment (v1.0.12) ---------- */
   // Loose single links learn WHICH channel they came from, so 2+ from the same
   // channel can be grouped into one folder. Free: the channel rides along in the

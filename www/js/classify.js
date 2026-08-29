@@ -22,9 +22,31 @@ export function driveFileId(url) {
   return null;
 }
 
-const VIDEO_EXT = /\.(mp4|webm|m4v|mov|ogv|ogg)(\?|#|$)/i;
+// v1.0.56 — the extension lists split: `.ogg` moved from the video list to the audio one
+// (it is an audio container in practice; `.ogv` stays video). The KEY format is untouched
+// for both branches — an existing record classifies to the same key it always did.
+const VIDEO_EXT = /\.(mp4|webm|m4v|mov|ogv)(\?|#|$)/i;
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)(\?|#|$)/i;
 
-/** Returns null for anything that isn't a supported YouTube link or https video file. */
+/**
+ * v1.0.56 — media kind ('audio' | 'video' | null) from a Drive mimeType or a filename.
+ * null = unknown/not media. Pure classification, so it lives here with the extension
+ * lists it must never drift from.
+ */
+export function mediaKindFromMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.startsWith('audio/')) return 'audio';
+  if (m.startsWith('video/')) return 'video';
+  return null;
+}
+export function mediaKindFromName(name) {
+  const s = String(name || '');
+  if (AUDIO_EXT.test(s)) return 'audio';
+  if (VIDEO_EXT.test(s)) return 'video';
+  return null;
+}
+
+/** Returns null for anything that isn't a supported YouTube link or https media file. */
 export function classifyLink(raw) {
   const s = String(raw || '').trim().replace(/^"+|"+$/g, '');
   if (!s) return null;
@@ -34,15 +56,17 @@ export function classifyLink(raw) {
 
   const did = driveFileId(s);
   if (did) {
+    // media stays null here — a Drive link carries no filename; the add path fills it
+    // from the file's metadata (gdrivepub) and the player detects it at runtime anyway.
     return {
       type: 'file', driveId: did,
       url: `https://drive.google.com/uc?export=download&id=${did}`,
-      srcUrl: s, key: 'file:drive:' + did
+      srcUrl: s, key: 'file:drive:' + did, media: null
     };
   }
 
-  if (/^https:\/\//i.test(s) && VIDEO_EXT.test(s)) {
-    return { type: 'file', url: s, srcUrl: s, key: 'file:' + s };
+  if (/^https:\/\//i.test(s) && (VIDEO_EXT.test(s) || AUDIO_EXT.test(s))) {
+    return { type: 'file', url: s, srcUrl: s, key: 'file:' + s, media: mediaKindFromName(s) };
   }
   return null;
 }
@@ -213,11 +237,25 @@ export function classifyShared(text, subject) {
  */
 export function titleFromFileUrl(url) {
   if (typeof url !== 'string') return '';
+  // v1.0.56 — a Drive link's path carries NO filename ("/file/d/<id>/view",
+  // "/uc?export=…"), so the old code answered the literal segment "view"/"uc" and the
+  // child's tile wore that as a caption. Drive names come from the file's metadata
+  // (gdrivepub.fetchDriveFileMeta); here the honest answer is ''.
+  if (driveFileId(url)) return '';
   let path = url;
   try { path = new URL(url).pathname; } catch { /* not absolute — use as is */ }
   const seg = path.split('/').filter(Boolean).pop() || '';
-  let name = seg;
-  try { name = decodeURIComponent(seg); } catch { /* malformed %-escape: keep raw */ }
+  return titleFromFileName(seg);
+}
+
+/**
+ * v1.0.56 — the segment→display-name half of titleFromFileUrl, split out because a Drive
+ * file's metadata answers a FILENAME ("שיר ערש.mp3"), not a URL. Percent-decoded first
+ * (a URL segment arrives encoded; an already-decoded API name has no %-escapes to touch).
+ */
+export function titleFromFileName(fileName) {
+  let name = String(fileName || '');
+  try { name = decodeURIComponent(name); } catch { /* malformed %-escape: keep raw */ }
   name = name
     .replace(/\.[A-Za-z0-9]{1,5}$/, '') // extension (".mp4", ".webm") — never a Hebrew word
     .replace(/[_\-+]+/g, ' ')

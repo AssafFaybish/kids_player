@@ -1798,7 +1798,7 @@ export function manualVideoRecord({ row, scope, title = '', sortKey = 0, origin 
   const display = String(title || '').trim();
   return {
     scopeId: scope, key: r.key, type: r.type, id: r.id ?? null, url: r.url ?? null,
-    srcUrl: r.srcUrl, driveId: r.driveId ?? null,
+    srcUrl: r.srcUrl, driveId: r.driveId ?? null, media: r.media ?? null,
     title: display, titleSource: display ? 'sheet' : null,
     folderId: 'sheet', channelId: null,   // 'sheet' is the ⭐ folder id, not a spreadsheet
     sortKey, publishedAt: null, rowIndex, origin, state: 'live',

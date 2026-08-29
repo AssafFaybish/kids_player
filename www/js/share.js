@@ -140,7 +140,7 @@ async function routeShare(o, { alreadyRouted = false } = {}) {
   const now = Date.now();
   await db.putVideos([{
     scopeId: scope, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
-    srcUrl: c.srcUrl, driveId: c.driveId ?? null,
+    srcUrl: c.srcUrl, driveId: c.driveId ?? null, media: c.media ?? null,
     title: c.title || '', titleSource: c.title ? 'sheet' : null, normTitle: normalizeTitle(c.title),
     folderId: requireApproval ? '~pending' : homeFolder,
     homeFolderId: homeFolder, channelId: null,

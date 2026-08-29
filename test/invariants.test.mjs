@@ -137,6 +137,67 @@ test('nothing calls the YouTube search endpoint (100 quota units per call)', () 
   }
 });
 
+test('public-Drive access lives in ONE module and never touches OAuth (v1.0.56)', () => {
+  // The app's only OAuth scope is drive.file and it must never grow (v1.0.19 — a
+  // SENSITIVE scope brings Google's "unverified app" screen back for every family, and
+  // verification needs DNS control we do not have on github.io). Reading a parent's own
+  // Drive file is therefore impossible by design; gdrivepub works ONLY on files the
+  // parent shared publicly, which playback on the child's tablet already requires.
+  // A gauth import here would be the first step of exactly that regression.
+  const gd = MODULES.get('www/js/gdrivepub.js');
+  assert.ok(gd, 'gdrivepub.js is gone — public-Drive metadata lost its one home');
+  const deps = [...new Set([...importsOf('www/js/gdrivepub.js'), ...dynamicImportsOf('www/js/gdrivepub.js')])];
+  const allowed = new Set(['www/js/platform.js', 'www/js/keys.js']);
+  assert.deepEqual(deps.filter((d) => !allowed.has(d)), [],
+    'gdrivepub.js imports above its tier (gauth/db/drive belong nowhere near it): ' + deps);
+  assert.doesNotMatch(CODE.get('www/js/gdrivepub.js'), /Authorization/,
+    'gdrivepub.js attaches an Authorization header — it is the KEYLESS/public path');
+
+  // the drive/v3 REST literal stays here: one blast radius when Google changes it, and
+  // drive.js (the OAuth backup file) is the only other legitimate carrier
+  const carriers = [...CODE].filter(([, b]) => /googleapis\.com\/drive\/v3/.test(b)).map(([p]) => p);
+  assert.deepEqual(carriers.sort(), ['www/js/drive.js', 'www/js/gdrivepub.js'],
+    'a Drive REST literal appeared outside its two modules: ' + carriers.join(', '));
+
+  // the parsers must be TOTAL — a 200-with-HTML or an error envelope may never become a
+  // child's tile caption. Behaviour is pinned in gdrivepub.test.mjs; this pins that the
+  // fetch keeps routing through them rather than reading .name off a raw response.
+  const fetchBody = fnSlice(CODE.get('www/js/gdrivepub.js'), 'export async function fetchDriveFileMeta(');
+  assert.match(fetchBody, /interpretDriveFileMeta\(/, 'the API answer bypasses its parser');
+  assert.match(fetchBody, /extractDriveFileMetaFromHtml\(/, 'the keyless scrape fallback is gone');
+});
+
+test('audio files: no black thumbnail is ever captured, and the scene always clears (v1.0.56)', () => {
+  // captureFrame ran with `videoWidth || 320`, so an AUDIO element (videoWidth 0) painted
+  // nothing onto a 320×180 canvas and persistThumb stored a solid-black JPEG as the tile's
+  // PERMANENT thumbnail — it never retries a record that already has one.
+  const cap = fnSlice(CODE.get('www/js/media.js'), 'export function captureFrame(');
+  // ban the regression's exact shape — a NUMERIC fallback dimension. (A bare
+  // `videoWidth ||` cannot be banned: the correct early-return below contains one.)
+  assert.doesNotMatch(cap, /video(?:Width|Height)\s*\|\|\s*\d/,
+    'captureFrame invents dimensions for a track-less element again');
+  assert.match(cap, /if \(!video\.videoWidth \|\| !video\.videoHeight\) return null;/,
+    'captureFrame no longer refuses an element with no video track');
+
+  // the audio scene is a class on the SHARED wrap, so a file that leaves it behind would
+  // cover the next video (and the YouTube engine, which never touches this class)
+  const player = CODE.get('www/js/player.js');
+  const playFile = fnSlice(player, 'async function playFile(');
+  assert.match(playFile, /setAudioScene\(false\)/, 'the audio scene is never cleared on teardown');
+  const cleanup = playFile.slice(playFile.indexOf('const cleanup = ('));
+  assert.match(cleanup.slice(0, cleanup.indexOf('};')), /setAudioScene\(false\)/,
+    'cleanup() does not clear the audio scene — it would cover the NEXT video');
+  // runtime correction: the record's `media` may be missing (a share, an older peer)
+  assert.match(playFile, /setAudioScene\(!\(video\.videoWidth > 0\)\)/,
+    'the scene no longer self-corrects from the loaded metadata');
+
+  // the same container invariant as .player-hud/.player-topbar
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  const scene = css.slice(css.indexOf('.audio-scene {'));
+  assert.match(scene.slice(0, scene.indexOf('}')), /pointer-events:\s*none/,
+    'the audio scene takes pointer events — it would swallow the tap-shield');
+});
+
 test('the keyless youtubei endpoints live in EXACTLY one module and never see a key', () => {
   // The endpoints are undocumented — when YouTube changes them, ONE module must be the
   // whole blast radius. And they never need a key: sending one would tie the family's
