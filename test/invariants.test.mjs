@@ -184,8 +184,16 @@ test('custom folders: the store is version-guarded and every surface knows them 
     'the purge answer deletes without tombstones — every Drive merge is a union, so a peer re-pushes them');
 
   // The picker must settle EXACTLY once, by any exit — the chooseShareProfile lesson.
-  assert.match(app, /nav\.register\('folderpick'[\s\S]{0,200}?onLeave/,
+  // ANCHORED to this registration's OWN body: a window-based match was satisfied by the
+  // NEXT nav.register's onLeave and stayed green on a planted regression (proven).
+  const regAt = app.indexOf("nav.register('folderpick'");
+  assert.ok(regAt > 0, "lost nav.register('folderpick') — re-anchor this guard");
+  const nextReg = app.indexOf('nav.register(', regAt + 10);
+  const regBody = app.slice(regAt, nextReg > 0 ? nextReg : regAt + 400);
+  assert.match(regBody, /onLeave/,
     'leaving the picker no longer resolves the awaiting add — the caller hangs forever');
+  assert.match(regBody, /folderPickHandlers = null/,
+    'the picker handler is not cleared on leave — a stale handler settles the NEXT add');
 });
 
 test('custom folders converge across devices like every other collection (v1.0.56)', () => {
