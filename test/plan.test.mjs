@@ -12,7 +12,7 @@ import {
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
   planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
   effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText,
-  favActive, mergeFavState, favouriteKeys
+  favActive, mergeFavState, favouriteKeys, pinKeyAction
 } from '../www/js/plan.js';
 
 import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
@@ -1743,4 +1743,23 @@ test('a favourite is protected from the rolling window, including a SIBLING\'s (
   const tight = planChannelWindow({ records: live, keep: 1, protectedKeys: guarded });
   assert.equal(tight.total, 0, 'a favourite was proposed for deletion');
   assert.deepEqual(tight.byChannel, {});
+});
+
+/* ---------------- typed parent code (v1.0.55) ---------------- */
+
+test('pinKeyAction: digits and delete map; every other key keeps its existing owner', () => {
+  // TV remotes and hardware keyboards send e.key '0'..'9' for BOTH the digit row and the
+  // numpad — that is why the mapping reads e.key and not e.code ('Digit7' vs 'Numpad7').
+  for (let d = 0; d <= 9; d++) assert.equal(pinKeyAction(String(d)), String(d));
+  assert.equal(pinKeyAction('Backspace'), 'del');
+  assert.equal(pinKeyAction('Delete'), 'del');
+  // Enter activates whatever the D-pad focused (a digit key on the on-screen pad — typing
+  // must not double it), Escape is the hardware-back stand-in, letters are not code.
+  for (const k of ['Enter', 'Escape', 'ArrowLeft', ' ', 'a', 'ד', '10', '']) {
+    assert.equal(pinKeyAction(k), null, `'${k}' must be refused`);
+  }
+  // a non-string (broken caller, synthetic event) must neither crash nor type
+  assert.equal(pinKeyAction(5), null);
+  assert.equal(pinKeyAction(null), null);
+  assert.equal(pinKeyAction(undefined), null);
 });

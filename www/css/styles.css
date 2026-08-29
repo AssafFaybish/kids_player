@@ -440,7 +440,11 @@ html.tv .np-channel { font-size: 18px; }
   color: var(--ink); font-size: 30px; font-weight: 800; font-family: inherit;
   height: 74px; cursor: pointer;
 }
-.key:active { transform: scale(0.94); background: #e4e0ff; }
+/* v1.0.55: NO pressed feedback on the code keys, DELIBERATELY — a child watching the
+   parent type must not see WHICH digit was tapped (the filling dots above already say
+   how many). Never re-add :active/:hover styling here (invariant-pinned); the TV focus
+   ring (html.tv) stays — a D-pad cannot navigate an invisible pad, and remotes with
+   digit buttons can type instead (v1.0.55 keydown path). */
 .key-empty { background: transparent; }
 .key-del { background: #fff0f0; color: var(--danger); font-size: 26px; }
 

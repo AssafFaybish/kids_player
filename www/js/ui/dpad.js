@@ -124,6 +124,9 @@ let inited = false;
 export function initDpad() {
   if (inited) return;
   inited = true;
+  // CAPTURE phase, and deliberately NO stopPropagation for keys this manager ignores:
+  // the PIN view's typed-digit listener (app.js, v1.0.55) rides the bubble phase of the
+  // same window and would starve behind one.
   window.addEventListener('keydown', onKeyDown, true);
   // view switches toggle .active on .view sections — watch for them
   const obs = new MutationObserver(onViewChange);

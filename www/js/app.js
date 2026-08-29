@@ -31,7 +31,7 @@ import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
-  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel,
+  planProfilePurge, planRejectedPurge, shareOutcome, groupLibraryByFolder, planBootProfile, evalScheduledLock, scheduledLockDurationMs, lockCountdownLabel, pinKeyAction,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
@@ -5851,6 +5851,27 @@ function wire() {
   document.querySelector('.keypad').addEventListener('click', (e) => {
     const b = e.target.closest('.key'); if (!b || !b.dataset.k) return;
     onKey(b.dataset.k);
+  });
+  // v1.0.55: the code can be TYPED — TV-remote digit buttons and hardware keyboards —
+  // so on TV nothing on screen lights up while the parent enters it (D-pad walking the
+  // on-screen pad shows the child the code one focus ring at a time; the pad itself
+  // STAYS, because many Android TV remotes carry no digit buttons at all). Gated hard:
+  // only while the PIN view is the active view, never under a modal (the recovery flow
+  // stacks confirms over this screen), and never out of a text field. The mapping is
+  // pure plan.pinKeyAction; everything it refuses (Enter, Escape, arrows) keeps its
+  // existing owner — the D-pad manager and hardware-back.
+  window.addEventListener('keydown', (e) => {
+    if (!nav.isActive('pin') || isModalOpen()) return;
+    // A HELD key must not type (dpad.js's ~30/s lesson): in SETUP mode a held remote
+    // digit would fill step 1 with '7777' and the still-repeating key would confirm
+    // step 2 with the same digits — the family's code set without anyone choosing it.
+    if (e.repeat) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    const act = pinKeyAction(e.key);
+    if (!act) return;
+    e.preventDefault();
+    onKey(act);
   });
   // v1.0.7: cancel returns to WHERE THE PIN OPENED FROM (profiles/gallery/folder) —
   // the pin view can now open over the profiles screen too (update flow).
