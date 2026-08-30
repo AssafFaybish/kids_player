@@ -90,9 +90,13 @@ export const CACHE_SWEEP_EVERY_MS = 24 * 60 * 60 * 1000; // the sweep itself run
 export const EMPTY_FOLDER_GRACE_MS = 10 * 60 * 1000;
 
 /* v1.0.58 — SEARCH INSIDE A FOLDER (user request). The scope is the folder plus every
-   folder nested with it — which, in this app, means exactly one thing: the folders of one
-   imported Drive tree (`driveRootId`). Nothing else nests; the app has no folder-in-folder
-   screen and deliberately gains none.
+   folder nested with it.
+   ⚠️ v1.0.61 CHANGED WHAT THAT MEANS. This comment used to end "nothing else nests; the app
+   has no folder-in-folder screen and deliberately gains none" — true then, false now: an
+   imported Drive tree nests for real (`parentFolderId`) and the scope is the SUBTREE, via
+   pure `folderSubtreeIds`. The v1.0.58 rule survives inside it: standing in a disc searches
+   the whole collection, because the root row is hidden from the child whenever it holds no
+   songs of its own.
    The caps bound the read, not the answer: an imported collection is ~750 files today, and
    a folder search must never turn into loading a family's whole library into memory. */
 export const FOLDER_SEARCH_MAX_PER_FOLDER = 2000;

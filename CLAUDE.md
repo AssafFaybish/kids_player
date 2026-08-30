@@ -428,6 +428,10 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     no folder-inside-a-folder screen — this feature deliberately does not add one. The ONLY
     parent/child relation in the data is what an imported Drive tree leaves behind, where
     every folder of one import carries `driveRootId` pointing at its root (v1.0.58).
+    ⚠️ **SUPERSEDED BY v1.0.61**, which nests an imported Drive tree for real
+    (`parentFolderId`) and gives it a folder-inside-a-folder screen. The search scope is
+    the SUBTREE now; the paragraph below — standing in a disc searches the whole
+    collection — is unchanged and still the reason.
   - **INSIDE AN IMPORTED COLLECTION THE SCOPE IS THE WHOLE COLLECTION** (user decision
     2026-08-30), not just what hangs below the current folder. The reason is structural: the
     root row is HIDDEN from the child whenever it holds no songs of its own, so a strictly

@@ -2429,7 +2429,8 @@ export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first
     return 'לא הצלחנו לקרוא את התיקיה מדרייב. ודאו שהיא משותפת "לכל מי שיש לו הקישור"';
   }
   // v1.0.58 — a NESTED import says how it was laid out, because the parent pasted ONE link
-  // and is about to find several folders on the child's home; and a walk that was cut short
+  // and is about to find a folder holding several more (v1.0.61: they nest under it now
+  // rather than landing beside it on the home); and a walk that was cut short
   // or could not read part of the tree SAYS SO (the v1.0.37 rule) instead of quietly
   // delivering less than the folder holds.
   const notes = [];
@@ -2459,18 +2460,19 @@ export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first
 /**
  * v1.0.58 — PURE: which folders a search STARTED INSIDE ONE FOLDER may look at.
  *
- * ⚠️ "NESTED" HAS EXACTLY ONE MEANING IN THIS APP, and it is worth stating because the
- * phrase suggests otherwise: there is no folder hierarchy. Folders are flat (`ch:`, `cf:`,
- * `grp:`, `pl:`) and the app has no folder-inside-a-folder screen. The ONLY parent/child
- * relation in the data is the one an imported Drive tree leaves behind — every folder of
- * one import carries `driveRootId` pointing at the root it came from (v1.0.58).
+ * ⚠️ WHAT "NESTED" MEANS HERE CHANGED IN v1.0.61, and this comment used to say the
+ * opposite: folders WERE flat (`ch:`, `cf:`, `grp:`, `pl:`) and the app had no
+ * folder-inside-a-folder screen. It has one now — an imported Drive tree nests for real via
+ * `parentFolderId`, and the scope is the SUBTREE (pure `folderSubtreeIds`). A folder that
+ * nests nothing is still its own scope, which is what "search in this folder" means for
+ * every other folder kind.
  *
- * So: inside a folder of an imported collection, the scope is THE WHOLE COLLECTION (the
- * user's decision 2026-08-30). Reading it strictly downwards would make the feature
- * useless exactly where it was asked for — the root row is hidden from the child when it
- * holds no songs of its own, so from a disc there would be no way to reach the other 31.
- * Anywhere else the scope is the folder itself, which is what "search in this folder" means
- * when nothing nests.
+ * The v1.0.58 rule survives INSIDE a collection, and its reason is unchanged: standing in a
+ * disc searches THE WHOLE COLLECTION (the user's decision 2026-08-30), because reading it
+ * strictly downwards would make the feature useless exactly where it was asked for — the
+ * root row is hidden from the child when it holds no songs of its own, so from a disc there
+ * would be no way to reach the other 31. `driveRootId` remains the fallback for a tree
+ * imported before v1.0.61 whose rows have not been re-walked yet.
  *
  * ⚠️ A FOLDER LOCK NARROWS IT TO ONE FOLDER, ALWAYS. The global search is hidden under a
  * folder lock precisely because "search reaches ANOTHER folder"; a scoped search may stay
