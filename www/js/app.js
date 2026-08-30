@@ -106,6 +106,16 @@ function goGallery() {
   stop();
   wake.releaseAll(); // hard safety net (F7): outside the player, the screen may sleep
   currentWatch = null;
+  // v1.0.56 — UNDER A FOLDER LOCK THE HOME IS NOT A DESTINATION. This is the ONE funnel
+  // every "go home" path uses (the in-place delete, the share flow, leaveWatch's floor,
+  // the search/sites back buttons…), so containing it here covers all of them at once —
+  // the same reasoning that made openFolder the boundary rather than each caller.
+  if (containState.active && containState.mode === 'folder' && containState.folderId) {
+    folderId = containState.folderId;
+    renderFolderView().catch(() => {});
+    nav.reset('folder');
+    return;
+  }
   renderHome();
   nav.reset('gallery');
 }
@@ -939,7 +949,11 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   // library sync and AWAITED, for the same reason the sunset was: it writes video records
   // that the sync then enriches and gifts, and a detached .then() here is the v1.0.25 race.
   // Silent and self-throttled; a failed listing changes nothing.
-  if (await refreshDriveFolders(libScope)) {
+  // the SCOPE is resolved, never read off the bare global: `libScope` is published by
+  // buildFolders (i.e. only after a home render), and this runs concurrently with that
+  // render — the v1.0.25 rule the channel-approval paths already follow. A null scope
+  // here would silently skip every Drive-backed folder on the first entry of a launch.
+  if (await refreshDriveFolders(await currentLibScope())) {
     if (activeProfileId !== id) return;
     await renderAfterRemoteChange();
   }

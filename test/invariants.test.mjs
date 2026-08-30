@@ -284,6 +284,13 @@ test('the containment lock cannot be escaped, and releases only what it took (v1
   const tap = fnSlice(app, 'async function onLockTap(');
   assert.match(tap, /nav\.back\(\)/, 'releasing the lock leaves the parent stranded on the PIN screen');
 
+  // 4e. goGallery is the ONE funnel every "go home" path uses (the in-place delete, the
+  //     share flow, leaveWatch's floor, the search/sites back buttons). Under a folder
+  //     lock the home is not a destination, so the funnel itself must contain it —
+  //     otherwise a parent deleting one video drops the child onto the full home.
+  assert.match(fnSlice(app, 'function goGallery('), /containState\.mode === 'folder'/,
+    'goGallery resets to the home under a folder lock — every "go home" path leaks');
+
   // 5. The break screen must not become a way OUT of a folder lock.
   const leave = fnSlice(app, 'function leaveLockedScreen(');
   assert.match(leave, /containState\.active/,
