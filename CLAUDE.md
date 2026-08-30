@@ -273,6 +273,60 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.62 — **THE PAGE FOLLOWS THE FINGER, AND THE NEXT PAGE COMES IN WITH IT** (user
+  request: "משוב, על ידי הזזת הדף ביחס להזזת האצבע, למשתמש לדעת שהוא מזיז את הדף לדף הבא").
+  v1.0.57 turned pages on RELEASE with nothing visible until it happened — the child had to
+  learn that the gesture existed. Now the grid tracks the finger 1:1 and the neighbouring
+  page slides in beside it.
+  - **FOUR USER DECISIONS** (2026-08-30): a real **carousel** (the neighbour is visible, not
+    just the current page moving); a **rubber band** at the first/last page; the turn decided
+    by **relative distance** (⅓ of the width) rather than the old fixed 56px; and **only the
+    tile grid moves** — the folder name, 🏠, 🔍 and the pager stay put.
+  - **THREE PURE DECISIONS** (`plan.swipeDragArm` / `swipeDragOffset` / `swipeDragCommit`,
+    node-tested; a second copy of any is invariant-banned alongside `swipePageAction`).
+    ⚠️ **ARMING HAPPENS DURING THE MOVE, WHICH IS WHAT THIS FEATURE COSTS.** v1.0.57 could
+    decide "swipe or scroll?" at leisure on release; here a wrong answer is VISIBLE while it
+    happens, so `SWIPE_ARM_PX` (18) must clear `TAP_SLOP_PX` (14) — a tap that nudges the
+    whole screen reads as a bug — and the `SWIPE_RATIO` test runs at the same instant, or the
+    grid jitters sideways during every vertical scroll (the v1.0.52 collision, made visible).
+  - **THE COMMIT IS RELATIVE BECAUSE THE FEEDBACK IS**: past a third of the width the next
+    page is already more than half revealed, so releasing there must complete the turn —
+    "what you see is what happens" is the only rule that cannot surprise. `SWIPE_MIN_PX`
+    survives as the floor for the FALLBACK path, which is why both constants still exist.
+  - **THE LIVE TRACK IS AN ADDITION, NEVER A REPLACEMENT**, and that is a safety property:
+    `renderPage` is async (it reads the database with the finger already moving), a viewport
+    can be missing, and a ghost may never arrive — every one of those falls through to the
+    v1.0.57 flick, which is also what a mouse and a TV remote still use. Guard-pinned.
+  - ⚠️ **`overflow: hidden` IS APPLIED ONLY WHILE `.swiping`.** Permanent `overflow-x: hidden`
+    turns the OTHER axis into `auto` per spec, making the viewport a scroll container and
+    taking vertical scrolling away from the document — the exact class of bug v1.0.50/51/52
+    chased around this app three times. During a gesture there is nothing to scroll inside it
+    (the grid is its only in-flow child and exactly fills it), so the clip is safe there.
+  - **THREE WAYS TO LEAVE A CHILD'S GRID STUCK TRANSLATED, all closed and each guard-pinned**:
+    `pointercancel` SPRINGS BACK rather than only dropping the start (the OS steals drags —
+    the v1.0.22 seek-bar invariant); a grid rebuilt UNDER the finger by a sync or a Drive pull
+    fires `kp:gridrender` and drops the drag; and a **FAST FLIP MUST NOT LOSE A PAGE** —
+    a child swiping again inside the 220ms settle cancels it, so `clearDrag` FLUSHES the
+    committed turn it was carrying. Without that flush the faster they swipe the more pages
+    silently vanish.
+  - The `kp:gridrender` event is dispatched on the **GRID**, never its viewport: events bubble
+    UP, and on the watch screen the swipe host IS the grid, so a viewport-level event would
+    never reach the listener. Guard-pinned by that reasoning.
+  - The ghost render is **`silent`**: it must not move the pager, or the page would read as
+    already turned before the child committed to anything.
+  - ⚠️ **TOOLING, AGAIN** (the v1.0.57 lesson, paid twice): in a HIDDEN Browser pane
+    `setTimeout` is throttled ~6× and CSS transitions may not run at all, so a settle that
+    takes 220ms can measure as seconds. The first reading of "the release did not commit" was
+    a sample taken too early, not a bug — poll for the change instead of sleeping once.
+  - 4 unit tests + 2 invariants guards, every guard proven red on a planted regression (7).
+    Browser-verified on all three grids at a real 820px viewport: the transform tracking the
+    finger 1:1 from 20px to 300px, the ghost carrying the NEXT page's real tiles, a release
+    past ⅓ committing and below it springing back, the rubber band capped at exactly 12% of
+    the width with no ghost rendered, a 45px sideways drift during a vertical scroll never
+    arming, a tap moving nothing, a fast double-flip landing BOTH turns (3/3 → 1/3), the
+    post-swipe click swallowed while a later tap still worked, a mid-gesture re-render
+    leaving nothing stuck, and the player's shield and wrap untouched throughout.
+
 - v1.0.61 — **A DRIVE TREE NESTS, EXACTLY AS IT DOES IN DRIVE** (user request, with a
   screenshot of 32 disc folders spread over 8 pages of the child's home).
   - ⚠️ **THIS REVERSES A v1.0.58 DECISION, DELIBERATELY.** That release flattened the tree
