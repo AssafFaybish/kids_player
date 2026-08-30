@@ -273,6 +273,80 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.63 — **THE MUSIC CAN KEEP PLAYING WITH THE SCREEN OFF** (user request), **opt-in,
+  per profile, OFF unless a parent turns it on.**
+  - ⚠️ **THIS TAKES THE APP FROM 2 PERMISSIONS AND 0 SERVICES TO 5 AND 1.** All three new
+    permissions (`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`,
+    `POST_NOTIFICATIONS`) belong to this one feature, and the manifest comment that promised
+    "exactly two" is rewritten rather than quietly deleted. A family that never opens the
+    setting gains no service and no notification.
+  - ⚠️ **ANDROID CANNOT TELL THE POWER BUTTON FROM `HOME`.** `appStateChange` carries no
+    reason, so the setting really means "keep playing when the app goes to the background",
+    and a child who taps HOME keeps hearing it. That cannot be fixed — only said, which the
+    setting's own hint does.
+  - **YOUTUBE IS EXCLUDED BY DESIGN** (the user's decision): the IFrame player is a WebView
+    Android may throttle or evict the moment the app is not foreground, so "background
+    YouTube" would be a promise the app cannot keep. Own audio/video files only.
+  - ⚠️ **THE SERVICE IS STARTED IN `openWatch`, WHILE THE APP IS PROVABLY FOREGROUND.**
+    Since API 31 a backgrounded app may not start a foreground service at all, so arming
+    when the screen goes off is too late on every modern device — the feature would look
+    implemented and never work. That is also why the notification appears during ordinary
+    viewing: it IS the control, and every media app behaves this way.
+  - **THE DECISION IS MADE FROM CACHED STATE** (`bgPlayEnabled`, refreshed in
+    `loadGiftStates` beside `resumeEnabled`). `onAppPause` reads the live playhead and must
+    stay a synchronous arrow (invariant-pinned); by the time an awaited settings read
+    returned, the video would already be paused.
+  - ⚠️ **THE CALL WATCHER STAYS ARMED EVEN WHEN THE VIDEO KEEPS PLAYING.** A call takes
+    audio focus and the WebView pauses its own media regardless of our service, so an early
+    `return` for the background case would leave a background-playing video stopped for good
+    once the call ended. Guard-pinned by the ABSENCE of that return.
+  - **⏮/⏯/⏭ ON THE NOTIFICATION** (the user's decision 2026-08-31). The skip list is the
+    ORDER THE CHILD IS LOOKING AT — built once from `pageAnyFolder`, THE pagination entry
+    point (the v1.0.58 precedent) — so the notification can never disagree with the grid
+    under the player. `nextAfter` was NOT mirrored: it walks forward from a cursor and has
+    no reverse, and writing one would be a second answer to "what is in this folder, in what
+    order" (the v1.0.21 bug). No wrap-around: a chain that looped would play all night.
+  - **A WRAPPED GIFT IS SKIPPED, NEVER OPENED** (`backgroundSkipTarget`): its whole ritual is
+    that the FIRST TAP unwraps it and deliberately does not play (v1.0.25), so starting it
+    from a notification would consume the video while leaving the tile wrapped forever.
+  - ⚠️ **THE NOTIFICATION HAS NO CONTENT INTENT, DELIBERATELY.** Tapping it must not open
+    the app: under a containment lock that would be a way out of a locked folder, and on a
+    kiosk tablet a way back into a session the parent ended. Three transport buttons and
+    nothing else; guard-pinned against `setContentIntent`.
+  - **TORN DOWN AT EVERY DOOR** (each guard-pinned): leaving the watch view, a profile switch
+    (`bgPlay` is a per-profile answer and a sibling's song must not follow the next child),
+    and a **scheduled break — which also PAUSES**: screen time that leaves a song playing is
+    not a break, and the notification would hand the child a ⏭ button for its whole duration.
+    The teardown sits AFTER `showLockedScreen`'s parent-screen guard, for the same reason
+    that guard exists.
+  - **THE IDLE "עדיין צופים?" TIMER IS SUSPENDED** while playing hidden (the user's
+    decision): it exists for a child asleep IN FRONT OF a screen, and there is no screen to
+    show the prompt on. The counter is held at NOW rather than paused, so the full window
+    restarts when the app returns.
+  - The channel is `IMPORTANCE_LOW` with no sound and no vibration — a media notification
+    that chimed on every song change is a tablet that wakes a sleeping child. `START_NOT_STICKY`:
+    a service the SYSTEM restarted would show a control for a video that is not playing,
+    with a JS side that no longer exists.
+  - If **POST_NOTIFICATIONS is denied** on Android 13+ the service still runs and the parent
+    simply loses the visible control — said out loud rather than degrading in silence.
+  - ⚠️ **PROCESS, PAID A THIRD TIME**: a `git checkout www/js/app.js` during a plant cycle
+    destroyed the whole settings toggle AND the `onAppPause` branch, because at that moment
+    they were still UNCOMMITTED. Commit BEFORE planting. It was caught only because a new
+    guard asserted the handler consults the decision — by a test written for the feature,
+    not by re-reading the diff.
+  - ⚠️ Two existing guards over `onAppPause` extracted its body with a non-greedy
+    `([\s\S]*?)\}\);`, which ends at the FIRST `});` — so the moment the handler called
+    anything with an object literal, the body was truncated and both guards claimed it had
+    "stopped pausing the player". A guard that breaks on correct code trains you to edit the
+    test until it passes. Extraction is brace-balanced now (`appPauseBody`).
+  - 4 unit tests + 2 invariants guards, every guard proven red on a planted regression (7),
+    and the debug APK BUILDS — the text-parity tests cannot see a Java syntax error.
+    Browser-verified with a stubbed bridge: the setting persisting and naming the child,
+    both messages, the service arming on a real audio file with its real title, a YouTube
+    video never arming, and the service stopping when the watch view is left.
+    **Real background playback, the notification, its three buttons and the permission
+    prompt are DEVICE checklist items** — no browser can prove them.
+
 > ⚠️ **VERSION NOTE (2026-08-30): 1.0.61 WAS NEVER CUT.** The three v1.0.61 trains (the
 > channel-sync dialog, re-adding removed content, nested Drive folders) and the v1.0.62
 > swipe feedback were merged together, so ONE release carries all four: 1.0.60 → **1.0.62**.

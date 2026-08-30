@@ -57,7 +57,12 @@ Native (android/, canonical copies in native-reference/): `MainActivity.java`
 back/pause/resume hooks), `KidsNativePlugin.java` (keepAwake, share inbox, APK installer),
 `GoogleAuthPlugin.java` (AuthorizationClient drive.file), `KidsWebPlugin.java` (v1.0.45 —
 the restricted site viewer: the ONLY place a child's web navigation is enforced; see
-[docs/WEBSITES.md](docs/WEBSITES.md)).
+[docs/WEBSITES.md](docs/WEBSITES.md)), `PlaybackService.java` (v1.0.63 — the app's ONLY
+service: a mediaPlayback foreground service so the family's own audio/video keeps playing
+when the app is backgrounded. It runs only while a parent has turned the per-profile
+`bgPlay` setting on, knows nothing about folders or gifts — every playback decision stays
+in JS — and its notification deliberately carries NO content intent, because tapping it
+open would be a way out of a containment lock).
 `release/android-release.gradle` = versioning + signing + play-services dep + `.dev` debug suffix.
 
 ## IndexedDB schema (`kidsplayer` v3)
