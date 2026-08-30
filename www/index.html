@@ -306,6 +306,10 @@
           <span id="folder-logo-top" class="folder-logo-top hidden"></span>
           <span id="folder-title" class="brand-title"></span>
         </div>
+        <!-- v1.0.58 — search INSIDE this folder (and the folders imported with it). Unlike
+             the home's search this one cannot reach another collection, which is why it is
+             also the one search that survives a folder lock (scoped to that folder alone). -->
+        <button id="folder-search" class="round-btn" type="button" aria-label="חיפוש בתיקייה">🔍</button>
         <!-- v1.0.56 — lock the child INTO this folder (same button, same code gate) -->
         <button id="folder-lock-btn" class="round-btn lock-btn" type="button" aria-label="נעילה על התיקיה">🔓</button>
       </header>

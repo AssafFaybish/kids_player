@@ -3506,3 +3506,45 @@ test('a folder picture has three doors, and only the parent installs one (v1.0.5
   assert.match(fnSlice(app, 'async function renderFolderPick('), /setFolderNameFieldVisible\(true\)/,
     'the name field stays hidden after an art edit — the next folder could not be named');
 });
+
+test('searching inside a folder reuses the ONE pagination entry point (v1.0.58)', () => {
+  const app = CODE.get('www/js/app.js');
+  const build = fnSlice(app, 'async function buildFolderSearchIndex(');
+
+  // 1) THE CANDIDATES COME FROM pageAnyFolder, never from a second reading of the folder
+  //    rules. That function already knows every folder kind — the 🎁/⭐/🕒 views that carry
+  //    no folderId at all, a channel's absorbed singles, the trimmed loose list. Filtering
+  //    the merge index by folderId instead would be a SECOND answer to "what is in this
+  //    folder", and the two would disagree exactly where it hurts (the v1.0.21 bug that
+  //    cost the child every way out of a gift).
+  assert.match(build, /pageAnyFolder\(/, 'the folder search reads the library on its own terms');
+  assert.doesNotMatch(build, /loadMergeIndex\(/, 'the folder search re-derives folder membership');
+  assert.match(build, /folderSearchScope\(/, 'the scope is decided inline');
+
+  // 2) THE LOCK IS PASSED IN, and folder results are suppressed under it. A folder result
+  //    is a way to REACH another folder — the one thing a folder lock forbids, and the very
+  //    reason the home's search is hidden while one is on.
+  assert.match(build, /containState\.mode === 'folder'/, 'the folder search ignores a folder lock');
+  assert.match(build, /locked \}\)/, 'the lock never reaches the scope decision');
+  assert.match(build, /if \(!locked\) \{[\s\S]*?folderEntries\.push/,
+    'folder results are offered under a lock — that is a way out of the locked folder');
+
+  // 3) IT IS BOUNDED. A folder search must never become "load the family's whole library".
+  assert.match(build, /FOLDER_SEARCH_MAX_TOTAL/, 'the folder search lost its ceiling');
+  assert.match(build, /FOLDER_SEARCH_MAX_PER_FOLDER/, 'one huge folder can exhaust the search');
+
+  // 4) THE TWO SEARCHES CANNOT BLUR. The home's search must reset the scope, and a rebuild
+  //    must use the index the screen was opened for — a folder search that silently fell
+  //    back to the whole library would leak other folders into a locked one.
+  assert.match(fnSlice(app, 'async function openSearch('), /searchFolderId = null/,
+    "the home's search can inherit a folder scope");
+  assert.match(fnSlice(app, 'async function openFolderSearch('), /searchFolderId = folderId/,
+    'the folder search never records its scope');
+  assert.match(fnSlice(app, 'async function renderSearchResults('),
+    /searchFolderId \? buildFolderSearchIndex\(searchFolderId\) : buildSearchIndex\(\)/,
+    'a rebuilt index ignores which search the screen is showing');
+
+  // 5) One screen, one ranking: the folder search must not grow its own matcher.
+  assert.equal((app.match(/rankItems\(/g) || []).length, 2,
+    'a second ranking implementation appeared — search.rankItems is the only one');
+});

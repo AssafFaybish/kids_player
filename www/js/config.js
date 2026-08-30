@@ -89,6 +89,15 @@ export const CACHE_SWEEP_EVERY_MS = 24 * 60 * 60 * 1000; // the sweep itself run
    parent choosing a picture for the folder they just made would watch it disappear. */
 export const EMPTY_FOLDER_GRACE_MS = 10 * 60 * 1000;
 
+/* v1.0.58 — SEARCH INSIDE A FOLDER (user request). The scope is the folder plus every
+   folder nested with it — which, in this app, means exactly one thing: the folders of one
+   imported Drive tree (`driveRootId`). Nothing else nests; the app has no folder-in-folder
+   screen and deliberately gains none.
+   The caps bound the read, not the answer: an imported collection is ~750 files today, and
+   a folder search must never turn into loading a family's whole library into memory. */
+export const FOLDER_SEARCH_MAX_PER_FOLDER = 2000;
+export const FOLDER_SEARCH_MAX_TOTAL = 6000;
+
 /* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
    is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
    Long enough that a parent who changes their mind has a real window; short enough that
