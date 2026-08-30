@@ -26,6 +26,8 @@ import {
   listLibraryChannels, putLibraryChannel, getChannel, putChannel, deleteLibraryChannel,
   getDeletedChannels, putDeletedChannels,
   listSiteEntries, putSiteEntry, deleteSiteEntry, getDeletedSiteEntries, putDeletedSiteEntries,
+  listCustomFolders, putCustomFolder, deleteCustomFolder,
+  getDeletedCustomFolders, putDeletedCustomFolders,
   loadDenyRecords, denyActive, tx, profScope, putVideoStates, getVideoState, purgeProfile
 } from './db.js';
 import { getAllSettings, putAllSettings, mergeSettings } from './settings.js';
@@ -408,6 +410,54 @@ export function planSiteApply({ localRows, remoteRows, localTombs, remoteTombs }
   };
 }
 
+/* ---------------- custom folders (v1.0.56) ----------------
+   The same trio again, for the same reason: one LWW record merge, one max-merge tombstone
+   map, one strict-outlives test, one apply plan. */
+
+/**
+ * PURE: two copies of one parent-created folder. Later `updatedAt` wins (stamped inside
+ * `db.putCustomFolder`). An exact tie takes the row with a PICTURE — both are the parent's
+ * own choice and neither is unsafe, so the tie-break is simply the richer folder, and it
+ * is deterministic, which is what keeps the merge commutative.
+ */
+export function mergeCustomFolder(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ta = a.updatedAt || 0;
+  const tb = b.updatedAt || 0;
+  if (ta !== tb) return tb > ta ? b : a;
+  if (!!a.artThumbId !== !!b.artThumbId) return a.artThumbId ? a : b;
+  return a;
+}
+
+/** PURE: union of two folder-deletion tombstone maps ({folderId: deletedAt}); latest wins. */
+export function mergeDeletedCustomFolders(a, b) {
+  const out = {};
+  for (const src of [a, b]) {
+    for (const [id, at] of Object.entries(src || {})) {
+      const t = Number(at) || 0;
+      out[id] = id in out ? Math.max(out[id], t) : t;
+    }
+  }
+  return out;
+}
+
+/** PURE: strictly newer survives; a TIE is a deletion (the siteEntry rule). */
+export function customFolderOutlivesTombstone(row, at) {
+  return ((row && row.updatedAt) || 0) > (Number(at) || 0);
+}
+
+/** PURE: the customFolders half of applying a remote doc. */
+export function planCustomFolderApply({ localRows, remoteRows, localTombs, remoteTombs }) {
+  const tombs = mergeDeletedCustomFolders(localTombs, remoteTombs);
+  const survives = (e) => !(e.folderId in tombs) || customFolderOutlivesTombstone(e, tombs[e.folderId]);
+  return {
+    tombs,
+    puts: (remoteRows || []).filter((e) => e && e.folderId && survives(e)),
+    deletes: (localRows || []).filter((e) => e && e.folderId && !survives(e)).map((e) => e.folderId)
+  };
+}
+
 /** Commutative + idempotent (tested): merge(a,b) ≡ merge(b,a); merge(a,a) ≡ a. */
 export function mergeDbFiles(a, b) {
   if (!a) return b;
@@ -474,6 +524,18 @@ export function mergeDbFiles(a, b) {
       if (row && !siteEntryOutlivesTombstone(row, at)) sites.delete(entryId);
     }
 
+    // v1.0.56 — parent-created folders, the same union-then-filter shape again.
+    const cfs = new Map();
+    for (const e of [...(la.customFolders || []), ...(lb.customFolders || [])]) {
+      if (!e || !e.folderId) continue;
+      cfs.set(e.folderId, mergeCustomFolder(cfs.get(e.folderId), e));
+    }
+    const cfDel = mergeDeletedCustomFolders(la.deletedCustomFolders, lb.deletedCustomFolders);
+    for (const [folderId, at] of Object.entries(cfDel)) {
+      const row = cfs.get(folderId);
+      if (row && !customFolderOutlivesTombstone(row, at)) cfs.delete(folderId);
+    }
+
     out.libraries[id] = {
       sheetUrl: la.sheetUrl || lb.sheetUrl || null,
       videos: [...vids.values()],
@@ -482,7 +544,9 @@ export function mergeDbFiles(a, b) {
       libraryChannels: [...libCh.values()],
       deletedChannels: chDel,
       siteEntries: [...sites.values()],
-      deletedSiteEntries: siteDel
+      deletedSiteEntries: siteDel,
+      customFolders: [...cfs.values()],
+      deletedCustomFolders: cfDel
     };
   }
 
@@ -612,7 +676,11 @@ async function buildLocalDoc(profiles) {
         // v1.0.45: sites are profile-scoped, so a library scope never has any — but the
         // key must still be present and empty, or a merge against a peer would read this
         // side as "unknown" rather than "none".
-        siteEntries: [], deletedSiteEntries: {}
+        siteEntries: [], deletedSiteEntries: {},
+        // v1.0.56: custom folders are the mirror image — LIBRARY-scoped, because the
+        // videos they hold are library records.
+        customFolders: await listCustomFolders(lib),
+        deletedCustomFolders: await getDeletedCustomFolders(lib)
       };
     }
     // profile-scope manual items ride inside a pseudo-library keyed by the prof scope
@@ -629,7 +697,10 @@ async function buildLocalDoc(profiles) {
         sheetUrl: null, videos: pv,
         denylist: await loadDenyRecords(pScope),
         channels: [], libraryChannels: [],
-        siteEntries: pSites, deletedSiteEntries: pSiteDel
+        siteEntries: pSites, deletedSiteEntries: pSiteDel,
+        // present-and-empty for the same reason the library branch carries empty sites:
+        // an absent key must not read as "unknown" to a peer's merge
+        customFolders: [], deletedCustomFolders: {}
       };
     }
     const states = {};
@@ -734,6 +805,23 @@ async function applyRemoteDoc(doc) {
     }
     for (const e of sitePlan.puts) {
       await putSiteEntry({ ...e, scopeId: libId }, { preserveTimestamp: true });
+    }
+    // v1.0.56 — parent-created folders, identical shape and order.
+    const cfPlan = planCustomFolderApply({
+      localRows: await listCustomFolders(libId),
+      remoteRows: lib.customFolders || [],
+      localTombs: await getDeletedCustomFolders(libId),
+      remoteTombs: lib.deletedCustomFolders
+    });
+    await putDeletedCustomFolders(libId, cfPlan.tombs);
+    for (const folderId of cfPlan.deletes) {
+      await deleteCustomFolder(libId, folderId, { tombstone: false });
+    }
+    for (const e of cfPlan.puts) {
+      // `artThumbId` names a blob in the LOCAL thumbs store, which never travels — so a
+      // folder arriving from a peer renders its emoji until this device fetches the
+      // picture itself from `artSrcUrl` (best-effort, on the next render).
+      await putCustomFolder({ ...e, scopeId: libId }, { preserveTimestamp: true });
     }
   }
   // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the library data

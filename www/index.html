@@ -104,6 +104,42 @@
       </div>
     </section>
 
+    <!-- v1.0.56 — WHERE SHOULD THIS GO? The destination picker, raised by every manual
+         add (paste / YouTube search / a single Drive file). The DEFAULT row is always
+         first and is always "סרטונים נוספים": a parent who just taps the top button gets
+         exactly the behaviour every earlier version had. A real view (not a modal) because
+         it can also CREATE a folder, which needs a name field and a picture chooser —
+         and because the add flows already stack modals it must not fight with. -->
+    <section id="view-folderpick" class="view">
+      <div class="wn-wrap">
+        <header class="wn-head">
+          <div class="wn-emoji">📁</div>
+          <h1 id="fp-title" class="wn-title">לאיזו תיקיה להוסיף?</h1>
+          <p id="fp-sub" class="modal-text"></p>
+        </header>
+        <div class="wn-body">
+          <ul id="fp-list" class="parent-list"></ul>
+          <!-- the create form, revealed by the last row -->
+          <div id="fp-create" class="fp-create hidden">
+            <label class="field-label" for="fp-name">שם התיקיה החדשה</label>
+            <input id="fp-name" class="input" type="text" maxlength="24" placeholder="למשל: שירי ערש" />
+            <div id="fp-name-msg" class="form-msg"></div>
+            <div class="fp-art-head">
+              <span>תמונה לתיקיה</span>
+              <button id="fp-art-search" class="btn btn-small" type="button">🔎 חיפוש תמונה</button>
+            </div>
+            <div id="fp-art-msg" class="form-msg"></div>
+            <div id="fp-art-row" class="fp-art-row"></div>
+            <div id="fp-emoji-row" class="fp-emoji-row"></div>
+          </div>
+        </div>
+        <div class="wn-actions">
+          <button id="fp-ok" class="btn btn-primary wn-ok" type="button">שמירה</button>
+          <button id="fp-cancel" class="text-btn" type="button">ביטול</button>
+        </div>
+      </div>
+    </section>
+
     <section id="view-whatsnew" class="view">
       <div class="wn-wrap">
         <header class="wn-head">
@@ -636,6 +672,15 @@
         <details id="channels-box" class="library-box">
           <summary class="list-head library-summary"><span id="channels-count" class="list-count">ערוצים</span></summary>
           <ul id="channels-list" class="parent-list"></ul>
+        </details>
+
+        <!-- v1.0.56 — parent-created folders. Folded like the channel list (v1.0.28), and
+             ALWAYS listing every folder, including the empty ones that the child's home
+             hides: this is where a parent renames one, changes its picture, or deletes it. -->
+        <details id="folders-box" class="library-box">
+          <summary class="list-head library-summary"><span id="folders-count" class="list-count">תיקיות</span></summary>
+          <ul id="folders-list" class="parent-list"></ul>
+          <button id="folder-new" class="btn btn-small" type="button">＋ תיקיה חדשה</button>
         </details>
 
         <!-- v1.0.28: the YouTube-API-key form is gone (parent's decision): the target

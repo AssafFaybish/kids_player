@@ -28,7 +28,7 @@
 // automatically. The "חדשים 🎁" folder is a pure range scan, no filtering.
 
 export const DB_NAME = 'kidsplayer';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export const profScope = (profileId) => 'prof:' + profileId;
 
@@ -91,6 +91,16 @@ export function openDb() {
         // component silently omits the record. Kept because dropping an index costs a
         // DB_VERSION bump, and an unread index is harmless.
         sites.createIndex('by_scope', ['scopeId', 'order']);
+      }
+
+      if (from < 3) {
+        // v1.0.56 — PARENT-CREATED FOLDERS. Only the folder's own metadata lives here;
+        // membership is the VIDEO's `folderId` ('cf:<id>'), exactly as a channel folder
+        // works — so the by_folder_sort range index, pageFolder, the watch-grid chain and
+        // the orphan GC all keep working with no new branch anywhere.
+        // Deliberately NO index (the listSiteEntries lesson: an index key with an
+        // undefined component silently hides the record); readers range the primary key.
+        db.createObjectStore('customFolders', { keyPath: ['scopeId', 'folderId'] });
       }
     };
     req.onsuccess = () => {
@@ -739,6 +749,81 @@ export async function deleteSiteEntry(scopeId, entryId, { tombstone = true, tomb
   await tx(['siteEntries'], 'readwrite', (s) => { s.delete([scopeId, entryId]); });
 }
 
+/* ---------------- custom folders (v1.0.56) ----------------
+   A parent-created folder for single videos and files. The record here is METADATA
+   ONLY — `{scopeId, folderId:'cf:<id>', title, emoji, artThumbId, artSrcUrl, order,
+   createdAt, updatedAt}`; membership is the video's own `folderId`, which is why every
+   existing folder mechanism (paging, the watch-grid chain, search, parking via
+   homeFolderId) works on these with no new branch.
+
+   Scope is the LIBRARY scope: the videos these folders hold are library records, and a
+   folder scoped anywhere else could never contain them. Siblings sharing a legacy
+   library therefore share the folders too — same as they already share the content. */
+
+export async function listCustomFolders(scopeId) {
+  const db = await openDb();
+  const store = db.transaction('customFolders').objectStore('customFolders');
+  const r = await preq(store.getAll(IDBKeyRange.bound([scopeId, ''], [scopeId, '￿'])));
+  return r || [];
+}
+
+export async function getCustomFolder(scopeId, folderId) {
+  const db = await openDb();
+  return (await preq(db.transaction('customFolders').objectStore('customFolders').get([scopeId, folderId]))) || null;
+}
+
+/** `updatedAt` is stamped HERE, never at the call sites — the v1.0.22 putLibraryChannel
+ *  lesson: drive.mergeCustomFolder resolves two devices by it, and a field nobody stamps
+ *  makes every comparison `0 > 0`, i.e. order-dependent, i.e. broken. */
+export async function putCustomFolder(rec, { preserveTimestamp = false } = {}) {
+  const base = preserveTimestamp && rec.updatedAt ? rec : { ...rec, updatedAt: Date.now() };
+  const out = Number.isFinite(Number(base.order)) ? base : { ...base, order: base.createdAt || 0 };
+  await tx(['customFolders'], 'readwrite', (s) => { s.put(out); });
+}
+
+const cfDelKey = (scopeId) => 'cfDel:' + scopeId;
+export async function getDeletedCustomFolders(scopeId) {
+  const raw = await getMeta(cfDelKey(scopeId));
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+export async function putDeletedCustomFolders(scopeId, map) {
+  await putMeta(cfDelKey(scopeId), map && typeof map === 'object' ? map : {});
+}
+
+/** TOMBSTONE FIRST (the chDel/siteDel rule): every Drive merge is a union, so absence
+ *  alone is re-added by any peer that has not pulled. `tombstone:false` is for
+ *  drive.applyRemoteDoc applying a peer's own tombstone. This deletes ONLY the folder
+ *  row — what happens to the videos inside is the caller's decision (app.deleteCustomFolder
+ *  asks the parent), because it is the difference between moving and destroying. */
+export async function deleteCustomFolder(scopeId, folderId, { tombstone = true, tombstoneAt } = {}) {
+  if (tombstone) {
+    const map = await getDeletedCustomFolders(scopeId);
+    const at = tombstoneAt || Date.now();
+    map[folderId] = Math.max(Number(map[folderId]) || 0, at);
+    await putDeletedCustomFolders(scopeId, map);
+  }
+  await tx(['customFolders'], 'readwrite', (s) => { s.delete([scopeId, folderId]); });
+}
+
+/** Re-home every record filed under `folderId` (live rows by folderId, parked rows by
+ *  homeFolderId — a pending video must land in the right place when it is approved).
+ *  Returns how many moved. Chunked through putVideos like every other bulk write. */
+export async function moveFolderVideos(scopeId, folderId, targetFolderId) {
+  const all = [...(await loadMergeIndex(scopeId)).values()];
+  const now = Date.now();
+  const out = [];
+  for (const rec of all) {
+    const parked = rec.folderId === '~pending' || rec.folderId === '~rejected';
+    const home = parked ? rec.homeFolderId : rec.folderId;
+    if (home !== folderId) continue;
+    out.push(parked
+      ? { ...rec, homeFolderId: targetFolderId, updatedAt: now }
+      : { ...rec, folderId: targetFolderId, homeFolderId: rec.homeFolderId ? targetFolderId : rec.homeFolderId, updatedAt: now });
+  }
+  if (out.length) await putVideos(out);
+  return out.length;
+}
+
 export async function deleteLibraryChannel(libraryId, channelId, { tombstone = true, tombstoneAt } = {}) {
   // TOMBSTONE FIRST: a crash between the two writes must leave the intent recorded, or
   // the interrupted deletion resurrects silently.
@@ -974,10 +1059,10 @@ export async function purgeProfile(profileId, scopes = null) {
     metaKeys.push(siteDelKey(s));
     if (!String(s).startsWith('lib:')) continue;
     metaKeys.push('sync:' + s + ':lastFullSyncAt', 'sheetMirrorAlert:' + s,
-      'sheetMirrorIgnoredSig:' + s, 'dedupe:' + s, chDelKey(s));
+      'sheetMirrorIgnoredSig:' + s, 'dedupe:' + s, chDelKey(s), cfDelKey(s));
   }
-  await tx(['videos', 'denylist', 'libraryChannels', 'siteEntries', 'profileVideoState', 'sources', 'meta', 'opLog'], 'readwrite',
-    (videos, deny, libCh, sites, pvs, sources, meta, ops) => {
+  await tx(['videos', 'denylist', 'libraryChannels', 'siteEntries', 'customFolders', 'profileVideoState', 'sources', 'meta', 'opLog'], 'readwrite',
+    (videos, deny, libCh, sites, cfs, pvs, sources, meta, ops) => {
       for (const s of list) {
         videos.delete(range(s));
         deny.delete(range(s));
@@ -985,6 +1070,7 @@ export async function purgeProfile(profileId, scopes = null) {
         // subscriptions are orphans the moment its videos are gone.
         libCh.delete(range(s));
         sites.delete(range(s));
+        cfs.delete(range(s)); // v1.0.56 — same reason: folders of a library that is gone
       }
       for (const k of metaKeys) meta.delete(k);
       pvs.delete(IDBKeyRange.bound([profileId, ''], [profileId, '￿']));

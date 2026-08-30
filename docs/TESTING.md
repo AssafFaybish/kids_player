@@ -334,3 +334,20 @@ Release notes are parent-facing Hebrew and get de-noised by `update.extractRelea
 ```bash
 node -e "import('./www/js/update.js').then(m=>console.log(m.extractReleaseNotes(require('fs').readFileSync('/tmp/notes.txt','utf8')).join('\n')))"
 ```
+
+### Custom folders (v1.0.56 — the browser proves the flow; these need a device or two)
+- [ ] **The v2→v3 database upgrade on a REAL install**: update over an existing app (never a
+      debug build over the release one) → the app opens, the library is intact. *(An
+      unguarded `createObjectStore` aborts the version-change transaction and the app cannot
+      open its database at all — a bricked install, not a bug.)*
+- [ ] **A folder made on one device appears on the other** (needs two devices, one account):
+      create a folder + file a video into it on the phone → the tablet shows the folder after
+      its next pull. The PICTURE will show as an emoji there until that device fetches it
+      itself — `artThumbId` names a local blob and deliberately never travels.
+- [ ] **A folder deleted on one device stays deleted on the other** — the tombstone, not
+      absence, is what carries it (every Drive merge is a union).
+- [ ] **The image search on a real tablet**: create a folder with a Hebrew name → candidates
+      appear and the chosen one renders offline afterwards (it is stored as bytes). No
+      network → no candidates and the emoji row still works.
+- [ ] TV: the picker's rows, the create form and the emoji row are all reachable with the
+      D-pad (they are real `<button>`s), and the folder tile shows its focus ring.

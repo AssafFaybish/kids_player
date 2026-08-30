@@ -888,8 +888,10 @@ html.tv .tile:active, html.tv button:active { transform: none; }
    view that uses .wn-wrap — the wrap is a fixed-width flex column, so without it the
    generic `.view.active { display: block }` leaves it pinned to the RTL right edge
    (measured: 560px wide at left:720 of a 1280 viewport). */
-#view-whatsnew, #view-pick { min-height: 100dvh; }
-#view-whatsnew.active, #view-pick.active { display: flex; align-items: center; justify-content: center; }
+/* v1.0.56: #view-folderpick is the third user of this skeleton, and it hit the exact bug
+   this comment warns about — measured in the browser, pinned to the right edge. */
+#view-whatsnew, #view-pick, #view-folderpick { min-height: 100dvh; }
+#view-whatsnew.active, #view-pick.active, #view-folderpick.active { display: flex; align-items: center; justify-content: center; }
 .wn-wrap {
   display: flex; flex-direction: column; gap: 12px;
   width: min(94vw, 560px); max-height: 92dvh;
@@ -1240,3 +1242,37 @@ html.tv .tile:active, html.tv button:active { transform: none; }
   background: #fff; overflow: hidden;
 }
 .li-site-icon img { width: 100%; height: 100%; object-fit: contain; }
+
+/* v1.0.56 — the destination picker (which folder should this video go to?) and the
+   inline create form. Rows are real <button>s so the TV remote reaches every one. */
+.fp-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  background: #fff; border: 2px solid transparent; border-radius: 14px;
+  padding: 10px 12px; margin-bottom: 8px; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(45, 42, 74, 0.08);
+  font: inherit; text-align: start; color: inherit;
+}
+.fp-row.is-sel { border-color: var(--brand); }
+.fp-row .fp-ico {
+  width: 46px; height: 46px; border-radius: 12px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; background: #efedfb; overflow: hidden;
+}
+.fp-row .fp-ico img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fp-row .fp-name { font-weight: 700; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.fp-row .fp-count { font-size: 12px; color: var(--muted); flex: 0 0 auto; }
+
+.fp-create { margin-top: 10px; padding: 12px; background: #fff; border-radius: 14px; }
+.field-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.fp-art-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 14px; font-size: 13px; color: var(--muted);
+}
+.fp-art-row, .fp-emoji-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.fp-art, .fp-emoji {
+  width: 64px; height: 64px; border-radius: 12px; border: 3px solid transparent;
+  background: #efedfb; cursor: pointer; padding: 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; font-size: 28px;
+}
+.fp-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fp-art.is-sel, .fp-emoji.is-sel { border-color: var(--brand); }

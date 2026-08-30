@@ -17,12 +17,15 @@ import { sortKeyFor } from './order.js';
 // plan/sync2/drive tier — importing the deny LWW merge from drive.js creates no cycle
 // (drive.js never imports this module; the invariants cycle test pins the graph).
 // Replicating the rule here instead would be the drift CLAUDE.md bans.
-import { mergeDenyRecord, mergeSiteEntry, planSiteApply } from './drive.js';
+import { mergeDenyRecord, mergeSiteEntry, planSiteApply, mergeCustomFolder, planCustomFolderApply } from './drive.js';
 import { canonicalSitePrefix, ruleIdFor, shortcutIdFor } from './weblock.js';
+import { isCustomFolder as isCustomFolderId, normalizeFolderTitle } from './plan.js';
 import {
   openDb, getSources, putSources, loadMergeIndex, putVideos,
   listLibraryChannels, putLibraryChannel, getChannel, putChannel,
   listSiteEntries, putSiteEntry, deleteSiteEntry,
+  listCustomFolders, putCustomFolder, deleteCustomFolder,
+  getDeletedCustomFolders, putDeletedCustomFolders,
   getDeletedSiteEntries, putDeletedSiteEntries,
   loadDenyRecords, tx, profScope, putVideoStates
 } from './db.js';
@@ -78,11 +81,17 @@ export async function exportProfileSnapshot(profileId, profileMeta = null) {
   const pScope = profScope(profileId);
   const siteEntries = await listSiteEntries(pScope);
   const deletedSiteEntries = await getDeletedSiteEntries(pScope);
+  // v1.0.56 — the parent's folders, with their tombstones for the same reason. Without
+  // them a restore puts every video back under a `cf:` folder whose NAME is gone: the
+  // child's home would show nothing for them (buildFolders renders only folders it has a
+  // row for) while the records sat in the database — the v1.0.38 empty-home shape.
+  const customFolders = lib ? await listCustomFolders(lib) : [];
+  const deletedCustomFolders = lib ? await getDeletedCustomFolders(lib) : {};
 
   return JSON.stringify({
     schema: 2, kind: 'kids-player-snapshot', exportedAt: Date.now(),
     profile: profileMeta, profileId, sources, videos, denylist, channels, libraryChannels, states,
-    siteEntries, deletedSiteEntries
+    siteEntries, deletedSiteEntries, customFolders, deletedCustomFolders
   });
 }
 
@@ -363,6 +372,46 @@ export async function importProfileSnapshot(profileId, text) {
       for (const e of plan.puts) {
         // LWW against what is already here, so an older snapshot cannot undo a newer edit.
         await putSiteEntry(mergeSiteEntry(byId.get(e.entryId), e), { preserveTimestamp: true });
+      }
+    }
+  }
+
+  // v1.0.56 — the parent's folders, through the same merge-never-blind-put treatment as
+  // the sites above, on the LIBRARY scope (that is where they live, because that is where
+  // the videos filed into them live). Titles are re-sanitized like every other imported
+  // string; `artThumbId` is DROPPED — it names a blob in the exporting device's thumbs
+  // store, which does not travel, and a dangling id renders nothing. artSrcUrl survives
+  // so a later render can re-fetch the picture.
+  {
+    // `lib` is the library scope resolved at the top of this function
+    const snapRows = [];
+    for (const row of Array.isArray(snap.customFolders) ? snap.customFolders : []) {
+      if (!row || typeof row.folderId !== 'string' || !isCustomFolderId(row.folderId)) continue;
+      const title = normalizeFolderTitle(row.title);
+      if (!title) continue;
+      snapRows.push({
+        scopeId: lib, folderId: row.folderId, title,
+        emoji: typeof row.emoji === 'string' ? row.emoji.slice(0, 8) : '📁',
+        artThumbId: null,
+        artSrcUrl: typeof row.artSrcUrl === 'string' && /^https:/.test(row.artSrcUrl) ? row.artSrcUrl : null,
+        order: Number.isFinite(Number(row.order)) ? Number(row.order) : 0,
+        createdAt: Number.isFinite(Number(row.createdAt)) ? Number(row.createdAt) : Date.now(),
+        updatedAt: Number.isFinite(Number(row.updatedAt)) ? Number(row.updatedAt) : 0
+      });
+    }
+    const remoteTombs = (snap.deletedCustomFolders && typeof snap.deletedCustomFolders === 'object'
+      && !Array.isArray(snap.deletedCustomFolders)) ? snap.deletedCustomFolders : {};
+    if (lib && (snapRows.length || Object.keys(remoteTombs).length)) {
+      const localRows = await listCustomFolders(lib);
+      const plan = planCustomFolderApply({
+        localRows, remoteRows: snapRows,
+        localTombs: await getDeletedCustomFolders(lib), remoteTombs
+      });
+      await putDeletedCustomFolders(lib, plan.tombs);
+      for (const fid of plan.deletes) await deleteCustomFolder(lib, fid, { tombstone: false });
+      const byId = new Map(localRows.map((r) => [r.folderId, r]));
+      for (const e of plan.puts) {
+        await putCustomFolder(mergeCustomFolder(byId.get(e.folderId), e), { preserveTimestamp: true });
       }
     }
   }

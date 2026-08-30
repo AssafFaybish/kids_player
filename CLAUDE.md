@@ -273,6 +273,72 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.56 — **THE PARENT CAN MAKE FOLDERS** (user request: until now every single video
+  landed in the one fixed "סרטונים נוספים" list; now each manual add ASKS where it goes,
+  and a folder can be created on the spot).
+  - **THE FOLDER ROW IS METADATA; MEMBERSHIP IS THE VIDEO'S OWN `folderId`** (`cf:<id>`).
+    That one decision is why nothing else needed a new branch: `by_folder_sort` ranges over
+    it, `db.pageFolder` pages it, `pageAnyFolder`/`nextAfter` fall through to their default
+    branch exactly as `pl:` does (invariant-pinned: a `cf:` case appearing in either is a
+    REGRESSION), parking via `homeFolderId` works, and the watch-grid chain follows it.
+  - **THE DEFAULT IS ALWAYS FIRST AND ALWAYS 'sheet'** (`plan.folderPickOptions`): a parent
+    who taps the top button gets exactly the behaviour every earlier version had. Asked on
+    the three paths where the parent is STANDING THERE — paste, YouTube search, a single
+    Drive file — and only AFTER every refusal (duplicate, deny-tombstone) has passed, so
+    nobody picks a folder for a video that is not going to be added. **Backing out CANCELS
+    the add**: it is a question, and no answer is not "the default".
+  - **`nav.register('folderpick')`'s `onLeave` is what resolves the awaiting add** — every
+    exit (button, hardware back, a navigation from elsewhere) settles it exactly once, or
+    the caller hangs forever holding a half-finished add (the v1.0.23 chooseShareProfile
+    lesson). Guard-pinned.
+  - **DELETING A FOLDER ASKS ABOUT ITS VIDEOS, AND THE DEFAULT MOVES THEM.** `planOrphanGC`
+    never touches a record with no `channelId` — i.e. every manual single — so a folder
+    deleted without re-homing its contents leaves them filed under a folder that no longer
+    exists: invisible on every screen, forever, and NOT cleaned up by anything. The purge
+    answer writes **tombstones** (`deleteVideosWithTombstones`), because a raw delete is
+    pure absence and every Drive merge is a union (the v1.0.39 rule).
+  - **The convergence trio is copied line-for-line from `siteEntries`** (`mergeCustomFolder`
+    / `mergeDeletedCustomFolders` / `customFolderOutlivesTombstone` / `planCustomFolderApply`),
+    tombstone written FIRST, `preserveTimestamp` on apply, **both `buildLocalDoc` branches
+    carrying the keys present-and-empty** (the v1.0.45 measurement: an absent key reads as
+    "unknown", not "none"), and `purgeProfile` taking `cfDel:` with it. A second pattern here
+    would be a second set of bugs.
+  - **THE PICTURE IS SEARCHED, THE PARENT CHOOSES, AND THE BYTES ARE CACHED**
+    ([folderart.js](www/js/folderart.js), user decision 2026-08-29). An arbitrary image
+    search on a 5-year-old's tablet cannot be made safe by a query parameter, so the module
+    may only PROPOSE — an invariant bans it from writing anything, and it imports platform
+    alone. **Provider order is a MEASUREMENT, not a preference** (2026-08-29, live): Wikimedia
+    Commons resolves the CONCEPT across languages ("דינוזאורים" → Dinosaur-plateau / Pinata /
+    cake), while Openverse matched only Hebrew METADATA ("דינוזאורים" → Israeli archive photos
+    of Haifa; "מכוניות" → naive paintings of Luna Park). Re-measure before reordering. The
+    chosen image is stored as BYTES in the thumbs store (`cfart:<folderId>`) — the v1.0.32
+    logo lesson: a stored URL 404s on a rebrand, needs the network on every render, and
+    cannot work offline. `artThumbId` never travels (it names a local blob); a peer's folder
+    shows its emoji until this device fetches the picture itself.
+  - **`groupLibraryByFolder` gives an UNKNOWN `cf:` folder its own section**, never folding
+    it into "סרטונים נוספים": a peer's folder whose metadata has not synced yet would
+    otherwise tell the parent those videos live somewhere they do not, and the section would
+    disagree with the child's home.
+  - **A `📁` "move to folder" button on the parent's library rows** is the door for content
+    that did NOT arrive through the add form (a share from YouTube, a links-file import, a
+    pre-v1.0.56 library). Offered ONLY for loose/custom-folder records — a channel's video
+    cannot be filed by hand, because the sync owns `ch:<id>` membership and would put it
+    straight back.
+  - ⚠️ **`DB_VERSION` 2 → 3.** Every `createObjectStore` sits inside its `if (from < N)`
+    guard, and the invariants test now walks each guard's REAL BRACE RANGE rather than a
+    fixed look-behind window (the `from < 1` block alone creates nine stores, so the first
+    version of that guard failed on correct code). Verified in the browser on a real v2
+    database: it opens at v3 with 11 stores and no `ConstraintError`.
+  - The links file deliberately does NOT carry folder assignment (no second grammar, no
+    second parser — the v1.0.38 promise); it travels in the Drive doc and the snapshot.
+  - **CENTERING: `#view-folderpick` is the third user of the `.wn-wrap` skeleton and hit the
+    exact bug its comment warns about** — measured pinned to the RTL right edge, fixed, and
+    re-measured centered (353px both sides).
+  - 12 unit tests + 3 invariants tests; browser-verified end to end through the real PIN gate:
+    the v2→v3 upgrade, a folder created from a live Hebrew image search (6 relevant
+    candidates, 34KB cached), the video filed into it, the tile + header art + search all
+    finding it, and a delete that MOVED the video instead of orphaning it.
+
 - v1.0.56 — **AUDIO (mp3) IS CONTENT, AND A DRIVE FILE KNOWS ITS OWN NAME** (user request:
   add a Drive link to an audio or video file and it reaches the child). Half of this
   already existed and was quietly poor: `classifyLink` has accepted Drive links since the
