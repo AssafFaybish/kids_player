@@ -229,6 +229,24 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Nested Drive folders (v1.0.58 — the browser proved the walk against the real folder;
+### these need a device, a second account, or both)
+- [ ] **The reported folder on a DEVICE**: paste a Drive folder of folders → one app folder
+      per subfolder, named as in Drive, and the songs play. *(The browser proves the import;
+      only a device proves the CapacitorHttp transport reads the same pages.)*
+- [ ] **An unwidened / keyless build**: the same paste must still work through the public
+      page. This is the door most families are on, and the one the "empty folder" bug hid.
+- [ ] **A folder that is genuinely empty** still says "התיקיה ריקה", and an UNSHARED folder
+      says to check the sharing — the two must never swap.
+- [ ] **A subfolder shared differently from its parent** (open the parent, restrict one
+      child) → the import must report "חלק מתת-התיקיות לא נקראו", keep the folders it could
+      read, and delete nothing.
+- [ ] **Add a song to a disc in Drive**, wait for the refresh (30 min) or reopen the home →
+      it arrives in that folder. **Add a whole new disc folder** → a new tile appears.
+- [ ] **Delete the ROOT folder in the app** → the discs stay and keep refreshing themselves.
+- [ ] Watch the mobile-data cost of one refresh on a 33-folder tree: it must be ONE walk
+      (~33 listings), not 33 walks.
+
 ### Swipe paging (v1.0.57 — the browser proved the decision and the wiring; these are the
 ### parts only a real finger on a real panel can answer)
 - [ ] **A flick turns the page in all three grids**: home, a folder, and the grid under the

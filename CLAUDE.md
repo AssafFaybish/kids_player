@@ -273,6 +273,68 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.58 — **A DRIVE FOLDER MAY CONTAIN FOLDERS OF SONGS** (user request), **and the
+  "התיקיה ריקה" it used to answer was never about an empty folder** (same report).
+  - ⚠️ **THE BUG FIRST, because it is the one that lied.** A folder of 28 mp3s answered
+    "התיקיה ריקה". Measured against the reported folders before changing anything: the link
+    parsing, BOTH network doors, the HTML parser and the media classifier were all correct,
+    and four user-agents (Dalvik included) get the identical page — so it was **NOT** the
+    v1.0.32 mobile-page trap. The defect is in `fetchDriveFolder`: **`files.list` answers
+    200 with an EMPTY LIST — not an error — when the API key may not see into a folder
+    shared "anyone with the link"**, and the keyed branch returned that as
+    `{ok:true, files:[]}` from inside its own pagination loop. So the app reported an empty
+    folder and **never tried the public page that CAN read it**. The interpretSheetResponse
+    doctrine one level deeper: **emptiness may only be reported by a door that actually saw
+    the contents** — the keyed branch now returns only when it read something, and an empty
+    answer falls through. Pinned by shape (exactly one keyed return, gated on `out.length`,
+    keyless door after it) and proven against a simulated empty keyed answer.
+  - **A SUBFOLDER IS TOLD BY ITS LINK, NEVER BY ITS ICON.** The keyless page gives a folder
+    row `<a href=".../drive/folders/<id>">` and **no `/type/<mime>` icon at all**, so the
+    icon-only reading answered `mimeType: null` for every subfolder — which is why the
+    parser's own header comment claiming folders were "skipped here" had never been true.
+    The rule is now the same one `classify.driveFolderId` uses for a pasted link: the two id
+    spaces are identical and only the URL shape separates them. `DRIVE_FOLDER_MIME` /
+    `isDriveFolderEntry` are the single name for it (invariant-banned elsewhere).
+  - **THE TREE IS FLATTENED INTO A LIST OF ORDINARY CUSTOM FOLDERS — one per Drive
+    subfolder that holds media** (user decision 2026-08-30). The app has no
+    folder-inside-a-folder screen and deliberately gains none: each row is a plain `cf:`
+    folder carrying its own `driveFolderId`, so paging, search, the watch-grid chain,
+    deletion-with-tombstones and the Drive sync all keep working with **no new branch
+    anywhere** (invariant-pinned on `pageAnyFolder` and `nextAfter`).
+  - **THE ROOT ALWAYS GETS A ROW, EVEN WITH NO MEDIA OF ITS OWN.** It holds nothing, so the
+    child never sees it (0 videos = hidden, the v1.0.21 rule) — but it is what **ANCHORS THE
+    REFRESH**, and the user asked for a disc added in Drive later to arrive on its own.
+    Without that row nothing would ever re-walk the tree.
+  - **THE REFRESH WALKS ROOTS ONLY.** Every folder of a tree carries its own
+    `driveFolderId`, and the root's walk already re-lists all of them — so refreshing the
+    descendants too would list a 33-folder tree **33 times over, every half hour**, on a
+    family's mobile data. A descendant whose root row the parent DELETED refreshes itself
+    again, or the remaining folders would silently stop updating.
+  - **BREADTH-FIRST, and that is not a style choice**: the caps cut the walk off, and a
+    depth-first walk would spend them on one deep branch while the parent's top-level discs
+    went missing. An unreadable **ROOT** aborts (check the sharing); an unreadable **CHILD**
+    sets `partial` and the walk carries on — the import is ADDITIVE, so what we could read
+    is still worth having. Both facts are said out loud (the v1.0.37 rule), as is a walk cut
+    short by a cap.
+  - ⚠️ **A GUARD IS A THING THAT CAN BREAK, so the walk is bounded by LISTINGS PERFORMED as
+    well.** Planting the removal of the `seen` cycle guard did not turn a test red — it made
+    the walk **run forever**, because a Drive shortcut pointing at an ancestor re-queues an
+    id that never grows `seen`, so the folder cap is never reached. A frozen app on a
+    family's tablet is far worse than importing less than the folder holds; the loop now
+    counts listings, so the worst a broken identity check can do is truncate.
+  - Identity is the `driveFolderId`, never the title: a folder the PARENT renamed keeps its
+    name across every refresh instead of being duplicated under the Drive name. Two discs
+    that genuinely share a name get " (2)" (`plan.uniqueFolderTitle`, deterministic so a
+    re-import lands on the same title instead of drifting a suffix upward).
+  - Files route through the SAME `planDriveFolderImport` the flat import uses, so "which
+    files are media / already here / removed before" keeps exactly one answer.
+  - 11 unit tests + 1 invariants test (5 wiring halves), every guard proven red on a planted
+    regression (15 — one of which is what exposed the infinite walk). Verified against the
+    REAL reported folder through the real add form: **751 files in 32 folders in ~8s**, the
+    root row hidden at 0, natural song order, 🎵 badges; the reported "flat" folder alone →
+    28 files; and then the tree ON TOP of it reusing that row instead of duplicating it
+    (723 new + 28 existing = 751).
+
 - v1.0.57 — **A PAGE OF TILES TURNS WITH A FINGER** (user request: keep the blue arrows,
   and also swipe left/right on the app screen).
   - **THE ARROWS STAY, and that is not politeness**: a TV remote produces NO pointer
