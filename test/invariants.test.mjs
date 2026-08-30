@@ -322,6 +322,14 @@ test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
   assert.match(CODE.get('www/js/gdrivepub.js'), /ok: false, files: \[\]/,
     'fetchDriveFolder collapsed "could not read" into "nothing there"');
 
+  // the KEYED branch must still name the folder: files.list answers children only, and a
+  // folder titled by the generic fallback breaks the user's requirement that the app's
+  // folder carries the DRIVE folder's name (regression activated the day the operator
+  // widened the API key, which is exactly when the keyed branch started running).
+  const fetchFolder = fnSlice(CODE.get('www/js/gdrivepub.js'), 'export async function fetchDriveFolder(');
+  assert.equal((fetchFolder.match(/keyedFolderName\(/g) || []).length, 2,
+    'the keyed folder path no longer resolves the folder name on both of its returns');
+
   // the zero must NAME its cause (the v1.0.37 rule) — four different facts, four sentences
   assert.match(plan, /export function driveFolderOutcome\(/, 'the outcome text is no longer pure');
   assert.match(imp, /driveFolderOutcome\(/, 'the importer hand-rolls its own message');

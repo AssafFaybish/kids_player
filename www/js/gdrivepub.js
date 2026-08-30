@@ -15,10 +15,13 @@
 //  - Parsers are TOTAL (the v1.0.33 rule): any unrecognized/error/HTML answer is null,
 //    never a throw and never a fabricated name.
 //
-// NOTE for operators: the shared API key must have the Google Drive API enabled in its
-// API restrictions (it used to be YouTube-only) — see GOOGLE_CLOUD_SETUP.md. A key still
-// restricted to YouTube answers 403 here, which reads as "no meta" and falls back to the
-// scrape: degraded, never broken.
+// NOTE for operators: the shared API key must list the Google Drive API in its own API
+// restrictions — see GOOGLE_CLOUD_SETUP.md שלב 5. Done on the project key 2026-08-30 and
+// verified live (files.get on a bogus id answers 404 "File not found" rather than 403
+// API_KEY_SERVICE_BLOCKED, and files.list returns real children). A key that is NOT
+// widened still works: it answers 403, one refusal sets the session memo, and everything
+// falls through to the public-page scrape — degraded, never broken. Keyless builds
+// (keys.local.js is gitignored) live on that same path permanently.
 
 import { httpGetJson, httpGetText } from './platform.js';
 import { defaultYtApiKey } from './keys.js';
@@ -93,11 +96,22 @@ export function extractDriveFileMetaFromHtml(html) {
 }
 
 /* ---------------- folders ----------------
-   A parent can share a whole folder of songs/videos. Two doors, and the KEYLESS one is
-   the load-bearing one: `files.list` (and `files.get`) answer 403 API_KEY_SERVICE_BLOCKED
-   unless the shared key has the Drive API in its own API restrictions — measured live
-   2026-08-29 against the real key, which is still YouTube-only. So the embedded folder
-   view is what actually works today, and the keyed path is the upgrade. */
+   A parent can share a whole folder of songs/videos. TWO DOORS, and which one runs depends
+   on the shipped key's own API restrictions:
+     - KEYED (`files.list`): live since the project key was widened to include the Drive
+       API (2026-08-30, verified: 200 with real children, sizes included, ~650ms). It
+       paginates, so a folder of hundreds of files works.
+     - KEYLESS (`embeddedfolderview`): the fallback, and the ONLY path for a build with no
+       key at all. Measured to carry more than expected — the page <title> is the folder's
+       own name and each row's icon URL carries the real mimeType.
+   ⚠ `files.list` answers the CHILDREN only — never the folder's name — so the keyed path
+   fetches that separately (keyedFolderName). Without it a folder imported through the API
+   would lose the name the parent gave it in Drive. */
+
+/** The FOLDER's own metadata — `files.list` answers children only, never the folder name. */
+export function folderMetaUrl(folderId, key) {
+  return `${PUB_API}/files/${folderId}?fields=name,mimeType&key=${encodeURIComponent(key)}`;
+}
 
 export function folderListUrl(folderId, key, pageToken = '') {
   const q = `'${folderId}' in parents and trashed=false`;
@@ -198,11 +212,9 @@ export async function fetchDriveFolder(folderId) {
         if (!got) { noteDriveKeyRefused(); out.length = 0; break; } // blocked/changed shape
         out.push(...got.files);
         token = got.nextPageToken;
-        // the keyed listing carries no folder NAME (files.list answers children only), so
-        // the caller falls back to its own default — see importDriveFolder
-        if (!token) return { ok: true, files: out, name: '' };
+        if (!token) return { ok: true, files: out, name: await keyedFolderName(id, key) };
       }
-      if (out.length) return { ok: true, files: out, name: '' };
+      if (out.length) return { ok: true, files: out, name: await keyedFolderName(id, key) };
     } catch { noteDriveKeyRefused(); /* fall through to the keyless door */ }
   }
   try {
@@ -213,6 +225,20 @@ export async function fetchDriveFolder(folderId) {
   } catch {
     return { ok: false, files: [], name: '', error: 'network' };
   }
+}
+
+/**
+ * The folder's OWN name on the keyed path. `files.list` answers the children and nothing
+ * else, so without this a folder imported through the API would be titled by the caller's
+ * generic fallback instead of what the parent named it in Drive — the user's requirement
+ * is that the app's folder carries the DRIVE folder's name. Best-effort: a failure here
+ * degrades to that same fallback and never costs the listing.
+ */
+async function keyedFolderName(folderId, key) {
+  try {
+    const meta = interpretDriveFileMeta(await httpGetJson(folderMetaUrl(folderId, key)));
+    return meta && meta.name ? meta.name : '';
+  } catch { return ''; }
 }
 
 /**

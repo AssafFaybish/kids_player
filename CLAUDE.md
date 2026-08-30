@@ -336,14 +336,22 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     An unreadable listing **ABORTS and says so**; treating it as an empty folder is the
     exact shape that deleted families' libraries in the sheet era. Guard-pinned: the
     importer may not call ANY delete.
-  - ⚠️ **THE KEYLESS DOOR IS THE LOAD-BEARING ONE, and that is a MEASUREMENT.** Both
-    `files.list` and `files.get` answer `403 API_KEY_SERVICE_BLOCKED` with the shipped key,
-    because it is restricted to YouTube — `reason: API_KEY_SERVICE_BLOCKED` says this is
-    the KEY's own restriction (operator-fixable, GOOGLE_CLOUD_SETUP שלב 5), not a
-    Google-wide block. So `embeddedfolderview` is what works today, and one refusal sets a
-    SESSION memo (`noteDriveKeyRefused`) so later folders skip the dead keyed attempt
-    instead of walking the whole transport ladder again — found by watching a real add
-    crawl in the browser, not by reasoning.
+  - ⚠️ **WHICH DOOR RUNS IS AN OPERATOR SETTING, and both are measured.** On 2026-08-29
+    both `files.list` and `files.get` answered `403 API_KEY_SERVICE_BLOCKED` — the KEY's own
+    restriction (it was YouTube-only), not a Google-wide block, which is what
+    `reason: API_KEY_SERVICE_BLOCKED` distinguishes. The project key was widened on
+    2026-08-30 and re-measured: `files.get` on a bogus id now answers 404 "File not found"
+    and `files.list` returns real children with sizes in ~650ms, so the KEYED path is live
+    and paginates. A key that is not widened, and every keyless build, still work through
+    `embeddedfolderview`; one refusal sets a SESSION memo (`noteDriveKeyRefused`) so later
+    folders skip the dead keyed attempt instead of walking the whole transport ladder again
+    — found by watching a real add crawl in the browser, not by reasoning.
+  - ⚠️ **`files.list` ANSWERS THE CHILDREN ONLY — NEVER THE FOLDER'S NAME.** The keyed path
+    therefore fetches it separately (`keyedFolderName` → `files.get` on the FOLDER id,
+    which answers a folder exactly like a file). Widening the key ACTIVATED this gap: until
+    then only the scrape ran, and its `<title>` carried the name for free. Without the extra
+    call every API-imported folder would have been titled by the generic fallback instead of
+    what the parent named it in Drive — the user's explicit requirement. Count-pinned.
   - **THE PUBLIC PAGE GIVES MORE THAN EXPECTED**: its `<title>` IS the folder's own name
     (the tile has no other keyless source for it), and each row's icon URL carries the real
     `mimeType`, so audio-vs-video needs no filename guessing. **Parsed PER ENTRY BLOCK** —
