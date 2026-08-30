@@ -3589,3 +3589,45 @@ test('v1.0.58 REVIEW: three defects that reached main, each now pinned', () => {
   assert.match(fnSlice(app, 'async function openFolderArtEditor('), /fpEmojiPicked = false/,
     'the flag survives from one folder to the next — the second edit would wipe a picture');
 });
+
+test('the "how to sync this channel" button always ASKS, and saves both fields (v1.0.61)', () => {
+  const app = CODE.get('www/js/app.js');
+  const fn = fnSlice(app, 'async function decideNewChannel(');
+
+  // 1) IT NO LONGER DELEGATES TO THE BACKLOG DIALOG. `offerChannelApproval` returns before
+  //    opening anything when the queue is empty (six states reach that), and this function
+  //    used to read `count === 0` as "the tap was the review" — stamping decidedAt, hiding
+  //    the row, and leaving the channel on manual forever. That was the field report.
+  assert.doesNotMatch(fn, /offerChannelApproval\(/,
+    'the fresh-channel button asks about the BACKLOG again — an empty queue opens no dialog');
+  assert.doesNotMatch(fn, /res\.count === 0/, 'the silent decide-without-asking branch is back');
+  assert.match(fn, /channelSyncModeDialog\(/, 'the button no longer asks the subscription mode');
+  assert.match(fn, /askKid\(/, 'the button decides without a dialog');
+
+  // 2) THE ANSWER WRITES BOTH FIELDS. `autoApprove` IS the ✅ in the channel list and the
+  //    actual sync mode; `decidedAt` is only what clears the row out of "ערוצים חדשים".
+  //    Writing the second without the first is precisely how the row vanished while
+  //    nothing was decided.
+  assert.match(fn, /autoApprove: auto/, 'the chosen mode is never saved');
+  assert.match(fn, /decidedAt: row\.decidedAt \|\| Date\.now\(\)/, 'the row will not leave "ערוצים חדשים"');
+  assert.match(fn, /autoApproveSource: 'ui'/, 'the decision loses its provenance');
+
+  // 3) A NULL LIBRARY SCOPE MUST NOT DECIDE ANYTHING. It is one of the six ways the old
+  //    flow reached an empty queue, and an invariant already exists about it elsewhere.
+  assert.match(fn, /if \(!scope\)/, 'a null library scope silently decides again');
+  const scopeAt = fn.indexOf('if (!scope)');
+  assert.ok(scopeAt >= 0 && scopeAt < fn.indexOf('askKid('), 'the scope check must precede the dialog');
+
+  // 4) CANCEL AND DISMISS WRITE NOTHING. `askKid` also answers 'dismiss' when another modal
+  //    is already open (modal.js refuses to stack), and that must leave the row where the
+  //    parent can find it — never a half-decision.
+  assert.match(fn, /if \(answer !== 'ok' && answer !== 'third'\) return;/,
+    'an accidental dismiss can now write a decision');
+  const guardAt = fn.indexOf("answer !== 'ok'");
+  assert.ok(guardAt >= 0 && guardAt < fn.indexOf('putLibraryChannel('),
+    'the write happens before the answer is validated');
+
+  // 5) The words live in plan.js, like every other dialog in this app.
+  assert.match(CODE.get('www/js/plan.js'), /export function channelSyncModeDialog\(/, 'the dialog text left plan.js');
+  assert.match(fn, /channelSyncModeOutcome\(/, 'the outcome toast is hand-rolled');
+});
