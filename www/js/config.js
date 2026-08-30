@@ -56,6 +56,13 @@ export const SWIPE_RATIO = 1.4;   // |dx| must beat |dy| by this much to be "hor
    gives a little and springs back, which says "there is nothing that way" without the screen
    reading as frozen. Its cap is a FRACTION of the width, not a pixel count, so a phone and a
    tablet feel the same. */
+/* v1.0.63 — how many videos of the current folder the notification's ⏮/⏭ can move
+   through. Bounded for the same reason the folder search is: a folder can hold hundreds of
+   songs, and the list is built while a child is standing there waiting for a video to
+   start. Past this the buttons simply stop at the end of what was loaded — a limit a child
+   reaches by pressing ⏭ two hundred times, which is not a case worth a second read. */
+export const BG_TRACK_MAX = 300;
+
 export const SWIPE_ARM_PX = 18;          // travel before the grid starts to move (> TAP_SLOP_PX)
 export const SWIPE_COMMIT_RATIO = 0.33;  // release past this fraction of the width ⇒ turn
 export const SWIPE_RUBBER = 0.35;        // resistance factor when there is no page that way

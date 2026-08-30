@@ -13,7 +13,7 @@ import { playItem, stop, playbackState, pauseCurrent, resumeCurrent } from './pl
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
-  setOrientation, httpGetBlob, audioMode } from './platform.js';
+  setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -23,13 +23,13 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
-  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL } from './config.js';
+  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_TRACK_MAX } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
-  fullscreenOrientation, planCallResume } from './playerlogic.js';
+  fullscreenOrientation, planCallResume, backgroundPlayDecision, backgroundSkipTarget } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -800,6 +800,12 @@ function swallowIdleGestureTail(e) {
 async function tickIdleSleep() {
   const pid = activeProfileId;
   if (!pid) return;
+  // v1.0.63 — SUSPENDED WHILE PLAYING IN THE BACKGROUND (the user's decision). "עדיין
+  // צופים?" exists for a child who fell asleep in front of a screen; with the screen off
+  // and a parent's setting saying "keep playing", nobody is meant to be looking, and there
+  // is nothing to show a prompt on. The counter is held at NOW rather than paused, so the
+  // full window starts again the moment the app comes back to the foreground.
+  if (bgPlayLive && document.hidden) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
   const afterMin = screenOffMinutes(
     await getSetting(pid, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN);
   const st = playbackState();
@@ -1538,6 +1544,10 @@ function registerViews() {
       // at a torn-down player. (planCallResume also answers 'disarm' for a missing watch
       // view — this is the same rule enforced at the door instead of on the next tick.)
       disarmCallResume();
+      // v1.0.63 — the notification belongs to the video on THIS screen. A control left on
+      // the lock screen for a video that no longer exists is a button that does nothing,
+      // and on a kiosk tablet it is a surface the child can reach for no reason at all.
+      disarmBackgroundPlayback().catch(() => {});
       stop();
       wake.releaseAll();
       currentWatch = null;
@@ -3312,6 +3322,83 @@ async function toggleFavourite() {
   renderWatchGrid(currentWatch);
 }
 
+/* ---------------- background playback (v1.0.63) ---------------- */
+
+// The ORDER THE CHILD IS LOOKING AT, as keys — what ⏮/⏭ on the notification moves through.
+// Built once when background playback arms, from `pageAnyFolder` (THE pagination entry
+// point), so the notification can never disagree with the grid under the player. The
+// autoplay chain's `nextAfter` walks FORWARD from a cursor and has no reverse; writing one
+// would be a second answer to "what is in this folder, in what order" (the v1.0.21 bug).
+let bgTrack = [];
+
+async function buildBackgroundTrack() {
+  bgTrack = [];
+  const scope = watchCtx.scope;
+  const fid = watchCtx.folderId;
+  if (!scope || !fid) return;
+  try {
+    const res = await pageAnyFolder(scope, fid, {
+      offset: 0, limit: BG_TRACK_MAX, recentSnapshot: watchCtx.recent || null
+    });
+    bgTrack = (res.items || []).map((r) => r && r.key).filter(Boolean);
+  } catch { bgTrack = []; }
+}
+
+/**
+ * Arm or refresh the foreground service for the video now playing.
+ *
+ * ⚠️ CALLED WHILE THE APP IS FOREGROUND. Since API 31 a backgrounded app may not start a
+ * foreground service at all, so this runs when an eligible video OPENS — not when the
+ * screen goes off, which is already too late.
+ */
+async function armBackgroundPlayback(item) {
+  const want = backgroundPlayDecision({ enabled: bgPlayEnabled, playing: true, item });
+  if (!want.play) { await disarmBackgroundPlayback(); return; }
+  await buildBackgroundTrack();
+  const ok = await startBackgroundPlayback(item.title || '', true);
+  bgPlayLive = !!ok;
+}
+
+async function disarmBackgroundPlayback() {
+  bgTrack = [];
+  if (!bgPlayLive) return;
+  bgPlayLive = false;
+  await stopBackgroundPlayback().catch(() => {});
+}
+
+/**
+ * A ⏮/⏯/⏭ tap on the notification. Every decision stays in JS — the service knows nothing
+ * about folders, gifts or the end of a list.
+ *
+ * The state is RE-READ after the awaits (the v1.0.57 call-resume rule): the parent can tap
+ * ⏭ seconds after the child left the video, a scheduled break can have taken the screen,
+ * and starting a video then would be a surprise noise rather than a control.
+ */
+async function handlePlaybackCommand(action) {
+  if (!bgPlayEnabled || !currentWatch) return;
+  if (action === 'toggle') {
+    const st = playbackState();
+    if (!st) return;
+    if (st.playing) { pauseCurrent(); await startBackgroundPlayback(currentWatch.title || '', false); }
+    else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true); }
+    return;
+  }
+  if (action !== 'next' && action !== 'prev') return;
+  const key = backgroundSkipTarget({
+    keys: bgTrack, currentKey: currentWatch.key, dir: action,
+    // a wrapped gift is SKIPPED, never opened: its ritual is the first tap unwrapping it
+    // (v1.0.25), and playing it from a notification would consume the video while leaving
+    // the tile wrapped forever
+    isGift: (k) => { const st = giftStates.get(k); return !!(st && st.giftRank && !st.unwrappedAt); }
+  });
+  if (!key) return;
+  const scopes = [libScope, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
+  const rec = await db.findLiveByKey(key, scopes).catch(() => null);
+  if (!rec) return;
+  if (!nav.isActive('watch') || !currentWatch) return;   // re-checked AFTER the awaits
+  await openWatch(rec);
+}
+
 async function openWatch(item) {
   // v1.0.32: switching video→video — bank the OLD video's stop point BEFORE playItem
   // reuses or tears down the player (the clock goes with it).
@@ -3366,6 +3453,11 @@ async function openWatch(item) {
   setWatchChannel(item); // v1.0.53 — the fullscreen overlay's channel line
   paintFavButton(item.key); // v1.0.40 — ⭐ on/off for THIS video
   renderWatchGrid(item);
+  // v1.0.63 — arm (or tear down) the background service for THIS video, HERE, while the app
+  // is provably foreground: API 31+ forbids starting a foreground service from the
+  // background, so waiting for the screen to go off would be too late. A YouTube video, or
+  // the setting being off, disarms instead — the notification must never outlive its video.
+  armBackgroundPlayback(item).catch(() => {});
 
   // v1.0.32: resume — the pure decision; 0 whenever the setting is off, nothing usable
   // is stored, or the stored stop is inside the tail. giftStates mirrors the whole
@@ -8527,6 +8619,11 @@ async function init() {
     // bridge call.
     if (st && st.playing) checkCallResume().catch(() => {});
   });
+
+  // v1.0.63 — ⏮/⏯/⏭ on the notification. Registered once, at boot, like every other native
+  // listener: a command retained natively while the WebView was frozen is delivered as soon
+  // as it thaws, so nothing is lost with the screen off.
+  onPlaybackCommand((action) => { handlePlaybackCommand(action).catch(() => {}); });
 
   // v1.0.34 idle screen-off: every touch and every remote key is "someone is here".
   // CAPTURE phase, so a handler that stops propagation cannot hide input from the
