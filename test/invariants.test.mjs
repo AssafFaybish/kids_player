@@ -32,6 +32,28 @@ const MODULES = new Map(FILES.map((p) => [rel(p), src(p)]));
 const stripComments = (b) => b.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 const CODE = new Map([...MODULES].map(([k, v]) => [k, stripComments(v)]));
 
+/**
+ * v1.0.63 — the body of `onAppPause(() => { … })`, extracted by BALANCING BRACES.
+ *
+ * ⚠️ Both guards over this handler used a non-greedy `([\s\S]*?)\}\);`, which ends at the
+ * first `});` in the body — so the moment the handler called anything with an object
+ * literal (`f({ … })`) the extracted body was truncated and the guards reported the
+ * handler had "stopped pausing the player". A guard that breaks on correct code is worse
+ * than no guard: it trains you to edit the test until it passes.
+ */
+function appPauseBody(app) {
+  const at = app.indexOf('onAppPause(() => {');
+  if (at < 0) return null;
+  let i = app.indexOf('{', at);
+  const start = i + 1;
+  let depth = 0;
+  for (; i < app.length; i++) {
+    if (app[i] === '{') depth++;
+    else if (app[i] === '}') { depth--; if (!depth) return app.slice(start, i); }
+  }
+  return null;
+}
+
 /** Anchored function-body slice (v1.0.55). Asserts the anchor still exists, so a rename
  *  fails as "lost the anchor — re-anchor this guard" instead of as a phantom regression
  *  (an unchecked indexOf answers -1, slice(-1) yields one character, and the guard's
@@ -1419,8 +1441,9 @@ test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists an
   // listener a playing video kept its soundtrack running behind a dark screen. Proven to
   // fail on a planted regression (listener removed / a half dropped).
   const app = MODULES.get('www/js/app.js');
-  const m = app.match(/onAppPause\(\(\) => \{([\s\S]*?)\}\);/);
-  assert.ok(m, 'app.js no longer registers an onAppPause listener — screen-off keeps playing');
+  const raw = appPauseBody(app);
+  assert.ok(raw, 'app.js no longer registers an onAppPause listener — screen-off keeps playing');
+  const m = [null, raw];
   // comment lines don't count — the first version of this guard passed with the call
   // commented out, which is exactly the vacuous-guard failure TESTING.md warns about
   const body = m[1].split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
@@ -3363,8 +3386,8 @@ test('a call pauses the video and the END of the call resumes it (v1.0.57)', () 
   // 3) ARMING AT THE PAUSE REQUIRES THE VIDEO TO HAVE BEEN PLAYING. `pauseCurrent()` runs
   //    first in that handler, so a state read afterwards always says "paused" — and arming
   //    on it would resume a video the child had deliberately paused BEFORE the call.
-  const m = app.match(/onAppPause\(\(\) => \{([\s\S]*?)\}\);/);
-  assert.ok(m, 'the onAppPause listener is gone');
+  const m = [null, appPauseBody(app)];
+  assert.ok(m[1], 'the onAppPause listener is gone');
   assert.match(m[1], /const st = playbackState\(\);[\s\S]*?pauseCurrent\(\)/,
     'the playhead is no longer read BEFORE the pause');
   assert.match(m[1], /if \(st && st\.playing\) checkCallResume\(\)/,
