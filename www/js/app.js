@@ -2971,6 +2971,19 @@ async function openFolder(fid) {
   }
   folderId = fid;
   folderPage = 0;
+  paintFolderHeader(fid);
+  nav.go('folder', { folderId: fid, page: 0 }); // its onEnter renders the grid (v1.0.32)
+}
+
+/**
+ * v1.0.61 — the folder's name and picture, painted from the folder id ALONE.
+ *
+ * It used to live inline in `openFolder`, which is fine while a folder screen is only ever
+ * entered from a tile. Nested, `folder` sits on the stack twice and a back-pop re-renders
+ * the grid WITHOUT going through openFolder — so the collection's discs appeared under the
+ * disc's name. Found in the browser: the grid was right, the header lied.
+ */
+function paintFolderHeader(fid) {
   const f = folders.find((x) => x.id === fid)
     || (searchIndex && searchIndex.folders.find((x) => x.id === fid)); // opened from search
   $('folder-title').textContent = f ? (f.isNew ? 'חדשים 🎁' : f.isFav ? 'מועדפים ⭐' : f.title) : '';
@@ -2993,7 +3006,6 @@ async function openFolder(fid) {
   } else {
     logoTop.classList.add('hidden');
   }
-  nav.go('folder', { folderId: fid, page: 0 }); // its onEnter renders the grid (v1.0.32)
 }
 
 async function renderFolderView() {
@@ -3012,6 +3024,7 @@ async function renderFolderView() {
       }
     });
   }
+  paintFolderHeader(folderId);   // a back-pop never runs openFolder — see paintFolderHeader
   await renderGridPage($('folder-grid'), scopeForFolder(folderId), folderId, 'folder');
 }
 

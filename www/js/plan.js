@@ -2560,7 +2560,13 @@ export function folderWithinLock(folderId, lockFolderId, rows = []) {
  */
 export function homeFolderRows(rows = []) {
   const list = (rows || []).filter(Boolean);
-  const ids = new Set(list.map((r) => r.folderId).filter(Boolean));
+  // ⚠️ TWO SHAPES REACH THIS, and only one of them was handled at first: a `customFolders`
+  // DB row calls its id `folderId`, while the tile objects `buildFolders` produces — which
+  // is what the home actually renders — call it `id`. Reading only `folderId` made every
+  // parent lookup miss, so the filter silently kept all 32 discs on the home: the feature
+  // did nothing, with a green suite. Found in the browser against the real collection.
+  const idOf = (r) => r.id || r.folderId || '';
+  const ids = new Set(list.map(idOf).filter(Boolean));
   return list.filter((r) => !r.parentFolderId || !ids.has(r.parentFolderId));
 }
 

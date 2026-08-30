@@ -2383,6 +2383,15 @@ test('homeFolderRows: the home shows roots, and never loses an orphan', async ()
   assert.deepEqual(homeFolderRows(orphaned).map((r) => r.folderId), ['cf:disc1', 'cf:disc2', 'cf:plain']);
   assert.deepEqual(homeFolderRows([]), []);
   assert.deepEqual(homeFolderRows(), []);
+  // ⚠️ THE HOME RENDERS TILE OBJECTS, WHOSE ID FIELD IS `id`, NOT `folderId`. Reading only
+  // the DB row's name made every parent lookup miss and left all 32 discs on the home —
+  // the feature doing nothing, with a green suite. Found in the browser, so pinned here.
+  const tiles = [
+    { id: 'cf:root', title: 'אוסף' },
+    { id: 'cf:disc1', parentFolderId: 'cf:root' },
+    { id: 'cf:disc2', parentFolderId: 'cf:root' }
+  ];
+  assert.deepEqual(homeFolderRows(tiles).map((r) => r.id), ['cf:root']);
 });
 
 test('folderPageSlots: child folders and videos share ONE pager, folders first', async () => {
