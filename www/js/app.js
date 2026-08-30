@@ -41,7 +41,8 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   planCacheSweep, planEmptyFolderSweep, deleteLocalChoice, formatBytes, folderSearchScope,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
-  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
+  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText,
+  folderAncestry, folderWithinLock, homeFolderRows, folderPageSlots, folderPageTotal } from './plan.js';
 import { makePager } from './ui/pager.js';
 import { attachSwipePager } from './ui/swipe.js';
 import * as loading from './ui/loading.js';
@@ -87,6 +88,7 @@ let recentLimit = RECENT_DEFAULT_LIMIT; // v1.0.57: 🕒 folder size, per profil
 let singleGroups = new Map();         // channelId -> records of its grouped singles
 let absorbedSingles = new Map();      // channelId -> singles shown inside its 📺 folder
 let looseSingles = [];                // what stayed in the flat "סרטונים נוספים" list
+let customFolderRows = [];            // v1.0.61: the raw cf: rows — the ancestry walk's input
 let watchCtx = { scope: null, folderId: null }; // which folder the watch grid pages
 
 // PIN flow state
@@ -508,7 +510,10 @@ async function applyContainment() {
 
 /** Paint both padlocks and close every door the lock forbids. */
 async function refreshContainUi() {
-  const chrome = containmentChrome(containState);
+  // v1.0.61 — is the child standing AT the locked folder, or somewhere inside it? Only the
+  // first is a place where 🏠 would be an escape.
+  const atLockFolder = !containState.folderId || folderId === containState.folderId;
+  const chrome = containmentChrome({ ...containState, atLockFolder });
   for (const id of ['lock-btn', 'folder-lock-btn']) {
     const b = $(id);
     if (!b) continue;
@@ -531,6 +536,10 @@ async function refreshContainUi() {
   const home = $('folder-back');
   if (home) home.classList.toggle('hidden', chrome.hideHome);
   const inFolderLock = containState.active && containState.mode === 'folder';
+  // ⚠️ The button needs NO new behaviour: its handler already tries `nav.back()` first,
+  // which pops disc → collection, and `goGallery` (its fallback) resets to the LOCKED
+  // folder under a lock. So showing it inside a subfolder is the whole fix, and it can
+  // never reach outside the lock.
   // search reaches ANOTHER folder, so it goes away with the folder's own way out
   const search = $('search-open');
   if (search) search.classList.toggle('hidden', inFolderLock);
@@ -1474,12 +1483,25 @@ function registerViews() {
   // fresh progress bar, exactly like the home view's own onEnter re-render. Same page,
   // same scroll (nav restores it after the double-rAF).
   nav.register('folder', {
-    onEnter: () => { if (folderId) renderFolderView().catch(() => {}); refreshContainUi().catch(() => {}); },
+    // v1.0.61 — THE ENTRY'S OWN params ARE THE AUTHORITY, not the module global. With
+    // folders nesting, `folder` sits on the stack more than once (collection → disc), and
+    // popping back to the collection must re-render the COLLECTION: the global still holds
+    // the disc the child just left, so an onEnter that trusted it would paint the wrong
+    // grid under the right header. `folderPage` rides the entry's own state for the same
+    // reason — the collection's page must survive a trip into a disc and back.
+    onEnter: (entry) => {
+      const p = (entry && entry.params) || {};
+      if (p.folderId) { folderId = p.folderId; folderPage = Number(p.page) || 0; }
+      if (folderId) renderFolderView().catch(() => {});
+      refreshContainUi().catch(() => {});
+    },
     // v1.0.56 — under a FOLDER lock the child may not leave this folder. Swallowing
     // back here is the other half of hiding the 🏠 button: without it the hardware
     // back (and the Escape stand-in) walks straight out to the gallery.
+    // v1.0.61 — a lock now covers a SUBTREE, so back is swallowed only at the lock's own
+    // folder: inside it the child must be able to walk back up to the disc list.
     onBack: () => (containState.active && containState.mode === 'folder'
-      && containState.folderId === folderId)
+      && !!containState.folderId && containState.folderId === folderId)
   });
   nav.register('search', {}); // default pop → home; watch pushed on top returns here
   // v1.0.56 — the destination picker. Leaving it by ANY route (hardware back, the cancel
@@ -2249,7 +2271,12 @@ function folderTile(f) {
   nm.textContent = f.title;
   const cnt = document.createElement('span');
   cnt.className = 'folder-count';
-  cnt.textContent = `${f.count} סרטונים`;
+  // v1.0.61 — a tile that opens FOLDERS counts folders. "32 תיקיות" describes what the tap
+  // gives you; the song total describes something the child will never see on one screen,
+  // and would be the only number on the home that does not match the grid it opens.
+  cnt.textContent = f.children
+    ? (f.children === 1 ? 'תיקיה אחת' : `${f.children} תיקיות`)
+    : `${f.count} סרטונים`;
   btn.appendChild(logo);
   btn.appendChild(nm);
   btn.appendChild(cnt);
@@ -2333,6 +2360,7 @@ async function buildFolders() {
     singleGroups = cache.singleGroups;
     absorbedSingles = cache.absorbedSingles;
     looseSingles = cache.looseSingles;
+    customFolderRows = cache.customFolderRows;
     return cache.folders.slice();
   }
   const seq = db.dataVersion();
@@ -2343,6 +2371,7 @@ async function buildFolders() {
   // B then hit the cache and was shown A's library, with libScope pointing at A's videos.
   const pid = activeProfileId;
   const out = [];
+  let cfRows = [];   // published with the rest only if this profile is still current
   if (!pid) return out;
   const giftCount = await db.countGifts(pid);
   if (giftCount > 0) out.push({ id: 'new', title: 'חדשים', emoji: '🎁', count: giftCount, isNew: true });
@@ -2374,12 +2403,27 @@ async function buildFolders() {
   if (lib) {
     const custom = (await db.listCustomFolders(lib)).slice()
       .sort((a, b) => (a.order || 0) - (b.order || 0));
+    cfRows = custom;
+    // v1.0.61 — how many CHILD folders each row has. A folder that holds folders is shown
+    // even with no songs of its own: it is the row a parent taps to reach 32 discs, and
+    // hiding it at zero (the v1.0.21 rule) would hide the whole collection — which is the
+    // bug this feature exists to fix.
+    const childrenOf = new Map();
+    for (const cf of custom) {
+      if (!cf.parentFolderId) continue;
+      childrenOf.set(cf.parentFolderId, (childrenOf.get(cf.parentFolderId) || 0) + 1);
+    }
     for (const cf of custom) {
       const count = await db.countFolder(lib, cf.folderId);
-      if (!count) continue;
+      const children = childrenOf.get(cf.folderId) || 0;
+      if (!count && !children) continue;
       out.push({
         id: cf.folderId, scope: lib, title: cf.title || 'תיקיה',
         emoji: cf.emoji || '📁', count, custom: true,
+        // v1.0.61 — a tile that opens FOLDERS counts folders, not songs. "32 תיקיות" says
+        // what the tap gives you; "751" describes something a pre-reader will never see on
+        // one screen, and would be the only number on the home not matching its grid.
+        children, parentFolderId: cf.parentFolderId || null,
         // the parent-picked picture rides the thumbs byte cache like a channel logo
         // (v1.0.32), so it renders offline and survives a dead source URL
         artThumbId: cf.artThumbId || null
@@ -2478,12 +2522,13 @@ async function buildFolders() {
   singleGroups = groups;
   absorbedSingles = absorbed;
   looseSingles = loose;
+  customFolderRows = cfRows;
   // Cache against the write counter AND the profile READ AT ENTRY: if anything committed
   // while we were deriving, `seq` is already stale and the next render redoes the work
   // (never serves a list that never matched the store).
   foldersCache = {
     seq, profileId: pid, recentLimit, libScope: lib, folders: out.slice(),
-    singleGroups: groups, absorbedSingles: absorbed, looseSingles: loose
+    singleGroups: groups, absorbedSingles: absorbed, looseSingles: loose, customFolderRows: cfRows
   };
   return out;
 }
@@ -2501,6 +2546,10 @@ function scopeForFolder(fid) {
  */
 async function renderHome() {
   folders = await buildFolders();
+  // v1.0.61 — THE HOME SHOWS ROOTS; `folders` still holds every row. Three consumers look a
+  // folder up by id (openFolder's header and both search indexes) and a missing entry is a
+  // blank header, so the filter belongs HERE and nowhere upstream.
+  const homeList = homeFolderRows(folders);
   const grid = $('grid');
 
   refreshGateDot(); // fire-and-forget — the red dot must never delay the grid
@@ -2511,24 +2560,24 @@ async function renderHome() {
   refreshSitesLauncher().catch(() => {});
   refreshContainUi().catch(() => {}); // v1.0.56 — the padlock and what the lock hides
 
-  const empty = folders.length === 0;
+  const empty = homeList.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
   grid.classList.toggle('hidden', empty);
   // v1.0.57: homePages back to 1 here too — this early return skips updateHomePager, and a
   // count left over from the previous profile would let a swipe page an empty home.
   if (empty) { homePages = 1; $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
-  if (shouldFlattenHome(folders)) {
-    // shouldFlattenHome only says yes for a SINGLE non-🎁 folder, so folders[0] is it
-    await renderGridPage(grid, folders[0].scope, folders[0].id, 'home');
+  if (shouldFlattenHome(homeList)) {
+    // shouldFlattenHome only says yes for a SINGLE non-🎁 folder, so homeList[0] is it
+    await renderGridPage(grid, homeList[0].scope, homeList[0].id, 'home');
     return;
   }
 
-  const total = Math.max(1, Math.ceil(folders.length / PAGE_FOLDERS));
+  const total = Math.max(1, Math.ceil(homeList.length / PAGE_FOLDERS));
   if (page >= total) page = total - 1;
   if (page < 0) page = 0;
   grid.innerHTML = '';
-  for (const f of folders.slice(page * PAGE_FOLDERS, (page + 1) * PAGE_FOLDERS)) {
+  for (const f of homeList.slice(page * PAGE_FOLDERS, (page + 1) * PAGE_FOLDERS)) {
     grid.appendChild(folderTile(f));
   }
   updateHomePager(total);
@@ -2721,9 +2770,24 @@ async function nextAfter(scope, fid, current) {
 /** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
 async function renderGridPage(grid, scope, fid, which) {
   const pg = which === 'home' ? page : folderPage;
-  const res = await pageAnyFolder(scope, fid, { offset: pg * PAGE_SIZE, limit: PAGE_SIZE });
-  const total = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
+  // v1.0.61 — A FOLDER MAY HOLD FOLDERS, and they share ONE pager with its videos, folders
+  // first. `pageAnyFolder`/`nextAfter` are deliberately untouched: the concatenation lives
+  // here, so neither grows a nesting branch and their "they cover the same kinds" invariant
+  // stays literally true. The child tiles are taken from `folders` (already built, already
+  // hidden-at-zero) rather than re-read, so the grid can never disagree with the home.
+  const kids = which === 'home' ? [] : folders.filter((f) => f.parentFolderId === fid);
+  const slots = folderPageSlots({ childCount: kids.length, page: pg, pageSize: PAGE_SIZE });
+  // ⚠️ CALLED EVEN WHEN videoLimit IS 0 (a page of pure folder tiles): `res.total` is what
+  // sizes the pager. db.pageFolder answers {items: [], total} for a zero limit — the
+  // v1.0.58 zero-limit fix is what makes this shape safe.
+  const res = await pageAnyFolder(scope, fid, { offset: slots.videoOffset, limit: slots.videoLimit });
+  const total = which === 'home'
+    ? Math.max(1, Math.ceil(res.total / PAGE_SIZE))
+    : folderPageTotal({ childCount: kids.length, videoTotal: res.total, pageSize: PAGE_SIZE });
   grid.innerHTML = '';
+  for (const f of kids.slice(slots.folderOffset, slots.folderOffset + slots.folderSlots)) {
+    grid.appendChild(folderTile(f));
+  }
   for (const rec of res.items) grid.appendChild(tileEl(rec));
   if (which === 'home') updateHomePager(total);
   else folderPagerObj.update(folderPage, total);
@@ -2898,8 +2962,11 @@ async function openFolder(fid) {
   // renders the home for an instant, the TV remote can reach a tile, and a search result
   // carries a folder id — every one of those is a way into another folder unless the OPEN
   // itself refuses. Hiding chrome is the affordance; this is the boundary.
-  if (containState.active && containState.mode === 'folder'
-      && containState.folderId && fid !== containState.folderId) {
+  // v1.0.61 — the test is ANCESTRY, not equality: a child locked into a collection must be
+  // able to open the discs inside it, and nothing else. `folderWithinLock` errs strict — an
+  // unknown folder is out of bounds — so a stale id still lands back on the locked folder.
+  if (containState.active && containState.mode === 'folder' && containState.folderId
+      && !folderWithinLock(fid, containState.folderId, customFolderRows)) {
     fid = containState.folderId;
   }
   folderId = fid;
@@ -2926,14 +2993,23 @@ async function openFolder(fid) {
   } else {
     logoTop.classList.add('hidden');
   }
-  nav.go('folder', { folderId: fid }); // its onEnter renders the grid (v1.0.32)
+  nav.go('folder', { folderId: fid, page: 0 }); // its onEnter renders the grid (v1.0.32)
 }
 
 async function renderFolderView() {
   if (!folderPagerObj) {
     folderPagerObj = makePager({
       mount: $('folder-pager'),
-      onChange: async (p) => { folderPage = p; await renderFolderView(); }
+      // v1.0.61 — the page is written back onto the STACK ENTRY, so walking into a disc and
+      // pressing back returns the parent to the page of discs they were on. Without it the
+      // entry's params still say page 0 and its onEnter would drag the child to the top of
+      // a 32-disc list every time they came out of one.
+      onChange: async (p) => {
+        folderPage = p;
+        const e = nav.current();
+        if (e && e.name === 'folder' && e.params) e.params.page = p;
+        await renderFolderView();
+      }
     });
   }
   await renderGridPage($('folder-grid'), scopeForFolder(folderId), folderId, 'folder');
@@ -4752,10 +4828,16 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
   const now = Date.now();
   let rootFolderId = folder ? folder.folderId : null;
   let step = 0;
+  // v1.0.61 — Drive id → the `cf:` id of the row that represents it, so a child can name its
+  // parent. `plan.folders` follows the walk's BREADTH-FIRST order, so a parent is always
+  // filled in before the children that look it up (the walk is breadth-first for its own
+  // reason — see gdrivepub — and this now depends on it, which the tests pin).
+  const cfOf = new Map();
   for (const node of plan.folders) {
     // The row the parent's ADD created (if any) is the root's row — reuse it rather than
     // minting a second folder for the same Drive id.
     let target = node.existing || (node.isRoot ? folder : null);
+    const parentFolderId = node.parentDriveId ? (cfOf.get(node.parentDriveId) || null) : null;
     if (!target) {
       const order = now + (step += 1);
       target = {
@@ -4765,10 +4847,19 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
         // the root's own walk re-lists this folder anyway, so without this marker a tree of
         // 33 folders would re-list itself 33 times over, every half hour.
         driveRootId: node.isRoot ? null : driveFolderId,
+        parentFolderId,
         order, createdAt: order
       };
       await db.putCustomFolder(target);
+    } else if ((target.parentFolderId || null) !== parentFolderId) {
+      // THE MIGRATION, and it is the whole of it: every row of a tree imported before
+      // v1.0.61 is matched here by its driveFolderId and gains its parent in place, so the
+      // discs leave the home screen by themselves on the next add or refresh. It also
+      // repairs a row whose parent was deleted and re-made.
+      target = { ...target, parentFolderId };
+      await db.putCustomFolder(target);
     }
+    cfOf.set(node.driveFolderId, target.folderId);
     if (node.isRoot) rootFolderId = target.folderId;
     if (!node.add.length) continue;
     const recs = node.add.map((f, i) => ({

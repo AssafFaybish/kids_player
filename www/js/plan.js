@@ -2774,12 +2774,18 @@ export function evalContainment({ now = Date.now(), mode = null, folderId = null
  * is always visible: it is the parent's only way back in, and a child who taps it meets
  * the code screen.
  */
-export function containmentChrome({ active = false, mode = null } = {}) {
+export function containmentChrome({ active = false, mode = null, atLockFolder = true } = {}) {
   if (!active) return { hideExit: false, hideChip: false, hideHome: false, locked: false };
   return {
     hideExit: true,                 // the child may not leave the app
     hideChip: true,                 // …nor switch to a sibling's profile
-    hideHome: mode === 'folder',    // folder mode: no way out of THIS folder
+    // folder mode: no way out of THIS folder. v1.0.61 — but a lock now covers a SUBTREE,
+    // and a child standing inside a disc of a locked collection needs a way back up to the
+    // disc list; hiding the button there would leave them with only the hardware back,
+    // which in immersive mode costs an edge swipe. So it is hidden only AT the lock's own
+    // folder, where it would genuinely be a way out. `atLockFolder` defaults TRUE so a
+    // caller that does not know its position gets the strict answer (the containment rule).
+    hideHome: mode === 'folder' && atLockFolder !== false,
     locked: true
   };
 }

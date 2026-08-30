@@ -34,6 +34,10 @@ import {
 // in lockstep. Still an ANCHORED whitelist of shapes we write ourselves: an imported path
 // must never point the player outside the cache directory (traversal/exe pinned by tests).
 const LOCALPATH_RE = /^videos\/[A-Za-z0-9_-]{1,90}\.(mp4|webm|m4v|mov|ogv|mp3|m4a|aac|wav|ogg|oga|opus|flac)$/;
+// v1.0.61 — a Drive id out of an untrusted file. The same shape gdrivepub's DRIVE_ID uses;
+// it is written into a row the refresh then LISTS over the network, so it is validated here
+// rather than trusted.
+const DRIVE_ID_RE = /^[A-Za-z0-9_-]{10,200}$/;
 
 export async function exportProfileSnapshot(profileId, profileMeta = null) {
   const sources = await getSources(profileId);
@@ -394,6 +398,16 @@ export async function importProfileSnapshot(profileId, text) {
         emoji: typeof row.emoji === 'string' ? row.emoji.slice(0, 8) : '📁',
         artThumbId: null,
         artSrcUrl: typeof row.artSrcUrl === 'string' && /^https:/.test(row.artSrcUrl) ? row.artSrcUrl : null,
+        // v1.0.61 — THE SHAPE OF THE TREE TRAVELS, or a restore flattens a 32-disc
+        // collection back onto the home screen. These three were already being dropped by
+        // this whitelist before nesting made it visible: without driveFolderId the restored
+        // folder never refreshes again, and without driveRootId the refresh re-lists every
+        // descendant separately. parentFolderId is validated as a folder id — it is an
+        // untrusted string from a file, and the ancestry walk follows it.
+        driveFolderId: typeof row.driveFolderId === 'string' && DRIVE_ID_RE.test(row.driveFolderId) ? row.driveFolderId : null,
+        driveRootId: typeof row.driveRootId === 'string' && DRIVE_ID_RE.test(row.driveRootId) ? row.driveRootId : null,
+        parentFolderId: (typeof row.parentFolderId === 'string' && isCustomFolderId(row.parentFolderId)
+          && row.parentFolderId !== row.folderId) ? row.parentFolderId : null,
         order: Number.isFinite(Number(row.order)) ? Number(row.order) : 0,
         createdAt: Number.isFinite(Number(row.createdAt)) ? Number(row.createdAt) : Date.now(),
         updatedAt: Number.isFinite(Number(row.updatedAt)) ? Number(row.updatedAt) : 0
