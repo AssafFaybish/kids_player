@@ -2577,11 +2577,18 @@ async function renderHome() {
   const total = Math.max(1, Math.ceil(homeList.length / PAGE_FOLDERS));
   if (page >= total) page = total - 1;
   if (page < 0) page = 0;
-  grid.innerHTML = '';
-  for (const f of homeList.slice(page * PAGE_FOLDERS, (page + 1) * PAGE_FOLDERS)) {
-    grid.appendChild(folderTile(f));
-  }
+  paintHomePage(grid, page);
+  announceGridRender(grid);   // v1.0.62 — a live swipe must drop a drag on a rebuilt grid
   updateHomePager(total);
+}
+
+/** v1.0.62 — one page of home tiles into ANY element, so the swipe can fill its ghost. */
+function paintHomePage(target, pageIndex) {
+  const homeList = homeFolderRows(folders);
+  target.innerHTML = '';
+  for (const f of homeList.slice(pageIndex * PAGE_FOLDERS, (pageIndex + 1) * PAGE_FOLDERS)) {
+    target.appendChild(folderTile(f));
+  }
 }
 
 function updateHomePager(total) {
@@ -2769,8 +2776,14 @@ async function nextAfter(scope, fid, current) {
 }
 
 /** Render one page of videos of (scope, folderId) into a grid ('home' or 'folder'). */
-async function renderGridPage(grid, scope, fid, which) {
-  const pg = which === 'home' ? page : folderPage;
+/**
+ * v1.0.62 — `pageOverride`/`silent` exist for the swipe's GHOST: the neighbouring page is
+ * rendered into a detached element while the finger is moving. `silent` is what keeps that
+ * render from touching the pager — the ghost is a preview, and moving the pager before the
+ * child has committed would say the page already turned.
+ */
+async function renderGridPage(grid, scope, fid, which, pageOverride = null, silent = false) {
+  const pg = pageOverride == null ? (which === 'home' ? page : folderPage) : pageOverride;
   // v1.0.61 — A FOLDER MAY HOLD FOLDERS, and they share ONE pager with its videos, folders
   // first. `pageAnyFolder`/`nextAfter` are deliberately untouched: the concatenation lives
   // here, so neither grows a nesting branch and their "they cover the same kinds" invariant
@@ -2790,8 +2803,20 @@ async function renderGridPage(grid, scope, fid, which) {
     grid.appendChild(folderTile(f));
   }
   for (const rec of res.items) grid.appendChild(tileEl(rec));
+  if (silent) return;
+  // v1.0.62 — tell any live swipe that the grid it was translating has been rebuilt under
+  // the finger (a sync landing, a Drive pull applying). Without it the drag would keep
+  // moving a page that no longer exists, beside a ghost of one that never did.
+  announceGridRender(grid);
   if (which === 'home') updateHomePager(total);
   else folderPagerObj.update(folderPage, total);
+}
+
+/** v1.0.62 — see ui/swipe.js: a grid rebuilt mid-gesture must drop the drag. */
+function announceGridRender(grid) {
+  // dispatched on the GRID, never its viewport: events bubble UP, and on the watch screen
+  // the swipe host IS the grid — a viewport-level event would never reach the listener.
+  try { grid.dispatchEvent(new CustomEvent('kp:gridrender', { bubbles: true })); } catch {}
 }
 
 /* ---------------- Search (v1.0.7) ---------------- */
@@ -3036,6 +3061,27 @@ async function renderFolderView() {
 let watchPage = 0;
 let watchPager = null;
 
+/**
+ * v1.0.62 — one page of the under-player grid into ANY element, for the swipe's ghost.
+ * It reuses the FROZEN recent snapshot (`watchCtx.recent`) for the same reason the live
+ * grid does: 🕒 reorders itself after every video, and a preview that re-read the live
+ * order would show the child a page they are not about to get.
+ */
+async function paintWatchPage(target, pageIndex, current) {
+  const scope = watchCtx.scope;
+  const fid = watchCtx.folderId;
+  if (!scope || !fid) { target.innerHTML = ''; return; }
+  const res = await pageAnyFolder(scope, fid, {
+    offset: pageIndex * PAGE_WATCH, limit: PAGE_WATCH, recentSnapshot: watchCtx.recent || null
+  });
+  target.innerHTML = '';
+  for (const rec of res.items) {
+    const tile = tileEl(rec);
+    if (current && rec.key === current.key) tile.classList.add('tile-current');
+    target.appendChild(tile);
+  }
+}
+
 async function renderWatchGrid(current) {
   if (!watchPager) watchPager = makePager({ mount: $('watch-pager'), onChange: (p) => { watchPage = p; renderWatchGrid(currentWatch); } });
   const grid = $('watch-grid');
@@ -3075,6 +3121,7 @@ async function renderWatchGrid(current) {
     if (current && rec.key === current.key) tile.classList.add('tile-current');
     grid.appendChild(tile);
   }
+  announceGridRender(grid);   // v1.0.62
   watchPager.update(watchPage, total);
 }
 
@@ -7626,20 +7673,34 @@ function wire() {
   // Every state getter reads the LIVE numbers at gesture end — the pager object for the
   // two that have one, `homePages` for the hand-written home pager (its markup predates
   // makePager and carries the exit button, so it is not one).
+  // v1.0.62 — the fourth argument is the LIVE TRACK: the page follows the finger and the
+  // neighbour slides in beside it (user request). It is optional by design — every grid
+  // still turns pages through the same `onSwipe` the arrows use, so a missing viewport or
+  // a ghost that never rendered degrades to the v1.0.57 flick, never to nothing.
   attachSwipePager($('view-gallery'), (dir) => {
     page += dir === 'next' ? 1 : -1;
     renderHome();
-  }, () => ({ page, total: homePages }));
+  }, () => ({ page, total: homePages }), {
+    viewport: $('grid-vp'), grid: $('grid'),
+    renderPage: (n, target) => { paintHomePage(target, n); }
+  });
 
   attachSwipePager($('view-folder'), (dir) => {
     folderPage += dir === 'next' ? 1 : -1;
     renderFolderView().catch(() => {});
-  }, () => (folderPagerObj ? folderPagerObj.state() : null));
+  }, () => (folderPagerObj ? folderPagerObj.state() : null), {
+    viewport: $('folder-grid-vp'), grid: $('folder-grid'),
+    renderPage: (n, target) =>
+      renderGridPage(target, scopeForFolder(folderId), folderId, 'folder', n, true)
+  });
 
   attachSwipePager($('watch-grid'), (dir) => {
     watchPage += dir === 'next' ? 1 : -1;
     renderWatchGrid(currentWatch);
-  }, () => (watchPager ? watchPager.state() : null));
+  }, () => (watchPager ? watchPager.state() : null), {
+    viewport: $('watch-grid-vp'), grid: $('watch-grid'),
+    renderPage: (n, target) => paintWatchPage(target, n, currentWatch)
+  });
   $('exit-btn').addEventListener('click', askExit);
   // v1.0.32: the picker's exit button — same flow as hardware back there (user request)
   $('profiles-exit').addEventListener('click', askExit);

@@ -267,7 +267,10 @@
         <button id="sites-open" class="search-launcher hidden" type="button">🌐 אתרי אינטרנט</button>
       </div>
 
-      <main id="grid" class="grid" aria-label="רשימת סרטונים"></main>
+      <!-- v1.0.62 — the swipe viewport. It exists so the NEIGHBOURING page can sit
+           beside this one during a drag and be clipped away; see ui/swipe.js. It is inert
+           (position:relative only) until a gesture arms. -->
+      <div class="swipe-vp" id="grid-vp"><main id="grid" class="grid" aria-label="רשימת סרטונים"></main></div>
 
       <div id="empty-state" class="empty-state hidden">
         <div class="empty-emoji">🎬</div>
@@ -313,7 +316,7 @@
         <!-- v1.0.56 — lock the child INTO this folder (same button, same code gate) -->
         <button id="folder-lock-btn" class="round-btn lock-btn" type="button" aria-label="נעילה על התיקיה">🔓</button>
       </header>
-      <main id="folder-grid" class="grid" aria-label="סרטוני התיקייה"></main>
+      <div class="swipe-vp" id="folder-grid-vp"><main id="folder-grid" class="grid" aria-label="סרטוני התיקייה"></main></div>
       <nav id="folder-pager" class="pager" aria-label="דפדוף"></nav>
     </section>
 
@@ -460,7 +463,7 @@
       <h1 id="watch-title" class="watch-title hidden"></h1>
       <div id="watch-status" class="watch-status hidden"></div>
       <h2 class="watch-more-title">עוד סרטונים</h2>
-      <div id="watch-grid" class="grid grid-more"></div>
+      <div class="swipe-vp" id="watch-grid-vp"><div id="watch-grid" class="grid grid-more"></div></div>
       <nav id="watch-pager" class="pager" aria-label="דפדוף סרטונים"></nav>
     </section>
 

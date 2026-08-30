@@ -7,6 +7,7 @@
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
 import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO,
+  SWIPE_ARM_PX, SWIPE_COMMIT_RATIO, SWIPE_RUBBER, SWIPE_RUBBER_MAX,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, CACHE_MAX_AGE_MS, EMPTY_FOLDER_GRACE_MS } from './config.js';
 
 /**
@@ -522,6 +523,74 @@ export function favouriteKeys(states) {
  * an odd WebView that reports no clock must not cost the child every swipe, and the worst
  * case is a page turn they can undo with one flick back.
  */
+/**
+ * v1.0.62 — PURE: has the finger moved enough, and horizontally enough, to START DRAGGING
+ * the grid? -> 'next' | 'prev' | null.
+ *
+ * This runs on every pointermove until it answers, and the answer is what makes the screen
+ * move. Two refusals, and both are the same collisions `swipePageAction` handles at release
+ * — but here they matter MORE, because a wrong answer is visible while it happens:
+ *  - below SWIPE_ARM_PX the travel is inside tap territory, and a tap on a tile that nudges
+ *    the whole screen reads as a bug;
+ *  - a movement that is not clearly horizontal is a SCROLL (the page scrolls under the same
+ *    finger), and arming on it would make the grid jitter sideways during every scroll.
+ */
+export function swipeDragArm({ dx, dy } = {}) {
+  const x = Number(dx);
+  const y = Number(dy);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (Math.abs(x) < SWIPE_ARM_PX) return null;
+  if (Math.abs(x) < Math.abs(y) * SWIPE_RATIO) return null;
+  // RTL: dragging RIGHT brings the NEXT page in from the left — the pager puts `prev` first
+  // in the DOM and dir="rtl" mirrors the row, so ◀ "next" sits on the LEFT. Same mapping as
+  // swipePageAction, and it must stay the same or the drag would preview one page and the
+  // release would turn to the other.
+  return x > 0 ? 'next' : 'prev';
+}
+
+/**
+ * v1.0.62 — PURE: how far the grid is translated right now, in pixels.
+ *
+ * `edge` means there is no page in that direction. The user's decision (2026-08-30) is a
+ * RUBBER BAND there rather than a frozen screen: the page gives a little and springs back,
+ * which tells a child "there is nothing this way" in the only language they have. The cap
+ * is a fraction of the width so a phone and a tablet feel the same.
+ *
+ * The sign is clamped to the ARMED direction. Only ONE neighbour is rendered (rendering both
+ * doubles a database read taken while the finger is already moving), so dragging back past
+ * the start must come to REST at 0 rather than reveal a page that is not there.
+ */
+export function swipeDragOffset({ dx, dir = null, width = 0, edge = false } = {}) {
+  const x = Number(dx);
+  const w = Number(width);
+  if (!Number.isFinite(x) || !Number.isFinite(w) || w <= 0) return 0;
+  const sign = dir === 'next' ? 1 : dir === 'prev' ? -1 : 0;
+  if (!sign) return 0;
+  const travel = x * sign;                    // how far along the armed direction
+  if (travel <= 0) return 0;                  // dragged back past the start
+  if (edge) return sign * Math.min(travel * SWIPE_RUBBER, w * SWIPE_RUBBER_MAX);
+  return sign * Math.min(travel, w);          // never further than one full page
+}
+
+/**
+ * v1.0.62 — PURE: does releasing here turn the page? -> boolean.
+ *
+ * RELATIVE, not the absolute SWIPE_MIN_PX (the user's decision): with the neighbour visible,
+ * "what you see is what happens" is the only rule that cannot surprise — past a third of the
+ * width the next page is already more than half revealed. An `edge` drag never commits, no
+ * matter how far it was pulled: there is no page to turn to, which is what the rubber band
+ * was saying the whole time.
+ */
+export function swipeDragCommit({ dx, dir = null, width = 0, edge = false } = {}) {
+  if (edge) return false;
+  const x = Number(dx);
+  const w = Number(width);
+  if (!Number.isFinite(x) || !Number.isFinite(w) || w <= 0) return false;
+  const sign = dir === 'next' ? 1 : dir === 'prev' ? -1 : 0;
+  if (!sign) return false;
+  return x * sign >= w * SWIPE_COMMIT_RATIO;
+}
+
 export function swipePageAction({ dx, dy, dt, page, total } = {}) {
   const x = Number(dx);
   const y = Number(dy);

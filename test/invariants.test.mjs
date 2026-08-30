@@ -3205,12 +3205,19 @@ test('swipe paging is wired to the three grids and nothing else (v1.0.57)', () =
 
   // 1) ONE geometry decision. A second copy — an inline dx check in a handler — is a
   //    second answer to "was that a swipe or a tap", and the two will disagree.
-  assert.match(swipe, /import \{ swipePageAction \} from '\.\.\/plan\.js'/,
+  assert.match(swipe, /import \{[^}]*swipePageAction[^}]*\} from '\.\.\/plan\.js'/,
     'ui/swipe.js no longer delegates to the pure decision');
   assert.match(swipe, /swipePageAction\(\{/, 'ui/swipe.js stopped calling the pure decision');
+  // v1.0.62 — the live drag adds three MORE decisions, and they must live in the same one
+  // place for the same reason: arming, the offset and the commit are all answers to "was
+  // that a swipe", and a second copy of any of them would disagree with the release.
+  for (const fn of ['swipeDragArm', 'swipeDragOffset', 'swipeDragCommit']) {
+    assert.match(swipe, new RegExp(fn + '\\('), `ui/swipe.js does not use plan.${fn}`);
+  }
   for (const [p, body] of CODE) {
     if (p === 'www/js/ui/swipe.js' || p === 'www/js/plan.js') continue;
-    assert.doesNotMatch(body, /swipePageAction/, `${p} decides swipes on its own`);
+    assert.doesNotMatch(body, /swipePageAction|swipeDragArm|swipeDragOffset|swipeDragCommit/,
+      `${p} decides swipes on its own`);
   }
 
   // 2) pointercancel next to pointerup — the v1.0.22 seek-bar invariant, same disease: the
@@ -3789,4 +3796,74 @@ test('the "how to sync this channel" button always ASKS, and saves both fields (
   // 5) The words live in plan.js, like every other dialog in this app.
   assert.match(CODE.get('www/js/plan.js'), /export function channelSyncModeDialog\(/, 'the dialog text left plan.js');
   assert.match(fn, /channelSyncModeOutcome\(/, 'the outcome toast is hand-rolled');
+});
+
+test('the live swipe track cleans up after itself, always (v1.0.62)', () => {
+  // Every one of these is a way to leave the child's grid TRANSLATED with a ghost of a page
+  // beside it — a screen that looks broken and cannot be recovered without a navigation.
+  const swipe = CODE.get('www/js/ui/swipe.js');
+  assert.ok(swipe, 'ui/swipe.js is gone');
+
+  // 1) the OS steals drags (the gesture inset, a scroll it decides to own) and no pointerup
+  //    ever arrives — the v1.0.22 seek-bar invariant, which here must SPRING BACK, not just
+  //    drop the start.
+  const cancel = swipe.slice(swipe.indexOf("addEventListener('pointercancel'"));
+  assert.match(cancel.slice(0, 200), /settle\(0\)/,
+    'a stolen gesture leaves the grid translated forever');
+
+  // 2) a grid rebuilt UNDER the finger (a sync landing, a Drive pull applying) must drop the
+  //    drag: it would otherwise keep moving a page that no longer exists.
+  assert.match(swipe, /kp:gridrender/, 'a mid-gesture re-render no longer resets the drag');
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /function announceGridRender\(/, 'nothing announces a re-render any more');
+  assert.match(app, /grid\.dispatchEvent\(new CustomEvent\('kp:gridrender'/,
+    'the event is dispatched somewhere other than the grid — on the watch screen the swipe host IS the grid, and events bubble UP');
+
+  // 3) A FAST FLIP MUST NOT LOSE A PAGE. A child swiping again inside the 220ms settle
+  //    starts a gesture that cancels it; without the flush, the page turn that settle was
+  //    carrying is silently dropped, and the faster they swipe the more pages vanish.
+  const clear = swipe.slice(swipe.indexOf('const clearDrag = () =>'));
+  const body = clear.slice(0, clear.indexOf('\n  };'));
+  assert.match(body, /const run = pending/, 'clearDrag no longer flushes a committed turn — a fast flip loses pages');
+  assert.match(body, /if \(run\) run\(\)/, 'the committed turn is captured but never run');
+  assert.match(body, /ghost[\s\S]*remove\(\)/, 'the ghost is not removed — a stale page stays on screen');
+  assert.match(body, /transform = ''/, 'the transform is not cleared — the grid stays translated');
+
+  // 4) the live path is an ADDITION, never a replacement: renderPage is async, the viewport
+  //    can be absent, and a ghost may never render — all of those must still turn the page.
+  assert.match(swipe, /const canLive = !!\(vp && grid && renderPage\)/,
+    'the live track is no longer optional — a missing viewport would break paging entirely');
+  assert.match(swipe, /swipePageAction\(\{/, 'the fallback flick is gone');
+});
+
+test('the swipe viewport never becomes a scroll container (v1.0.62)', () => {
+  // ⚠️ Permanent `overflow-x: hidden` turns the OTHER axis into `auto` per spec, making the
+  // element a scroll container and taking vertical scrolling away from the document — the
+  // exact class of bug v1.0.50/51/52 chased around this app three times. It is therefore
+  // applied ONLY while a gesture is running, when there is nothing to scroll inside it.
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  assert.match(css, /\.swipe-vp\s*\{[^}]*position:\s*relative/, 'the viewport lost its positioning context');
+  assert.match(css, /\.swipe-vp\.swiping\s*\{[^}]*overflow:\s*hidden/,
+    'the clip is not tied to the gesture');
+  assert.ok(!/\.swipe-vp\s*\{[^}]*overflow/.test(css),
+    'the viewport clips permanently — that makes it a scroll container and the page stops scrolling');
+  // the movement must be a COMPOSITOR property: a cheap tablet moves 15 tiles with images
+  assert.ok(!/\.swipe-vp[^{]*\{[^}]*transition:[^;]*(left|margin)/.test(css),
+    'the track animates a layout property — it must be transform only');
+
+  // all three grids are wrapped, and each is wired with its viewport
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  for (const id of ['grid', 'folder-grid', 'watch-grid']) {
+    assert.ok(html.includes(`id="${id}-vp"`), `#${id} has no swipe viewport`);
+  }
+  const app = CODE.get('www/js/app.js');
+  for (const id of ['grid-vp', 'folder-grid-vp', 'watch-grid-vp']) {
+    assert.ok(app.includes(`viewport: $('${id}')`), `${id} is not wired to a swipe pager`);
+  }
+  // the ghost is a PREVIEW: it must never move the pager, or the page would look turned
+  // before the child committed
+  assert.match(app, /renderGridPage\(grid, scope, fid, which, pageOverride = null, silent = false\)/,
+    'renderGridPage lost its ghost parameters');
+  assert.match(app, /if \(silent\) return;[\s\S]{0,200}?announceGridRender/,
+    'a ghost render updates the pager — the page would look turned before it was');
 });

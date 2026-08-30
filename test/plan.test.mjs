@@ -2511,3 +2511,80 @@ test('channelSyncModeOutcome: a zero names itself', async () => {
   assert.match(channelSyncModeOutcome({ auto: true, approved: 1, name: 'ערוץ' }), /סרטון אחד אושר/);
   for (const m of [many, none, manual]) assert.doesNotMatch(m, /undefined|NaN|null/);
 });
+
+/* ---------------- live swipe feedback (v1.0.62) ---------------- */
+
+test('swipeDragArm: the grid starts moving only for a deliberate HORIZONTAL drag', async () => {
+  const { swipeDragArm } = await import('../www/js/plan.js');
+  const { SWIPE_ARM_PX, TAP_SLOP_PX } = await import('../www/js/config.js');
+  // ⚠️ the invariant: arming below the tap slop would make every tap on a tile visibly
+  // nudge the whole screen. This is SWIPE_MIN_PX's rule one step earlier and stricter.
+  assert.ok(SWIPE_ARM_PX > TAP_SLOP_PX, 'a tap would move the grid');
+  assert.equal(swipeDragArm({ dx: SWIPE_ARM_PX - 1, dy: 0 }), null, 'tap territory must not arm');
+  assert.equal(swipeDragArm({ dx: 40, dy: 0 }), 'next', 'RTL: dragging RIGHT brings the next page in');
+  assert.equal(swipeDragArm({ dx: -40, dy: 0 }), 'prev');
+  // a SCROLL that drifts sideways is still a scroll — arming on it makes the grid jitter
+  // sideways every time the child scrolls the page (the v1.0.52 collision, now visible)
+  assert.equal(swipeDragArm({ dx: 40, dy: -260 }), null, 'a vertical scroll armed a page drag');
+  assert.equal(swipeDragArm({ dx: 45, dy: -400 }), null);
+  assert.equal(swipeDragArm({ dx: 60, dy: 20 }), 'next', 'a slightly diagonal swipe is still a swipe');
+  assert.equal(swipeDragArm({}), null);
+  assert.equal(swipeDragArm({ dx: NaN, dy: 0 }), null);
+});
+
+test('swipeDragOffset: 1:1 with the finger, rubber-banded where there is no page', async () => {
+  const { swipeDragOffset } = await import('../www/js/plan.js');
+  const { SWIPE_RUBBER, SWIPE_RUBBER_MAX } = await import('../www/js/config.js');
+  const W = 800;
+  // the whole point of the feature: the page moves exactly as far as the finger did
+  assert.equal(swipeDragOffset({ dx: 120, dir: 'next', width: W }), 120);
+  assert.equal(swipeDragOffset({ dx: -120, dir: 'prev', width: W }), -120);
+  assert.equal(swipeDragOffset({ dx: 5000, dir: 'next', width: W }), W, 'never further than one page');
+  // dragged back past the start: only ONE neighbour is rendered, so it comes to REST at 0
+  // rather than revealing a page that is not there
+  assert.equal(swipeDragOffset({ dx: -30, dir: 'next', width: W }), 0);
+  assert.equal(swipeDragOffset({ dx: 30, dir: 'prev', width: W }), 0);
+  // the edge answers with resistance (the user's decision) instead of a frozen screen
+  assert.equal(swipeDragOffset({ dx: 100, dir: 'next', width: W, edge: true }), 100 * SWIPE_RUBBER);
+  assert.equal(swipeDragOffset({ dx: 9999, dir: 'next', width: W, edge: true }), W * SWIPE_RUBBER_MAX,
+    'the rubber band must be capped as a FRACTION, so a phone and a tablet feel the same');
+  assert.equal(swipeDragOffset({ dx: -9999, dir: 'prev', width: W, edge: true }), -W * SWIPE_RUBBER_MAX);
+  // nonsense never moves anything
+  assert.equal(swipeDragOffset({ dx: 100, dir: null, width: W }), 0);
+  assert.equal(swipeDragOffset({ dx: 100, dir: 'next', width: 0 }), 0);
+  assert.equal(swipeDragOffset({}), 0);
+});
+
+test('swipeDragCommit: relative to the width, and an edge NEVER turns', async () => {
+  const { swipeDragCommit } = await import('../www/js/plan.js');
+  const { SWIPE_COMMIT_RATIO } = await import('../www/js/config.js');
+  const W = 800;
+  const line = W * SWIPE_COMMIT_RATIO;
+  // "what you see is what happens": past a third the next page is more than half revealed
+  assert.equal(swipeDragCommit({ dx: line + 1, dir: 'next', width: W }), true);
+  assert.equal(swipeDragCommit({ dx: line - 1, dir: 'next', width: W }), false);
+  assert.equal(swipeDragCommit({ dx: -(line + 1), dir: 'prev', width: W }), true);
+  assert.equal(swipeDragCommit({ dx: -(line - 1), dir: 'prev', width: W }), false);
+  // RELATIVE, not absolute: the same drag decides differently on a phone and a tablet,
+  // which is the point — it is a fraction of what the child can see.
+  assert.equal(swipeDragCommit({ dx: 200, dir: 'next', width: 400 }), true);
+  assert.equal(swipeDragCommit({ dx: 200, dir: 'next', width: 1200 }), false);
+  // ⚠️ an edge drag never commits however far it was pulled — there is no page to turn to,
+  // which is exactly what the rubber band was saying the whole time
+  assert.equal(swipeDragCommit({ dx: 5000, dir: 'next', width: W, edge: true }), false);
+  // dragging back past the start is not a turn in the armed direction
+  assert.equal(swipeDragCommit({ dx: -500, dir: 'next', width: W }), false);
+  assert.equal(swipeDragCommit({ dx: 100, dir: null, width: W }), false);
+  assert.equal(swipeDragCommit({}), false);
+});
+
+test('the live drag and the fallback flick agree about direction (v1.0.62)', async () => {
+  const { swipeDragArm, swipePageAction } = await import('../www/js/plan.js');
+  // ⚠️ If these ever disagreed the drag would PREVIEW one page and the release would turn
+  // to the other — invisible to every other test, and the app would feel possessed.
+  for (const dx of [60, 200, -60, -200]) {
+    const armed = swipeDragArm({ dx, dy: 0 });
+    const flick = swipePageAction({ dx, dy: 0, dt: 300, page: 1, total: 5 });
+    assert.equal(armed, flick, `the two paths disagree at dx=${dx}`);
+  }
+});

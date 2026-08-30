@@ -34,6 +34,34 @@ export const SWIPE_MIN_PX = 56;   // horizontal travel that counts as a delibera
 export const SWIPE_MAX_MS = 2500; // beyond this the finger was resting, not swiping
 export const SWIPE_RATIO = 1.4;   // |dx| must beat |dy| by this much to be "horizontal"
 
+/* v1.0.62 — THE PAGE NOW FOLLOWS THE FINGER (user request: "משוב, על ידי הזזת הדף ביחס
+   להזזת האצבע, למשתמש לדעת שהוא מזיז את הדף לדף הבא"). The neighbouring page is rendered
+   beside the current one and both translate together, so the child SEES where they are
+   going instead of guessing.
+
+   ⚠️ SWIPE_ARM_PX > TAP_SLOP_PX IS THE SAME INVARIANT SWIPE_MIN_PX CARRIES, one step
+   earlier and stricter in its consequence: this is the travel at which the grid starts to
+   MOVE, so a value at or below the tap slop would make every tap on a tile visibly nudge
+   the screen. It also has to clear the noise of a finger settling before a vertical scroll,
+   which is why the ratio test is applied at the same moment (a scroll that drifts sideways
+   must never arm a drag — the v1.0.52 collision, now visible while it happens).
+
+   THE COMMIT IS RELATIVE, NOT ABSOLUTE (the user's decision 2026-08-30). With live feedback
+   the honest rule is "what you see is what happens": past a third of the width the next page
+   is already more than half-revealed, so releasing there must complete the turn. SWIPE_MIN_PX
+   stays as the floor for the FALLBACK path (a gesture that never armed a live drag), which
+   is why both constants exist.
+
+   THE RUBBER-BAND is what the first/last page answers with (the user's decision): the page
+   gives a little and springs back, which says "there is nothing that way" without the screen
+   reading as frozen. Its cap is a FRACTION of the width, not a pixel count, so a phone and a
+   tablet feel the same. */
+export const SWIPE_ARM_PX = 18;          // travel before the grid starts to move (> TAP_SLOP_PX)
+export const SWIPE_COMMIT_RATIO = 0.33;  // release past this fraction of the width ⇒ turn
+export const SWIPE_RUBBER = 0.35;        // resistance factor when there is no page that way
+export const SWIPE_RUBBER_MAX = 0.12;    // …and never further than this fraction of the width
+export const SWIPE_SNAP_MS = 220;        // the settle animation, both for a turn and a spring-back
+
 /* Continuous play (v1.0.25) — OFF by default, per profile, synced.
    The countdown is the child's only visible way out of a chain: it must be long enough
    for a 5-year-old to notice the screen changed and reach the stop button, and short
