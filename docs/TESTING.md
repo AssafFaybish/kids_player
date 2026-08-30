@@ -246,6 +246,18 @@ for anything destructive, and purge it afterwards.
       belongs to Android (back / home). It must not leave the app in a state where the NEXT
       swipe is ignored — the v1.0.57 lost-end bug, whose fix is pinned but whose trigger is
       the OS.
+### 🕒 נצפה לאחרונה (v1.0.57 — the browser proved the folder; these need a device or two)
+- [ ] **The stamp survives a force-close**: watch a video past ~10 seconds, kill the app from
+      the recents switcher, reopen → the video is in 🕒. *(The write is immediate, but only a
+      real process kill proves nothing was buffered.)*
+- [ ] **Two devices, one account**: watch different videos on the tablet and on the phone →
+      each keeps its OWN 🕒 list, and neither pull empties the other's. Then change the
+      NUMBER on one device → the other device's 🕒 resizes after its next pull, while its
+      contents stay its own. *(This is the whole device-local/synced split in one check.)*
+- [ ] **The number is per child**: set 🕒 to 3 for one profile and 0 for a sibling → the
+      sibling's home has no 🕒 tile at all, and the first child's holds 3.
+- [ ] **An incoming CALL mid-video** (with feature 3): the stamp must still land — the pause
+      does not reset the playhead, so a video already past 10 seconds stays watched.
 
 ### Drive files + audio (v1.0.56 — the browser proves the scene and the parsers, NOT these)
 - [ ] **A Drive mp3 plays and looks like music**: share an mp3 in Drive as "anyone with the

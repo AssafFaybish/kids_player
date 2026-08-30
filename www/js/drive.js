@@ -202,6 +202,12 @@ export function mergeAppliedState(mine, remote) {
     if (mine.posSec !== undefined) out.posSec = mine.posSec;
     if (mine.durSec !== undefined) out.durSec = mine.durSec;
     if (mine.posAt !== undefined) out.posAt = mine.posAt;
+    // v1.0.57 — 🕒's watch stamp is DEVICE-LOCAL (the user's decision) and must survive the
+    // fold for exactly the reason the position above does: this function REPLACES the local
+    // row, and a field the remote cannot carry is a field a pull would erase. Every pull
+    // would have emptied "נצפה לאחרונה" on the tablet whenever the phone touched the same
+    // video — silently, and only on the devices that sync.
+    if (mine.playedAt !== undefined) out.playedAt = mine.playedAt;
     // a LOCAL gift rank is device-local by rule and must survive a fold that only
     // carries a star (the old shape dropped it as part of the unwrap semantics, which is
     // right for an unwrap and wrong for a favourite-only entry)

@@ -27,7 +27,7 @@ import {
   listCustomFolders, putCustomFolder, deleteCustomFolder,
   getDeletedCustomFolders, putDeletedCustomFolders,
   getDeletedSiteEntries, putDeletedSiteEntries,
-  loadDenyRecords, tx, profScope, putVideoStates
+  loadDenyRecords, tx, profScope, putVideoStates, loadVideoStates
 } from './db.js';
 
 // v1.0.56 — audio joined the cache (media.cacheExtFor), so the accepted extensions widen
@@ -417,12 +417,26 @@ export async function importProfileSnapshot(profileId, text) {
   }
 
   // unwrap state: min(unwrappedAt) semantics — once unwrapped, never re-gifted
+  //
+  // ⚠️ v1.0.57 — THIS USED TO BLIND-PUT A TWO-FIELD RECORD OVER A LIVE ROW. `profileVideoState`
+  // is ONE row per (child, video) shared by every per-child feature, and this loop rebuilt it
+  // from scratch: importing a snapshot onto a profile that was already in use erased the
+  // child's ⭐ (v1.0.40), their resume position (v1.0.32) and now their 🕒 stamp — silently,
+  // for every video the snapshot mentioned. Exactly the class of bug `drive.mergeAppliedState`
+  // exists to prevent on the sync path, on the path nobody looked at. The local row is now
+  // read first and the snapshot's two fields are folded ON TOP of it.
+  //
+  // The DEVICE-LOCAL fields are deliberately NOT taken from the file (the export carries
+  // whole rows): a position and a watch stamp describe the device that made them, which is
+  // the same rule the Drive document follows. Keeping the LOCAL ones is not the same act as
+  // importing someone else's.
   if (Array.isArray(snap.states)) {
+    const existing = await loadVideoStates(profileId).catch(() => new Map());
     const statePuts = [];
     for (const st of snap.states) {
       if (!st || typeof st.key !== 'string') continue;
-      const rec = { profileId, key: st.key };
-      if (st.unwrappedAt) rec.unwrappedAt = st.unwrappedAt;
+      const rec = { ...(existing.get(st.key) || {}), profileId, key: st.key };
+      if (st.unwrappedAt) { rec.unwrappedAt = st.unwrappedAt; delete rec.giftRank; }
       else if (st.giftRank) rec.giftRank = st.giftRank;
       statePuts.push(rec);
     }

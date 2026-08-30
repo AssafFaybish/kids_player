@@ -2176,10 +2176,20 @@ test('a favourite is protected from the window, including a sibling\'s (v1.0.40)
   // pin the CALL, not the mere mention: the first version of this guard matched the array's
   // construction, so dropping it from the protectedWindowKeys arguments passed vacuously —
   // the exact trap CLAUDE.md documents.
-  assert.match(body, /protectedWindowKeys\(\{ records, states: giftStates, statesByProfile \}\)/,
+  // v1.0.57: `recent` joined the argument list (🕒's members are protected too — the user's
+  // decision). The shape is pinned WHOLE and updated deliberately, exactly as this guard
+  // intends: adding an argument must be a decision, and dropping one must fail here.
+  assert.match(body, /protectedWindowKeys\(\{ records, states: giftStates, statesByProfile, recent \}\)/,
     'the siblings\' stars are built but not passed — a shared library eats the sibling\'s favourite');
   assert.match(body, /src\.libraryId !== scope/, 'the sibling scan no longer filters to THIS library');
   assert.match(body, /loadVideoStates\(/, 'the siblings\' state is never read');
+  // and the recent set must be built for the SIBLINGS too, each with their OWN limit — a
+  // sibling's 🕒 is a different length, and reading the active child's number for everyone
+  // would protect the wrong videos in both directions.
+  assert.match(body, /recentKeys\(giftStates, recentLimit\)/, 'the active child\'s 🕒 is not protected');
+  assert.match(body, /recentKeys\(s\.states, lim\)/, 'a sibling\'s 🕒 is not protected');
+  assert.match(body, /recentLimitFor\(await getSetting\(s\.pid, 'recentLimit'/,
+    'the siblings\' 🕒 length is not read per profile');
 });
 
 test('a tap on a video reaches fullscreen SYNCHRONOUSLY (v1.0.2 rule, pinned v1.0.40)', () => {
@@ -3169,4 +3179,69 @@ test('swipe paging is wired to the three grids and nothing else (v1.0.57)', () =
   const rule = css.match(/#view-gallery, #view-folder, #watch-grid \{ touch-action: ([a-z-]+); \}/);
   assert.ok(rule, 'the swipe hosts lost their touch-action rule');
   assert.equal(rule[1], 'pan-y', 'the swipe hosts must be pan-y — `none` kills scrolling, `auto` kills the swipe');
+});
+
+test('🕒 נצפה לאחרונה is wired end to end, and device-local (v1.0.57)', () => {
+  const app = CODE.get('www/js/app.js');
+  const dbm = CODE.get('www/js/db.js');
+
+  // 1) THE THREE DERIVED FOLDERS MUST STAY IN LOCKSTEP. 🎁 and ⭐ each shipped a bug where
+  //    one renderer knew the folder and another did not (v1.0.21: an empty under-player
+  //    grid, i.e. the child loses every way to reach the next video). pageAnyFolder is THE
+  //    pagination entry point and nextAfter is the chain — a kind in one and not the other
+  //    means the chain silently disagrees with what is on screen.
+  const pager = fnSlice(app, 'async function pageAnyFolder(');
+  const chain = fnSlice(app, 'async function nextAfter(');
+  assert.match(pager, /fid === 'recent'/, 'pageAnyFolder does not know 🕒 — the folder renders empty');
+  assert.match(chain, /fid === 'recent'/, 'nextAfter does not know 🕒 — the chain disagrees with the grid');
+
+  // 2) THE CHAIN READS THE FROZEN SNAPSHOT, NEVER THE LIVE ORDER. Watching a video moves it
+  //    to the FRONT of this folder, so a live re-read hands back the video before it and the
+  //    chain rocks between the same two forever.
+  const recentBranch = chain.slice(chain.indexOf("fid === 'recent'"));
+  assert.match(recentBranch.slice(0, 400), /watchCtx\.recent/,
+    'the 🕒 chain re-reads the live order — it will ping-pong between two videos');
+  assert.doesNotMatch(recentBranch.slice(0, 400), /recentKeys\(giftStates/,
+    'the 🕒 chain re-derives the order instead of using the snapshot');
+  assert.match(fnSlice(app, 'async function openWatch('), /watchCtx\.recent =/,
+    'openWatch no longer freezes the 🕒 order');
+
+  // 3) The stamp is INDEPENDENT of the resume setting (saveWatchPosition is gated on it, and
+  //    this folder must work for a family that never turns resume on) and runs ONCE per
+  //    opening — the interval fires every few seconds and every write bumps dataVersion(),
+  //    which is what the home's folder cache keys off.
+  const stamp = fnSlice(app, 'function stampWatched(');
+  assert.doesNotMatch(stamp, /resumeEnabled/, 'the 🕒 stamp was gated on the resume setting');
+  assert.match(stamp, /stampedWatch === item\.key/, 'the stamp no longer runs once per opening');
+  assert.match(stamp, /recentLimit <= 0/, 'the stamp writes state even when the folder is off');
+
+  // 4) The folder cache key names the SETTING. Settings live in Preferences, so changing
+  //    this number does NOT move db.dataVersion() — without it in the key the child's home
+  //    keeps the old folder until some unrelated write happens to bump the counter.
+  const build = fnSlice(app, 'async function buildFolders(');
+  assert.match(build, /cache\.recentLimit === recentLimit/,
+    'the folder cache ignores the 🕒 setting — changing it will not repaint the home');
+
+  // 5) DEVICE-LOCAL, both directions (behaviourally pinned in gdrive.test.mjs; this pins
+  //    that the fields exist where they must). The serializer is an allowlist, so the
+  //    dangerous half is the APPLY side silently dropping the local stamp.
+  assert.match(CODE.get('www/js/drive.js'), /mine\.playedAt !== undefined\) out\.playedAt = mine\.playedAt/,
+    'a Drive pull erases the local 🕒 stamps');
+
+  // 6) THE ROW-DELETE PREDICATE IS THE SHARED PURE ONE. The inline version it replaced ate
+  //    ⭐ (see normalize.stateRowIsSpent); the next feature to share this row must extend
+  //    that function, not write a second answer here.
+  assert.match(dbm, /import \{ stateRowIsSpent \} from '\.\/normalize\.js'/,
+    'db.js no longer uses the shared row-spent predicate');
+  assert.equal((dbm.match(/stateRowIsSpent\(rec\)/g) || []).length, 2,
+    'both row-clearing paths (position + watch stamp) must use the shared predicate');
+  assert.doesNotMatch(dbm, /rec\.giftRank === undefined && !rec\.unwrappedAt/,
+    'the inline row-spent check is back — it deletes ⭐ and 🕒 with the row');
+
+  // 7) The snapshot import must FOLD onto the live row, never rebuild it: this store is one
+  //    row per (child, video) shared by every per-child feature, and a blind put erased the
+  //    child's ⭐, their resume position and their 🕒 for every video the file mentioned.
+  const imp = CODE.get('www/js/snapshot.js');
+  assert.match(imp, /\.\.\.\(existing\.get\(st\.key\) \|\| \{\}\)/,
+    'the snapshot import rebuilds state rows from scratch — it erases ⭐ and 🕒');
 });

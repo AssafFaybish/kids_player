@@ -6,7 +6,8 @@
 
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
-import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO } from './config.js';
+import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO,
+  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT } from './config.js';
 
 /**
  * v1.0.37 — PURE: the caps a sync actually enforces.
@@ -539,6 +540,52 @@ export function swipePageAction({ dx, dy, dt, page, total } = {}) {
   return dir;
 }
 
+/* ---------------- 🕒 נצפה לאחרונה (v1.0.57) ---------------- */
+
+/**
+ * v1.0.57 — PURE: how many videos the "watched recently" folder holds. 0 = OFF.
+ *
+ * ⚠️ THE UNSET CHECK MUST PRECEDE THE COERCION, and this is the third feature to say so
+ * (`plan.screenOffMinutes`, `plan.normalizeLockMinutes`): `Number(null) === 0`, so reading
+ * the value first would turn "the parent never opened this screen" into an explicit
+ * "off" and silently discard the default.
+ *
+ * A nonsense value falls back to the DEFAULT, never to 0 — the `planRejectedPurge` rule,
+ * pointing the opposite way to `keepNewestPerChannel` because the directions are not
+ * symmetric: there, a typo must not start proposing DELETIONS; here, the worst a wrong
+ * value can do is show a shortcut folder nobody asked for, while reading a typo as OFF
+ * would quietly remove a folder the child navigates by.
+ */
+export function recentLimitFor(raw, { def = RECENT_DEFAULT_LIMIT, max = RECENT_MAX_LIMIT } = {}) {
+  if (raw === null || raw === undefined || raw === '') return def; // never written
+  const n = Number(raw);
+  if (n === 0) return 0;                       // an explicit 0 IS the answer: off
+  if (!Number.isFinite(n) || n < 0) return def;
+  return Math.min(max, Math.max(1, Math.floor(n)));
+}
+
+/**
+ * v1.0.57 — PURE: the folder's contents, newest watch FIRST (the user's explicit order).
+ *
+ * The OPPOSITE of ⭐'s ascending order, and deliberately: ⭐ is a shelf the child builds and
+ * navigates by position, while this folder's whole promise is "what I was just watching is
+ * at the front". The cost is stated where it matters: THE FOLDER REORDERS ITSELF AFTER
+ * EVERY VIDEO, which is why the watch-grid chain runs on a snapshot (see app.openWatch) —
+ * a live re-read would make "the next video" the one that just moved, forever.
+ */
+export function recentKeys(states, limit) {
+  const n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0) return [];
+  const entries = states instanceof Map
+    ? [...states.entries()]
+    : Object.entries(states && typeof states === 'object' ? states : {});
+  return entries
+    .filter(([key, st]) => key && st && Number(st.playedAt) > 0)
+    .sort((x, y) => (Number(y[1].playedAt) || 0) - (Number(x[1].playedAt) || 0))
+    .slice(0, Math.floor(n))
+    .map(([key]) => key);
+}
+
 /* ---------------- rolling window (v1.0.39) ---------------- */
 
 /**
@@ -660,9 +707,17 @@ export function planChannelWindow({ records, keep, protectedKeys = new Set() }) 
  * only the active one: on a legacy shared scope, one child's window must never prune the
  * sibling's favourite (the same cross-profile rule `db.deleteVideoStates` follows).
  */
-export function protectedWindowKeys({ records = [], states = null, statesByProfile = null } = {}) {
+export function protectedWindowKeys({ records = [], states = null, statesByProfile = null, recent = null } = {}) {
   const out = new Set();
   for (const rec of records) if (rec && rec.key && rec.keepForever) out.add(rec.key);
+  // v1.0.57 — WHATEVER IS IN 🕒 RIGHT NOW IS PROTECTED (the user's decision 2026-08-30).
+  // A watch stamp is the honest play signal this feature has always lacked: `posSec` below
+  // is cleared by a video watched to the END (resumeSaveDecision), so the most-rewatched
+  // video — exactly the one the rationale is about — carries no position at all. The keys
+  // arrive COMPUTED because the limit is per profile and a sibling on a legacy shared
+  // library has their own; unioning "every video ever watched" instead would quietly gut
+  // the window it is protecting from.
+  for (const key of (Array.isArray(recent) ? recent : [])) if (key) out.add(key);
   const readEntries = (s) => (s instanceof Map
     ? [...s.entries()]
     : Object.entries(s && typeof s === 'object' ? s : {}));

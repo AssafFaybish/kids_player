@@ -154,3 +154,32 @@ export function settleCuration(rec, fallbackFolderId, now = Date.now()) {
   }
   return rec;
 }
+
+/**
+ * v1.0.57 — PURE: has this `profileVideoState` row got anything left worth keeping?
+ *
+ * The store is ONE row per (child, video) shared by four unrelated features — the gift
+ * rank, the unwrap stamp, the resume position, the ⭐, and now the watch stamp — so
+ * "clear my field" and "delete the row" are different acts, and only this predicate may
+ * decide the second one.
+ *
+ * ⚠️ IT EXISTS BECAUSE THE INLINE VERSION SILENTLY ATE STARS. `db.clearPlayPosition`
+ * (which runs on every video that plays to the END while resume is on) deleted the row
+ * whenever it carried no `giftRank` and no `unwrappedAt` — a check written in v1.0.32,
+ * before ⭐ existed, and never revisited when v1.0.40 added `favAt`/`favOffAt` to the same
+ * row. So a video the child starred, that was never a gift, watched to the end, lost its
+ * star: it vanished from ⭐ with nothing to explain it, and `favOffAt` was not written
+ * either, so a peer's copy could later re-star it. Found while adding `playedAt`, which
+ * would have been the next field to disappear the same way.
+ *
+ * Every field the row can carry is named here ON PURPOSE: the next feature to share this
+ * row must add its field to this list, and a test pins the list against the writers.
+ */
+export function stateRowIsSpent(rec) {
+  if (!rec) return true;
+  return rec.giftRank === undefined
+    && !rec.unwrappedAt
+    && !rec.favAt && !rec.favOffAt
+    && !rec.playedAt
+    && rec.posSec === undefined;
+}

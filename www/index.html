@@ -847,6 +847,22 @@
           <p class="hint sched-lock-hint">בזמן ניגון תופיע שאלת "עדיין צופים?" — בלי תשובה הסרטון יושהה והמסך יכבה לפי הגדרת הזמן של המכשיר. 0 = המסך נשאר דולק תמיד (כמו עד היום).</p>
         </div>
 
+        <!-- v1.0.57 — 🕒 "נצפה לאחרונה". Per-profile + SYNCED, default ON at 10 (the user's
+             request). The folder itself is derived from this device's own watch stamps, so
+             the NUMBER travels between devices and the CONTENTS do not — same split as the
+             resume position, and for the same reason. 0 hides the folder entirely. -->
+        <div class="sched-lock-row">
+          <span class="sched-lock-label">🕒 תיקיית "נצפה לאחרונה"<b id="recent-limit-owner" class="setting-owner"></b></span>
+          <div class="sched-lock-fields">
+            <label>לשמור את
+              <input id="recent-limit" class="input sched-num" type="number" min="0" max="50" step="1" inputmode="numeric" value="10" />
+              הסרטונים האחרונים שנצפו</label>
+          </div>
+          <p class="hint sched-lock-hint">תיקייה בראש מסך הבית עם הסרטונים האחרונים שהילד/ה צפו
+            בהם — מהאחרון לישן — כדי לחזור אליהם מהר. הסרטונים נשארים גם במקום הרגיל שלהם, ושום
+            דבר לא נמחק. הרשימה נשמרת במכשיר הזה בלבד. 0 = בלי התיקייה.</p>
+        </div>
+
         <!-- v1.0.39 — the ROLLING WINDOW. OFF by default (0): this is the only setting that
              deletes the child's videos, so it may never arrive with an update. Even when on,
              the sync only PROPOSES — the notice appears in the מקורות tab and the parent

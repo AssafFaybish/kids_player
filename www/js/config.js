@@ -80,6 +80,21 @@ export const SCREEN_OFF_DEFAULT_MIN = 10;
 export const SCREEN_OFF_PROMPT_SEC = 45;
 
 
+/* v1.0.57 — 🕒 "נצפה לאחרונה": the last N videos this child watched, in their own folder at
+   the top of the home, IN ADDITION to wherever the video really lives (user request).
+   Per profile, SYNCED (the number is a parenting choice); the WATCH STAMPS THEMSELVES ARE
+   DEVICE-LOCAL, exactly like the resume position and for the same reason — "what was
+   watched here" is about the tablet in the child's hands, and pushing a timestamp per
+   video watched would rewrite the family document all afternoon (user decision 2026-08-30).
+   ⚠️ DEFAULT IS ON at 10, so this arrives with the update for every existing family — the
+   SCREEN_OFF_DEFAULT_MIN precedent, and it must ride the release notes the same way. */
+export const RECENT_DEFAULT_LIMIT = 10;
+export const RECENT_MAX_LIMIT = 50;   // beyond this the folder stops being a shortcut
+// A video counts as WATCHED after this many seconds of playback (user decision): a child's
+// mistaken tap, or a two-second peek, must not evict something they actually watched from a
+// 10-slot folder. A video that ENDS counts regardless — a 6-second clip can never reach it.
+export const RECENT_MIN_PLAY_SEC = 10;
+
 /* v1.0.39 — ROLLING WINDOW: keep only the newest N videos per channel.
    0 = OFF, and OFF IS THE DEFAULT. This is the only feature in the app that deletes the
    CHILD'S content, so it may never arrive with an update: a family that never opens the
