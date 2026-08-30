@@ -273,6 +273,15 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+> ⚠️ **NAMING NOTE (2026-08-30): everything labelled `v1.0.58` below SHIPPED IN v1.0.57.**
+> The three v1.0.57 features and both v1.0.58 trains were merged and released together, so
+> `npm version patch` cut one release — 1.0.56 → **1.0.57** — carrying all of them. The
+> `v1.0.58` labels in the code, the tests and the entries below are therefore the FEATURE
+> TRAIN's name, not the version a family runs. Left as they are on purpose: renaming ~80
+> comments would churn the whole diff for a cosmetic gain, and publishing a duplicate
+> release would have shown every parent the same what's-new text twice. The next version to
+> be cut is 1.0.58 and it will contain none of this.
+
 - v1.0.58 — **THE TABLET STOPS FILLING UP, AND A FOLDER CAN CHANGE ITS FACE** (four user
   requests in one release).
   - **AN EMPTY FOLDER IS DELETED, NOT HIDDEN.** v1.0.56 deliberately kept the row (the
