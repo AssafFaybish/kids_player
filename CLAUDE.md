@@ -273,6 +273,51 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.58 — **SEARCH INSIDE A FOLDER** (user request: like the home's search, but over the
+  current folder and everything nested in it).
+  - ⚠️ **"NESTED" HAS EXACTLY ONE MEANING IN THIS APP, and the phrase suggests otherwise.**
+    There is no folder hierarchy: folders are flat (`ch:` `cf:` `grp:` `pl:`) and there is
+    no folder-inside-a-folder screen — this feature deliberately does not add one. The ONLY
+    parent/child relation in the data is what an imported Drive tree leaves behind, where
+    every folder of one import carries `driveRootId` pointing at its root (v1.0.58).
+  - **INSIDE AN IMPORTED COLLECTION THE SCOPE IS THE WHOLE COLLECTION** (user decision
+    2026-08-30), not just what hangs below the current folder. The reason is structural: the
+    root row is HIDDEN from the child whenever it holds no songs of its own, so a strictly
+    downward reading would leave no place from which the other 31 discs could ever be
+    searched. The folder the child is standing in is searched FIRST — its own songs are the
+    likeliest answer. Anywhere else the scope is the folder itself, which is what "search in
+    this folder" means when nothing nests.
+  - **THE CANDIDATES COME FROM `pageAnyFolder`, NOT FROM A SECOND READING OF THE FOLDER
+    RULES.** That function is THE pagination entry point and already knows every folder kind
+    — the 🎁/⭐/🕒 views that carry no `folderId` at all, a channel's absorbed singles, the
+    trimmed loose list. Filtering the merge index by `folderId` instead would have been a
+    second answer to "what is in this folder", and the two would have disagreed exactly
+    where it hurts (the v1.0.21 bug that cost the child every way out of a gift). The search
+    therefore sees what the folder shows BY CONSTRUCTION, and is bounded by config caps so
+    it can never become "load the family's whole library".
+  - **A FOLDER LOCK NARROWS IT TO ONE FOLDER, ALWAYS, AND SUPPRESSES FOLDER RESULTS.** The
+    home's search is hidden while such a lock is on, and its own comment says why — "search
+    reaches ANOTHER folder". A scoped search may stay (the user's decision: a child locked
+    into a 700-song folder should still be able to find a song) only for as long as it
+    cannot do that, and a sibling folder's result IS a way to reach that folder's grid
+    through the watch screen's under-player pager.
+  - Nested folder NAMES are results too (user decision), folders first — in a 32-disc
+    collection, typing the disc's name should open it in one tap. Never the folder the child
+    is already in, and never under a lock.
+  - ONE screen and ONE ranking: it reuses `view-search` and `search.rankItems`; only
+    `searchFolderId` differs, and the home's search clears it so the two can never blur.
+  - ⚠️ **FOUND IN THE BROWSER AND NOWHERE ELSE**: the edit that adds the two caps to the
+    config import silently did not apply (the line had moved in an earlier change), so both
+    were `undefined` — a ReferenceError swallowed by the caller's `catch`, which showed as a
+    search that found nothing and said nothing. `node --check` passes on that, and no node
+    test executes app.js at runtime. **An unasserted string replace is how this happens; the
+    fix asserts the constants landed in the import.**
+  - 3 unit tests + 1 invariants test (5 wiring halves), every guard proven red on a planted
+    regression (8). Verified in the browser against the real 32-disc collection: "קדיש" from
+    inside disc 9 found 4 songs across the collection, a disc NAME opened that folder in one
+    tap, the home's search stayed global — and with a real folder lock engaged the same
+    query returned exactly 1 result, from the locked folder, with no folder results at all.
+
 > ⚠️ **NAMING NOTE (2026-08-30): everything labelled `v1.0.58` below SHIPPED IN v1.0.57.**
 > The three v1.0.57 features and both v1.0.58 trains were merged and released together, so
 > `npm version patch` cut one release — 1.0.56 → **1.0.57** — carrying all of them. The
