@@ -3,8 +3,12 @@
 // WITHOUT hiding the host (the exit button lives inside the gallery pager's host).
 
 /**
- * makePager({ mount, onChange }) -> { update(page, total), el }
+ * makePager({ mount, onChange }) -> { update(page, total), state(), el }
  * mount: container element. onChange(newPage): called on arrow taps.
+ *
+ * `state()` exists for the v1.0.57 swipe (ui/swipe.js): the flick and the arrows must
+ * agree about which page is showing and how many there are, so the gesture reads the
+ * SAME numbers the arrows were last drawn from instead of a copy kept beside them.
  */
 export function makePager({ mount, onChange }) {
   const controls = document.createElement('div');
@@ -46,5 +50,5 @@ export function makePager({ mount, onChange }) {
   }
 
   update(0, 1);
-  return { update, el: controls };
+  return { update, state: () => ({ page, total }), el: controls };
 }
