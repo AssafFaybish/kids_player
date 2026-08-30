@@ -316,6 +316,42 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     question with the honest count and restored; and two declined, staying removed with
     "לא נוסף כלום — 2 קבצים בתיקיה הוסרו כאן בעבר".
 
+- v1.0.61 — **"⚙️ איך לסנכרן את הערוץ?" ACTUALLY ASKS NOW** (field report with a screenshot:
+  tapping it hid the row and asked nothing, and the channel stayed un-synced until the
+  parent ticked auto-approve by hand in the list below).
+  - **ROOT CAUSE: THE BUTTON WAS ASKING THE WRONG QUESTION.** It delegated to
+    `offerChannelApproval`, which asks about the BACKLOG — and that function returns
+    `{count: 0}` **before opening any dialog** when the pending queue is empty.
+    `decideNewChannel` then read `count === 0` as "the tap was the review", called
+    `markChannelDecided` (which writes **`decidedAt` ONLY, never `autoApprove`**) and showed
+    a 4-second toast. The row left "ערוצים חדשים" with nothing decided.
+  - **SIX STATES REACH AN EMPTY QUEUE**, and only one of them is the intended
+    Shorts-only case: a peer's row this device has not synced yet, an auto-approved
+    `defaultAutoApprove`, a pending record parked in the PROFILE scope (`pendingKeysOfChannel`
+    reads ONE scope, unlike `pendingTotal`), `pagePending`'s 5000 cap — and **a null
+    `libScope`**, which is the exact failure `test/invariants.test.mjs` already carries a
+    guard about for the sibling functions. A seventh silent path: `askKid` answers
+    `'dismiss'` instantly when another modal is open (modals never stack), which the old
+    code could not tell from a real "אחר כך".
+  - **THE FIX IS A DIFFERENT QUESTION, NOT A PATCHED GUARD.** A sync MODE is a property of
+    the SUBSCRIPTION and can always be asked; the backlog is a consequence, and the same
+    answer settles it. `plan.channelSyncModeDialog` is raised on every tap regardless of the
+    queue, and the answer writes **both** `autoApprove` (which IS the ✅ in the channel list)
+    and `decidedAt` (which is only what clears the row out of the section), plus
+    `autoApproveSource:'ui'`. "אוטומטי" also approves any backlog; "ידני" opens the picker
+    when there is one.
+  - **"אחר כך" AND A DISMISS WRITE NOTHING** — the row stays where the parent can find it,
+    which is the v1.0.23 rule ("אחר כך" is deliberately not a decision) now applied to the
+    accidental-dismiss case too. A null scope says so instead of deciding.
+  - The ADD flow's own three-way dialog is untouched: there the parent has just pasted a
+    channel and the backlog IS the question.
+  - 3 unit tests + 1 invariants test (5 wiring halves), every guard proven red on a planted
+    regression (5). **`decideNewChannel` had ZERO test coverage before this** — the empty-queue
+    branch was described only in a CLAUDE.md paragraph that called it intended behaviour.
+    Browser-verified through the real PIN gate on a planted empty-queue channel: the dialog
+    opens, "אוטומטי" saves `autoApprove:true` + `decidedAt` and ticks the ✅ in the list
+    below, "אחר כך" leaves the row untouched, and both survive a reload.
+
 - v1.0.58 REVIEW PASS — **THREE DEFECTS REACHED MAIN, AND A FOURTH WAS BORN FIXING THEM.**
   Found by reading the shipped diff with fresh eyes; every one is now guard-pinned and
   proven red on a planted regression. **All four are the same shape: a green suite over code
