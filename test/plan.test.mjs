@@ -2200,14 +2200,26 @@ test('planEmptyFolderSweep: empty folders go, but not the refresh anchor or a fr
     { folderId: 'cf:full', createdAt: old },
     { folderId: 'cf:driveRoot', driveFolderId: 'D', createdAt: old },
     { folderId: 'cf:driveDisc', driveFolderId: 'D2', driveRootId: 'D', createdAt: old },
-    { folderId: 'cf:justMade', createdAt: now - 1000 }
+    { folderId: 'cf:justMade', createdAt: now - 1000 },
+    // v1.0.61 — a folder whose CHILDREN hold the songs: the row a parent taps to reach 32
+    // discs holds nothing of its own
+    { folderId: 'cf:container', createdAt: old },
+    { folderId: 'cf:disc9', parentFolderId: 'cf:container', createdAt: old }
   ];
-  const gone = planEmptyFolderSweep({ folders, counts: { 'cf:full': 3 }, now });
-  assert.deepEqual(gone, ['cf:plain', 'cf:driveDisc']);
+  const gone = planEmptyFolderSweep({ folders, counts: { 'cf:full': 3, 'cf:disc9': 12 }, now });
+  assert.deepEqual(gone, ['cf:plain']);
   // ⚠️ THE DRIVE ROOT IS EMPTY ON PURPOSE — it is the row the refresh walks, and deleting it
   // silently stops a nested Drive folder from ever picking up a disc added later (the
   // user's decision 2026-08-30 was to keep it).
   assert.ok(!gone.includes('cf:driveRoot'));
+  // ⚠️ v1.0.61 REVERSES A v1.0.58 RULE, DELIBERATELY: a Drive DESCENDANT used to be swept at
+  // zero. That was a ping-pong even before nesting — `planDriveFolderImport` counts DENIED
+  // files as media present, so a disc whose songs the parent deleted in-app still re-appears
+  // on the next refresh, with a NEW folderId. The sweep would tombstone it and the refresh
+  // would mint it again, every 30 minutes, against the Drive document, on every device.
+  assert.ok(!gone.includes('cf:driveDisc'), 'a Drive-backed row is re-created by the refresh — sweeping it is a loop');
+  // a folder that holds FOLDERS is not empty, however few songs of its own it has
+  assert.ok(!gone.includes('cf:container'), 'the collection front door was deleted — its discs survive, unreachable');
   // and a folder made minutes ago belongs to a parent who is still working on it: the
   // destination picker creates the row BEFORE the add finishes
   assert.ok(!gone.includes('cf:justMade'));

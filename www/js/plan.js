@@ -2213,25 +2213,33 @@ export function folderPickOptions(customFolders, { defaultTitle = 'סרטוני�
  *              them). Irreversible, and the text says so.
  * An empty folder needs no question at all — `needsChoice` is false and 'move' is a no-op.
  */
-export function planFolderDeletion({ title = '', count = 0, mode = 'move' } = {}) {
+export function planFolderDeletion({ title = '', count = 0, mode = 'move', children = 0 } = {}) {
   const n = Math.max(0, Number(count) | 0);
   const name = String(title || 'התיקיה');
+  // v1.0.61 — DELETING A COLLECTION DELETES THE FOLDERS INSIDE IT (the user's decision: it
+  // works like Drive). Saying so is not politeness: after nesting, "delete this folder" can
+  // mean 32 discs and 751 songs, and a parent who reads only the folder's own name has been
+  // told the smallest true thing rather than the relevant one.
+  const kids = Math.max(0, Number(children) | 0);
+  const alsoFolders = kids ? (kids === 1 ? ' ואת התיקיה שבתוכה' : ` ואת ${kids} התיקיות שבתוכה`) : '';
   if (!n) {
-    return { needsChoice: false, mode: 'move', moves: 0, deletes: 0,
-      text: `למחוק את התיקיה "${name}"? היא ריקה.` };
+    return { needsChoice: !!kids, mode: 'move', moves: 0, deletes: 0, children: kids,
+      text: kids
+        ? `למחוק את התיקיה "${name}"${alsoFolders}? היא לא מכילה סרטונים בעצמה.`
+        : `למחוק את התיקיה "${name}"? היא ריקה.` };
   }
   // The singular/plural phrasing is written out rather than built with hebCount: that
   // helper appends "אחד" AFTER its noun ("סרטון אחד"), which only reads correctly when the
   // noun phrase ends there — embedding a verb produced "הסרטון שבתוכה יעבור אחד".
   if (mode === 'purge') {
     const what = n === 1 ? 'ואת הסרטון שבתוכה' : `ואת ${n} הסרטונים שבתוכה`;
-    return { needsChoice: true, mode: 'purge', moves: 0, deletes: n,
-      text: `למחוק את התיקיה "${name}" ${what} לצמיתות? ` +
+    return { needsChoice: true, mode: 'purge', moves: 0, deletes: n, children: kids,
+      text: `למחוק את התיקיה "${name}"${alsoFolders} ${what} לצמיתות? ` +
         'הסרטונים יימחקו בכל המכשירים ולא ניתן יהיה לשחזר אותם — רק להוסיף מחדש.' };
   }
   const what = n === 1 ? 'הסרטון שבתוכה יעבור' : `${n} הסרטונים שבתוכה יעברו`;
-  return { needsChoice: true, mode: 'move', moves: n, deletes: 0,
-    text: `למחוק את התיקיה "${name}"? ${what} ל"סרטונים נוספים" — שום סרטון לא יימחק.` };
+  return { needsChoice: true, mode: 'move', moves: n, deletes: 0, children: kids,
+    text: `למחוק את התיקיה "${name}"${alsoFolders}? ${what} ל"סרטונים נוספים" — שום סרטון לא יימחק.` };
 }
 
 /* ---------------- Drive folders (v1.0.56) ----------------
@@ -2353,6 +2361,13 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
   const totals = { existing: 0, denied: 0, nonMedia: 0 };
   const deniedKeys = [];
   let added = 0;
+  // Pass 1 — plan every node's own files, and remember who holds media. v1.0.58 dropped a
+  // folder that held only subfolders ("a folder of folders is not a folder here") because
+  // the tree was FLATTENED and such a row could never be opened. v1.0.61 nests it, so that
+  // folder is exactly the one the parent taps to reach the discs: it survives if it holds
+  // media OR any descendant does.
+  const nodes = [];
+  const holdsMedia = new Set();
   for (const node of folders || []) {
     if (!node || typeof node.id !== 'string' || !node.id) continue;
     const plan = planDriveFolderImport({
@@ -2363,8 +2378,26 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
     totals.nonMedia += plan.skipped.nonMedia;
     deniedKeys.push(...(plan.deniedKeys || []));
     const mediaHere = plan.add.length + plan.skipped.existing + plan.skipped.denied;
+    if (mediaHere) holdsMedia.add(node.id);
+    nodes.push({ node, plan });
+  }
+  // Pass 2 — lift "holds media" up every ancestor chain, so a container folder survives.
+  // Walking parents per node is O(n·depth) and depth is cap-bounded, which is nothing for
+  // the 32-disc trees this exists for.
+  const parentOf = new Map();
+  for (const { node } of nodes) parentOf.set(node.id, node.parentId || null);
+  const bearing = new Set();
+  for (const { node } of nodes) {
+    if (!holdsMedia.has(node.id)) continue;
+    let at = node.id;
+    const guard = new Set(); // a malformed parent chain must never loop
+    while (at && !guard.has(at)) { guard.add(at); bearing.add(at); at = parentOf.get(at) || null; }
+  }
+  for (const { node, plan } of nodes) {
     const isRoot = node.id === rootId || node.depth === 0;
-    if (!isRoot && !mediaHere) continue; // a folder of folders is not a folder here
+    // The ROOT always gets a row even when the whole tree holds nothing: it is what ANCHORS
+    // the refresh, and without it nothing would ever re-walk the tree (the v1.0.58 rule).
+    if (!isRoot && !bearing.has(node.id)) continue;
     const existing = byDriveId.get(node.id) || null;
     let title = existing ? existing.title : '';
     if (!existing) {
@@ -2374,6 +2407,9 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
     added += plan.add.length;
     out.push({
       driveFolderId: node.id, title, isRoot, depth: Number(node.depth) || 0,
+      // v1.0.61 — the Drive parent, which the caller maps to a `cf:` id. The walk has always
+      // returned it; nothing ever persisted it, which is why the tree arrived FLAT.
+      parentDriveId: isRoot ? null : (node.parentId || null),
       existing, add: plan.add, skipped: plan.skipped
     });
   }
@@ -2441,13 +2477,135 @@ export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first
  * (the user's decision) only for as long as it cannot do that — and a result from a sibling
  * folder is a way to reach that folder's grid through the watch screen.
  */
+/**
+ * PURE (v1.0.61): the chain of folder ids from `folderId` up to its root, the folder itself
+ * FIRST. `[]` for an unknown id.
+ *
+ * This is the one place that walks `parentFolderId`, because a folder lock, the home filter
+ * and the search scope all need the same answer and three copies would disagree exactly
+ * where it hurts. The cycle guard is not defensive decoration: `parentFolderId` travels in
+ * the Drive document and is merged LWW per row, so two devices editing different rows can
+ * briefly produce a chain that points at itself — and a lock that hangs is a child stuck.
+ */
+export function folderAncestry(folderId, rows = []) {
+  const fid = String(folderId || '');
+  if (!fid) return [];
+  const by = new Map();
+  for (const r of rows || []) if (r && r.folderId) by.set(r.folderId, r);
+  if (!by.has(fid)) return [];
+  const out = [];
+  const seen = new Set();
+  let at = fid;
+  while (at && by.has(at) && !seen.has(at)) {
+    seen.add(at); out.push(at);
+    at = (by.get(at).parentFolderId) || null;
+  }
+  return out;
+}
+
+/**
+ * PURE (v1.0.61): is `folderId` the locked folder or anywhere beneath it?
+ *
+ * A folder lock used to be an EQUALITY test in five places, which was right while folders
+ * were flat. Nested, equality would lock a child into a collection's front door and then
+ * refuse every disc inside it — the lock would read as broken. An unknown folder is NOT
+ * contained: the lock errs strict (containment's direction since v1.0.56).
+ */
+export function folderWithinLock(folderId, lockFolderId, rows = []) {
+  const lock = String(lockFolderId || '');
+  if (!lock) return true;                       // no lock ⇒ nothing is out of bounds
+  const fid = String(folderId || '');
+  if (!fid) return false;
+  if (fid === lock) return true;
+  return folderAncestry(fid, rows).includes(lock);
+}
+
+/**
+ * PURE (v1.0.61): which custom folders the HOME screen shows — the roots.
+ *
+ * v1.0.58 put every folder of an imported tree on the home (32 discs = 8 pages of tiles);
+ * the user asked for the Drive shape instead. A child row whose parent is GONE falls back
+ * to the home rather than disappearing: an older app on the same account sweeps container
+ * rows it does not understand, and a disc that vanished entirely would be worse than one
+ * that is merely in the wrong place (the next refresh restores the shape).
+ */
+export function homeFolderRows(rows = []) {
+  const list = (rows || []).filter(Boolean);
+  const ids = new Set(list.map((r) => r.folderId).filter(Boolean));
+  return list.filter((r) => !r.parentFolderId || !ids.has(r.parentFolderId));
+}
+
+/**
+ * PURE (v1.0.61): a folder screen shows its CHILD FOLDERS and its own videos in ONE paged
+ * grid, folders first.
+ *
+ * One pager, not two: 32 discs need paging themselves, and a 5-year-old cannot be asked to
+ * tell two pagers apart. `pageAnyFolder`/`nextAfter` are deliberately NOT touched — the
+ * concatenation happens here, so both keep their invariant that they cover the same folder
+ * kinds and neither grows a nesting branch.
+ *
+ * -> { folderSlots, videoOffset, videoLimit } for page `page` (0-based).
+ * ⚠️ `videoLimit` may be 0 on a page filled entirely by folder tiles, and the caller must
+ * still CALL `db.pageFolder` — its `total` sizes the pager. `pageFolder` answers
+ * `{items: [], total}` for a zero limit (the v1.0.58 fix), which is exactly that shape.
+ */
+export function folderPageSlots({ childCount = 0, page = 0, pageSize = 15 } = {}) {
+  const kids = Math.max(0, Number(childCount) || 0);
+  const size = Math.max(1, Number(pageSize) || 1);
+  const p = Math.max(0, Number(page) || 0);
+  const start = p * size;
+  const folderStart = Math.min(start, kids);
+  const folderEnd = Math.min(start + size, kids);
+  const folderSlots = Math.max(0, folderEnd - folderStart);
+  return {
+    folderOffset: folderStart,
+    folderSlots,
+    videoOffset: Math.max(0, start - kids),
+    videoLimit: size - folderSlots
+  };
+}
+
+/** PURE (v1.0.61): how many pages a folder screen has once its child folders are counted. */
+export function folderPageTotal({ childCount = 0, videoTotal = 0, pageSize = 15 } = {}) {
+  const size = Math.max(1, Number(pageSize) || 1);
+  const n = Math.max(0, Number(childCount) || 0) + Math.max(0, Number(videoTotal) || 0);
+  return Math.max(1, Math.ceil(n / size));
+}
+
 export function folderSearchScope({ folderId = null, customRows = [], locked = false } = {}) {
   const fid = String(folderId || '');
   if (!fid) return [];
   if (locked) return [fid];
   const rows = Array.isArray(customRows) ? customRows.filter(Boolean) : [];
   const here = rows.find((r) => r.folderId === fid);
-  const rootDriveId = here && (here.driveRootId || here.driveFolderId);
+  if (!here) return [fid];
+  // v1.0.61 — the scope is the SUBTREE the child is standing in, which for a folder that
+  // nests is what "and everything inside it" means (the user's request). The v1.0.58 rule
+  // survives inside it: from a disc, the whole COLLECTION is searched, because the root row
+  // is hidden from the child whenever it holds no songs of its own — a strictly downward
+  // reading would leave the other 31 discs unreachable from anywhere.
+  const kidsOf = new Map();
+  for (const r of rows) {
+    if (!r.parentFolderId) continue;
+    if (!kidsOf.has(r.parentFolderId)) kidsOf.set(r.parentFolderId, []);
+    kidsOf.get(r.parentFolderId).push(r.folderId);
+  }
+  const chain = folderAncestry(fid, rows);
+  const top = chain.length ? chain[chain.length - 1] : fid;
+  const subtree = [];
+  const seen = new Set();
+  const stack = [top];
+  while (stack.length) {
+    const at = stack.pop();
+    if (!at || seen.has(at)) continue;
+    seen.add(at); subtree.push(at);
+    for (const k of kidsOf.get(at) || []) stack.push(k);
+  }
+  if (subtree.length > 1) {
+    // the folder the child is standing in comes FIRST: its own songs are the likeliest answer
+    return [fid, ...subtree.filter((id) => id !== fid)];
+  }
+  const rootDriveId = here.driveRootId || here.driveFolderId;
   if (!rootDriveId) return [fid];
   const tree = rows.filter((r) => r.driveFolderId === rootDriveId || r.driveRootId === rootDriveId);
   if (tree.length <= 1) return [fid];
@@ -2555,11 +2713,21 @@ export function deleteLocalChoice({ total = 0, local = 0, bytes = 0 } = {}) {
 export function planEmptyFolderSweep({ folders = [], counts = null, now = Date.now(),
   graceMs = EMPTY_FOLDER_GRACE_MS } = {}) {
   const by = counts instanceof Map ? counts : new Map(Object.entries(counts || {}));
+  const kids = new Set();
+  for (const f of folders || []) if (f && f.parentFolderId) kids.add(f.parentFolderId);
   const out = [];
   for (const f of folders || []) {
     if (!f || !f.folderId) continue;
     if ((Number(by.get(f.folderId)) || 0) > 0) continue;
-    if (f.driveFolderId && !f.driveRootId) continue;      // the refresh anchor
+    // v1.0.61 — A FOLDER THAT HOLDS FOLDERS IS NOT EMPTY. With the tree nested, the row the
+    // parent taps to reach 32 discs holds no songs of its OWN, and sweeping it would delete
+    // the whole collection's front door (its children survive, unreachable from the home).
+    if (kids.has(f.folderId)) continue;
+    // ⚠️ ANY Drive-backed row is exempt, not just the root anchor. The 30-minute refresh
+    // re-creates whatever it finds in Drive, so a swept descendant comes straight back with
+    // a NEW folderId — the sweep and the refresh would write a tombstone and mint a row
+    // against each other forever, against the Drive document, on every device.
+    if (f.driveFolderId) continue;
     const born = Number(f.createdAt) || Number(f.order) || 0;
     if (born && now - born < graceMs) continue;           // the parent is still working
     out.push(f.folderId);
