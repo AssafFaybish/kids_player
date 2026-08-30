@@ -42,7 +42,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText,
-  folderAncestry, folderWithinLock, homeFolderRows, folderPageSlots, folderPageTotal } from './plan.js';
+  folderAncestry, folderSubtreeIds, folderWithinLock, homeFolderRows, folderPageSlots, folderPageTotal } from './plan.js';
 import { makePager } from './ui/pager.js';
 import { attachSwipePager } from './ui/swipe.js';
 import * as loading from './ui/loading.js';
@@ -4729,11 +4729,27 @@ async function renameCustomFolder(cf) {
  * exists, invisible on every screen and un-reachable forever. Hence: MOVE by default.
  */
 async function deleteCustomFolderFlow(cf) {
-  const count = await db.countFolder(libScope, cf.folderId);
-  const plan = planFolderDeletion({ title: cf.title, count });
+  // v1.0.61 — DELETING A COLLECTION DELETES THE FOLDERS INSIDE IT (the user's decision: it
+  // behaves like Drive). Without the cascade the discs survive with a parent that no longer
+  // exists — `homeFolderRows` would put all 32 of them back on the home screen, which is
+  // both a mess and precisely the shape this whole feature removes.
+  const allRows = await db.listCustomFolders(libScope).catch(() => []);
+  const subtree = folderSubtreeIds(cf.folderId, allRows);
+  const descendants = subtree.filter((id) => id !== cf.folderId);
+  // Every folder of the subtree is counted, not just this one — the confirm must name what
+  // the tap actually destroys, and the purge branch must reach every video inside it.
+  let count = 0;
+  for (const id of subtree) count += await db.countFolder(libScope, id).catch(() => 0);
+  const plan = planFolderDeletion({ title: cf.title, count, children: descendants.length });
+  const dropRows = async () => {
+    // The children go FIRST: each gets its own `cfDel:` tombstone, because absence alone is
+    // re-added by any peer that has not pulled (the v1.0.36 rule).
+    for (const id of descendants) await db.deleteCustomFolder(libScope, id);
+    await db.deleteCustomFolder(libScope, cf.folderId);
+  };
   if (!plan.needsChoice) {
     if (!(await confirmKid({ emoji: '🗑️', title: 'מחיקת תיקיה', text: plan.text, ok: 'מחיקה', cancel: 'ביטול', danger: true }))) return;
-    await db.deleteCustomFolder(libScope, cf.folderId);
+    await dropRows();
   } else {
     const answer = await askKid({
       emoji: '🗑️', title: 'מחיקת תיקיה', text: plan.text,
@@ -4743,8 +4759,9 @@ async function deleteCustomFolderFlow(cf) {
     if (answer === 'third') {
       const purge = planFolderDeletion({ title: cf.title, count, mode: 'purge' });
       if (!(await confirmKid({ emoji: '⚠️', title: 'למחוק לצמיתות?', text: purge.text, ok: 'כן, למחוק', cancel: 'ביטול', danger: true }))) return;
+      const inSubtree = new Set(subtree);
       const recs = [...(await db.loadMergeIndex(libScope)).values()]
-        .filter((r) => (r.folderId === '~pending' || r.folderId === '~rejected' ? r.homeFolderId : r.folderId) === cf.folderId);
+        .filter((r) => inSubtree.has(r.folderId === '~pending' || r.folderId === '~rejected' ? r.homeFolderId : r.folderId));
       // v1.0.58 — ONE question for the whole folder, never one per video (the user's
       // decision), and only if any of them was actually downloaded.
       const localChoice = await askDeleteLocalCopies(recs);
@@ -4753,10 +4770,10 @@ async function deleteCustomFolderFlow(cf) {
       // WITH tombstones (the v1.0.39 rule): a raw delete is pure absence, and every Drive
       // merge is a union — a peer that has not pulled would re-push every one of them.
       await db.deleteVideosWithTombstones(libScope, recs.map((r) => r.key), 'folder-delete');
-      await db.deleteCustomFolder(libScope, cf.folderId);
+      await dropRows();
     } else {
-      await db.moveFolderVideos(libScope, cf.folderId, 'sheet');
-      await db.deleteCustomFolder(libScope, cf.folderId);
+      for (const id of subtree) await db.moveFolderVideos(libScope, id, 'sheet');
+      await dropRows();
     }
   }
   await refreshFoldersList();

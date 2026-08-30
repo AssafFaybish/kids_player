@@ -2504,6 +2504,35 @@ export function folderAncestry(folderId, rows = []) {
 }
 
 /**
+ * PURE (v1.0.61): `folderId` and every folder beneath it, the folder itself FIRST.
+ *
+ * The downward twin of folderAncestry. Deleting a collection must reach every disc inside
+ * it (their rows AND their videos), and the search scope needs the same walk — two copies
+ * would disagree exactly where it hurts. Cycle-guarded for the same reason: parentFolderId
+ * is merged LWW per row across devices and can briefly point in a circle.
+ */
+export function folderSubtreeIds(folderId, rows = []) {
+  const fid = String(folderId || '');
+  if (!fid) return [];
+  const kidsOf = new Map();
+  for (const r of rows || []) {
+    if (!r || !r.parentFolderId || !r.folderId) continue;
+    if (!kidsOf.has(r.parentFolderId)) kidsOf.set(r.parentFolderId, []);
+    kidsOf.get(r.parentFolderId).push(r.folderId);
+  }
+  const out = [];
+  const seen = new Set();
+  const stack = [fid];
+  while (stack.length) {
+    const at = stack.pop();
+    if (!at || seen.has(at)) continue;
+    seen.add(at); out.push(at);
+    for (const k of kidsOf.get(at) || []) stack.push(k);
+  }
+  return out;
+}
+
+/**
  * PURE (v1.0.61): is `folderId` the locked folder or anywhere beneath it?
  *
  * A folder lock used to be an EQUALITY test in five places, which was right while folders
@@ -2584,23 +2613,9 @@ export function folderSearchScope({ folderId = null, customRows = [], locked = f
   // survives inside it: from a disc, the whole COLLECTION is searched, because the root row
   // is hidden from the child whenever it holds no songs of its own — a strictly downward
   // reading would leave the other 31 discs unreachable from anywhere.
-  const kidsOf = new Map();
-  for (const r of rows) {
-    if (!r.parentFolderId) continue;
-    if (!kidsOf.has(r.parentFolderId)) kidsOf.set(r.parentFolderId, []);
-    kidsOf.get(r.parentFolderId).push(r.folderId);
-  }
   const chain = folderAncestry(fid, rows);
   const top = chain.length ? chain[chain.length - 1] : fid;
-  const subtree = [];
-  const seen = new Set();
-  const stack = [top];
-  while (stack.length) {
-    const at = stack.pop();
-    if (!at || seen.has(at)) continue;
-    seen.add(at); subtree.push(at);
-    for (const k of kidsOf.get(at) || []) stack.push(k);
-  }
+  const subtree = folderSubtreeIds(top, rows);
   if (subtree.length > 1) {
     // the folder the child is standing in comes FIRST: its own songs are the likeliest answer
     return [fid, ...subtree.filter((id) => id !== fid)];
