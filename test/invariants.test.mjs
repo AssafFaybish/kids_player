@@ -1840,7 +1840,10 @@ test('a Drive folder import asks ONCE for everything it refused (v1.0.61)', () =
   const revokeAt = body.indexOf('db.unDeny(');
   assert.ok(revokeAt > askAt, 'the tombstones are revoked BEFORE the parent answers');
   assert.match(body.slice(askAt, revokeAt), /await confirmKid\(/, 'the prompt is built but never shown');
-  assert.match(body, /plan = planDriveTreeImport\(/,
+  // ⚠️ anchored PAST the revoke on purpose: `plan = planDriveTreeImport(` also matches the
+  // import's own opening `let plan = ...`, so the naive version of this guard stayed green
+  // with the whole re-run deleted (caught by planting exactly that).
+  assert.match(body.slice(revokeAt), /plan = planDriveTreeImport\(/,
     'the plan is not re-run after the revoke — the files would stay skipped despite the yes');
   // only on a FIRST import: a 30-minute refresh must never raise a dialog at nobody
   assert.match(body, /plan\.deniedKeys\.length && first/,
