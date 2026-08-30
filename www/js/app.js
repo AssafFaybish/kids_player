@@ -1117,11 +1117,35 @@ async function sweepEmptyFolders() {
   if (!rows.length) return 0;
   const counts = new Map();
   for (const cf of rows) counts.set(cf.folderId, await db.countFolder(scope, cf.folderId));
+  // ⚠️ REVIEW FIX — A FOLDER HOLDING ONLY PARKED VIDEOS IS NOT EMPTY. `countFolder` ranges
+  // `by_folder_sort`, and a video waiting for approval (or sitting in the rejected archive)
+  // carries `folderId: '~pending'|'~rejected'` with the REAL folder in `homeFolderId` — so
+  // it counts as zero. The parent can put one there deliberately: moveVideoToFolder writes
+  // `homeFolderId` for exactly these records. Deleting the folder then leaves the video
+  // filed under a folder that no longer exists the moment it is approved — invisible on
+  // every screen and unreachable forever, which is the failure deleteCustomFolderFlow's
+  // own comment exists to prevent.
+  // ⚠️ BOTH readers answer `{ items, total }`. Spreading the OBJECT throws "not iterable"
+  // AFTER the promise's .catch has had its chance, so the throw escaped to the caller's
+  // `.catch(() => {})` and the whole sweep silently did nothing — measured in the browser,
+  // suite green (no node test executes app.js).
+  const pending = await db.pagePending(scope, { offset: 0, limit: 5000 }).catch(() => ({ items: [] }));
+  const rejected = await db.pageRejected(scope, { limit: 5000 }).catch(() => ({ items: [] }));
+  const parked = [...(pending.items || []), ...(rejected.items || [])];
+  for (const rec of parked) {
+    const home = rec && rec.homeFolderId;
+    if (home && counts.has(home)) counts.set(home, (counts.get(home) || 0) + 1);
+  }
   const gone = planEmptyFolderSweep({ folders: rows, counts });
   for (const folderId of gone) await db.deleteCustomFolder(scope, folderId);
   if (gone.length) maybeSchedulePush();
   return gone.length;
 }
+
+/** REVIEW FIX (v1.0.58): the cache file a record actually owns, read off the path that was
+ *  written at download time. Re-deriving it from the record drifts the moment `media` is
+ *  corrected at playback, and a drifted name makes a live file look like an orphan. */
+const localCacheName = (rec) => String((rec && rec.localPath) || '').split('/').pop();
 
 /**
  * v1.0.58 — THE DOWNLOADED-FILE CACHE PRUNES ITSELF (user request: the tablet must not fill
@@ -1152,7 +1176,13 @@ async function sweepDownloadCache() {
       if (!cur) return resolve();
       const rec = cur.value;
       if (rec && rec.localPath) {
-        const name = cacheBaseName(rec);
+        // ⚠️ REVIEW FIX — THE NAME COMES FROM `localPath`, THE PATH ACTUALLY WRITTEN, never
+        // from re-deriving it. `cacheExtFor` picks the extension from `media`, and v1.0.56
+        // CORRECTS `media` at loadedmetadata (a Drive file with no extension in its URL
+        // starts null and becomes 'audio') — so a re-derived name flips .mp4 → .mp3 after
+        // the first play, the real file stops matching any record, and the sweep deletes a
+        // perfectly good cached file as an "orphan".
+        const name = localCacheName(rec);
         owned.set(name, { usedAt: Number(rec.localUsedAt) || 0 });
         stampable.set(name, rec);
       }
@@ -5617,6 +5647,7 @@ let fpArtChoice = null;          // { thumbUrl } | null — the parent's picked 
 let fpEmojiChoice = '📁';
 let fpArtSeq = 0;                // a stale image search must never paint over a newer one
 let fpArtEditing = null;         // v1.0.58: the folder whose PICTURE is being changed
+let fpEmojiPicked = false;       // …and whether an emoji was EXPLICITLY tapped in it
 
 const FOLDER_EMOJI = ['📁', '🎵', '🚗', '🦁', '⚽', '🎨', '🚀', '🧸', '🍎', '🌙'];
 
@@ -5647,6 +5678,7 @@ async function renderFolderPick() {
   // v1.0.58: the art editor hides the destination list and the name field — restore both,
   // or the next add would open a picker with nothing to pick from.
   fpArtEditing = null;
+  fpEmojiPicked = false;
   $('fp-list').classList.remove('hidden');
   setFolderNameFieldVisible(true);
   const scope = (await ensureSources()).libraryId;
@@ -5738,6 +5770,7 @@ function renderFolderEmojiRow() {
     b.textContent = e;
     b.addEventListener('click', () => {
       fpEmojiChoice = e;
+      fpEmojiPicked = true; // an EXPLICIT choice — the only thing that may drop a picture
       fpArtChoice = null; // an emoji REPLACES a picked picture — one folder, one face
       for (const el of $('fp-art-row').querySelectorAll('.fp-art')) el.classList.remove('is-sel');
       renderFolderEmojiRow();
@@ -5861,6 +5894,7 @@ async function openFolderArtEditor(cf) {
   if (!scope || !cf) return;
   fpArtChoice = null;
   fpEmojiChoice = cf.emoji || '📁';
+  fpEmojiPicked = false;
   fpArtEditing = cf;
   fpArtSeq += 1; // a search still in flight from a previous folder must not paint here
   $('fp-title').textContent = 'תמונה לתיקיה';
@@ -5896,9 +5930,11 @@ async function saveFolderArtEdit() {
         await db.putThumb(artThumbId, blob, { origin: 'folder-art', srcUrl: artSrcUrl });
       }
     } catch { /* the emoji stands in — the same rule creation follows */ }
-  } else {
-    // an EMOJI was chosen: the picture is dropped, or the tile would keep showing the old
-    // image behind a new icon the parent deliberately picked
+  } else if (fpEmojiPicked) {
+    // ⚠️ REVIEW FIX — ONLY AN EXPLICIT EMOJI TAP DROPS THE PICTURE. This branch used to run
+    // whenever no image was chosen, and `fpArtChoice` starts null every time the editor
+    // opens — so a parent who opened 🖼️, looked, and tapped שמירה silently ERASED the
+    // folder's picture. The comment claimed "an emoji was chosen" and nothing checked it.
     artThumbId = null;
     artSrcUrl = null;
   }

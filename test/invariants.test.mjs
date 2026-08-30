@@ -3548,3 +3548,44 @@ test('searching inside a folder reuses the ONE pagination entry point (v1.0.58)'
   assert.equal((app.match(/rankItems\(/g) || []).length, 2,
     'a second ranking implementation appeared — search.rankItems is the only one');
 });
+
+test('v1.0.58 REVIEW: three defects that reached main, each now pinned', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1) A FOLDER HOLDING ONLY PARKED VIDEOS IS NOT EMPTY. `countFolder` ranges
+  //    by_folder_sort, and a video waiting for approval carries folderId '~pending' with
+  //    the real folder in `homeFolderId` — so it counted as ZERO and the sweep deleted the
+  //    folder. The moment the parent approved it, the video was filed under a folder that
+  //    no longer existed: invisible on every screen, forever (the exact failure
+  //    deleteCustomFolderFlow's own comment exists to prevent).
+  const sweep = fnSlice(app, 'async function sweepEmptyFolders(');
+  assert.match(sweep, /pagePending\(/, 'the empty-folder sweep ignores videos awaiting approval');
+  assert.match(sweep, /pageRejected\(/, 'the empty-folder sweep ignores the rejected archive');
+  // ⚠️ AND IT MUST READ `.items`. Both readers answer `{ items, total }`; spreading the
+  // OBJECT throws "not iterable" AFTER the promise's .catch, so the throw escaped to the
+  // caller's `.catch(() => {})` and the whole sweep silently did nothing. Measured in the
+  // browser with the suite green — no node test executes app.js.
+  assert.match(sweep, /pending\.items \|\| \[\]/, 'the pending reader is spread as if it were an array');
+  assert.match(sweep, /rejected\.items \|\| \[\]/, 'the rejected reader is spread as if it were an array');
+  assert.match(sweep, /homeFolderId/, 'a parked video no longer counts toward its real folder');
+
+  // 2) THE CACHE SWEEP OWNS A FILE BY THE PATH THAT WAS WRITTEN, never by re-deriving the
+  //    name. `cacheExtFor` reads `media`, and v1.0.56 CORRECTS media at loadedmetadata, so
+  //    a re-derived name flips .mp4 → .mp3 after the first play — the live file then匹配
+  //    no record and the sweep deletes it as an orphan.
+  const cache = fnSlice(app, 'async function sweepDownloadCache(');
+  assert.match(cache, /localCacheName\(rec\)/, 'the cache sweep re-derives the file name instead of reading localPath');
+  assert.doesNotMatch(cache, /cacheBaseName\(rec\)/, 'the drifting name is back');
+  assert.match(app, /const localCacheName = \(rec\) =>[^\n]*localPath/,
+    'the owned-name helper no longer reads the path that was written');
+
+  // 3) ONLY AN EXPLICIT EMOJI TAP MAY DROP A FOLDER'S PICTURE. `fpArtChoice` starts null
+  //    every time the editor opens, so the old `else` branch fired for a parent who opened
+  //    🖼️, looked, and tapped שמירה — silently erasing the picture. The comment claimed an
+  //    emoji had been chosen and nothing checked it.
+  assert.match(fnSlice(app, 'async function saveFolderArtEdit('), /\} else if \(fpEmojiPicked\) \{/,
+    'saving the art editor with nothing chosen wipes the folder picture again');
+  assert.match(app, /fpEmojiPicked = true/, 'the explicit-emoji flag is never set');
+  assert.match(fnSlice(app, 'async function openFolderArtEditor('), /fpEmojiPicked = false/,
+    'the flag survives from one folder to the next — the second edit would wipe a picture');
+});
