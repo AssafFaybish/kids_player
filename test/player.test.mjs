@@ -455,3 +455,51 @@ test('planCallResume: every way for the intent to go stale disarms it', async ()
   assert.equal(planCallResume({}), null);
   assert.equal(planCallResume(), null);
 });
+
+/* ---------------- background playback (v1.0.63) ---------------- */
+
+test('backgroundPlayDecision: opt-in, own files only, and never a paused video', async () => {
+  const { backgroundPlayDecision } = await import('../www/js/playerlogic.js');
+  const file = { type: 'file', title: 'שיר' };
+  const yt = { type: 'youtube', id: 'abc' };
+  // the default is today's behaviour: a family that never opens the setting keeps the pause
+  assert.deepEqual(backgroundPlayDecision({ enabled: false, playing: true, item: file }),
+    { play: false, why: 'off' });
+  assert.deepEqual(backgroundPlayDecision({ enabled: true, playing: true, item: file }),
+    { play: true, why: 'ok' });
+  // ⚠️ YOUTUBE IS EXCLUDED BY DESIGN (the user's decision): the IFrame player is a WebView
+  // Android may throttle or evict once the app is backgrounded, so "background YouTube"
+  // would be a promise the app cannot keep.
+  assert.deepEqual(backgroundPlayDecision({ enabled: true, playing: true, item: yt }),
+    { play: false, why: 'youtube' });
+  // a video the child had ALREADY PAUSED must stay paused — otherwise the app starts making
+  // noise in a pocket for a video nobody was watching (the v1.0.57 call-resume rule)
+  assert.deepEqual(backgroundPlayDecision({ enabled: true, playing: false, item: file }),
+    { play: false, why: 'not-playing' });
+  assert.deepEqual(backgroundPlayDecision({ enabled: true, playing: true, item: null }),
+    { play: false, why: 'no-item' });
+  assert.equal(backgroundPlayDecision({}).play, false);
+  assert.equal(backgroundPlayDecision().play, false);
+});
+
+test('backgroundSkipTarget: ⏮/⏭ walk the list the child is looking at, skipping gifts', async () => {
+  const { backgroundSkipTarget } = await import('../www/js/playerlogic.js');
+  const keys = ['a', 'b', 'c', 'd'];
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'next' }), 'c');
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'prev' }), 'a');
+  // ⚠️ NO WRAP-AROUND, in either direction: a chain that looped would play all night
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'd', dir: 'next' }), null);
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'a', dir: 'prev' }), null);
+  // ⚠️ A WRAPPED GIFT IS SKIPPED, NEVER OPENED. Its whole ritual is that the FIRST TAP
+  // unwraps it and deliberately does not play (v1.0.25) — starting it from a notification
+  // would consume the video while leaving the tile wrapped forever.
+  const gift = (k) => k === 'c';
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'next', isGift: gift }), 'd');
+  // …and a run of gifts is skipped over, not stopped at
+  const allGifts = (k) => k === 'c' || k === 'd';
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'next', isGift: allGifts }), null);
+  // a video that is not in the list at all (the folder changed under us) moves nothing
+  assert.equal(backgroundSkipTarget({ keys, currentKey: 'zz', dir: 'next' }), null);
+  assert.equal(backgroundSkipTarget({ keys: [], currentKey: 'a' }), null);
+  assert.equal(backgroundSkipTarget({}), null);
+});

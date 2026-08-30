@@ -83,6 +83,8 @@ let folderPage = 0;
 let folderPagerObj = null;
 let giftStates = new Map();           // key -> profileVideoState record (gifts F9, resume v1.0.32)
 let resumeEnabled = false;            // the active profile's synced 'resume' setting (v1.0.32)
+let bgPlayEnabled = false;            // v1.0.63: the active profile's synced 'bgPlay' setting
+let bgPlayLive = false;               // …and whether the foreground service is running now
 let recentLimit = RECENT_DEFAULT_LIMIT; // v1.0.57: 🕒 folder size, per profile, synced (0 = off)
 // v1.0.12 grouping of loose singles — record arrays built by ONE bulk read in
 // buildFolders and paginated directly (no per-key IDB reads on render).
@@ -336,6 +338,12 @@ async function showLockedScreen() {
   // very screen where they set the timer would be absurd. The next tick (or their return to
   // the gallery) shows it once they leave. The lock is stamped either way, so no time is lost.
   if (nav.isActive('parent') || nav.isActive('pin') || nav.isActive('connect') || nav.isActive('tour')) return;
+  // v1.0.63 — A BREAK STOPS THE MUSIC TOO. Screen time that leaves a song playing is not a
+  // break, and the notification would hand the child a ⏭ button that carried on through the
+  // whole lock — the site-viewer lesson above, on the new surface. Placed AFTER the
+  // parent-screen guard for the same reason it is: a parent mid-configuration is not a break.
+  await disarmBackgroundPlayback().catch(() => {});
+  pauseCurrent();
   $('locked-countdown').textContent = lockCountdownLabel(e.msLeft);
   // Containment BEFORE the reveal (review finding): the exit door's `hidden` class is
   // sticky DOM state from the PREVIOUS break, so painting first showed a stale — possibly
@@ -891,7 +899,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'bgplay-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -1691,6 +1699,10 @@ async function loadGiftStates() {
   // v1.0.32: the resume flag rides the same load — tileEl is synchronous and needs both.
   try { resumeEnabled = (await getSetting(activeProfileId, 'resume', false)) === true; }
   catch { resumeEnabled = false; }
+  // v1.0.63 — cached for the SAME reason: `onAppPause` must stay synchronous (it reads the
+  // playhead before pausing), so the answer has to be in memory before the screen goes off.
+  try { bgPlayEnabled = (await getSetting(activeProfileId, 'bgPlay', false)) === true; }
+  catch { bgPlayEnabled = false; }
   // v1.0.57: and 🕒's size. buildFolders, the pager and the watch stamp all need it
   // synchronously, and it must be re-read HERE rather than cached once per launch — a peer
   // can change it (the number is synced) and a profile switch changes whose number it is.
@@ -4168,6 +4180,7 @@ async function refreshParent() {
   $('exit-lock-toggle').checked = await exitLockOn();
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
   $('resume-toggle').checked = (await getSetting(activeProfileId, 'resume', false)) === true;
+  $('bgplay-toggle').checked = (await getSetting(activeProfileId, 'bgPlay', false)) === true;
   // v1.0.31: scheduled lock — load both numbers (0 after = off)
   $('lock-after-min').value = String(Number(await getSetting(activeProfileId, 'lockAfterMin', 0)) || 0);
   $('lock-duration-min').value = String(Number(await getSetting(activeProfileId, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)) || SCHED_LOCK_DEFAULT_DURATION_MIN);
@@ -7589,6 +7602,10 @@ async function createNewProfile() {
 }
 
 async function activateProfile(id) {
+  // v1.0.63 — a sibling's video must never keep playing into the next child's session, and
+  // `bgPlay` is a PER-PROFILE answer: the new profile may not have it on at all. Torn down
+  // before the switch, and re-armed by the next openWatch if the new child's setting says so.
+  await disarmBackgroundPlayback().catch(() => {});
   await setActiveId(id);
   activeProfileId = id;
   source = await getSource();
@@ -8268,6 +8285,19 @@ function wire() {
       : 'המשך צפייה כובה — כל סרטון מתחיל מההתחלה';
     msg.className = 'form-msg ok';
   });
+  // v1.0.63 — background playback. Turning it OFF must take effect NOW, not at the next
+  // video: a parent switching it off is answering "the tablet is making noise in my bag".
+  $('bgplay-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'bgPlay', e.target.checked);
+    bgPlayEnabled = e.target.checked;
+    if (!bgPlayEnabled) disarmBackgroundPlayback().catch(() => {});
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'ניגון ברקע הופעל ✅ — קבצים שלכם ימשיכו להתנגן כשהמסך כבוי'
+      : 'ניגון ברקע כובה — סגירת המסך עוצרת את הניגון';
+    msg.className = 'form-msg ok';
+  });
   // v1.0.31: scheduled per-profile lock — two synced numbers. Clamp to sane bounds and
   // reflect the outcome. A change takes effect on the child's next armed cycle.
   const saveSchedLock = async () => {
@@ -8612,11 +8642,19 @@ async function init() {
     // on it would resume a video the child had deliberately paused before the call.
     const st = playbackState();
     saveWatchPosition(currentWatch, st);
-    pauseCurrent();
+    // v1.0.63 — KEEP PLAYING (user request, opt-in per profile). Decided from CACHED state,
+    // never an await: this handler reads the live playhead and must stay synchronous, and by
+    // the time a bridge call returned the video would already be paused. The position is
+    // banked above either way, so a process killed in the background loses nothing.
+    const bg = backgroundPlayDecision({ enabled: bgPlayEnabled && bgPlayLive, playing: !!(st && st.playing), item: currentWatch });
+    if (!bg.play) pauseCurrent();
     // Was it a CALL that took the app away? Asked HERE, while the reason is still current:
     // by the time the child comes back the mode has returned to normal and nothing would
     // distinguish a call from the power button. Not awaited — the pause must not wait on a
     // bridge call.
+    // ⚠️ ARMED EVEN WHEN THE VIDEO KEEPS PLAYING (v1.0.63). A call takes audio focus and the
+    // WebView pauses its own media regardless of our service, so an early return above this
+    // line would leave a background-playing video stopped for good once the call ended.
     if (st && st.playing) checkCallResume().catch(() => {});
   });
 
