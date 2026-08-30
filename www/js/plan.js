@@ -1964,8 +1964,15 @@ export function deniedReAddPrompt(opts) {
   // Destructured from `(opts || {})`, never a `= {}` default parameter: that only fires for
   // `undefined`, so an explicit `null` from a caller reading an absent record would throw
   // — the same trap as `Number(null) === 0` in screenOffMinutes.
-  const { denied = false, exists = false, count = 1 } = opts || {};
+  const { denied = false, exists = false, count = 1, source = '' } = opts || {};
   const n = Math.max(0, Number(count) | 0);
+  // v1.0.61 — the plural sentence names WHERE the parent is standing. It was written for the
+  // links file and says "בקובץ … מהלינקים בקובץ"; a Drive folder import reused it verbatim and
+  // told a parent importing a FOLDER of songs about links in a file they never opened. The
+  // words are the feature (the v1.0.27 rule), so the noun follows the door.
+  const where = source === 'drive-folder'
+    ? { in: 'בתיקיה', of: 'מהקבצים בתיקיה' }
+    : { in: 'בקובץ', of: 'מהלינקים בקובץ' };
   if (!denied || exists || !n) return { ask: false };
   // "בכל המכשירים" is not decoration: un-denying is not a local act, and a parent who
   // thinks otherwise would be surprised on the other tablet.
@@ -1979,8 +1986,8 @@ export function deniedReAddPrompt(opts) {
   }
   return {
     ask: true, emoji: '♻️',
-    title: `${n} מהסרטונים בקובץ הוסרו בעבר — להחזיר אותם?`,
-    text: `${n} מהלינקים בקובץ מפנים לסרטונים שמחקתם בעבר, ולכן הם לא נוספו. `
+    title: `${n} מהסרטונים ${where.in} הוסרו בעבר — להחזיר אותם?`,
+    text: `${n} ${where.of} מפנים לסרטונים שמחקתם בעבר, ולכן הם לא נוספו. `
       + '"החזרה" תבטל את המחיקה שלהם בכל המכשירים; השאר נוספו כרגיל.',
     ok: 'החזרה', cancel: 'לא, להשאיר מוסרים'
   };
@@ -2278,6 +2285,11 @@ export function planDriveFolderImport({ files = [], existingKeys = null, denyKey
   const kindOf = typeof mediaKindOf === 'function' ? mediaKindOf : () => null;
   const add = [];
   const skipped = { existing: 0, denied: 0, nonMedia: 0 };
+  // v1.0.61 — the denied KEYS, not just their count. A count can only be reported; the keys
+  // are what lets the parent be ASKED and the tombstones revoked when they say yes (user
+  // request). Collected here rather than re-derived by the caller, so "which files were
+  // refused" keeps exactly one answer.
+  const deniedKeys = [];
   const rows = [...(files || [])].filter((f) => f && typeof f.id === 'string' && f.id);
   rows.sort((a, b) => naturalCompare(a.name, b.name));
   for (const f of rows) {
@@ -2285,10 +2297,10 @@ export function planDriveFolderImport({ files = [], existingKeys = null, denyKey
     if (media !== 'audio' && media !== 'video') { skipped.nonMedia += 1; continue; }
     const key = 'file:drive:' + f.id;
     if (have.has(key)) { skipped.existing += 1; continue; }
-    if (denied.has(key)) { skipped.denied += 1; continue; }
+    if (denied.has(key)) { skipped.denied += 1; deniedKeys.push(key); continue; }
     add.push({ driveId: f.id, name: String(f.name || ''), media });
   }
-  return { add, skipped };
+  return { add, skipped, deniedKeys };
 }
 
 /**
@@ -2339,6 +2351,7 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
 
   const out = [];
   const totals = { existing: 0, denied: 0, nonMedia: 0 };
+  const deniedKeys = [];
   let added = 0;
   for (const node of folders || []) {
     if (!node || typeof node.id !== 'string' || !node.id) continue;
@@ -2348,6 +2361,7 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
     totals.existing += plan.skipped.existing;
     totals.denied += plan.skipped.denied;
     totals.nonMedia += plan.skipped.nonMedia;
+    deniedKeys.push(...(plan.deniedKeys || []));
     const mediaHere = plan.add.length + plan.skipped.existing + plan.skipped.denied;
     const isRoot = node.id === rootId || node.depth === 0;
     if (!isRoot && !mediaHere) continue; // a folder of folders is not a folder here
@@ -2363,7 +2377,7 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
       existing, add: plan.add, skipped: plan.skipped
     });
   }
-  return { folders: out, added, skipped: totals };
+  return { folders: out, added, skipped: totals, deniedKeys };
 }
 
 /**

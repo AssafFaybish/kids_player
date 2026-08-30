@@ -1698,11 +1698,20 @@ test('a previously-removed backlog has a way back, and it is the PARENT who says
   assert.match(body, /unDeny\(/, 'the restore does not actually revoke the tombstones');
   const askAt = body.indexOf('confirmKid(');
   assert.ok(body.indexOf('unDeny(') > askAt, 'the tombstones are revoked BEFORE the parent answers');
-  // wired into both add paths, and only when nothing arrived
+  // wired into both add paths — and since v1.0.61 REGARDLESS of how many videos arrived.
+  // v1.0.37 gated it on `!count`, so a channel where 12 of 40 videos had been removed here
+  // before imported the 28 and told the parent about the 12 NOWHERE: channelAddOutcome
+  // returns from its `if (n)` branch long before it reaches the denied clause. The user
+  // asked for removed content to be re-addable, which it cannot be if nobody is told.
   assert.equal((app.match(/offerDeniedRestore\(/g) || []).length, 3,
     'the restore must be offered by the channel AND the playlist add path (plus its definition)');
-  assert.match(app, /if \(!count && await offerDeniedRestore\(channelId, empty\)\)/,
-    'the channel path offers the restore unconditionally or not at all');
+  for (const [what, id] of [['channel', 'channelId'], ['playlist', 'plId']]) {
+    const call = new RegExp(`(\\S[^\\n]*)await offerDeniedRestore\\(${id}, empty\\)`);
+    const m = app.match(call);
+    assert.ok(m, `the ${what} add path no longer offers the restore at all`);
+    assert.doesNotMatch(m[1], /!\s*count/,
+      `the ${what} path offers the restore only when NOTHING arrived — a partial denial is then reported nowhere`);
+  }
 });
 
 /* ---------------- the links file (v1.0.38) ---------------- */
@@ -1790,6 +1799,55 @@ test('a re-added deleted video is ANSWERED for, never silently destroyed (v1.0.3
   // BOTH scopes: a key can carry a tombstone in the shared library and in the personal one
   assert.match(helper, /profScope\(activeProfileId\)/,
     'only one scope is un-denied — the other tombstone survives and re-deletes the video');
+});
+
+test('a SHARE of removed content asks — and only AFTER the parent code (v1.0.61)', () => {
+  // Until v1.0.61 a share of a previously-deleted video answered 'denied' and stopped. The
+  // user asked for it to be re-addable, so share.js now asks — but WHERE it asks is the
+  // safety rule: a share arrives from ANY app, on a tablet a child is holding. Asking before
+  // the PIN would hand the child a one-tap way to revoke a deletion tombstone (and a revoked
+  // tombstone travels to every device). The question therefore lives BELOW the decision.
+  const share = MODULES.get('www/js/share.js');
+  assert.match(share, /deniedHandler/, 'share.js no longer accepts a denied handler — the refusal is silent again');
+  assert.match(share, /askDenied\s*=\s*deniedHandler/, 'the handler is accepted but never installed');
+  const askAt = share.indexOf('askDenied(');
+  assert.ok(askAt > 0, 'nothing ever calls the denied handler');
+  const decideAt = share.indexOf('decision = await interactive(c)');
+  assert.ok(decideAt > 0, 'the interactive decision moved — re-anchor this guard');
+  assert.ok(askAt > decideAt,
+    'the re-add question is asked BEFORE the parent code — a child could revoke a deletion by sharing the video back');
+  assert.match(share.slice(askAt - 400, askAt), /if \(decision === 'discard'\) return 'cancelled'/,
+    'a parent who CANCELLED the share is still asked to revive the tombstone');
+  // and app.js must actually pass one, or the whole path is dead code
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /deniedHandler: \([^)]*\) => offerDeniedReAdd\(/,
+    'app.js does not wire the share denied handler — share.js would silently refuse again');
+});
+
+test('a Drive folder import asks ONCE for everything it refused (v1.0.61)', () => {
+  // A tree walk can meet dozens of previously-removed files at once. One question for the
+  // batch is the links-file precedent; dozens of dialogs would be a parent tapping "yes"
+  // without reading. The keys come from the PLAN (deniedKeys) because the caller cannot
+  // recompute them — the walk that produced them is a network operation.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf('async function importDriveFolder(');
+  assert.ok(at > 0, 'importDriveFolder is gone');
+  const body = app.slice(at, app.indexOf('\n  }\n\n  async function ', at));
+  assert.match(body, /plan\.deniedKeys/, 'the import ignores the refused keys again — a removed file is skipped in silence');
+  assert.match(body, /deniedReAddPrompt\(/, 'the import grew its own dialog text — the words live in plan.js');
+  assert.match(body, /count: plan\.deniedKeys\.length/, 'the question does not carry the honest count');
+  const askAt = body.indexOf('deniedReAddPrompt(');
+  const revokeAt = body.indexOf('db.unDeny(');
+  assert.ok(revokeAt > askAt, 'the tombstones are revoked BEFORE the parent answers');
+  assert.match(body.slice(askAt, revokeAt), /await confirmKid\(/, 'the prompt is built but never shown');
+  // ⚠️ anchored PAST the revoke on purpose: `plan = planDriveTreeImport(` also matches the
+  // import's own opening `let plan = ...`, so the naive version of this guard stayed green
+  // with the whole re-run deleted (caught by planting exactly that).
+  assert.match(body.slice(revokeAt), /plan = planDriveTreeImport\(/,
+    'the plan is not re-run after the revoke — the files would stay skipped despite the yes');
+  // only on a FIRST import: a 30-minute refresh must never raise a dialog at nobody
+  assert.match(body, /plan\.deniedKeys\.length && first/,
+    'the background refresh can raise this dialog — it runs unattended every 30 minutes');
 });
 
 test('both revive dialogs get their words from ONE place (v1.0.38)', () => {
