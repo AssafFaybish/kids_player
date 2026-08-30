@@ -3984,3 +3984,39 @@ test('the background service is declared, gated, and reachable only from the app
     assert.match(src, /emitPlaybackCommand/, `${f}: the notification buttons reach no one`);
   }
 });
+
+test('a declared runtime permission is actually REQUESTED (v1.0.64)', () => {
+  // ⚠️ THIS SHIPPED BROKEN IN v1.0.63. POST_NOTIFICATIONS was declared in the manifest and
+  // never requested — and on Android 13+ it is a RUNTIME permission, denied by default. So
+  // the foreground service started, the audio kept playing, and the control was suppressed
+  // on every modern device. A manifest entry only makes a permission REQUESTABLE.
+  const manifest = readRepo('android/app/src/main/AndroidManifest.xml').replace(/<!--[\s\S]*?-->/g, '');
+  const RUNTIME = ['POST_NOTIFICATIONS'];  // the runtime-gated permissions this app declares
+  for (const perm of RUNTIME) {
+    if (!manifest.includes(perm)) continue;
+    for (const f of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                     'native-reference/KidsNativePlugin.java']) {
+      const src = readRepo(f).replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      assert.ok(src.includes(perm),
+        `${f}: ${perm} is declared in the manifest but the plugin never declares it — it can never be requested`);
+      assert.match(src, /requestPermissionForAlias\(/,
+        `${f}: nothing requests ${perm} at runtime — it stays denied and the feature degrades silently`);
+      assert.match(src, /@PermissionCallback/, `${f}: the request has no callback, so the answer is never reported`);
+    }
+  }
+  // …and JS must ASK at the moment the parent turns the feature on — a prompt at launch has
+  // no context on a child's tablet, and one when the screen goes off has nobody to see it.
+  const app = CODE.get('www/js/app.js');
+  const at = app.indexOf("$('bgplay-toggle').addEventListener");
+  assert.ok(at > 0, 'the background-playback toggle is gone');
+  const body = app.slice(at, at + 1400);
+  assert.match(body, /ensureNotificationPermission\(/,
+    'enabling background playback no longer asks for the notification permission');
+  assert.match(body, /e\.target\.checked\) notif = await ensureNotificationPermission/,
+    'the permission is requested when the setting is turned OFF too — a prompt for nothing');
+  // a denied answer must be SAID, not swallowed
+  assert.match(body, /form-msg warn/, 'a denied permission is reported as success');
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  assert.match(css, /\.form-msg\.warn\s*\{[^}]*color/,
+    'the warn message has no colour — it would read as "nothing happened"');
+});

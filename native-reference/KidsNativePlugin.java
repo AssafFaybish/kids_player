@@ -22,7 +22,9 @@ package com.assaf.kidsplayer;
 //
 // Canonical copy: native-reference/KidsNativePlugin.java — keep both in sync.
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.pm.PackageManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
@@ -36,12 +38,22 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.File;
 import java.util.ArrayDeque;
 
-@CapacitorPlugin(name = "KidsNative")
+// v1.0.64 — POST_NOTIFICATIONS is declared here so Capacitor can REQUEST it. Declaring it
+// in the manifest alone is not enough on Android 13+: it is a runtime permission, DENIED by
+// default, and v1.0.63 shipped without ever asking — so the background-playback service
+// started (the audio kept playing) and its notification was silently suppressed. Reported
+// from a device: "השיר המשיך אבל לא הופיע כפתור".
+@CapacitorPlugin(name = "KidsNative", permissions = {
+    @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = KidsNativePlugin.NOTIF)
+})
 public class KidsNativePlugin extends Plugin {
 
     /* ---------------- keep screen on (F7) ---------------- */
@@ -299,6 +311,38 @@ public class KidsNativePlugin extends Plugin {
             // list as text, then the clipboard), so reject rather than crash.
             call.reject("share-file-failed: " + e.getMessage());
         }
+    }
+
+    /* ---------------- notification permission (v1.0.64) ---------------- */
+
+    static final String NOTIF = "notifications";
+
+    /**
+     * v1.0.64 — ask for POST_NOTIFICATIONS, and answer whether it is granted.
+     *
+     * Called from JS at the ONE moment it makes sense: when a parent switches background
+     * playback ON. Asking at launch would be a prompt with no context on a child's tablet;
+     * asking when the screen goes off would be a dialog nobody is there to see.
+     *
+     * Below API 33 there is no such permission and the answer is always "granted" — the
+     * notification simply shows.
+     */
+    @PluginMethod
+    public void ensureNotificationPermission(PluginCall call) {
+        if (Build.VERSION.SDK_INT < 33) { resolveGranted(call, true); return; }
+        if (getPermissionState(NOTIF) == PermissionState.GRANTED) { resolveGranted(call, true); return; }
+        requestPermissionForAlias(NOTIF, call, "notifPermCallback");
+    }
+
+    @PermissionCallback
+    private void notifPermCallback(PluginCall call) {
+        resolveGranted(call, getPermissionState(NOTIF) == PermissionState.GRANTED);
+    }
+
+    private void resolveGranted(PluginCall call, boolean granted) {
+        JSObject o = new JSObject();
+        o.put("granted", granted);
+        call.resolve(o);
     }
 
     /* ---------------- background playback (v1.0.63) ---------------- */
