@@ -273,6 +273,36 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.58 REVIEW PASS — **THREE DEFECTS REACHED MAIN, AND A FOURTH WAS BORN FIXING THEM.**
+  Found by reading the shipped diff with fresh eyes; every one is now guard-pinned and
+  proven red on a planted regression. **All four are the same shape: a green suite over code
+  no node test can execute.**
+  1. **A FOLDER HOLDING ONLY PARKED VIDEOS WAS DELETED AS EMPTY.** `db.countFolder` ranges
+     `by_folder_sort`, and a video awaiting approval carries `folderId: '~pending'` with the
+     real folder in `homeFolderId` — so it counts as ZERO. A parent can put one there on
+     purpose (`moveVideoToFolder` writes exactly that field for a parked record). Approving
+     it afterwards filed the video under a folder that no longer existed: invisible on every
+     screen, forever — the precise failure `deleteCustomFolderFlow`'s own comment exists to
+     prevent. The sweep now counts pending AND rejected records by their `homeFolderId`.
+  2. **THE CACHE SWEEP COULD DELETE A LIVE CACHED FILE.** It owned files by re-deriving the
+     name from the record, but `cacheExtFor` reads `media` and **v1.0.56 CORRECTS `media` at
+     `loadedmetadata`** — so a Drive file with no extension in its URL flips `.mp4` → `.mp3`
+     after its first play, stops matching any record, and is deleted as an "orphan". The
+     name now comes from `localPath`, THE PATH ACTUALLY WRITTEN. Measured live: the two
+     names really do differ, and the sweep now deletes nothing.
+  3. **OPENING THE PICTURE EDITOR AND SAVING WIPED THE PICTURE.** `fpArtChoice` starts null
+     every time the editor opens, so the `else` branch fired for a parent who opened 🖼️,
+     looked, and tapped שמירה. Its comment claimed "an emoji was chosen" and **nothing
+     checked it** — the class of bug this review exists to find. Only an explicit emoji tap
+     drops the art now, and the flag is cleared per folder so one edit cannot wipe the next.
+  4. ⚠️ **THE FIX FOR (1) SHIPPED DEAD FOR ONE ITERATION**: `db.pagePending`/`pageRejected`
+     answer `{ items, total }`, and spreading the OBJECT throws "not iterable" — **after**
+     the promise's `.catch` has had its chance, so the throw escaped to the caller's
+     `.catch(() => {})` and the whole empty-folder sweep silently did nothing. The suite
+     stayed green. Caught by verifying in the browser that the CONTROL folder was actually
+     deleted, not by trusting that the guarded case passed. **A feature that "does nothing"
+     is the signature of a swallowed throw — verify the negative AND the positive.**
+
 - v1.0.58 — **SEARCH INSIDE A FOLDER** (user request: like the home's search, but over the
   current folder and everything nested in it).
   - ⚠️ **"NESTED" HAS EXACTLY ONE MEANING IN THIS APP, and the phrase suggests otherwise.**

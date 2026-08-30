@@ -3561,6 +3561,12 @@ test('v1.0.58 REVIEW: three defects that reached main, each now pinned', () => {
   const sweep = fnSlice(app, 'async function sweepEmptyFolders(');
   assert.match(sweep, /pagePending\(/, 'the empty-folder sweep ignores videos awaiting approval');
   assert.match(sweep, /pageRejected\(/, 'the empty-folder sweep ignores the rejected archive');
+  // ⚠️ AND IT MUST READ `.items`. Both readers answer `{ items, total }`; spreading the
+  // OBJECT throws "not iterable" AFTER the promise's .catch, so the throw escaped to the
+  // caller's `.catch(() => {})` and the whole sweep silently did nothing. Measured in the
+  // browser with the suite green — no node test executes app.js.
+  assert.match(sweep, /pending\.items \|\| \[\]/, 'the pending reader is spread as if it were an array');
+  assert.match(sweep, /rejected\.items \|\| \[\]/, 'the rejected reader is spread as if it were an array');
   assert.match(sweep, /homeFolderId/, 'a parked video no longer counts toward its real folder');
 
   // 2) THE CACHE SWEEP OWNS A FILE BY THE PATH THAT WAS WRITTEN, never by re-deriving the
