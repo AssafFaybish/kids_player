@@ -3126,6 +3126,19 @@ test('swipe paging is wired to the three grids and nothing else (v1.0.57)', () =
     'the swipe never releases a stolen gesture — a later release will turn a page');
   assert.match(swipe, /addEventListener\('pointerup'/, 'the swipe lost its end event');
 
+  // 2b) A LOST END MAY NEVER EAT THE NEXT SWIPE (browser-measured, 2026-08-30). The first
+  //     version dropped a gesture whenever a start was still standing — written for a
+  //     second finger, and in practice it swallowed every other swipe once an end went
+  //     missing (the grid re-renders under the finger; a call backgrounds the app
+  //     mid-touch). pointerdown must therefore start fresh unconditionally, and multi-touch
+  //     is refused by the id check on the RELEASE instead.
+  const downHandler = swipe.slice(swipe.indexOf("addEventListener('pointerdown'"));
+  assert.doesNotMatch(downHandler.slice(0, downHandler.indexOf('}, { passive')),
+    /if \(start\)[\s\S]*?return;/,
+    'pointerdown drops a gesture when a start is standing — a lost end will eat the next swipe');
+  assert.match(swipe, /e\.pointerId !== s\.id/,
+    'the release no longer checks the pointer id — a pinch can turn a page');
+
   // 3) The click swallow, in CAPTURE phase. A tile is a <button> and the flick ENDS on one:
   //    without this, turning the page also opens whatever video the finger released over.
   //    Bubbling would be too late — the tile's own handler is bound deeper than the host.

@@ -44,9 +44,19 @@ export function attachSwipePager(el, onSwipe, getState) {
   let swallowUntil = 0;
 
   el.addEventListener('pointerdown', (e) => {
-    // A second finger means a pinch or a two-handed grab, never a page turn: drop the
-    // gesture rather than measuring one finger's half of it.
-    if (start) { start = null; return; }
+    // ALWAYS a fresh gesture — never "a start already exists, so drop this one".
+    //
+    // MEASURED (2026-08-30, browser): that guard was written for a second finger and its
+    // real effect was to EAT THE CHILD'S NEXT SWIPE whenever an end went missing, then
+    // work again, then eat one — the flakiness that makes an app feel broken. An end goes
+    // missing for ordinary reasons: the grid re-renders under the finger (a sync landing, a
+    // Drive pull applying) and the pointerup fires on a node no longer in the tree, so it
+    // never reaches this host; or the app is backgrounded mid-touch by an incoming call.
+    //
+    // Multi-touch is still refused, by the pointerId check on the release instead: a second
+    // finger overwrites this start, and then NEITHER release matches (the first carries the
+    // wrong id, the second finds no start), so a pinch turns no page. Same protection, no
+    // way to poison the gesture that follows.
     start = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId };
   }, { passive: true });
 

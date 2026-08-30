@@ -1842,11 +1842,18 @@ test('swipePageAction: a vertical SCROLL that drifts sideways is still a scroll'
   assert.equal(swipePageAction({ dx: 200, dy: 40, dt: 300, page: 1, total: 4 }), 'next');
 });
 
-test('swipePageAction: a slow DRAG is not a flick, but an unknown clock never costs a swipe', async () => {
+test('swipePageAction: a parked finger is refused, but an unknown clock never costs a swipe', async () => {
   const { swipePageAction } = await import('../www/js/plan.js');
   const { SWIPE_MAX_MS } = await import('../www/js/config.js');
   assert.equal(swipePageAction({ dx: 200, dy: 0, dt: SWIPE_MAX_MS + 1, page: 1, total: 4 }), null);
   assert.equal(swipePageAction({ dx: 200, dy: 0, dt: SWIPE_MAX_MS, page: 1, total: 4 }), 'next');
+  // MEASURED, not assumed (2026-08-30): the ceiling started at 900ms as a "flick" test and
+  // refused real swipes in the browser. A small child drags slowly and means it, and the
+  // app flips on RELEASE — distance is the whole intent test, so the ceiling must stay
+  // loose enough to pass an unhurried deliberate drag.
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 1200, page: 1, total: 4 }), 'next',
+    'an unhurried but deliberate drag is a page turn');
+  assert.ok(SWIPE_MAX_MS >= 2000, 'the ceiling tightened back into the range of a real slow swipe');
   // FAIL OPEN on a missing duration — the isTapGesture rule: an odd WebView reporting no
   // clock must not cost the child every swipe, and a stray page turn is one flick to undo.
   assert.equal(swipePageAction({ dx: 200, dy: 0, page: 1, total: 4 }), 'next');

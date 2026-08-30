@@ -511,7 +511,9 @@ export function favouriteKeys(states) {
  *     child could mean as a TAP (TAP_SLOP_PX = 14) must never also turn a page;
  *   - vertical dominance: the page scrolls under the same finger, and a scroll that drifts
  *     sideways is still a scroll — the v1.0.52 lesson, from the other side;
- *   - slower than SWIPE_MAX_MS: a flick, not a finger resting on the screen mid-read.
+ *   - slower than SWIPE_MAX_MS: a finger that was RESTING on the screen and wandered off a
+ *     tile. Deliberately a loose ceiling and not a flick test — see config.js: measuring a
+ *     real swipe is what corrected that, and a slow deliberate drag is a page turn.
  *
  * BOUNDS LIVE HERE, not in the caller: the first and last page must absorb the gesture
  * silently (the arrows are `disabled` there, and a page that "flips" to itself reads as a
