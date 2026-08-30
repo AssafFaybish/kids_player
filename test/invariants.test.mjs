@@ -3648,6 +3648,107 @@ test('v1.0.58 REVIEW: three defects that reached main, each now pinned', () => {
     'the flag survives from one folder to the next — the second edit would wipe a picture');
 });
 
+/* ---------------- nested Drive folders (v1.0.61) ---------------- */
+
+test('nesting is rendered, never paged: pageAnyFolder and nextAfter stay flat', () => {
+  // The whole design rests on this. `pageAnyFolder` is THE pagination entry point and
+  // `nextAfter` is its chain twin; an existing invariant pins that they cover the same
+  // folder kinds. Nesting concatenates CHILD TILES onto a page in renderGridPage instead,
+  // so neither grows a branch and the two can never disagree about what a folder holds.
+  const app = MODULES.get('www/js/app.js');
+  for (const fn of ['async function pageAnyFolder(', 'async function nextAfter(']) {
+    const body = fnSlice(app, fn);
+    assert.ok(body, `${fn} is gone — re-anchor this guard`);
+    assert.doesNotMatch(body, /parentFolderId/,
+      `${fn} grew a nesting branch — child folders belong to the RENDERER, not the pager`);
+    assert.doesNotMatch(body, /folderTile|folderPageSlots/,
+      `${fn} is building tiles — it returns records, and the grid decides what to draw`);
+  }
+  // and the renderer really does the concatenation
+  const grid = fnSlice(app, 'async function renderGridPage(');
+  assert.match(grid, /folderPageSlots\(/, 'renderGridPage no longer merges child folders');
+  assert.match(grid, /folderPageTotal\(/, 'the pager is sized without counting the child folders');
+  assert.match(grid, /folderTile\(/, 'the child folders are computed but never drawn');
+  // ⚠️ WHERE the children come from, not just that the helpers are called. The first version
+  // of this guard checked only the three calls above, and stayed green with the lookup
+  // replaced by an empty array — the feature rendering nothing, which is precisely the
+  // "a feature that does nothing" shape this suite exists to catch (v1.0.59).
+  assert.match(grid, /folders\.filter\(\(f\) => f\.parentFolderId === fid\)/,
+    'the child folders are not looked up from `folders` — the merge would silently render none');
+  assert.match(grid, /which === 'home' \? \[\]/,
+    'the HOME must pass no children: its own tiles are already the roots, and nesting them twice would duplicate them');
+});
+
+test('the folder view is driven by its STACK ENTRY, not by the module global (v1.0.61)', () => {
+  // `folder` now sits on the stack more than once (collection → disc). A back-pop re-enters
+  // the view WITHOUT going through openFolder, so an onEnter that trusted the global would
+  // paint the disc the child just left under the collection's header — and the header,
+  // painted only in openFolder, did exactly that until it moved into the render.
+  const app = MODULES.get('www/js/app.js');
+  const at = app.indexOf("nav.register('folder'");
+  assert.ok(at > 0, "nav.register('folder') is gone");
+  const body = app.slice(at, app.indexOf("nav.register('search'", at));
+  assert.match(body, /entry(\s*&&\s*entry)?\.params/, 'the folder onEnter ignores its entry params again');
+  assert.match(body, /folderId = p\.folderId/, 'the entry no longer sets the folder it names');
+  const view = fnSlice(app, 'async function renderFolderView(');
+  assert.match(view, /paintFolderHeader\(/,
+    'the header is painted only on open again — a back-pop would show the wrong folder name');
+  // and openFolder must PUSH, never replace: back is how the child walks out of a disc
+  const open = fnSlice(app, 'async function openFolder(');
+  assert.match(open, /nav\.go\('folder'/, 'openFolder replaces instead of pushing — back would skip the parent');
+  assert.doesNotMatch(open, /nav\.replace\('folder'/, 'a replaced entry destroys the way back to the collection');
+});
+
+test('a folder lock covers a SUBTREE, and the home filter is the only home change (v1.0.61)', () => {
+  // Five places compared containState.folderId for equality. Equality locks a child into a
+  // collection's front door and then refuses every disc inside it — the lock reads as broken.
+  const app = MODULES.get('www/js/app.js');
+  const open = fnSlice(app, 'async function openFolder(');
+  assert.match(open, /folderWithinLock\(/,
+    'openFolder tests the lock by equality again — the discs inside a locked collection cannot open');
+  assert.match(open, /fid = containState\.folderId/,
+    'a folder outside the lock is no longer redirected — the OPEN is the boundary, not the chrome');
+  // the home shows roots, and `folders` still holds every row (three consumers look it up)
+  const home = fnSlice(app, 'async function renderHome(');
+  assert.match(home, /homeFolderRows\(folders\)/, 'the home shows every folder again — 32 discs on the home screen');
+  assert.match(home, /shouldFlattenHome\(homeList\)/, 'the flatten test still counts nested folders');
+  assert.doesNotMatch(home, /folders = homeFolderRows/,
+    'the global was narrowed to roots — openFolder and both search indexes look folders up by id');
+});
+
+test('deleting a collection cascades, with a tombstone per folder (v1.0.61)', () => {
+  // Without the cascade the discs survive with a parent that no longer exists, and
+  // homeFolderRows puts all 32 of them back on the home — the exact shape this removes.
+  // A tombstone per row is not optional: absence alone is re-added by any peer that has
+  // not pulled (the v1.0.36 rule).
+  const app = MODULES.get('www/js/app.js');
+  const body = fnSlice(app, 'async function deleteCustomFolderFlow(');
+  assert.match(body, /folderSubtreeIds\(/, 'the delete no longer walks the subtree — the discs would be orphaned');
+  assert.match(body, /for \(const id of descendants\) await db\.deleteCustomFolder\(/,
+    'the child rows are not deleted with their tombstones');
+  assert.match(body, /children: descendants\.length/, 'the confirm no longer names the folders it takes');
+  assert.match(body, /for \(const id of subtree\) await db\.moveFolderVideos\(/,
+    'the move branch only re-homes the top folder — the discs\' songs would be orphaned');
+  assert.match(body, /inSubtree\.has\(/, 'the purge branch only reaches the top folder\'s own videos');
+});
+
+test('the tree survives a snapshot round trip, and its ids are validated (v1.0.61)', () => {
+  // The whitelist was already dropping driveFolderId/driveRootId before nesting made it
+  // visible: a restored folder never refreshed again. parentFolderId is an untrusted string
+  // from a file and the ancestry walk follows it, so it is validated as a folder id.
+  const snap = MODULES.get('www/js/snapshot.js');
+  const at = snap.indexOf('for (const row of Array.isArray(snap.customFolders)');
+  assert.ok(at > 0, 'the snapshot folder import moved — re-anchor this guard');
+  const body = snap.slice(at, snap.indexOf('const remoteTombs', at));
+  for (const f of ['driveFolderId', 'driveRootId', 'parentFolderId']) {
+    assert.ok(body.includes(f), `${f} is dropped by the snapshot import — a restore flattens the tree`);
+  }
+  assert.match(body, /isCustomFolderId\(row\.parentFolderId\)/,
+    'parentFolderId is taken from the file unvalidated — the ancestry walk follows it');
+  assert.match(body, /row\.parentFolderId !== row\.folderId/,
+    'a row may name ITSELF as its parent — the folder would vanish from the home forever');
+});
+
 test('the "how to sync this channel" button always ASKS, and saves both fields (v1.0.61)', () => {
   const app = CODE.get('www/js/app.js');
   const fn = fnSlice(app, 'async function decideNewChannel(');
