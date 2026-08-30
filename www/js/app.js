@@ -37,7 +37,8 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
   pruneConfirmText, favActive, favouriteKeys,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
-  isCustomFolder, planFolderDeletion, planDriveFolderImport, driveFolderOutcome } from './plan.js';
+  isCustomFolder, planFolderDeletion, planDriveFolderImport, driveFolderOutcome,
+  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -105,6 +106,16 @@ function goGallery() {
   stop();
   wake.releaseAll(); // hard safety net (F7): outside the player, the screen may sleep
   currentWatch = null;
+  // v1.0.56 — UNDER A FOLDER LOCK THE HOME IS NOT A DESTINATION. This is the ONE funnel
+  // every "go home" path uses (the in-place delete, the share flow, leaveWatch's floor,
+  // the search/sites back buttons…), so containing it here covers all of them at once —
+  // the same reasoning that made openFolder the boundary rather than each caller.
+  if (containState.active && containState.mode === 'folder' && containState.folderId) {
+    folderId = containState.folderId;
+    renderFolderView().catch(() => {});
+    nav.reset('folder');
+    return;
+  }
   renderHome();
   nav.reset('gallery');
 }
@@ -353,8 +364,16 @@ async function refreshLockContainment() {
 }
 
 function leaveLockedScreen() {
-  // back to where the child belongs — their gallery
-  if (activeProfileId) nav.reset('gallery'); else nav.reset('profiles');
+  // back to where the child belongs. v1.0.56: under a FOLDER containment lock that is the
+  // LOCKED FOLDER, not the gallery — a break that ends must not be a way out of the lock.
+  if (!activeProfileId) { nav.reset('profiles'); return; }
+  if (containState.active && containState.mode === 'folder' && containState.folderId) {
+    folderId = containState.folderId;
+    nav.reset('folder');
+    renderFolderView().catch(() => {});
+    return;
+  }
+  nav.reset('gallery');
 }
 
 /** The discreet פתיחה tap: parent code → unlock immediately (and re-arm on next video).
@@ -405,7 +424,241 @@ async function onLockedExitTap() {
 
 function startLockTicker() {
   if (lockTicker) return;
-  lockTicker = setInterval(() => { tickScheduledLock().catch(() => {}); }, 5000);
+  lockTicker = setInterval(() => {
+    tickScheduledLock().catch(() => {});
+    tickContainment().catch(() => {}); // v1.0.56 — expire + re-assert the pin
+  }, 5000);
+}
+
+/* ---------------- Containment lock (v1.0.56) ----------------
+ * The parent locks the child INTO the app, or into ONE folder, with an optional timer.
+ * Entering AND leaving both cost the parent code (the user's requirement).
+ *
+ * DEVICE-LOCAL (Preferences), exactly like the scheduled break above and for the same
+ * reason: a lock is about the tablet in the child's hands, and syncing "locked until X"
+ * would lock a sibling's device. It SURVIVES A RESTART (the mode/until stamps are read on
+ * boot, on resume and on profile activation) — a child who force-closes the app must not
+ * walk out of the lock.
+ */
+const containModeKey = (pid) => 'contain:' + pid + ':mode';
+const containFolderKey = (pid) => 'contain:' + pid + ':folder';
+const containUntilKey = (pid) => 'contain:' + pid + ':until';
+const CONTAIN_LAST_MIN = 'contain:lastMin'; // feature 5: the remembered default
+
+// Runtime OWNERSHIP of the OS pin, the breakPinHeld pattern (v1.0.55): the release must
+// follow what THIS lock actually pinned, never a re-read of some setting — and it must
+// never unpin a session the kiosk owns.
+let containPinHeld = false;
+let containState = { active: false, mode: null, folderId: null, msLeft: 0 };
+
+async function readContainment(pid = activeProfileId) {
+  if (!pid) return evalContainment({});
+  try {
+    return evalContainment({
+      mode: await prefGet(containModeKey(pid)),
+      folderId: await prefGet(containFolderKey(pid)),
+      until: Number(await prefGet(containUntilKey(pid))) || 0
+    });
+  } catch { return evalContainment({}); }
+}
+
+async function clearContainment(pid = activeProfileId) {
+  if (!pid) return;
+  for (const k of [containModeKey(pid), containFolderKey(pid), containUntilKey(pid)]) {
+    await prefRemove(k).catch(() => {});
+  }
+  // Release ONLY the pin this lock took, and NEVER under the kiosk (the v1.0.36 rule:
+  // a kiosk session stays pinned; stopLockTask raises the device keyguard). When the
+  // kiosk vetoes, ownership simply passes to it — the flag drops either way.
+  try {
+    if (containPinHeld && !(await exitLockOn(pid))) {
+      const { unlockTask } = await import('./platform.js');
+      await unlockTask();
+    }
+  } catch { /* browser preview / plugin absent */ }
+  containPinHeld = false;
+  containState = { active: false, mode: null, folderId: null, msLeft: 0 };
+}
+
+/**
+ * Apply the lock to the chrome and pin the task. Called on boot, on profile activation,
+ * on resume, on every home/folder render and from the 5s tick — the same "re-assert, do
+ * not assume" cadence the break lock needs, for the same measured reason: the
+ * hold-back+recents gesture unpins WITHOUT backgrounding the app, so no lifecycle event
+ * ever fires and only a tick can notice.
+ */
+async function applyContainment() {
+  const pid = activeProfileId;
+  const c = await readContainment(pid);
+  if (c.expired) { await clearContainment(pid); await refreshContainUi(); return; }
+  containState = c;
+  await refreshContainUi();
+  if (!c.active) return;
+  try {
+    const { lockTask } = await import('./platform.js');
+    if ((await lockTask()) === true) containPinHeld = true;
+  } catch { /* browser preview / plugin absent */ }
+}
+
+/** Paint both padlocks and close every door the lock forbids. */
+async function refreshContainUi() {
+  const chrome = containmentChrome(containState);
+  for (const id of ['lock-btn', 'folder-lock-btn']) {
+    const b = $(id);
+    if (!b) continue;
+    b.textContent = chrome.locked ? '🔒' : '🔓';
+    b.classList.toggle('is-locked', chrome.locked);
+    b.setAttribute('aria-label', chrome.locked ? 'שחרור הנעילה (קוד הורים)' : 'נעילה');
+  }
+  // The exit button is hidden by the kiosk OR by containment. It must be restored in BOTH
+  // directions: only ever ADDING the class left a kiosk-off family with no exit button at
+  // all once a containment lock had been used and released (measured in the browser).
+  // The kiosk stays the authority for its own half — this never SHOWS a button it hid.
+  const exitBtn = $('exit-btn');
+  if (exitBtn) {
+    let kiosk = false;
+    try { kiosk = await exitLockOn(); } catch { kiosk = true; } // unreadable ⇒ stay hidden
+    exitBtn.classList.toggle('hidden', chrome.hideExit || kiosk);
+  }
+  const chip = $('profile-chip');
+  if (chip) chip.classList.toggle('hidden', chrome.hideChip || !activeProfileId);
+  const home = $('folder-back');
+  if (home) home.classList.toggle('hidden', chrome.hideHome);
+  const inFolderLock = containState.active && containState.mode === 'folder';
+  // search reaches ANOTHER folder, so it goes away with the folder's own way out
+  const search = $('search-open');
+  if (search) search.classList.toggle('hidden', inFolderLock);
+  // the WATCH screen's 🏠 goes straight to the gallery — under a folder lock that is an
+  // escape from the folder. ⭐ and 🗑️ stay: neither leaves the folder.
+  const watchHome = $('watch-home');
+  if (watchHome) watchHome.classList.toggle('hidden', inFolderLock);
+  // the approved-websites launcher is a whole second surface (refreshSitesLauncher
+  // re-reads on every render, hence a re-assert here rather than a one-time toggle)
+  const sites = $('sites-open');
+  if (sites && inFolderLock) sites.classList.add('hidden');
+}
+
+/** The padlock tap: engage (code → how long?) or release (code). */
+async function onLockTap(scope) {
+  if (!activeProfileId) return;
+  if (containState.active) {
+    startPin((await hasPin()) ? 'verify' : 'setup', {
+      title: 'קוד הורים לשחרור הנעילה',
+      onSuccess: async () => {
+        await clearContainment();
+        // LEAVE THE CODE SCREEN. startPin's default onSuccess (enterParent) navigates by
+        // itself, so a handler that only does work strands the parent on the keypad —
+        // measured in the browser: the lock released and the screen never moved.
+        if (nav.isActive('pin')) nav.back();
+        await refreshContainUi();
+        toast('הנעילה שוחררה 🔓');
+        renderHome();
+      }
+    });
+    return;
+  }
+  const mode = scope === 'folder' ? 'folder' : 'app';
+  const fid = mode === 'folder' ? folderId : null;
+  if (mode === 'folder' && !fid) return;
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    title: mode === 'folder' ? 'קוד הורים לנעילה על התיקיה' : 'קוד הורים לנעילת האפליקציה',
+    onSuccess: () => { askLockDuration(mode, fid).catch(() => {}); }
+  });
+}
+
+let lockSetupCtx = null;
+
+/**
+ * "How long?" — asked EVERY time (the user's requirement), pre-filled with the last
+ * answer, which is remembered per device. 0 is a real answer: until the parent unlocks.
+ */
+async function askLockDuration(mode, fid) {
+  const last = normalizeLockMinutes(await prefGet(CONTAIN_LAST_MIN), 0);
+  lockSetupCtx = { mode, folderId: fid, minutes: last };
+  const title = mode === 'folder' ? 'נעילה על התיקיה' : 'נעילת האפליקציה';
+  const f = mode === 'folder' ? (folders.find((x) => x.id === fid) || {}) : {};
+  $('ls-title').textContent = 'לכמה זמן לנעול?';
+  $('ls-sub').textContent = title + (mode === 'folder' && f.title ? ' — "' + f.title + '"' : '');
+  $('ls-min').value = String(last);
+  renderLockPresets();
+  paintLockExplain();
+  nav.go('locksetup');
+}
+
+const LOCK_PRESETS = [15, 30, 45, 60, 0];
+function renderLockPresets() {
+  const host = $('ls-presets');
+  host.innerHTML = '';
+  for (const m of LOCK_PRESETS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ls-preset' + (lockSetupCtx && lockSetupCtx.minutes === m ? ' is-sel' : '');
+    b.textContent = m === 0 ? 'עד שחרור' : m + ' דק׳';
+    b.addEventListener('click', () => {
+      if (!lockSetupCtx) return;
+      lockSetupCtx.minutes = m;
+      $('ls-min').value = String(m);
+      renderLockPresets();
+      paintLockExplain();
+    });
+    host.appendChild(b);
+  }
+}
+
+function paintLockExplain() {
+  if (!lockSetupCtx) return;
+  const f = lockSetupCtx.mode === 'folder'
+    ? (folders.find((x) => x.id === lockSetupCtx.folderId) || {}) : {};
+  $('ls-explain').textContent = containConfirmText({
+    mode: lockSetupCtx.mode, folderTitle: f.title || '', minutes: lockSetupCtx.minutes
+  });
+}
+
+/** Engage the lock the dialog describes. */
+async function commitLockSetup() {
+  const ctx = lockSetupCtx;
+  if (!ctx || !activeProfileId) return;
+  const minutes = normalizeLockMinutes($('ls-min').value, ctx.minutes);
+  const pid = activeProfileId;
+  await prefSet(containModeKey(pid), ctx.mode);
+  if (ctx.mode === 'folder') await prefSet(containFolderKey(pid), ctx.folderId);
+  await prefSet(containUntilKey(pid), String(minutes > 0 ? Date.now() + minutes * 60000 : 0));
+  await prefSet(CONTAIN_LAST_MIN, String(minutes)); // remembered for next time
+  lockSetupCtx = null;
+  await applyContainment();
+  // Land the child where the lock holds them: inside the folder, or on their home.
+  if (ctx.mode === 'folder') { folderId = ctx.folderId; nav.reset('folder'); await renderFolderView(); }
+  else { nav.reset('gallery'); renderHome(); }
+  toast(minutes > 0 ? 'נעול ל-' + minutes + ' דקות 🔒' : 'נעול עד שחרור 🔒');
+}
+
+/**
+ * The containment half of the 5s tick: expire a timed lock by itself, and RE-ASSERT the
+ * pin (the hold-back+recents gesture unpins with no lifecycle event — the v1.0.55
+ * measurement). Cheap: one Preferences read, and it does nothing when no lock is set.
+ */
+async function tickContainment() {
+  try {
+    const pid = activeProfileId;
+    if (!pid) return;
+    const c = await readContainment(pid);
+    if (c.expired) {
+      await clearContainment(pid);
+      await refreshContainUi();
+      toast('הנעילה הסתיימה 🔓');
+      renderHome();
+      return;
+    }
+    if (!c.active) return;
+    containState = c;
+    // a code screen stacked over the child's view still needs the pin re-asserted, but
+    // the CHROME belongs to the view underneath — repaint only when it is on screen
+    if (!nav.isActive('pin') && !nav.isActive('locksetup')) await refreshContainUi();
+    if (containPinHeld) {
+      const { lockTask } = await import('./platform.js');
+      await lockTask();
+    }
+  } catch {}
 }
 
 /* ---------------- Idle screen-off (v1.0.34) ---------------- */
@@ -696,7 +949,11 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   // library sync and AWAITED, for the same reason the sunset was: it writes video records
   // that the sync then enriches and gifts, and a detached .then() here is the v1.0.25 race.
   // Silent and self-throttled; a failed listing changes nothing.
-  if (await refreshDriveFolders(libScope)) {
+  // the SCOPE is resolved, never read off the bare global: `libScope` is published by
+  // buildFolders (i.e. only after a home render), and this runs concurrently with that
+  // render — the v1.0.25 rule the channel-approval paths already follow. A null scope
+  // here would silently skip every Drive-backed folder on the first entry of a launch.
+  if (await refreshDriveFolders(await currentLibScope())) {
     if (activeProfileId !== id) return;
     await renderAfterRemoteChange();
   }
@@ -961,7 +1218,9 @@ function registerViews() {
     }
   });
   nav.register('gallery', {
-    onBack: () => { askExit(); return true; },
+    // v1.0.56: under containment the child may not leave the app at all — askExit is the
+    // door, so it must not even be offered (the exit BUTTON is hidden by the same rule).
+    onBack: () => { if (!containState.active) askExit(); return true; },
     // Re-render on EVERY return home: after unwrapping gifts the "חדשים" folder must
     // update immediately — and disappear entirely when the last gift was opened
     // (home then falls back to the flat video grid).
@@ -973,7 +1232,14 @@ function registerViews() {
   // video re-renders the page the child left — the tile they just watched must show its
   // fresh progress bar, exactly like the home view's own onEnter re-render. Same page,
   // same scroll (nav restores it after the double-rAF).
-  nav.register('folder', { onEnter: () => { if (folderId) renderFolderView().catch(() => {}); } });
+  nav.register('folder', {
+    onEnter: () => { if (folderId) renderFolderView().catch(() => {}); refreshContainUi().catch(() => {}); },
+    // v1.0.56 — under a FOLDER lock the child may not leave this folder. Swallowing
+    // back here is the other half of hiding the 🏠 button: without it the hardware
+    // back (and the Escape stand-in) walks straight out to the gallery.
+    onBack: () => (containState.active && containState.mode === 'folder'
+      && containState.folderId === folderId)
+  });
   nav.register('search', {}); // default pop → home; watch pushed on top returns here
   // v1.0.56 — the destination picker. Leaving it by ANY route (hardware back, the cancel
   // button, a navigation from somewhere else) must resolve the awaiting add, or the caller
@@ -981,6 +1247,9 @@ function registerViews() {
   nav.register('folderpick', {
     onLeave: () => { const h = folderPickHandlers; folderPickHandlers = null; if (h) h.cancel(); }
   });
+  // v1.0.56 — the lock-duration dialog. Leaving it by ANY route abandons the pending
+  // lock; nothing is written until the parent confirms.
+  nav.register('locksetup', { onLeave: () => { lockSetupCtx = null; } });
   // v1.0.45: the websites grid re-renders on entry so a site removed in the parent screen
   // (or arriving from another device) is gone the moment the child comes back to it.
   nav.register('sites', { onEnter: () => { renderSitesView(); } });
@@ -1936,6 +2205,7 @@ async function renderHome() {
   // websites and no videos at all, and hiding their only content behind "עדיין אין
   // סרטונים" would be the app forgetting half of what the parent set up.
   refreshSitesLauncher().catch(() => {});
+  refreshContainUi().catch(() => {}); // v1.0.56 — the padlock and what the lock hides
 
   const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
@@ -2188,6 +2458,14 @@ async function renderSearchResults() {
 
 /* ---------------- Folder view ---------------- */
 async function openFolder(fid) {
+  // v1.0.56 — THE FOLDER LOCK IS ENFORCED HERE, not only by hiding buttons. A relaunch
+  // renders the home for an instant, the TV remote can reach a tile, and a search result
+  // carries a folder id — every one of those is a way into another folder unless the OPEN
+  // itself refuses. Hiding chrome is the affordance; this is the boundary.
+  if (containState.active && containState.mode === 'folder'
+      && containState.folderId && fid !== containState.folderId) {
+    fid = containState.folderId;
+  }
   folderId = fid;
   folderPage = 0;
   const f = folders.find((x) => x.id === fid)
@@ -6302,6 +6580,12 @@ async function activateProfile(id) {
   // v1.0.25: the exit lock belongs to the CHILD now, so switching children changes the
   // answer — re-arm (or release) it and repaint the exit button for whoever this is.
   await applyExitLock();
+  await applyContainment(); // v1.0.56 — survives a restart and a profile switch
+  // …and a relaunch under a FOLDER lock lands INSIDE that folder, not on the home where
+  // every other tile is on screen (the openFolder guard refuses the tap, but showing the
+  // child a home they cannot use is not the promise).
+  const containLanding = containState.active && containState.mode === 'folder'
+    ? containState.folderId : null;
   // v1.0.31: a persisted scheduled lock survives a restart AND a profile switch — check it
   // now (it overrides the gallery), and keep the ticker running for this session.
   startLockTicker();
@@ -6323,6 +6607,16 @@ async function activateProfile(id) {
   // PREVIOUS profile's refresh.
   entryRefreshInFlight = null;
   nav.reset('gallery');
+  // v1.0.56 — …and then straight into the locked folder. AFTER the gallery reset, not
+  // instead of it: the gallery's onEnter is what starts the entry refresh (the pull + the
+  // sync), and skipping it would leave a contained child on stale content forever.
+  // AWAIT the home render first — `folders` is what openFolder reads the title and the
+  // picture from, and navigating before it exists landed the child in a folder with a
+  // BLANK header (measured in the browser).
+  if (containLanding) {
+    await renderHome().catch(() => {});
+    await openFolder(containLanding).catch(() => {});
+  }
 
   // v1.0.7: shares queued before a profile was active drain AFTER the gallery is up —
   // their interactive PIN flow must not fight the activation navigation.
@@ -6785,6 +7079,18 @@ function wire() {
   $('fp-cancel').addEventListener('click', () => { if (nav.isActive('folderpick')) nav.back(); });
   $('fp-art-search').addEventListener('click', () => { searchFolderArt().catch(() => {}); });
 
+  // v1.0.56 — the containment padlocks (home + folder header) and the duration dialog.
+  $('lock-btn').addEventListener('click', () => { onLockTap('app').catch(() => {}); });
+  $('folder-lock-btn').addEventListener('click', () => { onLockTap('folder').catch(() => {}); });
+  $('ls-ok').addEventListener('click', () => { commitLockSetup().catch(() => {}); });
+  $('ls-cancel').addEventListener('click', () => { if (nav.isActive('locksetup')) nav.back(); });
+  $('ls-min').addEventListener('input', () => {
+    if (!lockSetupCtx) return;
+    lockSetupCtx.minutes = normalizeLockMinutes($('ls-min').value, lockSetupCtx.minutes);
+    renderLockPresets();
+    paintLockExplain();
+  });
+
   // v1.0.38: both snapshot buttons moved to the SETTINGS tab, so they report into
   // #backup-msg — #add-msg belongs to the add form and is no longer on screen with them.
   $('export-btn').addEventListener('click', async () => {
@@ -6890,6 +7196,7 @@ function wire() {
     // parent screen: showLockedScreen refuses to reveal the lock while the parent is here.
     startLockTicker();
     await tickScheduledLock();
+    await tickContainment(); // v1.0.56 — a lock that expired while backgrounded
     const msg = $('settings-msg');
     msg.textContent = after > 0
       ? `נעילה מתוזמנת: אחרי ${after} דקות, למשך ${dur} דקות ✅`

@@ -273,6 +273,57 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.56 — **THE PARENT CAN LOCK THE CHILD INTO THE APP, OR INTO ONE FOLDER** (user
+  request: a padlock beside the home button; code to lock, code to unlock; and a timer
+  whose last value is remembered).
+  - **TWO MODES, ONE MECHANISM.** App mode: every folder stays open, but there is no way
+    out of the app and no profile switch. Folder mode: the child sees only the folder they
+    are in. Pure `plan.containmentChrome` answers ONLY containment's half of each control,
+    so it can never silently cancel the kiosk out (`hideExit` is OR-ed with `exitLockOn`).
+  - **HIDING BUTTONS IS NOT ENFORCEMENT.** Hardware back is swallowed in the locked folder
+    and never offers the exit dialog on the home; **`openFolder` itself REFUSES any folder
+    but the locked one** — a relaunch paints the home for an instant, a TV remote reaches a
+    tile, and a search result carries a folder id; the watch screen's 🏠, the search
+    launcher and the sites launcher all close under a folder lock; and the scheduled BREAK
+    returns INTO the locked folder instead of the gallery.
+  - **0 IS A REAL ANSWER ("until I unlock it"), which is why `normalizeLockMinutes` checks
+    for UNSET BEFORE COERCING.** `Number(null) === 0` would turn a never-written value into
+    an explicit lock-forever and silently discard the remembered default — the same trap
+    `plan.screenOffMinutes` documents. Caught by its own unit test, not by reasoning.
+  - **DEVICE-LOCAL, and it SURVIVES A RESTART.** Same rule as the scheduled break: a lock
+    is about the tablet in the child's hands, and syncing "locked until X" would lock a
+    sibling's device (an invariant bans `contain:` from drive/settings/snapshot). The mode
+    and `until` stamps are read on boot, on profile activation and on resume, so a
+    force-close is not an escape.
+  - **THE OS PIN FOLLOWS OWNERSHIP** (`containPinHeld`, the v1.0.55 pattern) and **never
+    unpins a kiosk session** (v1.0.36 — `stopLockTask` raises the device keyguard). The 5s
+    tick re-asserts it, because the hold-back+recents gesture unpins with NO lifecycle
+    event at all.
+  - **A CORRUPTED LOCK FAILS OPEN** — deliberately the opposite of the kiosk's strict
+    direction. This state is written by one device and read on every render, so junk must
+    not strand a child behind a lock nobody can identify; the kiosk still contains them
+    independently, so nothing is lost by erring open here.
+  - ⚠️ **THREE BUGS THE BROWSER CAUGHT THAT THE GREEN SUITE COULD NOT**, each now pinned:
+    a relaunch landed on the HOME with every other folder tappable (and, once fixed, landed
+    in the folder with a BLANK header because `folders` was not built yet — the landing now
+    awaits `renderHome` and goes through `openFolder`); releasing the lock **stranded the
+    parent on the PIN screen** (`startPin`'s default onSuccess navigates by itself, so a
+    handler that only does work never leaves); and the exit button was hidden ONE-WAY, so a
+    kiosk-off family lost it permanently after ever using a lock.
+  - ⚠️ **PROCESS LESSON, paid for in lost work**: a plant cycle was run on UNCOMMITTED
+    changes and the first `git restore` destroyed ~250 lines of finished feature code.
+    `git restore` is only safe on a file whose good state is already committed — check
+    `git status` BEFORE the cycle. Two guards in this feature were also caught VACUOUS by
+    their own plants (an `onBack` existence check that `() => false` satisfied, and a
+    windowed match that reached into the NEXT `nav.register`) — both re-anchored to the
+    registration's own body and re-proven.
+  - 7 unit tests + 1 invariants test (12 assertions), every guard proven red on a planted
+    regression (5). Browser-verified end to end through the real code gate: engage on a
+    folder, hardware back refused, the watch screen's 🏠 gone and back returning to the
+    folder, a relaunch landing inside it fully painted, a different folder's tile
+    redirecting to the locked one, the app-wide mode keeping every folder open with the
+    remembered 15 minutes pre-filled, and a release restoring every control.
+
 - v1.0.56 — **A WHOLE DRIVE FOLDER IS A SELF-REFILLING FOLDER** (user request: paste a link
   to a shared Drive folder and its files arrive as a folder named after it; files added
   there later flow in on their own).
@@ -285,14 +336,22 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     An unreadable listing **ABORTS and says so**; treating it as an empty folder is the
     exact shape that deleted families' libraries in the sheet era. Guard-pinned: the
     importer may not call ANY delete.
-  - ⚠️ **THE KEYLESS DOOR IS THE LOAD-BEARING ONE, and that is a MEASUREMENT.** Both
-    `files.list` and `files.get` answer `403 API_KEY_SERVICE_BLOCKED` with the shipped key,
-    because it is restricted to YouTube — `reason: API_KEY_SERVICE_BLOCKED` says this is
-    the KEY's own restriction (operator-fixable, GOOGLE_CLOUD_SETUP שלב 5), not a
-    Google-wide block. So `embeddedfolderview` is what works today, and one refusal sets a
-    SESSION memo (`noteDriveKeyRefused`) so later folders skip the dead keyed attempt
-    instead of walking the whole transport ladder again — found by watching a real add
-    crawl in the browser, not by reasoning.
+  - ⚠️ **WHICH DOOR RUNS IS AN OPERATOR SETTING, and both are measured.** On 2026-08-29
+    both `files.list` and `files.get` answered `403 API_KEY_SERVICE_BLOCKED` — the KEY's own
+    restriction (it was YouTube-only), not a Google-wide block, which is what
+    `reason: API_KEY_SERVICE_BLOCKED` distinguishes. The project key was widened on
+    2026-08-30 and re-measured: `files.get` on a bogus id now answers 404 "File not found"
+    and `files.list` returns real children with sizes in ~650ms, so the KEYED path is live
+    and paginates. A key that is not widened, and every keyless build, still work through
+    `embeddedfolderview`; one refusal sets a SESSION memo (`noteDriveKeyRefused`) so later
+    folders skip the dead keyed attempt instead of walking the whole transport ladder again
+    — found by watching a real add crawl in the browser, not by reasoning.
+  - ⚠️ **`files.list` ANSWERS THE CHILDREN ONLY — NEVER THE FOLDER'S NAME.** The keyed path
+    therefore fetches it separately (`keyedFolderName` → `files.get` on the FOLDER id,
+    which answers a folder exactly like a file). Widening the key ACTIVATED this gap: until
+    then only the scrape ran, and its `<title>` carried the name for free. Without the extra
+    call every API-imported folder would have been titled by the generic fallback instead of
+    what the parent named it in Drive — the user's explicit requirement. Count-pinned.
   - **THE PUBLIC PAGE GIVES MORE THAN EXPECTED**: its `<title>` IS the folder's own name
     (the tile has no other keyless source for it), and each row's icon URL carries the real
     `mimeType`, so audio-vs-video needs no filename guessing. **Parsed PER ENTRY BLOCK** —

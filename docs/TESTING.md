@@ -365,3 +365,21 @@ node -e "import('./www/js/update.js').then(m=>console.log(m.extractReleaseNotes(
 - [ ] **After the operator adds the Drive API to the key's restrictions**, the keyed
       listing should take over (it is faster and paginates); the app must behave the same.
       *(Until then every install uses the public-page path — that is the measured default.)*
+
+### Containment lock (v1.0.56 — the browser proved the chrome; these need a device)
+- [ ] **Folder lock on a device**: open a folder → padlock → code → 15 min → the child is
+      inside that folder, the OS pinning confirmation appears, HOME and recents are
+      contained, and 🏠 / the profile chip / search are gone.
+- [ ] **Force-close and relaunch** → the app comes back INSIDE the locked folder, still
+      locked. (A child who kills the app must not walk out of it.)
+- [ ] **The timer expires by itself** → the lock releases, the tablet unpins, and every
+      control returns. On a device with the system "ask PIN before unpinning" option this
+      lands on the DEVICE's own lock screen — the same bound the kiosk always had.
+- [ ] **Release by hand**: padlock → code → released, and the exit button comes back for a
+      family whose kiosk is OFF.
+- [ ] **Lock + KIOSK together**: releasing the containment lock must NOT unpin the session
+      (the kiosk owns it) and must not raise the keyguard.
+- [ ] **A scheduled break during a folder lock** → when the break ends the child returns to
+      the LOCKED FOLDER, not the gallery.
+- [ ] TV: the padlock is reachable with the D-pad on both the home and a folder, and the
+      duration presets are focusable.

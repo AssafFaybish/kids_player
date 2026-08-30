@@ -140,6 +140,29 @@
       </div>
     </section>
 
+    <!-- v1.0.56 — HOW LONG? Asked every time a lock is engaged, pre-filled with the last
+         answer (the user's request: remember it, but ask again each time). 0 = until the
+         parent unlocks. A view, not a modal: it carries presets AND a free number field. -->
+    <section id="view-locksetup" class="view">
+      <div class="wn-wrap">
+        <header class="wn-head">
+          <div class="wn-emoji">🔒</div>
+          <h1 id="ls-title" class="wn-title">לכמה זמן לנעול?</h1>
+          <p id="ls-sub" class="modal-text"></p>
+        </header>
+        <div class="wn-body">
+          <div id="ls-presets" class="ls-presets"></div>
+          <label class="field-label" for="ls-min">או מספר דקות (0 = עד שחרור ידני)</label>
+          <input id="ls-min" class="input" type="number" min="0" max="720" inputmode="numeric" />
+          <p id="ls-explain" class="modal-text"></p>
+        </div>
+        <div class="wn-actions">
+          <button id="ls-ok" class="btn btn-primary wn-ok" type="button">🔒 נעילה</button>
+          <button id="ls-cancel" class="text-btn" type="button">ביטול</button>
+        </div>
+      </div>
+    </section>
+
     <section id="view-whatsnew" class="view">
       <div class="wn-wrap">
         <header class="wn-head">
@@ -207,6 +230,9 @@
           <span class="brand-logo">🌳</span>
           <span class="brand-title">הסרטונים שלי</span>
         </div>
+        <!-- v1.0.56 — the containment padlock. Always visible: it is the parent's only
+             way back OUT of a lock, and a child who taps it meets the code screen. -->
+        <button id="lock-btn" class="round-btn lock-btn" type="button" aria-label="נעילת האפליקציה">🔓</button>
         <button id="profile-chip" class="profile-chip" type="button" aria-label="החלפת פרופיל">
           <span id="chip-av" class="chip-av">🙂</span>
           <span id="chip-name" class="chip-name"></span>
@@ -272,6 +298,8 @@
           <span id="folder-logo-top" class="folder-logo-top hidden"></span>
           <span id="folder-title" class="brand-title"></span>
         </div>
+        <!-- v1.0.56 — lock the child INTO this folder (same button, same code gate) -->
+        <button id="folder-lock-btn" class="round-btn lock-btn" type="button" aria-label="נעילה על התיקיה">🔓</button>
       </header>
       <main id="folder-grid" class="grid" aria-label="סרטוני התיקייה"></main>
       <nav id="folder-pager" class="pager" aria-label="דפדוף"></nav>

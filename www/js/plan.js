@@ -2218,3 +2218,100 @@ export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first
   if (s.existing) return 'אין קבצים חדשים בתיקיה';
   return 'התיקיה ריקה';
 }
+
+/* ---------------- containment lock (v1.0.56) ----------------
+   The parent locks the child INTO the app, or into ONE folder, with an optional timer.
+   Entering and leaving both cost the parent code. DEVICE-LOCAL state (Preferences), like
+   the scheduled break: a lock is about the tablet in the child's hands, and syncing
+   "locked until X" would lock a sibling's device too. */
+
+export const CONTAIN_MODES = ['app', 'folder'];
+
+/**
+ * PURE: is a containment lock active, and what does it hold?
+ *
+ *  - `until === 0` means UNTIL THE PARENT RELEASES IT (the user's "0" — an explicit,
+ *    deliberate value, never a fallback for junk);
+ *  - an unknown mode, or folder mode with no folder, is NOT a lock. Failing OPEN here is
+ *    deliberate and is the opposite of the exit-lock's direction: this state is written by
+ *    one device and read on every render, so a corrupted value must not strand a child
+ *    behind a lock nobody can identify — while the KIOSK (exitLock) is unaffected and
+ *    still contains them.
+ * -> { active, mode, folderId, msLeft, expired }
+ */
+export function evalContainment({ now = Date.now(), mode = null, folderId = null, until = 0 } = {}) {
+  const off = { active: false, mode: null, folderId: null, msLeft: 0, expired: false };
+  const m = CONTAIN_MODES.includes(mode) ? mode : null;
+  if (!m) return off;
+  const fid = typeof folderId === 'string' && folderId ? folderId : null;
+  if (m === 'folder' && !fid) return off;
+  const u = Number(until) || 0;
+  if (u > 0 && now >= u) return { ...off, expired: true };
+  return { active: true, mode: m, folderId: m === 'folder' ? fid : null, msLeft: u > 0 ? u - now : 0, expired: false };
+}
+
+/**
+ * PURE: what the child's chrome looks like under a containment lock.
+ *
+ * `hideExit` is OR-ed with the kiosk elsewhere — this helper answers only what CONTAINMENT
+ * requires, so the two features cannot silently cancel each other out. The padlock itself
+ * is always visible: it is the parent's only way back in, and a child who taps it meets
+ * the code screen.
+ */
+export function containmentChrome({ active = false, mode = null } = {}) {
+  if (!active) return { hideExit: false, hideChip: false, hideHome: false, locked: false };
+  return {
+    hideExit: true,                 // the child may not leave the app
+    hideChip: true,                 // …nor switch to a sibling's profile
+    hideHome: mode === 'folder',    // folder mode: no way out of THIS folder
+    locked: true
+  };
+}
+
+/**
+ * PURE: minutes for a new lock. 0 is a real answer ("until I unlock it"), so it must
+ * survive; anything unusable falls back to the remembered value and then to 0 — the
+ * planRejectedPurge rule (a typo must never invent a short lock the parent did not ask
+ * for, nor a long one). Capped at 12h: past that "until I unlock" is the honest choice.
+ */
+export const CONTAIN_MAX_MIN = 720;
+export function normalizeLockMinutes(value, fallback = 0) {
+  // ⚠️ THE UNSET CHECK PRECEDES THE COERCION — `Number(null)` and `Number('')` are both 0,
+  // and 0 is a MEANINGFUL answer here ("until I unlock it"). Coercing first turns a
+  // never-written value into an explicit "lock forever" and silently discards the
+  // remembered default. The same trap plan.screenOffMinutes documents.
+  const unset = (v) => v === null || v === undefined || v === '' ||
+    (typeof v === 'number' && !Number.isFinite(v)) || typeof v === 'object';
+  const clamp = (n) => Math.min(Math.floor(n), CONTAIN_MAX_MIN);
+  if (!unset(value)) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n >= 0) return clamp(n);
+  }
+  if (!unset(fallback)) {
+    const f = Number(fallback);
+    if (Number.isFinite(f) && f >= 0) return clamp(f);
+  }
+  return 0;
+}
+
+/** PURE: the sentence under the padlock dialog — it must say what the child will lose. */
+export function containConfirmText({ mode = 'app', folderTitle = '', minutes = 0 } = {}) {
+  const what = mode === 'folder'
+    ? `הילד/ה יוכל/תוכל לצפות רק בתיקיה "${folderTitle || 'הנוכחית'}"`
+    : 'הילד/ה יוכל/תוכל לצפות בכל התיקיות';
+  const how = minutes > 0
+    ? `הנעילה תשתחרר לבד אחרי ${minutes} דקות, או קודם עם קוד ההורים.`
+    : 'הנעילה תישאר עד שתשחררו אותה עם קוד ההורים.';
+  return `${what}, ולא תהיה אפשרות לצאת מהאפליקציה או להחליף פרופיל. ${how}`;
+}
+
+/** PURE: the countdown label for a running containment lock ('' when it has no end). */
+export function containCountdownLabel(msLeft) {
+  const ms = Number(msLeft) || 0;
+  if (ms <= 0) return '';
+  const total = Math.ceil(ms / 60000);
+  if (total < 60) return `${total} דק׳`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m ? `${h} ש׳ ${m} דק׳` : `${h} ש׳`;
+}

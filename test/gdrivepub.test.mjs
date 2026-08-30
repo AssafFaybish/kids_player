@@ -249,3 +249,20 @@ test('the folder outcome NAMES its zero — the v1.0.37 rule', async () => {
   assert.equal(new Set(zeros).size, 4, 'two different zeroes produced the same message');
   for (const z of zeros) assert.doesNotMatch(z, /undefined|NaN/);
 });
+
+test('the KEYED folder path still names the folder (files.list answers children only)', async () => {
+  const { folderMetaUrl, interpretDriveFileMeta } = await import('../www/js/gdrivepub.js');
+  // `files.list` returns the CHILDREN and nothing else, so a folder imported through the
+  // API would otherwise be titled by the caller's generic fallback instead of what the
+  // parent named it in Drive — the user's explicit requirement. The folder's own name
+  // comes from files.get on the FOLDER id, which answers a folder exactly like a file.
+  const u = folderMetaUrl('1FYLaoscxWBV_BU5sFouf7XCrv7cKktBY', 'k/y');
+  assert.match(u, /\/files\/1FYLaoscxWBV_BU5sFouf7XCrv7cKktBY\?/);
+  assert.match(u, /fields=name,mimeType/);
+  assert.match(u, /key=k%2Fy/, 'the key must be URL-encoded');
+  // a folder's metadata parses through the same TOTAL parser as a file's
+  assert.deepEqual(
+    interpretDriveFileMeta({ name: 'testpublic', mimeType: 'application/vnd.google-apps.folder' }),
+    { name: 'testpublic', mimeType: 'application/vnd.google-apps.folder', size: null }
+  );
+});
