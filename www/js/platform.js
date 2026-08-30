@@ -427,6 +427,43 @@ export async function isTv() {
  * (the child taps play). Answering 'normal' instead would make an unrelated pause look like
  * a call that just ended, and the video would start itself in a quiet room.
  */
+/**
+ * v1.0.63 — the foreground service that lets the family's OWN media keep playing when the
+ * app goes to the background. Bridge-gated and NEVER throwing: in a browser and on any APK
+ * built before the native side existed these are silent no-ops, and the video simply pauses
+ * on background exactly as it did before the feature.
+ *
+ * ⚠️ `start` MUST be called while the app is still FOREGROUND — since API 31 a backgrounded
+ * app may not start a foreground service at all. It is called when an eligible video begins
+ * playing, not when the screen goes off.
+ */
+export async function startBackgroundPlayback(title, playing) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.startBackgroundPlayback) return false;
+  try {
+    await kids.startBackgroundPlayback({ title: String(title || ''), playing: playing !== false });
+    return true;
+  } catch { return false; }
+}
+
+export async function stopBackgroundPlayback() {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.stopBackgroundPlayback) return false;
+  try { await kids.stopBackgroundPlayback(); return true; } catch { return false; }
+}
+
+/** A ⏮/⏯/⏭ tap on the notification. Retained natively, so a frozen WebView loses nothing. */
+export function onPlaybackCommand(fn) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.addListener) return;
+  try {
+    kids.addListener('playbackCommand', (o) => {
+      const a = o && typeof o.action === 'string' ? o.action : '';
+      if (a) { try { fn(a); } catch {} }
+    });
+  } catch {}
+}
+
 export async function audioMode() {
   const kids = plugin('KidsNative');
   if (!kids || !kids.audioMode) return 'unknown';
