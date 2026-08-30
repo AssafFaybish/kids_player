@@ -565,6 +565,10 @@ html.tv .np-channel { font-size: 18px; }
 .form-msg { min-height: 22px; margin: 10px 0; font-weight: 700; }
 .form-msg.ok { color: var(--green); }
 .form-msg.err { color: var(--danger); }
+/* v1.0.64 — a setting that WORKED but is degraded: background playback with the notification
+   permission denied. Not an error (the audio plays) and not an ok (the control is missing),
+   and the message must be seen — a colourless one reads as "nothing happened". */
+.form-msg.warn { color: #b26a00; }
 .hint { color: var(--muted); font-size: 14px; line-height: 1.5; }
 .hint code { background: #eceaff; padding: 1px 6px; border-radius: 6px; direction: ltr; display: inline-block; }
 

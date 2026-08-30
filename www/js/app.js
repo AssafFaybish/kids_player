@@ -13,7 +13,7 @@ import { playItem, stop, playbackState, pauseCurrent, resumeCurrent } from './pl
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
-  setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand } from './platform.js';
+  setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -8293,10 +8293,19 @@ function wire() {
     if (!bgPlayEnabled) disarmBackgroundPlayback().catch(() => {});
     maybeSchedulePush();
     const msg = $('settings-msg');
-    msg.textContent = e.target.checked
-      ? 'ניגון ברקע הופעל ✅ — קבצים שלכם ימשיכו להתנגן כשהמסך כבוי'
-      : 'ניגון ברקע כובה — סגירת המסך עוצרת את הניגון';
-    msg.className = 'form-msg ok';
+    // v1.0.64 — ASK FOR THE NOTIFICATION PERMISSION HERE, at the one moment it has context:
+    // the parent has just said they want playback to continue with the screen off, and the
+    // notification is how they control it. v1.0.63 declared the permission and never
+    // requested it, so on Android 13+ it was denied by default on every device — the audio
+    // continued and the control never appeared.
+    let notif = true;
+    if (e.target.checked) notif = await ensureNotificationPermission().catch(() => true);
+    msg.textContent = !e.target.checked
+      ? 'ניגון ברקע כובה — סגירת המסך עוצרת את הניגון'
+      : notif
+        ? 'ניגון ברקע הופעל ✅ — קבצים שלכם ימשיכו להתנגן כשהמסך כבוי'
+        : 'ניגון ברקע הופעל, אבל בלי הרשאת הודעות לא יופיעו כפתורי הניגון. אפשר לאשר בהגדרות המכשיר ← אפליקציות ← הסרטונים שלי ← התראות';
+    msg.className = notif ? 'form-msg ok' : 'form-msg warn';
   });
   // v1.0.31: scheduled per-profile lock — two synced numbers. Clamp to sane bounds and
   // reflect the outcome. A change takes effect on the child's next armed cycle.

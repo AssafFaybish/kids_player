@@ -437,6 +437,26 @@ export async function isTv() {
  * app may not start a foreground service at all. It is called when an eligible video begins
  * playing, not when the screen goes off.
  */
+/**
+ * v1.0.64 — ask for the notification permission, and report the honest answer.
+ *
+ * ⚠️ v1.0.63 declared POST_NOTIFICATIONS and never REQUESTED it. On Android 13+ that is a
+ * runtime permission denied by default, so the service started, the audio kept playing, and
+ * the control was suppressed on every device — the failure a parent reported as "השיר המשיך
+ * אבל לא הופיע כפתור". A manifest entry only makes a permission requestable.
+ *
+ * An absent bridge answers TRUE: on an older APK and in the browser there is nothing to ask
+ * for, and answering "denied" would put a false warning in front of a parent.
+ */
+export async function ensureNotificationPermission() {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.ensureNotificationPermission) return true;
+  try {
+    const r = await kids.ensureNotificationPermission();
+    return !(r && r.granted === false);
+  } catch { return true; }
+}
+
 export async function startBackgroundPlayback(title, playing) {
   const kids = plugin('KidsNative');
   if (!kids || !kids.startBackgroundPlayback) return false;
