@@ -273,6 +273,30 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.64 — **THE PLAYBACK NOTIFICATION NEVER APPEARED, AND THE REASON IS A ONE-LINE
+  MISUNDERSTANDING** (field report on the v1.0.63 release: "שמעתי שיר ולחצתי על כפתור
+  הבית, השיר המשיך להתנגן — יופי. אבל לא הופיע לי כפתור").
+  - **ROOT CAUSE: `POST_NOTIFICATIONS` IS A RUNTIME PERMISSION ON ANDROID 13+, AND A
+    MANIFEST ENTRY ONLY MAKES IT REQUESTABLE.** It is DENIED by default. v1.0.63 declared it
+    and nothing ever called for it, so on every modern device the foreground service started
+    (the audio kept playing, which is why the feature looked half-alive) and the notification
+    was silently suppressed.
+  - ⚠️ **THE DOCS DESCRIBED THE BUG AS A FEATURE.** v1.0.63's own entry says "if
+    POST_NOTIFICATIONS is denied the service still runs and the parent simply loses the
+    visible control" — written as a graceful degradation, and it was in fact the ONLY
+    behaviour, because the code to ask was never written. A documented failure mode is not
+    evidence that the success path exists.
+  - **ASKED WHEN THE PARENT TURNS THE SETTING ON**, which is the one moment it has context:
+    they have just said they want playback to continue with the screen off, and the
+    notification is how they control it. Not at launch (a prompt with no context on a child's
+    tablet) and not when the screen goes off (a dialog nobody is there to see).
+  - **A DENIED ANSWER IS SAID**, and it needed a new `.form-msg.warn` style: the file had
+    only `.ok` (green) and `.err` (red), so the message would have rendered colourless — i.e.
+    read as "nothing happened", which is exactly the silence this fix is about.
+  - **GUARD**: any runtime-gated permission the manifest declares must have a
+    `requestPermissionForAlias` + `@PermissionCallback` in BOTH java copies, and the feature's
+    own toggle must ask. Proven red three ways (no request, no ask, no colour).
+
 - v1.0.63 — **THE MUSIC CAN KEEP PLAYING WITH THE SCREEN OFF** (user request), **opt-in,
   per profile, OFF unless a parent turns it on.**
   - ⚠️ **THIS TAKES THE APP FROM 2 PERMISSIONS AND 0 SERVICES TO 5 AND 1.** All three new
