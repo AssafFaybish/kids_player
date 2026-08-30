@@ -56,8 +56,17 @@ Everything below is invisible to `npm test`. All four bugs listed here were gree
 | **Migration / upgrade paths** | The PIN migration never ran: `getSetting(scope, name, undefined)` triggers the `fallback = null` default, so "never written" read as "already migrated". **Every pin test called `setPin()` first, so none took the lift branch.** A real install would have lost its parent gate. |
 | **Real stored data** | The autoplay chain would have opened WRAPPED GIFTS — gift state lives per child *on the video*, so wrapped tiles exist inside channel folders, not only in 🎁. |
 | **Cross-function state** | Selection preservation done by parameter looked right; `refreshAfterAdd` rebuilt the list a beat later and cleared the ticks straight back. |
+| **A swallowed throw in app.js** | v1.0.58: the empty-folder sweep spread `{items,total}` as an array. The throw escaped the promise's `.catch` into the caller's `.catch(() => {})`, so the whole sweep silently did NOTHING — suite green, because no node test executes `app.js`. |
+| **A comment asserting a precondition nobody checks** | v1.0.58: the folder-picture editor's `else` branch said "an emoji was chosen" and nothing verified it, so opening 🖼️ and tapping save ERASED the picture. |
+| **A name re-derived instead of read** | v1.0.58: the cache sweep re-derived a file name from `media`, which v1.0.56 corrects at playback — so a live cached file stopped matching its record and was deleted as an orphan. |
 
 **The pattern:** tests set up the NEW state and skip the branch that converts the OLD one.
+
+**And the v1.0.58 pattern, which is different: VERIFY THE NEGATIVE TOO.** Three of the four
+defects above showed up as a feature doing *nothing* rather than doing something wrong. When
+you check a fix in the browser, check the CONTROL as well — the empty-folder sweep looked
+correct because the folder that had to survive survived, and the folder that had to be
+deleted was still there.
 When you add a feature that changes where something is stored, the migration branch is the
 one with no coverage.
 
