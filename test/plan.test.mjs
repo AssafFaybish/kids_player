@@ -2072,3 +2072,107 @@ test('driveFolderOutcome: a nested import names its shape, and a cut-short walk 
   // nothing leaks undefined/NaN into a sentence a parent reads
   for (const m of msgs) assert.doesNotMatch(m, /undefined|NaN|null/);
 });
+
+/* ---------------- downloaded-file cache + empty folders (v1.0.58) ---------------- */
+
+test('planCacheSweep: what is used survives, what was forgotten goes, junk always goes', async () => {
+  const { planCacheSweep } = await import('../www/js/plan.js');
+  const { CACHE_MAX_AGE_MS } = await import('../www/js/config.js');
+  const now = 1_800_000_000_000;
+  const files = [
+    { name: 'fresh.mp3', size: 5_000_000 },
+    { name: 'stale.mp3', size: 3_000_000 },
+    { name: 'edge.mp3', size: 1_000_000 },
+    { name: 'orphan.mp4', size: 7_000_000 },
+    { name: 'nostamp.mp3', size: 2_000_000 }
+  ];
+  const owned = new Map([
+    ['fresh.mp3', { usedAt: now - 1000 }],
+    ['stale.mp3', { usedAt: now - CACHE_MAX_AGE_MS - 1 }],
+    ['edge.mp3', { usedAt: now - CACHE_MAX_AGE_MS }],       // exactly at the window: kept
+    ['nostamp.mp3', { usedAt: 0 }]                           // downloaded before v1.0.58
+  ]);
+  const r = planCacheSweep({ files, owned, now });
+  assert.deepEqual(r.delete.sort(), ['orphan.mp4', 'stale.mp3']);
+  assert.equal(r.orphans, 1, 'a file no record owns is junk — that is the only thing that frees what old versions leaked');
+  assert.equal(r.expired, 1);
+  assert.equal(r.bytes, 10_000_000, 'the freed space must be measured from what is on DISK');
+  // ⚠️ A FILE WITH NO USE STAMP IS GIVEN A FULL WINDOW, NEVER DELETED ON SIGHT. Reading
+  // "no stamp" as "never used" would wipe the whole cache the first time this ran — the
+  // blanket behaviour the user's decision explicitly rejected.
+  assert.deepEqual(r.stampMissing, ['nostamp.mp3']);
+  assert.ok(!r.delete.includes('nostamp.mp3'));
+  // and it is total
+  assert.deepEqual(planCacheSweep({}).delete, []);
+  assert.deepEqual(planCacheSweep({ files: [{ size: 1 }], owned: new Map() }).delete, [], 'a nameless entry is not deletable');
+});
+
+test('formatBytes never shows a parent something meaningless', async () => {
+  const { formatBytes } = await import('../www/js/plan.js');
+  assert.equal(formatBytes(0), '0 MB');
+  assert.equal(formatBytes(-5), '0 MB');
+  assert.equal(formatBytes(NaN), '0 MB');
+  assert.equal(formatBytes(null), '0 MB');
+  assert.equal(formatBytes(900), '1 KB');
+  assert.equal(formatBytes(5_500_000), '5.2 MB');
+  assert.equal(formatBytes(2_500_000_000), '2.3 GB');
+});
+
+test('deleteLocalChoice: asked ONCE, and only when a copy is really on the device', async () => {
+  const { deleteLocalChoice } = await import('../www/js/plan.js');
+  // A video is downloaded only when STREAMING it failed, so most deletions have nothing to
+  // ask about and must raise NO dialog — and a 40-video rejection must raise one, not forty.
+  assert.equal(deleteLocalChoice({ total: 1, local: 0 }).ask, false);
+  assert.equal(deleteLocalChoice({}).ask, false);
+  const one = deleteLocalChoice({ total: 1, local: 1, bytes: 5_500_000 });
+  assert.equal(one.ask, true);
+  assert.match(one.text, /קובץ אחד/);
+  assert.match(one.text, /5\.2 MB/);
+  assert.match(one.text, /דרייב/, 'the parent must be told Google Drive is not touched');
+  const many = deleteLocalChoice({ total: 40, local: 3, bytes: 0 });
+  assert.match(many.text, /3 קבצים/);
+  assert.match(many.text, /מתוך 40/, 'a partial batch must say how many of the deletion it covers');
+  assert.doesNotMatch(many.text, /\(\)/, 'an unknown size must not leave empty brackets');
+  for (const m of [one.text, many.text]) assert.doesNotMatch(m, /undefined|NaN|null/);
+});
+
+test('planEmptyFolderSweep: empty folders go, but not the refresh anchor or a fresh one', async () => {
+  const { planEmptyFolderSweep } = await import('../www/js/plan.js');
+  const { EMPTY_FOLDER_GRACE_MS } = await import('../www/js/config.js');
+  const now = 1_800_000_000_000;
+  const old = now - EMPTY_FOLDER_GRACE_MS - 1;
+  const folders = [
+    { folderId: 'cf:plain', createdAt: old },
+    { folderId: 'cf:full', createdAt: old },
+    { folderId: 'cf:driveRoot', driveFolderId: 'D', createdAt: old },
+    { folderId: 'cf:driveDisc', driveFolderId: 'D2', driveRootId: 'D', createdAt: old },
+    { folderId: 'cf:justMade', createdAt: now - 1000 }
+  ];
+  const gone = planEmptyFolderSweep({ folders, counts: { 'cf:full': 3 }, now });
+  assert.deepEqual(gone, ['cf:plain', 'cf:driveDisc']);
+  // ⚠️ THE DRIVE ROOT IS EMPTY ON PURPOSE — it is the row the refresh walks, and deleting it
+  // silently stops a nested Drive folder from ever picking up a disc added later (the
+  // user's decision 2026-08-30 was to keep it).
+  assert.ok(!gone.includes('cf:driveRoot'));
+  // and a folder made minutes ago belongs to a parent who is still working on it: the
+  // destination picker creates the row BEFORE the add finishes
+  assert.ok(!gone.includes('cf:justMade'));
+  // `order` stands in for a row with no createdAt (older rows carry only that)
+  assert.deepEqual(planEmptyFolderSweep({ folders: [{ folderId: 'cf:x', order: now - 100 }], counts: {}, now }), []);
+  assert.deepEqual(planEmptyFolderSweep({}), []);
+});
+
+test('artUrlCandidate: https only, and never a page pretending to be a picture', async () => {
+  const { artUrlCandidate } = await import('../www/js/folderart.js');
+  assert.equal(artUrlCandidate('https://example.com/a/cat.jpg').thumbUrl, 'https://example.com/a/cat.jpg');
+  // these bytes are fetched by the app and end up on a CHILD's screen, so the rule is the
+  // one weblock and openExternal already follow
+  assert.equal(artUrlCandidate('http://example.com/cat.jpg'), null, 'plain http is refused');
+  assert.equal(artUrlCandidate('data:image/png;base64,AAAA'), null);
+  assert.equal(artUrlCandidate('javascript:alert(1)'), null);
+  assert.equal(artUrlCandidate('https://user:pass@example.com/a.jpg'), null, 'userinfo is a spoofing shape');
+  assert.equal(artUrlCandidate('https://example.com'), null, 'a bare host is a page, not a picture');
+  assert.equal(artUrlCandidate('not a url'), null);
+  assert.equal(artUrlCandidate(''), null);
+  assert.equal(artUrlCandidate(null), null);
+});

@@ -7,7 +7,7 @@
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
 import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO,
-  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT } from './config.js';
+  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, CACHE_MAX_AGE_MS, EMPTY_FOLDER_GRACE_MS } from './config.js';
 
 /**
  * v1.0.37 — PURE: the caps a sync actually enforces.
@@ -2404,6 +2404,117 @@ export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first
   }
   if (s.existing) return 'אין קבצים חדשים בתיקיה';
   return 'התיקיה ריקה';
+}
+
+/* ---------------- downloaded-file cache (v1.0.58) ----------------
+   A video is only ever downloaded when STREAMING it failed, so most families cache
+   nothing — but a family whose Drive audio streams badly can accumulate hundreds of
+   files, and nothing has ever deleted one. Three rules, all decided here:
+   deletion follows the record, an unused file expires, and a file nothing owns is junk. */
+
+/**
+ * PURE: which cached files to delete now.
+ *
+ * `files`   — what is ACTUALLY on disk: [{ name, size, mtime }] (platform.fsListDir).
+ * `owned`   — Map<fileName, { usedAt }> built from the records that hold a localPath.
+ *
+ * THE POLICY IS PER FILE, NOT A BLANKET SWEEP (user decision 2026-08-30, and the reason is
+ * the child): a monthly "delete everything" removes the one song they play daily, and the
+ * tablet re-downloads it on the family's mobile data. Age is measured from the LAST PLAY,
+ * so what is used survives and only what was forgotten goes.
+ *
+ * A file with NO record is an ORPHAN and always goes — that is the only thing that can free
+ * what earlier versions leaked (a video deleted before v1.0.58 left its file behind forever).
+ *
+ * ⚠️ A FILE WITH NO USE STAMP IS GIVEN A FULL WINDOW, NEVER DELETED ON SIGHT. Every file
+ * downloaded before this version has no `localUsedAt`, and reading "no stamp" as "never
+ * used" would wipe the whole cache the first time the sweep ran — exactly the blanket
+ * behaviour the decision rejected. The caller stamps them instead (`stampMissing`).
+ */
+export function planCacheSweep({ files = [], owned = null, now = Date.now(),
+  maxAgeMs = CACHE_MAX_AGE_MS } = {}) {
+  const own = owned instanceof Map ? owned : new Map(Object.entries(owned || {}));
+  const del = [];
+  const stampMissing = [];
+  let bytes = 0;
+  let orphans = 0;
+  let expired = 0;
+  for (const f of files || []) {
+    const name = f && typeof f.name === 'string' ? f.name : '';
+    if (!name) continue;
+    const rec = own.get(name);
+    if (!rec) {
+      orphans += 1;
+      del.push(name);
+      bytes += Number(f.size) || 0;
+      continue;
+    }
+    const usedAt = Number(rec.usedAt);
+    if (!Number.isFinite(usedAt) || usedAt <= 0) { stampMissing.push(name); continue; }
+    if (now - usedAt > maxAgeMs) {
+      expired += 1;
+      del.push(name);
+      bytes += Number(f.size) || 0;
+    }
+  }
+  return { delete: del, stampMissing, bytes, orphans, expired };
+}
+
+/** PURE: human bytes, for the parent's "how much is this costing me" line. */
+export function formatBytes(n) {
+  const b = Number(n);
+  if (!Number.isFinite(b) || b <= 0) return '0 MB';
+  if (b < 1024 * 1024) return Math.max(1, Math.round(b / 1024)) + ' KB';
+  const mb = b / (1024 * 1024);
+  if (mb < 1024) return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
+  return (mb / 1024).toFixed(1) + ' GB';
+}
+
+/**
+ * PURE: the "delete from the device too?" question (user request + decision 2026-08-30).
+ *
+ * ASKED ONLY WHEN THERE IS SOMETHING TO ASK ABOUT, and ONCE PER BATCH. A video that was
+ * never downloaded — which is most of them, since a download only happens after streaming
+ * fails — must not raise a dialog at all, and a 40-video rejection must not raise forty.
+ */
+export function deleteLocalChoice({ total = 0, local = 0, bytes = 0 } = {}) {
+  const n = Math.max(0, Number(local) | 0);
+  if (!n) return { ask: false, text: '' };
+  const t = Math.max(n, Number(total) | 0);
+  const size = bytes > 0 ? ` (${formatBytes(bytes)})` : '';
+  const what = n === 1 ? 'קובץ אחד ירד' : `${n} קבצים ירדו`;
+  const scope = t === n ? '' : ` מתוך ${t} שנמחקים`;
+  return {
+    ask: true,
+    text: `${what}${scope} למכשיר הזה${size}. למחוק גם אותם מזיכרון המכשיר? ` +
+      'הקבצים בגוגל דרייב לא ייגעו.'
+  };
+}
+
+/**
+ * PURE: which EMPTY custom folders to delete (user request: delete them, do not just hide
+ * them as today).
+ *
+ * TWO EXEMPTIONS, and both are load-bearing:
+ *  - A DRIVE ROOT ANCHOR (`driveFolderId` and no `driveRootId`) is empty ON PURPOSE — it is
+ *    the row the refresh walks, and deleting it would silently stop a nested Drive folder
+ *    from ever picking up a disc added later (the user's decision 2026-08-30: keep it).
+ *  - A folder created MINUTES ago. The picker creates the row before the add finishes, and
+ *    a parent who is still choosing a picture would watch their new folder vanish.
+ */
+export function planEmptyFolderSweep({ folders = [], counts = null, now = Date.now(),
+  graceMs = EMPTY_FOLDER_GRACE_MS } = {}) {
+  const by = counts instanceof Map ? counts : new Map(Object.entries(counts || {}));
+  const out = [];
+  for (const f of folders || []) {
+    if (!f || !f.folderId) continue;
+    if ((Number(by.get(f.folderId)) || 0) > 0) continue;
+    if (f.driveFolderId && !f.driveRootId) continue;      // the refresh anchor
+    const born = Number(f.createdAt) || Number(f.order) || 0;
+    if (born && now - born < graceMs) continue;           // the parent is still working
+    out.push(f.folderId);
+  }
+  return out;
 }
 
 /* ---------------- containment lock (v1.0.56) ----------------

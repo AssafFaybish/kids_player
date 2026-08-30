@@ -191,6 +191,41 @@ export async function fsRemoveDir(path) {
   try { await FS.rmdir({ path, directory: DIRECTORY, recursive: true }); } catch {}
 }
 
+/**
+ * v1.0.58 — delete ONE cached media file. Until now the only cleaner was `fsRemoveDir`, an
+ * all-or-nothing sweep, so deleting a video from the app left its downloaded copy on the
+ * tablet forever (the user's report). Never throws: a file that is already gone is the
+ * outcome we wanted anyway.
+ */
+export async function fsDeleteFile(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return false;
+  try { await FS.deleteFile({ path, directory: DIRECTORY }); return true; } catch { return false; }
+}
+
+/**
+ * v1.0.58 — list the cache directory: `[{ name, size, mtime }]`, [] when unreadable.
+ *
+ * This is what makes an HONEST cache policy possible. The records know which files they
+ * asked for, but only the DIRECTORY knows what is actually on disk — and the two drift:
+ * a video deleted before v1.0.58 left its file behind, a failed download can leave a
+ * partial, and a record can be pruned by the rolling window while its file stays. A sweep
+ * that only walked the records would never free any of that.
+ */
+export async function fsListDir(path) {
+  const FS = plugin('Filesystem');
+  if (!FS) return [];
+  try {
+    const res = await FS.readdir({ path, directory: DIRECTORY });
+    const files = (res && res.files) || [];
+    // Capacitor 5+ answers objects; older builds answered bare name strings.
+    return files.map((f) => (typeof f === 'string'
+      ? { name: f, size: 0, mtime: 0 }
+      : { name: String(f.name || ''), size: Number(f.size) || 0, mtime: Number(f.mtime) || 0 }))
+      .filter((f) => f.name);
+  } catch { return []; }
+}
+
 /* ---------- EXTERNAL dir (updater downloads; survives the unknown-sources detour) ---------- */
 // ⚠ Filesystem.downloadFile IGNORES recursive:true on Android (verified in
 // @capacitor/filesystem source) — mkdir first or the first download throws

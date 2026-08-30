@@ -75,6 +75,20 @@ export const CALL_RESUME_MAX_MS = 15 * 60 * 1000;
 export const DRIVE_TREE_MAX_FOLDERS = 100;
 export const DRIVE_TREE_MAX_FILES = 2000;
 
+/* v1.0.58 — THE DOWNLOADED-FILE CACHE. A file is only ever downloaded when streaming it
+   failed, so most families cache nothing; a family whose Drive audio streams badly can
+   accumulate hundreds of files, and until now nothing ever deleted one.
+   PER FILE, measured from the LAST PLAY (user decision 2026-08-30, choosing it over a
+   blanket monthly wipe): a blanket sweep deletes the one song the child plays every day and
+   the tablet re-downloads it on mobile data, while an unused file is exactly what should go. */
+export const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const CACHE_SWEEP_EVERY_MS = 24 * 60 * 60 * 1000; // the sweep itself runs at most daily
+
+/* v1.0.58 — an EMPTY folder is DELETED now, not just hidden (user request). The grace window
+   exists because the destination picker creates the row BEFORE the add finishes: without it a
+   parent choosing a picture for the folder they just made would watch it disappear. */
+export const EMPTY_FOLDER_GRACE_MS = 10 * 60 * 1000;
+
 /* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
    is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
    Long enough that a parent who changes their mind has a real window; short enough that

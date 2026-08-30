@@ -125,6 +125,10 @@ body {
    shield. Same split, other surface. */
 #view-gallery, #view-folder, #watch-grid { touch-action: pan-y; }
 
+/* v1.0.58 — the "paste an image link" row inside the folder-art chooser. */
+.fp-art-url { display: flex; gap: 8px; align-items: center; margin: 6px 0 2px; }
+.fp-art-url .input { flex: 1 1 auto; min-width: 0; }
+
 /* ---------- Search (v1.0.7) ---------- */
 .search-launcher {
   display: flex; align-items: center; justify-content: center; gap: 6px;

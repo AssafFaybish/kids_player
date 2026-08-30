@@ -229,6 +229,28 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Downloads, cache and folder pictures (v1.0.58 — the browser proved the logic against a
+### simulated device; only a real tablet proves the filesystem)
+- [ ] **A real download**: play a direct/Drive file whose streaming fails → it downloads,
+      plays from the device, and plays again OFFLINE.
+- [ ] **Delete that video** → the dialog offers "גם מזיכרון המכשיר"; choosing it frees the
+      space (check Android's app-storage screen), and the file in **Google Drive is
+      untouched**. Choosing "רק מהאפליקציה" leaves the file — and the daily sweep collects
+      it within a day as an orphan.
+- [ ] **Delete a video that was NEVER downloaded** → no dialog at all.
+- [ ] **Delete a whole folder with several downloaded files** → ONE question, not one per
+      video.
+- [ ] **The manual cleaner** reports a real count and a real size, and the app-storage
+      screen agrees.
+- [ ] **The month-old sweep**: set the device clock forward a month (or wait), open the app →
+      files not played in that window are gone, the ones being played are not. *(Only a
+      device has a filesystem; the browser can only simulate one.)*
+- [ ] **A folder emptied by deleting its last video** disappears from the parent's list on
+      the next home entry — and a nested Drive ROOT folder does NOT, so new discs keep
+      arriving.
+- [ ] **🖼️ תמונה on an existing folder**: search by name, paste an https link, or pick an
+      icon → the tile changes, and it still renders in airplane mode (the bytes are cached).
+
 ### Nested Drive folders (v1.0.58 — the browser proved the walk against the real folder;
 ### these need a device, a second account, or both)
 - [ ] **The reported folder on a DEVICE**: paste a Drive folder of folders → one app folder

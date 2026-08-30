@@ -273,6 +273,65 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.58 — **THE TABLET STOPS FILLING UP, AND A FOLDER CAN CHANGE ITS FACE** (four user
+  requests in one release).
+  - **AN EMPTY FOLDER IS DELETED, NOT HIDDEN.** v1.0.56 deliberately kept the row (the
+    parent could still rename it and file videos into it); the user asked for the opposite,
+    so pure `plan.planEmptyFolderSweep` now names them and the sweep deletes them **with the
+    ordinary tombstone** — absence alone is re-added by any peer that has not pulled (the
+    v1.0.36 rule). Two exemptions, both load-bearing: a **DRIVE ROOT ANCHOR** is empty BY
+    DESIGN (it is the row the nested refresh walks — deleting it silently stops a folder
+    from ever picking up a disc added later, so the user chose to keep it), and a folder
+    born in the last ten minutes belongs to a parent who is still working on it (the
+    destination picker creates the row BEFORE the add finishes). The home still hides a
+    zero-count folder, because a row can exist for the moments before the sweep runs.
+  - **A FOLDER PICTURE HAS THREE DOORS, AND CAN BE CHANGED AFTERWARDS.** The name search
+    already existed (v1.0.56); this adds the **pasted https link** and a **🖼️ button on the
+    parent's folder row**. The editor REUSES the creation chooser — same doors, same byte
+    cache, same rules — and only hides the destination list and the name field, which is why
+    `renderFolderPick` must put both back (guard-pinned: an art edit could otherwise leave
+    the next add with a picker that has nothing to pick from). `folderart.artUrlCandidate`
+    is pure and https-only for the reason `weblock` is: these bytes are fetched by the app
+    and land on a CHILD's screen. ONE renderer serves search results and pasted links,
+    because "what if the picture will not load" is a load-bearing answer (a candidate that
+    cannot render is removed, so the parent never picks a picture the folder can never show).
+  - **DELETING A VIDEO CAN DELETE ITS DOWNLOADED COPY** (user request). Nothing ever did
+    before, so every deletion since the app existed leaked a file into private storage.
+    Asked **ONCE per batch and only when a copy is really on the device** (the user's
+    decision): a download only happens after streaming fails, so most deletions raise no
+    dialog at all, and a 40-video rejection raises one question rather than forty.
+    `plan.deleteLocalChoice` decides; `askDeleteLocalCopies` is the one helper every
+    deletion surface goes through (count-pinned), and **cancelling deletes nothing**.
+    **GOOGLE DRIVE IS NEVER TOUCHED** — the text says so, and a guard bans the remote
+    surfaces from that code path.
+  - **THE CACHE PRUNES ITSELF, PER FILE, BY LAST PLAY** — the user chose this over their own
+    "wipe everything monthly" idea once the cost was named: a blanket sweep deletes the one
+    song the child plays every day, and the tablet re-downloads it on the family's mobile
+    data. `localUsedAt` is the only honest clock (stamped where a cached copy is actually
+    SERVED, in `prepareStreamSrc`) and is DEVICE-LOCAL like `localPath` itself — a guard
+    bans it from the Drive document.
+    ⚠️ **A FILE WITH NO STAMP IS GIVEN A FULL WINDOW, NEVER DELETED ON SIGHT.** Every file
+    downloaded before this version has none, and reading "no stamp" as "never used" would
+    wipe the whole cache the first time the sweep ran — exactly the blanket behaviour the
+    decision rejected. **An ORPHAN (a file no record owns) always goes**: that is the only
+    thing that can free what earlier versions leaked, and it is also what cleans up after a
+    parent who answered "רק מהאפליקציה".
+  - **BOTH SWEEPS RUN AFTER THE PULL AND THE DRIVE REFRESH, NEVER BEFORE** (index-pinned):
+    those two ADD content, and a sweep that ran first would judge a folder empty a second
+    before its videos arrived — deleting a folder full of songs, on every device.
+  - **THE MANUAL CLEANER NOW MEASURES WHAT IT FREED.** It counted RECORDS holding a
+    localPath and called everything "קבצי וידאו", so a parent could free 300 MB and be told
+    "נמחקו 0" — audio has been cacheable since v1.0.56, and a file left behind by a deletion
+    has no record at all. It reads the DIRECTORY before wiping and reports files + bytes.
+  - 13 unit tests + 3 invariants tests, every guard proven red on a planted regression (16 —
+    one of which fired on its own function name and had to be sharpened). Verified in the
+    browser against the real app: the old empty folder swept while the Drive anchor and a
+    fresh folder survived; a simulated device where the 40-day-old file and an orphan were
+    deleted while the freshly-played one kept its copy; the daily throttle refusing a second
+    sweep; the cleaner reporting "נוקו 3 קבצים · 5.7 MB"; a real file deletion clearing its
+    record's `localPath`; and the 🖼️ editor refusing plain http, accepting an https link,
+    caching its BYTES onto the folder, and handing the picker's chrome back to the next add.
+
 - v1.0.58 — **A DRIVE FOLDER MAY CONTAIN FOLDERS OF SONGS** (user request), **and the
   "התיקיה ריקה" it used to answer was never about an empty folder** (same report).
   - ⚠️ **THE BUG FIRST, because it is the one that lied.** A folder of 28 mp3s answered

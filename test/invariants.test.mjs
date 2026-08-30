@@ -3408,3 +3408,101 @@ test('a NESTED Drive folder becomes a list of ordinary folders (v1.0.58)', () =>
     assert.doesNotMatch(imp, banned, 'the tree import deletes — it is ADDITIVE ONLY');
   }
 });
+
+test('the download cache prunes itself, and deletion reaches the device (v1.0.58)', () => {
+  const app = CODE.get('www/js/app.js');
+  const media = CODE.get('www/js/media.js');
+
+  // 1) THE DECISION IS PURE AND app.js ONLY PERFORMS IT — the db.js split. What gets
+  //    deleted off a family's tablet is not a judgement to make inline.
+  const sweep = fnSlice(app, 'async function sweepDownloadCache(');
+  assert.match(sweep, /planCacheSweep\(/, 'the cache sweep decides inline');
+  assert.match(sweep, /CACHE_SWEEP_EVERY_MS/, 'the sweep lost its throttle — it would list the directory on every home entry');
+  assert.match(sweep, /cacheSweptAt/, 'the throttle has nothing to remember');
+  // a file we just expired must be forgotten by its record, or every later play stats a
+  // path that no longer exists
+  assert.match(sweep, /localPath: null/, 'an expired file leaves a record pointing at nothing');
+  // and the no-stamp case must be STAMPED, never deleted — that is the whole difference
+  // between this policy and the blanket wipe the user rejected
+  assert.match(sweep, /stampMissing/, 'files with no use stamp are no longer given a window');
+
+  // 2) THE CLOCK IT RUNS ON IS THE ONE HONEST SIGNAL: a cached copy was actually played.
+  assert.match(media, /touchLocalUse\(item\)/, 'playing a cached file no longer records that it was used');
+  assert.match(fnSlice(media, 'export async function prepareStreamSrc('), /touchLocalUse/,
+    'the use stamp left the one place that knows a local copy was served');
+  // device-local, exactly like localPath: it describes a file on THIS tablet
+  assert.doesNotMatch(CODE.get('www/js/drive.js'), /localUsedAt/, 'the use stamp travels to other devices');
+
+  // 3) BOTH SWEEPS RUN AFTER THE PULL AND THE DRIVE REFRESH, never before: those two ADD
+  //    content, and a sweep that ran first would judge a folder empty a second before its
+  //    videos arrived — deleting a folder full of songs, on every device.
+  const entry = fnSlice(app, 'async function entryRefresh(');
+  const pullAt = entry.indexOf('maybePullDrive()');
+  const driveAt = entry.indexOf('refreshDriveFolders(');
+  const emptyAt = entry.indexOf('sweepEmptyFolders()');
+  const cacheAt = entry.indexOf('sweepDownloadCache()');
+  assert.ok(pullAt >= 0 && driveAt > pullAt, 'the entry refresh no longer pulls before refreshing Drive folders');
+  assert.ok(emptyAt > driveAt, 'the empty-folder sweep runs before the content that fills folders arrives');
+  assert.ok(cacheAt > driveAt, 'the cache sweep runs before the Drive refresh that may claim files');
+
+  // 4) THE "DELETE FROM THE DEVICE TOO?" QUESTION IS ASKED ONCE, BY ONE HELPER. Every
+  //    deletion surface must go through it, or one of them silently leaves files behind.
+  assert.match(fnSlice(app, 'async function askDeleteLocalCopies('), /deleteLocalChoice\(/,
+    'the delete-from-device question is decided inline');
+  const callers = (app.match(/askDeleteLocalCopies\(/g) || []).length;
+  assert.ok(callers >= 4, 'a deletion surface stopped asking about the downloaded copy: ' + callers);
+  // cancelling must not delete anything — the answer is a THREE-way choice
+  assert.match(app, /if \(choice === 'cancel'\) return;/, 'cancelling the device question still deletes the video');
+  assert.match(fnSlice(app, 'async function applyDeleteLocalCopies('), /deleteLocalFiles\(/,
+    'the chosen answer is never carried out');
+
+  // 5) GOOGLE DRIVE IS NEVER TOUCHED. The app deletes its own cached copy and nothing else —
+  //    the user's explicit condition.
+  // the pattern names the REMOTE surfaces only: a looser /delete/i matched the function's
+  // own name and tripped on correct code — the self-tripping guard TESTING.md warns about
+  assert.doesNotMatch(fnSlice(media, 'export async function deleteLocalFiles('),
+    /gdrivepub|googleapis|drive\.google|files\.delete/i,
+    'the local-copy deletion reaches beyond the device cache — Google Drive must never be touched');
+  assert.match(CODE.get('www/js/platform.js'), /export async function fsDeleteFile\(/, 'the per-file delete is gone');
+});
+
+test('an EMPTY folder is deleted, not just hidden (v1.0.58)', () => {
+  const app = CODE.get('www/js/app.js');
+  const sweep = fnSlice(app, 'async function sweepEmptyFolders(');
+  assert.match(sweep, /planEmptyFolderSweep\(/, 'the empty-folder sweep decides inline');
+  // the deletion must write the ordinary tombstone, or a peer re-adds the row on its next
+  // push — the v1.0.36 lesson, which is why this goes through deleteCustomFolder
+  assert.match(sweep, /deleteCustomFolder\(/, 'the sweep no longer deletes through the tombstoned path');
+  assert.doesNotMatch(sweep, /tombstone: false/, 'the sweep deletes without a tombstone — a peer will bring the folder back');
+  // the home still hides a zero-count folder (a row can exist for a moment before the
+  // sweep runs, and the child must never see an empty tile — the v1.0.21 rule)
+  assert.match(fnSlice(app, 'async function buildFolders('), /if \(!count\) continue;/,
+    'the home stopped hiding a folder that is still empty');
+});
+
+test('a folder picture has three doors, and only the parent installs one (v1.0.58)', () => {
+  const app = CODE.get('www/js/app.js');
+  const art = CODE.get('www/js/folderart.js');
+  // the module may still only PROPOSE — the v1.0.56 rule, now with a third proposer
+  assert.doesNotMatch(art, /putCustomFolder|putThumb|db\.js/, 'folderart.js writes to the database');
+  assert.match(art, /export function artUrlCandidate\(/, 'the pasted-link door left the pure module');
+  // https only: these bytes are fetched by the app and shown to a CHILD
+  assert.match(fnSlice(art, 'export function artUrlCandidate('), /\^https:/,
+    'the pasted picture link is no longer restricted to https');
+  // ONE renderer for search results and pasted links — a second copy is a second answer to
+  // "what if the picture will not load", and that answer is load-bearing
+  assert.match(fnSlice(app, 'async function addFolderArtFromUrl('), /renderArtCandidates\(/,
+    'the pasted link renders through its own copy of the candidate loop');
+  assert.match(fnSlice(app, 'function renderArtCandidates('), /addEventListener\('error'/,
+    'a candidate that cannot load is still offerable — the parent would pick a picture the folder can never show');
+  // changing an EXISTING folder's picture stores BYTES, like creation does (v1.0.32)
+  const edit = fnSlice(app, 'async function saveFolderArtEdit(');
+  assert.match(edit, /httpGetBlob\(/, 'the changed picture is not fetched as bytes');
+  assert.match(edit, /putThumb\(/, 'the changed picture is not cached');
+  assert.match(edit, /putCustomFolder\(/, 'the changed picture never reaches the folder row');
+  // the editor borrows the creation view, so it MUST put the chrome back
+  assert.match(fnSlice(app, 'async function renderFolderPick('), /fpArtEditing = null/,
+    'the destination picker can open still in art-editing mode');
+  assert.match(fnSlice(app, 'async function renderFolderPick('), /setFolderNameFieldVisible\(true\)/,
+    'the name field stays hidden after an art edit — the next folder could not be named');
+});

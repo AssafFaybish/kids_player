@@ -128,6 +128,14 @@
               <span>תמונה לתיקיה</span>
               <button id="fp-art-search" class="btn btn-small" type="button">🔎 חיפוש תמונה</button>
             </div>
+            <!-- v1.0.58 — the THIRD way to give a folder a picture (user request), beside the
+                 name search above and the fixed icons below: paste a link to an image. The
+                 bytes are fetched and cached exactly like a searched picture, so it renders
+                 offline and survives the source going away. -->
+            <div class="fp-art-url">
+              <input id="fp-art-url" class="input" type="url" inputmode="url" placeholder="או הדביקו קישור לתמונה (https)" />
+              <button id="fp-art-url-go" class="btn btn-small" type="button">הוספה</button>
+            </div>
             <div id="fp-art-msg" class="form-msg"></div>
             <div id="fp-art-row" class="fp-art-row"></div>
             <div id="fp-emoji-row" class="fp-emoji-row"></div>
@@ -720,7 +728,7 @@
              under EVERY tab — the user saw it "twice") -->
         <div class="list-head" style="margin-top:18px"><span class="list-count">🧹 פינוי מקום</span></div>
         <div class="row-btns">
-          <button id="clear-cache" class="btn btn-small" type="button">ניקוי קבצי וידאו שהורדו (פינוי מקום)</button>
+          <button id="clear-cache" class="btn btn-small" type="button">🧹 ניקוי קבצים שהורדו (פינוי מקום)</button>
         </div>
       </div>
 

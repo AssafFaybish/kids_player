@@ -22,7 +22,8 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
-  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC } from './config.js';
+  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
+  CACHE_SWEEP_EVERY_MS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -37,6 +38,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
   pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys,
+  planCacheSweep, planEmptyFolderSweep, deleteLocalChoice, formatBytes,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
@@ -1035,6 +1037,13 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
     await renderAfterRemoteChange();
   }
   if (activeProfileId !== id) return;
+  // v1.0.58 — housekeeping, AFTER the pull and the Drive refresh and never before them: both
+  // of those ADD content, and a sweep that ran first would judge a folder empty a second
+  // before its videos arrived, or delete a file a peer's record was about to claim. Both are
+  // silent, best-effort and self-throttled; neither ever blocks the child's screen.
+  await sweepEmptyFolders().catch(() => {});
+  await sweepDownloadCache().catch(() => {});
+  if (activeProfileId !== id) return;
   if (!forceSync && !(await shouldSync(id))) return;
   await syncLibrary(id, { force: forceSync, onProgress: (p) => loading.progress(p) });
   if (activeProfileId !== id) return;
@@ -1042,6 +1051,131 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   await loadGiftStates();
   await renderAfterRemoteChange();
   maybeSchedulePush();
+}
+
+/**
+ * v1.0.58 — "למחוק גם מזיכרון המכשיר?" (user request), asked ONCE and only when there is
+ * something to ask about (their decision 2026-08-30).
+ *
+ * A video is downloaded only when STREAMING it failed, so most deletions have no local copy
+ * and must raise NO dialog at all; and a 40-video rejection must raise one question, not
+ * forty. `plan.deleteLocalChoice` decides both, and the caller passes the records it is
+ * about to delete.
+ *
+ * Returns 'device' | 'app' | 'cancel'. GOOGLE DRIVE IS NEVER TOUCHED and the text says so:
+ * this is the tablet's own copy, in the app's private storage, which no file manager can
+ * see — which is also why "app only" is the secondary answer and not the default.
+ */
+async function askDeleteLocalCopies(records) {
+  const local = (records || []).filter((r) => r && r.localPath);
+  if (!local.length) return 'app';
+  let bytes = 0;
+  try {
+    const { listCacheFiles, cacheBaseName } = await import('./media.js');
+    const sizes = new Map((await listCacheFiles()).map((f) => [f.name, Number(f.size) || 0]));
+    for (const r of local) bytes += sizes.get(cacheBaseName(r)) || 0;
+  } catch {}
+  const q = deleteLocalChoice({ total: (records || []).length, local: local.length, bytes });
+  if (!q.ask) return 'app';
+  const answer = await askKid({
+    emoji: '🧹', title: 'למחוק גם מהמכשיר?', text: q.text,
+    ok: 'כן, גם מזיכרון המכשיר', third: 'רק מהאפליקציה', cancel: 'ביטול'
+  });
+  if (answer === 'cancel' || answer === 'dismiss') return 'cancel';
+  return answer === 'third' ? 'app' : 'device';
+}
+
+/** Perform the answer above. 'app' leaves the file, which the daily sweep collects as an
+ *  orphan — so nothing is ever stranded on the tablet forever either way. */
+async function applyDeleteLocalCopies(records, choice) {
+  if (choice !== 'device') return { deleted: 0, bytes: 0 };
+  try {
+    const { deleteLocalFiles } = await import('./media.js');
+    return await deleteLocalFiles(records);
+  } catch { return { deleted: 0, bytes: 0 }; }
+}
+
+/**
+ * v1.0.58 — AN EMPTY FOLDER IS DELETED, not merely hidden (user request).
+ *
+ * v1.0.56 chose to keep the row and hide the tile so the parent could still rename it and
+ * file videos into it; the user has now asked for the opposite, so the row goes. Deletion
+ * writes the ordinary `cfDel:` tombstone, which is what makes it stick on every device
+ * instead of a peer re-adding the row on its next push.
+ *
+ * The two exemptions live in pure `plan.planEmptyFolderSweep`: a DRIVE ROOT anchor (empty by
+ * design — it is what the refresh walks) and a folder created minutes ago (the destination
+ * picker creates the row before the add finishes).
+ *
+ * Runs after the pull and the Drive refresh, never before: judging a folder empty a moment
+ * before its videos arrive would delete a folder full of songs, on every device.
+ */
+async function sweepEmptyFolders() {
+  const scope = await currentLibScope();
+  if (!scope) return 0;
+  const rows = await db.listCustomFolders(scope);
+  if (!rows.length) return 0;
+  const counts = new Map();
+  for (const cf of rows) counts.set(cf.folderId, await db.countFolder(scope, cf.folderId));
+  const gone = planEmptyFolderSweep({ folders: rows, counts });
+  for (const folderId of gone) await db.deleteCustomFolder(scope, folderId);
+  if (gone.length) maybeSchedulePush();
+  return gone.length;
+}
+
+/**
+ * v1.0.58 — THE DOWNLOADED-FILE CACHE PRUNES ITSELF (user request: the tablet must not fill
+ * up). Per file, by last play, because a blanket monthly wipe deletes the song the child
+ * plays daily and the tablet re-downloads it on mobile data (the user's decision).
+ *
+ * The DECISION is pure (`plan.planCacheSweep`) and this only performs it — the db.js split.
+ * Two things it frees that nothing else can: files whose record is gone (every deletion
+ * before this version leaked one), and files nobody has played for a month.
+ *
+ * Throttled to daily through `meta`, so it costs one directory listing a day at most.
+ */
+async function sweepDownloadCache() {
+  const { listCacheFiles, deleteCacheFiles, cacheBaseName } = await import('./media.js');
+  const lastAt = Number(await db.getMeta('cacheSweptAt')) || 0;
+  if (Date.now() - lastAt < CACHE_SWEEP_EVERY_MS) return 0;
+  const files = await listCacheFiles();
+  if (!files.length) { await db.putMeta('cacheSweptAt', Date.now()); return 0; }
+  // own the files by RECORD, across every scope this device holds: the cache is per device
+  // and one file can be referenced by a record in the shared library or in a personal scope
+  const owned = new Map();
+  const stampable = new Map();
+  const idb = await db.openDb();
+  await new Promise((resolve) => {
+    const req = idb.transaction('videos').objectStore('videos').openCursor();
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) return resolve();
+      const rec = cur.value;
+      if (rec && rec.localPath) {
+        const name = cacheBaseName(rec);
+        owned.set(name, { usedAt: Number(rec.localUsedAt) || 0 });
+        stampable.set(name, rec);
+      }
+      cur.continue();
+    };
+    req.onerror = () => resolve();
+  });
+  const plan = planCacheSweep({ files, owned });
+  // A file downloaded before v1.0.58 carries NO use stamp. It is given a full window rather
+  // than deleted on sight — reading "no stamp" as "never used" would wipe the whole cache
+  // the first time this ran, which is the blanket behaviour the user's decision rejected.
+  for (const name of plan.stampMissing) {
+    const rec = stampable.get(name);
+    if (rec) await db.setVideoFields(rec.scopeId, rec.key, { localUsedAt: Date.now() }).catch(() => {});
+  }
+  const removed = await deleteCacheFiles(plan.delete);
+  // a record whose file we just expired must forget it, or every play stats a dead path
+  for (const name of plan.delete) {
+    const rec = stampable.get(name);
+    if (rec) await db.setVideoFields(rec.scopeId, rec.key, { localPath: null, localUsedAt: null }).catch(() => {});
+  }
+  await db.putMeta('cacheSweptAt', Date.now());
+  return removed;
 }
 
 /**
@@ -1322,7 +1456,13 @@ function registerViews() {
   // button, a navigation from somewhere else) must resolve the awaiting add, or the caller
   // hangs forever holding a half-finished add — the chooseShareProfile lesson (v1.0.23).
   nav.register('folderpick', {
-    onLeave: () => { const h = folderPickHandlers; folderPickHandlers = null; if (h) h.cancel(); }
+    // EVERY exit settles the awaiting add exactly once (the chooseShareProfile lesson: a
+    // caller left holding a half-finished add hangs forever). v1.0.58: the art-editor mode
+    // has nothing to resolve, but its own state must not survive the view either.
+    onLeave: () => {
+      fpArtEditing = null;
+      const h = folderPickHandlers; folderPickHandlers = null; if (h) h.cancel();
+    }
   });
   // v1.0.56 — the lock-duration dialog. Leaving it by ANY route abandons the pending
   // lock; nothing is written until the parent confirms.
@@ -3116,6 +3256,17 @@ async function confirmDeleteWatch(item) {
       // just the played copy would leave the other one visible on the home grid.
       const scopes = new Set([item.scopeId, libScope,
         activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean));
+      // v1.0.58 — ask about the downloaded copy FIRST, while the records still exist:
+      // afterwards there is nothing left to read a localPath from. Asked once for every
+      // copy of this key together, because they share one file on disk.
+      const copies = [];
+      for (const scope of scopes) {
+        const r = await db.getVideo(scope, item.key);
+        if (r) copies.push(r);
+      }
+      const localChoice = await askDeleteLocalCopies(copies);
+      if (localChoice === 'cancel') return;
+      await applyDeleteLocalCopies(copies, localChoice);
       let deleted = false;
       let sheetBacked = false;
       let channelVideo = null;
@@ -4065,6 +4216,10 @@ async function refreshParentList() {
       ? () => { moveVideoToFolder(rec).catch(() => {}); }
       : null,
     onDelete: async () => {
+      // v1.0.58 — the downloaded copy goes with it, if the parent says so
+      const choice = await askDeleteLocalCopies([rec]);
+      if (choice === 'cancel') return;
+      await applyDeleteLocalCopies([rec], choice);
       await db.deleteVideo(rec.scopeId, rec.key); // atomic delete + deny tombstone
       await refreshParentList();
       renderHome();
@@ -4341,6 +4496,13 @@ async function customFolderRow(cf) {
   rename.type = 'button';
   rename.textContent = '✏️ שם';
   rename.addEventListener('click', () => renameCustomFolder(cf).catch(() => {}));
+  // v1.0.58 — CHANGE THE PICTURE (user request). It sits beside the rename because they are
+  // the same kind of act: the folder exists, and this is how the parent adjusts it.
+  const art = document.createElement('button');
+  art.className = 'btn btn-small';
+  art.type = 'button';
+  art.textContent = '🖼️ תמונה';
+  art.addEventListener('click', () => openFolderArtEditor(cf).catch(() => {}));
 
   const del = document.createElement('button');
   del.className = 'li-del';
@@ -4352,6 +4514,7 @@ async function customFolderRow(cf) {
   li.appendChild(ico);
   li.appendChild(body);
   li.appendChild(rename);
+  li.appendChild(art);
   li.appendChild(del);
   return li;
 }
@@ -4393,6 +4556,11 @@ async function deleteCustomFolderFlow(cf) {
       if (!(await confirmKid({ emoji: '⚠️', title: 'למחוק לצמיתות?', text: purge.text, ok: 'כן, למחוק', cancel: 'ביטול', danger: true }))) return;
       const recs = [...(await db.loadMergeIndex(libScope)).values()]
         .filter((r) => (r.folderId === '~pending' || r.folderId === '~rejected' ? r.homeFolderId : r.folderId) === cf.folderId);
+      // v1.0.58 — ONE question for the whole folder, never one per video (the user's
+      // decision), and only if any of them was actually downloaded.
+      const localChoice = await askDeleteLocalCopies(recs);
+      if (localChoice === 'cancel') return;
+      await applyDeleteLocalCopies(recs, localChoice);
       // WITH tombstones (the v1.0.39 rule): a raw delete is pure absence, and every Drive
       // merge is a union — a peer that has not pulled would re-push every one of them.
       await db.deleteVideosWithTombstones(libScope, recs.map((r) => r.key), 'folder-delete');
@@ -5365,6 +5533,7 @@ let folderPickHandlers = null;   // { resolve, cancel } — see nav.register('fo
 let fpArtChoice = null;          // { thumbUrl } | null — the parent's picked picture
 let fpEmojiChoice = '📁';
 let fpArtSeq = 0;                // a stale image search must never paint over a newer one
+let fpArtEditing = null;         // v1.0.58: the folder whose PICTURE is being changed
 
 const FOLDER_EMOJI = ['📁', '🎵', '🚗', '🦁', '⚽', '🎨', '🚀', '🧸', '🍎', '🌙'];
 
@@ -5392,6 +5561,11 @@ function askFolderDestination({ title = 'לאיזו תיקיה להוסיף?', s
 
 /** The rows: the default, then the parent's folders, then "＋ תיקיה חדשה". */
 async function renderFolderPick() {
+  // v1.0.58: the art editor hides the destination list and the name field — restore both,
+  // or the next add would open a picker with nothing to pick from.
+  fpArtEditing = null;
+  $('fp-list').classList.remove('hidden');
+  setFolderNameFieldVisible(true);
   const scope = (await ensureSources()).libraryId;
   const custom = await db.listCustomFolders(scope);
   const rows = folderPickOptions(custom);
@@ -5515,7 +5689,19 @@ async function searchFolderArt() {
   }
   msg.textContent = 'בחרו תמונה (או אימוג׳י למטה)';
   msg.className = 'form-msg';
+  renderArtCandidates(items);
+}
+
+/**
+ * v1.0.58 — ONE renderer for every source of a folder picture: the name search, and the
+ * link the parent pasted. A second copy of this loop is a second answer to "what happens
+ * when the picture will not load", and that answer is load-bearing — a candidate that
+ * cannot render must not be offerable, or the parent picks a picture the folder can
+ * never show.
+ */
+function renderArtCandidates(items, { append = false } = {}) {
   const row = $('fp-art-row');
+  if (!append) row.innerHTML = '';
   for (const it of items) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -5536,6 +5722,109 @@ async function searchFolderArt() {
     });
     row.appendChild(b);
   }
+}
+
+/** v1.0.58: the create-time name field is hidden while the picture of an EXISTING folder
+ *  is being changed, and must come back for the next creation (one place, both directions). */
+function setFolderNameFieldVisible(on) {
+  const input = $('fp-name');
+  if (input) input.classList.toggle('hidden', !on);
+  const label = document.querySelector('label[for="fp-name"]');
+  if (label) label.classList.toggle('hidden', !on);
+}
+
+/**
+ * v1.0.58 — the pasted-link door (user request). Validation is pure and lives in
+ * `folderart.artUrlCandidate` (https only, no userinfo, not a bare host); whether the bytes
+ * are really an image is settled where it can be — by the `<img>` that renders the
+ * candidate, exactly as a searched picture is. Nothing is stored until the parent picks it,
+ * so a bad link costs one failed thumbnail and no folder ever wears it.
+ */
+async function addFolderArtFromUrl() {
+  const msg = $('fp-art-msg');
+  const raw = $('fp-art-url').value;
+  const { artUrlCandidate } = await import('./folderart.js');
+  const cand = artUrlCandidate(raw);
+  if (!cand) {
+    msg.textContent = 'צריך קישור שמתחיל ב-https ומצביע על תמונה';
+    msg.className = 'form-msg err';
+    return;
+  }
+  msg.textContent = 'בחרו תמונה (או אימוג׳י למטה)';
+  msg.className = 'form-msg';
+  $('fp-art-url').value = '';
+  // APPENDED, never replacing: a parent who searched and then pasted should see both.
+  renderArtCandidates([cand], { append: true });
+  // …and it is selected straight away — pasting a link IS the choice
+  fpArtChoice = { thumbUrl: cand.thumbUrl };
+  const row = $('fp-art-row');
+  const last = row.lastElementChild;
+  for (const el of row.querySelectorAll('.fp-art')) el.classList.toggle('is-sel', el === last);
+  renderFolderEmojiRow();
+}
+
+/**
+ * v1.0.58 — CHANGE THE PICTURE OF AN EXISTING FOLDER (user request). Until now the picture
+ * could only be chosen at creation, and the parent's folder row offered nothing but ✏️ שם
+ * and 🗑️.
+ *
+ * It REUSES the create-time chooser rather than growing a second one: the same three doors
+ * (search by name, paste a link, a fixed icon), the same byte cache, the same rules. Only
+ * the destination list and the name field are hidden, because the folder already exists and
+ * renaming has its own button.
+ */
+async function openFolderArtEditor(cf) {
+  const scope = await currentLibScope();
+  if (!scope || !cf) return;
+  fpArtChoice = null;
+  fpEmojiChoice = cf.emoji || '📁';
+  fpArtEditing = cf;
+  fpArtSeq += 1; // a search still in flight from a previous folder must not paint here
+  $('fp-title').textContent = 'תמונה לתיקיה';
+  $('fp-sub').textContent = cf.title || '';
+  $('fp-list').classList.add('hidden');
+  $('fp-create').classList.remove('hidden');
+  $('fp-name').value = cf.title || '';
+  // the name field belongs to CREATION — renaming has its own button on the parent's row
+  setFolderNameFieldVisible(false);
+  $('fp-name-msg').textContent = '';
+  $('fp-art-msg').textContent = 'חפשו תמונה לפי השם, הדביקו קישור, או בחרו אייקון';
+  $('fp-art-msg').className = 'form-msg';
+  $('fp-art-row').innerHTML = '';
+  $('fp-art-url').value = '';
+  renderFolderEmojiRow();
+  folderPickHandlers = null;
+  nav.go('folderpick');
+}
+
+/** Save the picture chosen in the editor onto an EXISTING folder row. */
+async function saveFolderArtEdit() {
+  const cf = fpArtEditing;
+  if (!cf) return;
+  const scope = await currentLibScope();
+  let artThumbId = cf.artThumbId || null;
+  let artSrcUrl = cf.artSrcUrl || null;
+  if (fpArtChoice && fpArtChoice.thumbUrl) {
+    try {
+      const blob = await httpGetBlob(fpArtChoice.thumbUrl);
+      if (blob) {
+        artThumbId = 'cfart:' + cf.folderId;
+        artSrcUrl = fpArtChoice.thumbUrl;
+        await db.putThumb(artThumbId, blob, { origin: 'folder-art', srcUrl: artSrcUrl });
+      }
+    } catch { /* the emoji stands in — the same rule creation follows */ }
+  } else {
+    // an EMOJI was chosen: the picture is dropped, or the tile would keep showing the old
+    // image behind a new icon the parent deliberately picked
+    artThumbId = null;
+    artSrcUrl = null;
+  }
+  await db.putCustomFolder({ ...cf, emoji: fpEmojiChoice || '📁', artThumbId, artSrcUrl });
+  fpArtEditing = null;
+  maybeSchedulePush();
+  await refreshFoldersList();
+  renderHome();
+  toast('התמונה עודכנה');
 }
 
 /**
@@ -7368,7 +7657,13 @@ function wire() {
   // v1.0.56 — the destination picker. Cancel just navigates; the view's own onLeave is
   // what resolves the awaiting add with null, so EVERY way out (button, hardware back,
   // a navigation from elsewhere) settles it exactly once.
-  $('fp-ok').addEventListener('click', () => { onFolderPickOk().catch(() => {}); });
+  $('fp-ok').addEventListener('click', () => {
+    // v1.0.58: the same OK serves two jobs — creating/choosing a destination, and changing
+    // an existing folder's picture. One button, and the mode decides, so the view can never
+    // be left with two live confirm paths.
+    if (fpArtEditing) { saveFolderArtEdit().then(() => { if (nav.isActive('folderpick')) nav.back(); }).catch(() => {}); return; }
+    onFolderPickOk().catch(() => {});
+  });
   // The sources tab's "＋ תיקיה חדשה": the SAME picker, opened straight on its create
   // form. It resolves a folderId nothing is filed into — creating a folder up front is a
   // legitimate act (fill it later from any video's 📁 button).
@@ -7380,6 +7675,10 @@ function wire() {
   });
   $('fp-cancel').addEventListener('click', () => { if (nav.isActive('folderpick')) nav.back(); });
   $('fp-art-search').addEventListener('click', () => { searchFolderArt().catch(() => {}); });
+  $('fp-art-url-go').addEventListener('click', () => { addFolderArtFromUrl().catch(() => {}); });
+  $('fp-art-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addFolderArtFromUrl().catch(() => {}); }
+  });
 
   // v1.0.56 — the containment padlocks (home + folder header) and the duration dialog.
   $('lock-btn').addEventListener('click', () => { onLockTap('app').catch(() => {}); });
@@ -7732,14 +8031,23 @@ function wire() {
   $('wn-cancel').addEventListener('click', () => { closeWhatsNew(false); if (nav.isActive('whatsnew')) nav.back(); });
 
   $('parent-exit').addEventListener('click', goGallery);
+  // v1.0.58 — the manual cleaner now MEASURES what it freed, and it counts the FILES ON
+  // DISK rather than only the records that point at them. The old version reported the
+  // record count and called everything "קבצי וידאו" — but audio has been cacheable since
+  // v1.0.56, and a file left behind by a deletion has no record at all, so a parent could
+  // free 300 MB and be told "נמחקו 0". The listing is taken BEFORE the wipe: afterwards
+  // there is nothing left to measure.
   $('clear-cache').addEventListener('click', async () => {
-    const n = await clearCache();
+    let before = { files: 0, bytes: 0 };
+    try { const { cacheUsage } = await import('./media.js'); before = await cacheUsage(); } catch {}
+    const cleared = await clearCache();
+    const files = Math.max(before.files, cleared);
     await alertKid({
       emoji: '🧹',
-      title: n > 0 ? `נמחקו ${n} קבצי וידאו` : 'אין מה לנקות',
-      text: n > 0
-        ? 'הקבצים שהורדו למכשיר נמחקו (פינוי מקום). הרשימה עצמה נשמרת.'
-        : 'הורדה מתבצעת רק באפליקציה המותקנת, ורק לקובץ mp4 שההזרמה שלו נכשלה.',
+      title: files > 0 ? `נוקו ${files} קבצים` : 'אין מה לנקות',
+      text: files > 0
+        ? `פינינו ${formatBytes(before.bytes)} מזיכרון המכשיר. הסרטונים והשירים עצמם נשארו ברשימה — הם פשוט יורדו שוב בעת הצורך.`
+        : 'קובץ יורד למכשיר רק כשההזרמה שלו נכשלת, ולכן ברוב המקרים אין מה לנקות. מה שכן יורד נמחק גם לבד אחרי חודש בלי שימוש.',
       ok: 'סבבה'
     });
   });
