@@ -1,6 +1,6 @@
 // media.js — direct video-file playback support (hybrid: stream, then download + cache on failure).
 import {
-  fsAvailable, fsDownload, fsStatUri, fsRemoveDir, convertFileSrc
+  fsAvailable, fsDownload, fsStatUri, fsRemoveDir, convertFileSrc, fsDeleteFile, fsListDir
 } from './platform.js';
 import { loadItems, saveItems, setItemLocalPath } from './store.js';
 
@@ -21,10 +21,16 @@ export function cacheExtFor(item) {
   return item && item.media === 'audio' ? 'mp3' : 'mp4';
 }
 
-function cacheName(item) {
+export function cacheName(item) {
   const base = String(item.key || item.url).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 90);
   return `${CACHE_DIR}/${base}.${cacheExtFor(item)}`;
 }
+
+/** v1.0.58 — the BARE file name (no directory), which is what fsListDir answers with. The
+ *  sweep matches what is on disk against what the records own, and the two must speak the
+ *  same alphabet or every file would look like an orphan and be deleted. */
+export const cacheBaseName = (item) => cacheName(item).slice(CACHE_DIR.length + 1);
+export const CACHE_DIR_NAME = CACHE_DIR;
 
 // The Drive "download" host with a confirm token bypasses the virus-scan interstitial for large files.
 function downloadUrlFor(item) {
@@ -38,9 +44,20 @@ function downloadUrlFor(item) {
 export async function prepareStreamSrc(item) {
   if (item.localPath && fsAvailable()) {
     const uri = await fsStatUri(item.localPath);
-    if (uri) return { src: convertFileSrc(uri), local: true };
+    // v1.0.58 — THE CACHE POLICY'S ONLY HONEST CLOCK. The eviction keeps what is used and
+    // deletes what was forgotten (the user's decision over a blanket monthly wipe), and this
+    // is the one place that knows a cached copy was actually played. DEVICE-LOCAL like
+    // localPath itself: it describes a file on this tablet, so it never travels.
+    if (uri) { touchLocalUse(item); return { src: convertFileSrc(uri), local: true }; }
   }
   return { src: item.url, local: false };
+}
+
+function touchLocalUse(item) {
+  if (!item || !item.scopeId || !item.key) return;
+  import('./db.js')
+    .then((db) => db.setVideoFields(item.scopeId, item.key, { localUsedAt: Date.now() }))
+    .catch(() => {});
 }
 
 // Downloads the file once to the app data dir and returns a local src. Throws if unsupported.
@@ -55,7 +72,7 @@ export async function downloadAndCache(item) {
   if (item.scopeId && item.key) {
     try {
       const { setVideoFields } = await import('./db.js');
-      await setVideoFields(item.scopeId, item.key, { localPath: path });
+      await setVideoFields(item.scopeId, item.key, { localPath: path, localUsedAt: Date.now() });
     } catch {}
   }
   await setItemLocalPath(item.key, path);
@@ -103,4 +120,56 @@ export async function clearCache() {
   for (const it of items) { if (it.localPath) { delete it.localPath; count++; } }
   if (items.some((it) => !it.localPath)) await saveItems(items);
   return count;
+}
+
+/* ---------------- v1.0.58: the cache as a thing that can be measured and pruned ----------------
+   Until now the only operation was `clearCache()` — all or nothing — so a video deleted from
+   the app left its downloaded copy on the tablet forever, and nothing ever expired. These are
+   PRIMITIVES ONLY: what to delete is decided by pure `plan.planCacheSweep`, and app.js applies
+   it. Same split as db.js — I/O here, judgement there. */
+
+/** What is actually on disk: [{ name, size, mtime }]. Empty when there is no Filesystem. */
+export async function listCacheFiles() {
+  if (!fsAvailable()) return [];
+  return fsListDir(CACHE_DIR);
+}
+
+/** Total size of the cache, for the parent's "how much space is this" line. */
+export async function cacheUsage() {
+  const files = await listCacheFiles();
+  return { files: files.length, bytes: files.reduce((n, f) => n + (Number(f.size) || 0), 0) };
+}
+
+/** Delete cached files BY NAME (the sweep's output). Returns how many actually went. */
+export async function deleteCacheFiles(names) {
+  if (!fsAvailable()) return 0;
+  let n = 0;
+  for (const name of names || []) {
+    if (!name || String(name).includes('/')) continue; // bare names only — never a path
+    if (await fsDeleteFile(`${CACHE_DIR}/${name}`)) n += 1;
+  }
+  return n;
+}
+
+/**
+ * v1.0.58 — delete the downloaded copies of specific RECORDS and forget them (the user's
+ * request: deleting a video from the app may delete it from the device too).
+ *
+ * It clears `localPath` even when the file was already gone: a record pointing at a file
+ * that does not exist makes `prepareStreamSrc` stat a dead path on every single play.
+ * Google Drive is NEVER touched — this is the tablet's copy only.
+ */
+export async function deleteLocalFiles(records) {
+  const list = (records || []).filter((r) => r && r.localPath);
+  if (!list.length) return { deleted: 0, bytes: 0 };
+  const sizes = new Map((await listCacheFiles()).map((f) => [f.name, Number(f.size) || 0]));
+  let deleted = 0;
+  let bytes = 0;
+  const { setVideoFields } = await import('./db.js');
+  for (const rec of list) {
+    const name = String(rec.localPath).slice(CACHE_DIR.length + 1);
+    if (await fsDeleteFile(rec.localPath)) { deleted += 1; bytes += sizes.get(name) || 0; }
+    try { await setVideoFields(rec.scopeId, rec.key, { localPath: null, localUsedAt: null }); } catch {}
+  }
+  return { deleted, bytes };
 }

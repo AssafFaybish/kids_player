@@ -78,6 +78,27 @@ export function parseOpenverseImages(data) {
 }
 
 /** PURE: merge provider rows in order, dedupe by thumbnail, cap at `limit`. */
+/**
+ * v1.0.58 — PURE: a picture the parent PASTED, as a candidate (user request: "או לינק
+ * להורדת תמונה מהאינטרנט שההורה יזין").
+ *
+ * https ONLY — the same rule `weblock` and `platform.openExternal` follow, and the reason is
+ * the same: this address is fetched by the app and its bytes end up on the child's screen.
+ * `data:` and `javascript:` are refused by that alone, and a bare host with no path is
+ * refused because it is a page, not a picture. Whether the bytes really ARE an image is not
+ * decidable here and is checked at the fetch (the blob's own type) — this only keeps
+ * anything that cannot possibly be one from being tried.
+ */
+export function artUrlCandidate(raw) {
+  const s = String(raw || '').trim();
+  if (!/^https:\/\//i.test(s)) return null;
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (!u.hostname || u.username || u.password) return null;
+  if (u.pathname === '/' && !u.search) return null;
+  return { title: u.pathname.split('/').filter(Boolean).pop() || u.hostname, thumbUrl: u.href, fullUrl: u.href };
+}
+
 export function mergeArtCandidates(lists, limit = ART_CANDIDATES) {
   const seen = new Set();
   const out = [];
