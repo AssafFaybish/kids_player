@@ -2234,3 +2234,51 @@ test('folderSearchScope is total, and never answers with nothing to search', asy
   // a row that names a root nothing else belongs to is not a "tree"
   assert.deepEqual(folderSearchScope({ folderId: 'cf:a', customRows: [{ folderId: 'cf:a', driveFolderId: 'D' }] }), ['cf:a']);
 });
+
+/* ---------------- the channel sync-mode dialog (v1.0.61) ---------------- */
+
+test('channelSyncModeDialog: the question is the MODE, and it works with an empty queue', async () => {
+  const { channelSyncModeDialog } = await import('../www/js/plan.js');
+  // ⚠️ THE BUG THIS REPLACES: the old flow asked "what do I do with these N videos?" and
+  // could only be raised when N > 0, so a channel with an empty queue was marked "decided"
+  // with no dialog at all and stayed on manual forever.
+  const empty = channelSyncModeDialog({ name: 'הרב יעקובזון', pending: 0 });
+  assert.match(empty.title, /איך לסנכרן/);
+  assert.match(empty.title, /הרב יעקובזון/, 'the channel must be named — a parent may have several fresh rows');
+  assert.match(empty.text, /אין סרטונים שממתינים/, 'an empty queue is stated, not hidden');
+  assert.match(empty.text, /אוטומטי/);
+  assert.match(empty.text, /ידני/);
+  // three real answers; "אחר כך" must stay a real button (the v1.0.23 rule: an answer
+  // mapped onto an accidental dismiss lets a child poking the scrim decide)
+  assert.deepEqual([empty.ok, empty.third, empty.cancel], ['אוטומטי', 'ידני', 'אחר כך']);
+  const some = channelSyncModeDialog({ name: 'ערוץ', pending: 5 });
+  assert.match(some.text, /5 סרטונים שממתינים/);
+  assert.match(some.text, /ייכנסו עכשיו/, 'with a backlog, the answer must say what happens to it');
+});
+
+test('channelSyncModeDialog: singular reads correctly, and a nameless channel still works', async () => {
+  const { channelSyncModeDialog } = await import('../www/js/plan.js');
+  const one = channelSyncModeDialog({ name: 'ערוץ', pending: 1 });
+  assert.match(one.text, /סרטון אחד שממתין/);
+  assert.match(one.text, /הוא ייכנס עכשיו/, 'one video must not be described as "they"');
+  assert.doesNotMatch(one.text, /הם ייכנסו/);
+  const anon = channelSyncModeDialog({});
+  assert.match(anon.title, /הערוץ/);
+  for (const d of [one, anon, channelSyncModeDialog({ pending: -3 })]) {
+    assert.doesNotMatch(d.title + d.text, /undefined|NaN|null/);
+  }
+});
+
+test('channelSyncModeOutcome: a zero names itself', async () => {
+  const { channelSyncModeOutcome } = await import('../www/js/plan.js');
+  // the v1.0.37 rule — "nothing was waiting" and "5 were approved" are different facts
+  const many = channelSyncModeOutcome({ auto: true, approved: 5, name: 'ערוץ' });
+  const none = channelSyncModeOutcome({ auto: true, approved: 0, name: 'ערוץ' });
+  const manual = channelSyncModeOutcome({ auto: false, name: 'ערוץ' });
+  assert.match(many, /5 סרטונים אושרו/);
+  assert.match(none, /כל סרטון חדש ייכנס מעצמו/);
+  assert.doesNotMatch(none, /אושר/, 'nothing was approved — the sentence must not claim otherwise');
+  assert.match(manual, /ידנית/);
+  assert.match(channelSyncModeOutcome({ auto: true, approved: 1, name: 'ערוץ' }), /סרטון אחד אושר/);
+  for (const m of [many, none, manual]) assert.doesNotMatch(m, /undefined|NaN|null/);
+});
