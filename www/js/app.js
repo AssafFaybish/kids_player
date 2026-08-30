@@ -4673,11 +4673,32 @@ async function refreshFoldersList() {
   if (!libScope) return;
   const rows = (await db.listCustomFolders(libScope)).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   $('folders-count').textContent = rows.length ? `תיקיות (${rows.length})` : 'תיקיות';
-  for (const cf of rows) ul.appendChild(await customFolderRow(cf));
+  // v1.0.61 — THE LIST SHOWS THE TREE. 34 flat rows for one imported collection is the same
+  // clutter the child's home just stopped having, and it hides which folder a disc belongs
+  // to — which is exactly what a parent about to DELETE one needs to see. Children are
+  // listed under their parent and indented; an orphan (a peer's row whose parent has not
+  // arrived) is listed at the top level rather than dropped.
+  const kidsOf = new Map();
+  const ids = new Set(rows.map((r) => r.folderId));
+  for (const r of rows) {
+    const parent = r.parentFolderId && ids.has(r.parentFolderId) ? r.parentFolderId : null;
+    if (!parent) continue;
+    if (!kidsOf.has(parent)) kidsOf.set(parent, []);
+    kidsOf.get(parent).push(r);
+  }
+  const emit = async (cf, depth) => {
+    ul.appendChild(await customFolderRow(cf, depth, (kidsOf.get(cf.folderId) || []).length));
+    for (const kid of kidsOf.get(cf.folderId) || []) await emit(kid, depth + 1);
+  };
+  for (const cf of rows) {
+    if (cf.parentFolderId && ids.has(cf.parentFolderId)) continue; // emitted under its parent
+    await emit(cf, 0);
+  }
 }
 
-async function customFolderRow(cf) {
+async function customFolderRow(cf, depth = 0, children = 0) {
   const li = document.createElement('li');
+  if (depth) li.style.paddingInlineStart = Math.min(depth, 3) * 18 + 'px';
   const ico = document.createElement('span');
   ico.className = 'fp-ico';
   mountCustomArt(ico, cf.artThumbId, cf.emoji || '📁');
@@ -4689,7 +4710,14 @@ async function customFolderRow(cf) {
   const sub = document.createElement('div');
   sub.className = 'li-note';
   const count = await db.countFolder(libScope, cf.folderId);
-  sub.textContent = count ? `${count} סרטונים` : 'ריקה — לא מוצגת לילד עד שיהיה בה תוכן';
+  // v1.0.61 — a folder that holds FOLDERS is neither empty nor hidden from the child, and
+  // the old note said both. Measured on the real 32-disc collection: the row for the
+  // collection itself read "ריקה — לא מוצגת לילד" while it sat on the child's home.
+  const kids = children ? (children === 1 ? 'תיקיה אחת' : `${children} תיקיות`) : '';
+  sub.textContent = kids && count ? `${kids} · ${count} סרטונים`
+    : kids ? kids
+    : count ? `${count} סרטונים`
+    : 'ריקה — לא מוצגת לילד עד שיהיה בה תוכן';
   body.appendChild(title);
   body.appendChild(sub);
 
