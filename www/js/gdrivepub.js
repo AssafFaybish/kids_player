@@ -294,8 +294,17 @@ export async function fetchDriveFolderTree(rootId, {
   let partial = false;
   let rootFailed = false;
 
-  while (queue.length) {
-    const batch = queue.splice(0, Math.max(1, wave));
+  // ⚠️ THE WALK IS BOUNDED BY LISTINGS PERFORMED, not only by the `seen` set. `seen` is the
+  // cycle guard, but a guard is a thing that can break: planting its removal made this loop
+  // run FOREVER (a shortcut pointing at an ancestor re-queues an id that never grows `seen`,
+  // so the folder cap below is never reached) — a frozen app on a family's tablet, which is
+  // a far worse failure than importing less than the folder holds. With this counter the
+  // worst a broken identity check can do is truncate, and the parent is told that.
+  let listed = 0;
+  while (queue.length && listed < maxFolders) {
+    const batch = queue.splice(0, Math.min(Math.max(1, wave), maxFolders - listed));
+    listed += batch.length;
+    if (queue.length) truncated = truncated || listed >= maxFolders;
     const listings = await Promise.all(batch.map((n) => fetchDriveFolder(n.id).catch(() => ({ ok: false, files: [] }))));
     for (let i = 0; i < batch.length; i++) {
       const node = batch[i];
