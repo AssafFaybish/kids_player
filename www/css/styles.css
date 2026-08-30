@@ -125,6 +125,36 @@ body {
    shield. Same split, other surface. */
 #view-gallery, #view-folder, #watch-grid { touch-action: pan-y; }
 
+/* v1.0.62 — THE PAGE FOLLOWS THE FINGER (user request). The viewport holds the current
+   grid and, during a gesture only, the neighbouring page beside it.
+
+   ⚠️ `overflow: hidden` IS APPLIED ONLY WHILE `.swiping`, and that is deliberate. Permanent
+   `overflow-x: hidden` is not an option: the spec turns the OTHER axis into `auto`, which
+   would make this element a scroll container and take vertical scrolling away from the
+   document — the exact class of bug v1.0.50/51/52 chased around this app three times. While
+   swiping there is nothing to scroll vertically inside it (the grid is its only in-flow
+   child and exactly fills it), so hiding both axes for the length of a gesture is safe.
+
+   The ghost is `aria-hidden` and `inert`-like by construction: it is removed the moment the
+   gesture settles, so a screen reader or a D-pad never lands in a page that is on its way
+   out. */
+.swipe-vp { position: relative; }
+.swipe-vp.swiping { overflow: hidden; }
+/* transform only — a compositor property, so a cheap tablet moves 15 tiles with images
+   without laying anything out again. `will-change` is set from JS for the length of the
+   gesture rather than permanently: a permanently promoted layer costs memory on every
+   screen, for a gesture that happens seconds apart. */
+.swipe-vp > .grid { transform: translateX(0); }
+.swipe-vp.swiping > .grid, .swipe-vp .swipe-ghost { transition: none; }
+.swipe-vp.snapping > .grid, .swipe-vp.snapping .swipe-ghost {
+  transition: transform var(--swipe-snap, 220ms) cubic-bezier(.22,.61,.36,1);
+}
+/* the neighbour, laid over the same box so the two move as one */
+.swipe-vp .swipe-ghost { position: absolute; inset: 0 0 auto 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .swipe-vp.snapping > .grid, .swipe-vp.snapping .swipe-ghost { transition-duration: 1ms; }
+}
+
 /* v1.0.58 — the "paste an image link" row inside the folder-art chooser. */
 .fp-art-url { display: flex; gap: 8px; align-items: center; margin: 6px 0 2px; }
 .fp-art-url .input { flex: 1 1 auto; min-width: 0; }

@@ -3205,12 +3205,19 @@ test('swipe paging is wired to the three grids and nothing else (v1.0.57)', () =
 
   // 1) ONE geometry decision. A second copy — an inline dx check in a handler — is a
   //    second answer to "was that a swipe or a tap", and the two will disagree.
-  assert.match(swipe, /import \{ swipePageAction \} from '\.\.\/plan\.js'/,
+  assert.match(swipe, /import \{[^}]*swipePageAction[^}]*\} from '\.\.\/plan\.js'/,
     'ui/swipe.js no longer delegates to the pure decision');
   assert.match(swipe, /swipePageAction\(\{/, 'ui/swipe.js stopped calling the pure decision');
+  // v1.0.62 — the live drag adds three MORE decisions, and they must live in the same one
+  // place for the same reason: arming, the offset and the commit are all answers to "was
+  // that a swipe", and a second copy of any of them would disagree with the release.
+  for (const fn of ['swipeDragArm', 'swipeDragOffset', 'swipeDragCommit']) {
+    assert.match(swipe, new RegExp(fn + '\\('), `ui/swipe.js does not use plan.${fn}`);
+  }
   for (const [p, body] of CODE) {
     if (p === 'www/js/ui/swipe.js' || p === 'www/js/plan.js') continue;
-    assert.doesNotMatch(body, /swipePageAction/, `${p} decides swipes on its own`);
+    assert.doesNotMatch(body, /swipePageAction|swipeDragArm|swipeDragOffset|swipeDragCommit/,
+      `${p} decides swipes on its own`);
   }
 
   // 2) pointercancel next to pointerup — the v1.0.22 seek-bar invariant, same disease: the
