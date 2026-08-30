@@ -1403,7 +1403,11 @@ test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists an
   // commented out, which is exactly the vacuous-guard failure TESTING.md warns about
   const body = m[1].split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
   // save FIRST (it reads the live playhead), then pause. Both halves, this order.
-  const save = body.indexOf('saveWatchPosition(currentWatch)');
+  // v1.0.57: the call takes the state as a second argument (the handler reads the playhead
+  // ONCE, before pausing, because the call watcher also needs to know whether the video was
+  // actually playing). Matched by PREFIX so that stays flexible — the ORDER below is the
+  // invariant, not the argument list.
+  const save = body.indexOf('saveWatchPosition(currentWatch');
   const pause = body.indexOf('pauseCurrent()');
   assert.ok(save >= 0, 'the screen-off handler no longer banks the stop point');
   assert.ok(pause >= 0, 'the screen-off handler no longer pauses the player');
@@ -3244,4 +3248,87 @@ test('🕒 נצפה לאחרונה is wired end to end, and device-local (v1.0.5
   const imp = CODE.get('www/js/snapshot.js');
   assert.match(imp, /\.\.\.\(existing\.get\(st\.key\) \|\| \{\}\)/,
     'the snapshot import rebuilds state rows from scratch — it erases ⭐ and 🕒');
+});
+
+test('a call pauses the video and the END of the call resumes it (v1.0.57)', () => {
+  const app = CODE.get('www/js/app.js');
+  const platform = CODE.get('www/js/platform.js');
+
+  // 1) THE DECISION IS PURE AND NOBODY ELSE ANSWERS IT. "Was that a call?" decides whether
+  //    a video starts itself in a room, so an inline second opinion is not acceptable.
+  const check = fnSlice(app, 'async function checkCallResume(');
+  assert.match(check, /planCallResume\(\{/, 'app.js decides the call resume inline');
+  for (const [p, body] of CODE) {
+    if (p === 'www/js/app.js' || p === 'www/js/playerlogic.js') continue;
+    assert.doesNotMatch(body, /planCallResume|isCallAudioMode/, `${p} answers the call question on its own`);
+  }
+
+  // 2) THE STATE IS RE-READ AFTER THE AWAIT. Reading the audio mode is a bridge call, and
+  //    during it the child can leave, the video can change, or a scheduled break can take
+  //    the screen — acting on what was true before the await is how a video ends up playing
+  //    under a lock screen.
+  const awaitAt = check.indexOf('await audioMode()');
+  assert.ok(awaitAt > 0, 'the audio mode is no longer read from the device');
+  const after = check.slice(awaitAt);
+  assert.match(after, /playbackState\(\)/, 'the playback state is read before the await — it may be stale');
+  assert.match(after, /inWatch: nav\.isActive\('watch'\)/, 'the view is not re-checked after the await');
+
+  // 3) ARMING AT THE PAUSE REQUIRES THE VIDEO TO HAVE BEEN PLAYING. `pauseCurrent()` runs
+  //    first in that handler, so a state read afterwards always says "paused" — and arming
+  //    on it would resume a video the child had deliberately paused BEFORE the call.
+  const m = app.match(/onAppPause\(\(\) => \{([\s\S]*?)\}\);/);
+  assert.ok(m, 'the onAppPause listener is gone');
+  assert.match(m[1], /const st = playbackState\(\);[\s\S]*?pauseCurrent\(\)/,
+    'the playhead is no longer read BEFORE the pause');
+  assert.match(m[1], /if \(st && st\.playing\) checkCallResume\(\)/,
+    'the pause arms a call resume even for a video that was already paused');
+
+  // 4) ORDER ON RESUME: the scheduled-lock check runs FIRST. A break that matured during
+  //    the call resets nav to the lock screen, and planCallResume then disarms because the
+  //    watch view is gone — resuming first would leave a video playing behind the lock.
+  const resumeFn = app.slice(app.indexOf('onAppResume(async () => {'));
+  const lockAt = resumeFn.indexOf('tickScheduledLock()');
+  const callAt = resumeFn.indexOf('checkCallResume()');
+  assert.ok(lockAt >= 0 && callAt > lockAt,
+    'the call resume runs before the scheduled-lock check — a video can play behind the lock');
+
+  // 5) THE APP'S OWN IDLE PARK IS NOT A CALL PAUSE. Without this the watcher would see a
+  //    paused video during a later call, arm, and restart the video into the empty room the
+  //    idle feature exists to protect.
+  assert.match(app, /idleParkedAt = Date\.now\(\)/, 'the idle sleep no longer marks its park');
+  assert.match(app, /idleParkedAt = 0/, 'the park flag is never cleared — one park kills the feature');
+  assert.match(app, /!callResume && !idleParkedAt\) checkCallResume/,
+    'the in-app poll no longer skips an app-parked video');
+
+  // 6) LEAVING THE VIDEO DROPS THE INTENT AND ITS TIMER. A poll left running for the rest
+  //    of the session would fire a resume at a torn-down player.
+  const leave = app.slice(app.indexOf("nav.register('watch', {"));
+  assert.match(leave.slice(0, 1200), /disarmCallResume\(\)/, "the watch view's onLeave leaks the call watcher");
+  assert.match(fnSlice(app, 'function disarmCallResume('), /clearInterval|stopCallWatch/,
+    'disarming leaves the poll running');
+
+  // 7) THE BRIDGE NEVER GUESSES 'normal'. An older APK, a browser or a refused getter must
+  //    read as "no evidence", or every backgrounding would look like a call that ended.
+  const fn = platform.slice(platform.indexOf('export async function audioMode('));
+  assert.match(fn.slice(0, 600), /return 'unknown'/, 'platform.audioMode can answer something other than unknown on failure');
+  assert.doesNotMatch(fn.slice(0, 600), /return 'normal'/, "platform.audioMode guesses 'normal' — every pause would resume");
+});
+
+test('the audio-mode reader is in BOTH java copies and needs no permission (v1.0.57)', () => {
+  const a = readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java');
+  const b = readRepo('native-reference/KidsNativePlugin.java');
+  assert.equal(a, b, 'the two KidsNativePlugin copies drifted — native-reference is the rebuild copy');
+  for (const src of [a, b]) {
+    assert.match(src, /public void audioMode\(PluginCall call\)/, 'audioMode is missing from a java copy');
+    assert.match(src, /AudioManager\.MODE_IN_COMMUNICATION/, 'VoIP calls (WhatsApp) are not detected');
+    assert.match(src, /String mode = "unknown"/, 'the java default is not the safe "unknown"');
+  }
+  // READ_PHONE_STATE would be a runtime permission prompt on a child's tablet, to resume a
+  // video. AudioManager.getMode() needs none and catches VoIP as well.
+  const manifest = readRepo('android/app/src/main/AndroidManifest.xml');
+  assert.doesNotMatch(manifest, /READ_PHONE_STATE|READ_CALL_LOG|PROCESS_OUTGOING_CALLS/,
+    'a telephony permission appeared — call detection must stay permission-free');
+  for (const [p, body] of CODE) {
+    assert.doesNotMatch(body, /TelephonyManager/, `${p} reaches for telephony instead of the audio mode`);
+  }
 });

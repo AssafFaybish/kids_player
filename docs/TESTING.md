@@ -258,6 +258,26 @@ for anything destructive, and purge it afterwards.
       sibling's home has no 🕒 tile at all, and the first child's holds 3.
 - [ ] **An incoming CALL mid-video** (with feature 3): the stamp must still land — the pause
       does not reset the playhead, so a video already past 10 seconds stays watched.
+### Interrupted by a call (v1.0.57 — the browser proved the machinery with a stubbed
+### bridge; only a real call proves these)
+- [ ] **A real incoming call mid-video**: answer it → the video pauses; hang up → the video
+      carries on by itself, from where it stopped, with no tap. Try it both ways round: with
+      the call ANSWERED (the call app takes over and the video app backgrounds) and DECLINED
+      from the heads-up notification (the app never backgrounds at all — that path is the
+      poll, and it is the one a lifecycle-only implementation would miss).
+- [ ] **A WhatsApp / Messenger call** does the same. This is the important one on a tablet
+      with no SIM, and it is why the app reads the audio mode instead of telephony state.
+- [ ] **The power button is NOT a call**: press it mid-video, wait, wake the tablet → the
+      video is still PAUSED and waits for the child. Same for HOME and the app switcher.
+      *(Auto-resuming any backgrounding is exactly what the user's "calls only" decision
+      rules out.)*
+- [ ] **A video the child paused THEMSELVES before a call** must still be paused after it.
+- [ ] **A very long call** (over 15 minutes) → the video stays paused. By then it is a
+      surprise noise, not a convenience.
+- [ ] **A scheduled break that matured during the call** → the lock screen wins, and nothing
+      plays behind it.
+- [ ] **Older APK / no bridge**: nothing auto-resumes and nothing breaks — the pre-v1.0.57
+      behaviour, which is what an 'unknown' audio mode must always fall back to.
 
 ### Drive files + audio (v1.0.56 — the browser proves the scene and the parsers, NOT these)
 - [ ] **A Drive mp3 plays and looks like music**: share an mp3 in Drive as "anyone with the

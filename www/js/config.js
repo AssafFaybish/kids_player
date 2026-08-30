@@ -53,6 +53,19 @@ export const RESUME_MIN_POS_SEC = 8;  // a stop earlier than this is not worth r
 export const RESUME_TAIL_SEC = 12;    // a stop this close to the end = finished → start over
 export const RESUME_SAVE_MS = 5000;   // periodic save while playing (survives a process kill)
 
+/* v1.0.57 — A CALL INTERRUPTS THE VIDEO; WHEN IT ENDS THE VIDEO CARRIES ON (user request).
+   CALLS ONLY (user decision 2026-08-30): every other pause — the power button, HOME, the
+   app switcher, the child's own tap — keeps the v1.0.32 behaviour, where the video waits
+   paused and the child presses play. */
+// How often to look while a resume is armed. Fast enough that "the call ended and the video
+// came back" reads as automatic, and it runs ONLY while a paused video is waiting on a call
+// — never as a background heartbeat.
+export const CALL_RESUME_POLL_MS = 1500;
+// After this the call is no longer "the thing that just interrupted us": the tablet has sat
+// on a paused video for a quarter of an hour, whoever was watching has moved on, and
+// starting it then would be a surprise noise in the room rather than a convenience.
+export const CALL_RESUME_MAX_MS = 15 * 60 * 1000;
+
 /* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
    is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
    Long enough that a parent who changes their mind has a real window; short enough that

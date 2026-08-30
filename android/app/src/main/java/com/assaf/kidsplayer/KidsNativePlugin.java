@@ -103,6 +103,46 @@ public class KidsNativePlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /* ---------------- is a call happening? (v1.0.57) ---------------- */
+
+    /**
+     * The audio mode, as one lower-case word. This is how the app knows a video was
+     * interrupted by a CALL and not by the child, the power button or a home tap — the
+     * user's decision was "calls only", and the lifecycle alone cannot tell them apart.
+     *
+     * AudioManager.getMode() and NOT TelephonyManager: it needs NO PERMISSION (READ_PHONE_STATE
+     * is a runtime permission on a child's tablet, and asking for it to resume a video would be
+     * absurd), and it catches VoIP too — WhatsApp, Messenger and the rest report
+     * MODE_IN_COMMUNICATION, which a telephony listener never sees.
+     *
+     * Polled rather than pushed on purpose: OnModeChangedListener is API 31+, and this app
+     * runs on much older tablets. The poll is one in-process getter, and JS only runs it
+     * around a paused video.
+     *
+     * An unknown or unreadable state answers "unknown", never "normal": the JS side treats
+     * unknown as "no evidence of a call", so a device that cannot answer simply never
+     * auto-resumes — the same direction the browser takes.
+     */
+    @PluginMethod
+    public void audioMode(PluginCall call) {
+        String mode = "unknown";
+        try {
+            android.media.AudioManager am =
+                    (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                int m = am.getMode();
+                if (m == android.media.AudioManager.MODE_NORMAL) mode = "normal";
+                else if (m == android.media.AudioManager.MODE_RINGTONE) mode = "ringtone";
+                else if (m == android.media.AudioManager.MODE_IN_CALL) mode = "in_call";
+                else if (m == android.media.AudioManager.MODE_IN_COMMUNICATION) mode = "in_communication";
+                else mode = "other";
+            }
+        } catch (Exception ignored) { }
+        JSObject ret = new JSObject();
+        ret.put("value", mode);
+        call.resolve(ret);
+    }
+
     /* ---------------- open a link outside the app (v1.0.14) ---------------- */
 
     /**

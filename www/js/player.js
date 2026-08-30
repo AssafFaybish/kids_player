@@ -95,6 +95,20 @@ export function pauseCurrent() {
   try { current.ctl.pause(); } catch {}
 }
 
+/**
+ * v1.0.57 — the twin of pauseCurrent, for a video a CALL interrupted (user request: when
+ * the call ends the video carries on by itself).
+ *
+ * Answers whether it actually acted, and that is the point: app.js arms a one-shot "resume
+ * when the call is over", and it may only disarm on a real resume. A `false` here means
+ * there is nothing mounted (the child left, the player was torn down), so the caller drops
+ * the intent instead of firing it at whatever mounts next.
+ */
+export function resumeCurrent() {
+  if (!current || !current.ctl || !current.ctl.play) return false;
+  try { current.ctl.play(); return true; } catch { return false; }
+}
+
 // v1.0.18 — supersession token. playYouTube can only register itself in `current`
 // AFTER `await loadYouTubeApi()`, so a second tap while that script is still loading
 // found current === null, made stop() a no-op, and mounted a SECOND player and HUD.
@@ -319,6 +333,7 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
     seekTo: (s) => { try { player.seekTo(Math.max(0, s), true); } catch {} },
     isPlaying: () => { try { const st = player.getPlayerState(); return st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING; } catch { return false; } },
     pause: () => { try { player.pauseVideo(); } catch {} }, // screen-off (v1.0.32)
+    play: () => { try { player.playVideo(); } catch {} },   // after a call (v1.0.57)
     togglePlay: () => {
       try {
         const st = player.getPlayerState();
@@ -460,6 +475,10 @@ async function playFile(item, host, opts = {}, seq = 0) {
     seekTo: (s) => { try { video.currentTime = Math.max(0, s); } catch {} },
     isPlaying: () => !video.paused,
     pause: () => { try { video.pause(); } catch {} }, // screen-off (v1.0.32)
+    // after a call (v1.0.57) — the promise MUST be caught: a play() the browser refuses
+    // (no user activation, a device still holding audio focus) rejects, and an unhandled
+    // rejection here would surface as an error with the video simply staying paused
+    play: () => { try { const p = video.play(); if (p && p.catch) p.catch(() => {}); } catch {} },
     togglePlay: () => { if (video.paused) { const p = video.play(); if (p && p.catch) p.catch(() => {}); } else video.pause(); }
   };
   const onTime = () => { if (hud) hud.renderProgress(); };

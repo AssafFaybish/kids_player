@@ -386,6 +386,52 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     the newest-first order, the frozen snapshot while the live order moved, 10 → 2 shrinking
     the folder on the child's home (which is the cache-key fix), 0 removing it, and a ⭐
     SURVIVING a video watched to the end with resume on.
+- v1.0.57 — **A CALL PAUSES THE VIDEO, AND THE END OF THE CALL RESUMES IT** (user request).
+  - **CALLS ONLY** (user decision 2026-08-30). Every other pause — the power button, HOME,
+    the app switcher, the child's own tap — keeps the v1.0.32 behaviour exactly: the video
+    waits paused and the child presses play. Auto-resuming any backgrounding would start a
+    video in a pocket, in a bag, and in the middle of the night.
+  - **THE LIFECYCLE CANNOT TELL A CALL FROM ANYTHING ELSE**, so the signal is the device's
+    AUDIO MODE (`platform.audioMode` → new native `KidsNative.audioMode` →
+    `AudioManager.getMode()`). Chosen over `TelephonyManager` for two reasons and both are
+    guard-pinned: it needs **NO PERMISSION** (READ_PHONE_STATE is a runtime prompt on a
+    child's tablet, to resume a video), and it catches **VoIP** — WhatsApp and friends report
+    `MODE_IN_COMMUNICATION`, which a telephony listener never sees, and a tablet with no SIM
+    has no other kind of call. Polled, not pushed: `OnModeChangedListener` is API 31+.
+  - **TWO DOORS, AND THE SECOND IS NOT OPTIONAL.** On a modern Android an incoming call is a
+    heads-up notification: the ringtone takes audio focus, the WebView pauses its own media,
+    and **no `appStateChange` fires at all**. So the app watches on the lifecycle (arming at
+    `onAppPause`, resuming at `onAppResume`) AND on a short poll that exists only while a
+    paused video is waiting on a call. Verified live with a stubbed bridge: armed and
+    resumed with no lifecycle event and no user input.
+  - **ONLY AN AFFIRMATIVE `'normal'` RESUMES.** The first version read "not a call mode ⇒ the
+    call ended", which quietly made `'unknown'` — a failed bridge, an APK built before the
+    native method existed, a browser — mean "play it", so ANY pause would have resumed.
+    Caught by RUNNING the decision matrix, not by reading it. `'other'` (call screening among
+    them) is not evidence either. Both the JS wrapper and the Java default answer `unknown`,
+    never `normal`.
+  - **THREE MORE WAYS A VIDEO COULD HAVE STARTED ITSELF, all closed and each guard-pinned:**
+    the state is re-read AFTER the bridge `await` (the child can leave, the video can change,
+    a scheduled break can take the screen during it); `onAppPause` reads the playhead BEFORE
+    pausing and arms only if the video was actually PLAYING (otherwise a video the child had
+    paused before the call resumes after it); and the idle "עדיין צופים?" park is MARKED
+    (`idleParkedAt`), so a later call cannot un-park a video the app stopped because nobody
+    was watching — the empty room that feature exists to protect.
+  - **ON RESUME THE SCHEDULED-LOCK CHECK RUNS FIRST**, and the order is index-pinned: a break
+    that matured during the call resets nav to the lock screen, and `planCallResume` then
+    answers `'disarm'` because the watch view is gone. Resuming first would leave a video
+    playing behind the lock.
+  - The intent is ONE-SHOT and expires after `CALL_RESUME_MAX_MS` (15 min): past that the
+    call is no longer "what just interrupted us", and starting the video is a surprise noise
+    rather than a convenience. Leaving the watch view drops the intent AND its poll.
+  - ⚠️ **TOOLING**: a hidden Browser pane throttles `setInterval` hard (Chrome backgrounds
+    them to ~1/min), so a poll-driven feature can look dead there. Read the poll's own log
+    line before concluding anything — the first "it did not resume" was a missing tick, not
+    a bug.
+  - 3 unit tests + 2 invariants tests (7 wiring halves + java parity + the permission ban),
+    every guard proven red on a planted regression (11). Java proven to COMPILE (debug apk
+    built) — the text-parity tests cannot see a syntax error. A REAL call stays a device
+    checklist item; the browser proved the machinery with a stubbed bridge.
 
 - v1.0.56 — **THE PARENT CAN LOCK THE CHILD INTO THE APP, OR INTO ONE FOLDER** (user
   request: a padlock beside the home button; code to lock, code to unlock; and a timer
