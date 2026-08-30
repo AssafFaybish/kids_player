@@ -31,15 +31,19 @@ let interactive = null;
 // active. Resolves a profileId (it may have switched the app into it), or null to abort.
 // Absent (browser preview) ⇒ the active profile, i.e. exactly the old behaviour.
 let chooseProfile = null;
+// v1.0.61 — asks the parent whether to restore content they removed before. Injected by
+// app.js (the dialog and the un-deny live there); absent = the old silent refusal.
+let askDenied = null;
 // v1.0.26: app.js shows a toast for EVERY outcome. Absent (browser preview) ⇒ silent,
 // exactly as before.
 let onResult = () => {};
 
-export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler, profileChooser, resultHandler } = {}) {
+export function initShareTarget({ profileIdGetter, onShareAdded, interactiveHandler, profileChooser, resultHandler, deniedHandler } = {}) {
   if (profileIdGetter) getPid = profileIdGetter;
   if (onShareAdded) onAdded = onShareAdded;
   if (interactiveHandler) interactive = interactiveHandler;
   if (profileChooser) chooseProfile = profileChooser;
+  if (deniedHandler) askDenied = deniedHandler;
   if (resultHandler) onResult = resultHandler;
   const plug = kidsNative();
   if (!plug || !plug.addListener) return; // browser preview / plugin absent
@@ -117,10 +121,12 @@ async function routeShare(o, { alreadyRouted = false } = {}) {
   const homeFolder = lib ? 'sheet' : 'mine';
   if (await db.getVideo(scope, c.key)) return 'duplicate'; // idempotent on double delivery
   if (lib && await db.getVideo(db.profScope(pid), c.key)) return 'duplicate';
-  // Deleted stays deleted — but SAY so. A parent who deleted a video months ago and then
-  // shares it again gets no record and, until now, no explanation either.
-  if ((await db.loadDenySet(scope)).has(c.key)) return 'denied';
-  if (lib && (await db.loadDenySet(db.profScope(pid))).has(c.key)) return 'denied';
+  // v1.0.61 — DELETED NO LONGER MEANS REFUSED, IT MEANS ASKED (user request). But the
+  // question is deferred to AFTER the PIN+confirm below, and that order is the safety
+  // property: asking here would let a CHILD revoke a deletion tombstone by sharing the
+  // video back into the app. Only a parent who has already passed the code may answer it.
+  let denied = (await db.loadDenySet(scope)).has(c.key);
+  if (!denied && lib) denied = (await db.loadDenySet(db.profScope(pid))).has(c.key);
 
   // v1.0.7: the interactive PIN+confirm flow decides; without it (browser preview,
   // handler error) the old toggle-based routing still applies. A declined/cancelled
@@ -130,6 +136,13 @@ async function routeShare(o, { alreadyRouted = false } = {}) {
     try { decision = await interactive(c); } catch { decision = null; }
   }
   if (decision === 'discard') return 'cancelled';
+  // The tombstone question, now that a parent is provably present. With NO interactive
+  // handler (browser preview, a thrown handler) nobody has authenticated, so the old
+  // refusal stands — a share must never revoke a deletion unasked.
+  if (denied) {
+    const restored = decision && askDenied ? await askDenied(c.key, scope).catch(() => false) : false;
+    if (!restored) return 'denied';
+  }
   // v1.0.25: the fallback toggle moved to the synced per-profile settings. Defaulting to
   // TRUE is the whole point of this branch — it runs when the interactive PIN+confirm
   // flow is unavailable or threw, and a share must never reach the child unasked.

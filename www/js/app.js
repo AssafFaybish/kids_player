@@ -4712,7 +4712,7 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
   const index = await db.loadMergeIndex(scope);
   const denySet = await db.loadDenySet(scope);
   const existingFolders = await db.listCustomFolders(scope);
-  const plan = planDriveTreeImport({
+  let plan = planDriveTreeImport({
     folders: tree.folders,
     existingFolders,
     existingKeys: new Set(index.keys()),
@@ -4721,6 +4721,32 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
     // the icon URL gives a real mimeType keylessly; the filename is the fallback
     mediaKindOf: (f) => cls.mediaKindFromMime(f.mimeType) || cls.mediaKindFromName(f.name)
   });
+
+  // v1.0.61 — CONTENT THE PARENT REMOVED BEFORE IS OFFERED BACK, ONCE FOR THE WHOLE IMPORT
+  // (user request). Until now a Drive folder holding files that had been deleted here just
+  // skipped them, and said so only when NOTHING else arrived — so a folder that imported 30
+  // new songs never mentioned the 12 it silently refused.
+  //
+  // The parent is asked while they are standing here, behind the code gate they already
+  // crossed to reach the add form, and one question covers the batch (the links-file
+  // precedent). Answering yes revokes the tombstones and re-runs the SAME plan, so nothing
+  // downstream has to know this happened.
+  if (plan.deniedKeys && plan.deniedKeys.length && first) {
+    const { deniedReAddPrompt } = await import('./plan.js');
+    const q = deniedReAddPrompt({ denied: true, exists: false, source: 'drive-folder', count: plan.deniedKeys.length });
+    if (q.ask && await confirmKid({ emoji: q.emoji, title: q.title, text: q.text, ok: q.ok, cancel: q.cancel })) {
+      const scopes = [...new Set([scope, activeProfileId ? db.profScope(activeProfileId) : null])].filter(Boolean);
+      for (const key of plan.deniedKeys) for (const sc of scopes) await db.unDeny(sc, key);
+      plan = planDriveTreeImport({
+        folders: tree.folders,
+        existingFolders: await db.listCustomFolders(scope),
+        existingKeys: new Set((await db.loadMergeIndex(scope)).keys()),
+        denyKeys: await db.loadDenySet(scope),
+        rootId: driveFolderId,
+        mediaKindOf: (f) => cls.mediaKindFromMime(f.mimeType) || cls.mediaKindFromName(f.name)
+      });
+    }
+  }
 
   const { sortKeyFor } = await import('./order.js');
   const now = Date.now();
@@ -6164,8 +6190,11 @@ async function addClassifiedRow(row, { title = '', onNote = () => {}, askFolder 
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(channelId);
     if (!synced) return { status: 'error', message: 'שגיאה במשיכת הערוץ', subscribed: true };
-    // v1.0.37: nothing arrived because it was all removed before → offer the way back
-    if (!count && await offerDeniedRestore(channelId, empty)) {
+    // v1.0.37 offered the way back only when NOTHING arrived. v1.0.61 drops that gate (user
+    // request): a channel where 12 of 40 videos were removed here before imported the 28 and
+    // told the parent nothing at all — `channelAddOutcome` returns from its `if (n)` branch
+    // before it ever reaches the denied clause, so a PARTIAL denial was reported nowhere.
+    if (await offerDeniedRestore(channelId, empty)) {
       return { status: 'added', message: 'שוחזרו! הסרטונים ממתינים לאישור ברשימת "ממתינים" 👀', subscribed: true };
     }
     return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
@@ -6189,7 +6218,7 @@ async function addClassifiedRow(row, { title = '', onNote = () => {}, askFolder 
     await refreshChannelsList();
     const { synced, approved, count, empty, picked } = await importChannelAndAsk(plId);
     if (!synced) return { status: 'error', message: 'שגיאה במשיכת רשימת ההשמעה', subscribed: true };
-    if (!count && await offerDeniedRestore(plId, empty)) { // v1.0.37, same as the channel path
+    if (await offerDeniedRestore(plId, empty)) { // v1.0.37, same as the channel path
       return { status: 'added', message: 'שוחזרו! הסרטונים ממתינים לאישור ברשימת "ממתינים" 👀', subscribed: true };
     }
     return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
@@ -8328,6 +8357,11 @@ async function init() {
   initShareTarget({
     profileIdGetter: () => activeProfileId,
     interactiveHandler: handleShareInteractive,
+    // v1.0.61 — a share of content the parent removed before now ASKS instead of being
+    // refused (user request). share.js calls this only AFTER its PIN+confirm, so the
+    // question — and the un-deny behind it — can never be reached by the child.
+    deniedHandler: (key, scope) => offerDeniedReAdd(scope, key, 'share'),
+
     // v1.0.26: EVERY outcome is reported. Sharing used to be silent on all of its routes —
     // added, parked, duplicate, previously deleted, dropped — so "sharing does not work"
     // could not be told apart from "it worked and you are looking at the wrong screen".

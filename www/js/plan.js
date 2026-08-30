@@ -2278,6 +2278,11 @@ export function planDriveFolderImport({ files = [], existingKeys = null, denyKey
   const kindOf = typeof mediaKindOf === 'function' ? mediaKindOf : () => null;
   const add = [];
   const skipped = { existing: 0, denied: 0, nonMedia: 0 };
+  // v1.0.61 — the denied KEYS, not just their count. A count can only be reported; the keys
+  // are what lets the parent be ASKED and the tombstones revoked when they say yes (user
+  // request). Collected here rather than re-derived by the caller, so "which files were
+  // refused" keeps exactly one answer.
+  const deniedKeys = [];
   const rows = [...(files || [])].filter((f) => f && typeof f.id === 'string' && f.id);
   rows.sort((a, b) => naturalCompare(a.name, b.name));
   for (const f of rows) {
@@ -2285,10 +2290,10 @@ export function planDriveFolderImport({ files = [], existingKeys = null, denyKey
     if (media !== 'audio' && media !== 'video') { skipped.nonMedia += 1; continue; }
     const key = 'file:drive:' + f.id;
     if (have.has(key)) { skipped.existing += 1; continue; }
-    if (denied.has(key)) { skipped.denied += 1; continue; }
+    if (denied.has(key)) { skipped.denied += 1; deniedKeys.push(key); continue; }
     add.push({ driveId: f.id, name: String(f.name || ''), media });
   }
-  return { add, skipped };
+  return { add, skipped, deniedKeys };
 }
 
 /**
@@ -2339,6 +2344,7 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
 
   const out = [];
   const totals = { existing: 0, denied: 0, nonMedia: 0 };
+  const deniedKeys = [];
   let added = 0;
   for (const node of folders || []) {
     if (!node || typeof node.id !== 'string' || !node.id) continue;
@@ -2348,6 +2354,7 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
     totals.existing += plan.skipped.existing;
     totals.denied += plan.skipped.denied;
     totals.nonMedia += plan.skipped.nonMedia;
+    deniedKeys.push(...(plan.deniedKeys || []));
     const mediaHere = plan.add.length + plan.skipped.existing + plan.skipped.denied;
     const isRoot = node.id === rootId || node.depth === 0;
     if (!isRoot && !mediaHere) continue; // a folder of folders is not a folder here
@@ -2363,7 +2370,7 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
       existing, add: plan.add, skipped: plan.skipped
     });
   }
-  return { folders: out, added, skipped: totals };
+  return { folders: out, added, skipped: totals, deniedKeys };
 }
 
 /**
