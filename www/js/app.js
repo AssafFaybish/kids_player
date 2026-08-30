@@ -9,11 +9,11 @@ import {
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, getSettings, putSetting } from './settings.js';
-import { playItem, stop, playbackState, pauseCurrent } from './player.js';
+import { playItem, stop, playbackState, pauseCurrent, resumeCurrent } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
-  setOrientation, httpGetBlob } from './platform.js';
+  setOrientation, httpGetBlob, audioMode } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -21,13 +21,13 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
-  KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS } from './config.js';
+  KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
-  fullscreenOrientation } from './playerlogic.js';
+  fullscreenOrientation, planCallResume } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -661,6 +661,70 @@ async function tickContainment() {
   } catch {}
 }
 
+/* ---------------- Interrupted by a call (v1.0.57) ---------------- */
+//
+// User request: a call comes in mid-video, the video pauses as it already does, and when
+// the call ENDS it carries on by itself. User decision: CALLS ONLY — every other pause (the
+// power button, HOME, the app switcher, the child's own tap) keeps the v1.0.32 behaviour,
+// where the video waits paused and the child presses play.
+//
+// THE LIFECYCLE ALONE CANNOT TELL THESE APART, and on a modern Android an incoming call may
+// not even background the app: it arrives as a heads-up notification, the WebView loses
+// audio focus, and the media pauses itself with no `appStateChange` at all. So the signal is
+// the DEVICE'S AUDIO MODE (`platform.audioMode` → AudioManager.getMode, no permission,
+// catches VoIP), and the app watches for it on BOTH doors: the resume event, and a poll that
+// only exists while a paused video is waiting on a call.
+//
+// The decision is pure (`playerlogic.planCallResume`); everything here is plumbing.
+let callResume = null;   // { key, at } — the armed intent, one video, this session only
+let callTicker = null;
+
+function stopCallWatch() {
+  if (callTicker) { clearInterval(callTicker); callTicker = null; }
+}
+
+/** Drop the intent AND its poll — one place, so a disarm can never leave the timer behind. */
+function disarmCallResume() {
+  callResume = null;
+  stopCallWatch();
+}
+
+/**
+ * One look at "is a call happening, and is this video waiting on it?".
+ *
+ * Runs on the app-resume event and, while armed, on its own short poll. Reading the audio
+ * mode is an async bridge call, so the state is re-checked AFTER the await: the child can
+ * leave, the video can be switched or a scheduled break can take the screen during it, and
+ * acting on what was true before the await is how a video starts playing under a lock
+ * screen. That is also why `resumeCurrent()`'s answer is honoured — a false means nothing
+ * is mounted any more.
+ */
+async function checkCallResume() {
+  const key = currentWatch && currentWatch.key;
+  if (!callResume && !(nav.isActive('watch') && key)) return;
+  const mode = await audioMode();
+  const st = playbackState();
+  const action = planCallResume({
+    armed: callResume,
+    mode,
+    playing: !!(st && st.playing),
+    inWatch: nav.isActive('watch'),
+    key: currentWatch && currentWatch.key
+  });
+  if (action === 'arm') {
+    callResume = { key, at: Date.now() };
+    // the poll is what covers the call that never backgrounded the app
+    if (!callTicker) callTicker = setInterval(() => { checkCallResume().catch(() => {}); }, CALL_RESUME_POLL_MS);
+  } else if (action === 'resume') {
+    // ONE SHOT, whether or not the player took it: a `false` means nothing is mounted any
+    // more, and keeping the intent alive would aim it at whatever video mounts next.
+    resumeCurrent();
+    disarmCallResume();
+  } else if (action === 'disarm') {
+    disarmCallResume();
+  }
+}
+
 /* ---------------- Idle screen-off (v1.0.34) ---------------- */
 // After N minutes with no touch/remote key WHILE A VIDEO PLAYS: ask "עדיין צופים?",
 // and if nobody answers — save the position, pause IN PLACE (never stop()), and let
@@ -673,6 +737,9 @@ async function tickContainment() {
 let idleLastInputAt = Date.now();
 let idlePromptAt = 0;
 let idleTicker = null;
+// v1.0.57: when the idle timer PARKED a video (nobody answered the prompt). A call must
+// never un-park it — see the 'sleep' branch below and the call watcher above.
+let idleParkedAt = 0;
 
 function hideIdlePrompt() {
   idlePromptAt = 0;
@@ -698,6 +765,7 @@ let idleSwallowGesture = false;
 function onUserInput(e) {
   const answeredPrompt = idlePromptAt > 0;
   idleLastInputAt = Date.now();
+  idleParkedAt = 0; // v1.0.57: somebody IS here — the video is no longer app-parked
   if (!answeredPrompt) {
     if (e && e.type === 'pointerdown') idleSwallowGesture = false;
     return;
@@ -747,6 +815,11 @@ async function tickIdleSleep() {
     // comes back the child finds the video waiting, paused, exactly where it stopped.
     saveWatchPosition(currentWatch);
     pauseCurrent();
+    // v1.0.57: THE APP parked this video because nobody answered "עדיין צופים?" — so a call
+    // that happens to start and end afterwards must not un-park it. Without this flag the
+    // call watcher would see a paused video during a call, arm, and start it again into the
+    // empty room this feature exists to protect. Cleared by any real input (onUserInput).
+    idleParkedAt = Date.now();
     hideIdlePrompt();
     return;
   }
@@ -1262,6 +1335,12 @@ function registerViews() {
       saveWatchPosition(currentWatch);
       clearInterval(posTimer);
       posTimer = null;
+      // v1.0.57 — the call-resume intent belongs to ONE video on THIS screen. Leaving the
+      // watch view drops it AND its poll: without this, a child who walks away during a call
+      // leaves a timer running for the rest of the session, and a late 'resume' would fire
+      // at a torn-down player. (planCallResume also answers 'disarm' for a missing watch
+      // view — this is the same rule enforced at the door instead of on the next tick.)
+      disarmCallResume();
       stop();
       wake.releaseAll();
       currentWatch = null;
@@ -2776,7 +2855,17 @@ async function openWatch(item) {
   // screen is off must still know where the child stopped.
   clearInterval(posTimer);
   posTimer = setInterval(() => {
-    if (nav.isActive('watch') && currentWatch) saveWatchPosition(currentWatch);
+    if (!nav.isActive('watch') || !currentWatch) return;
+    saveWatchPosition(currentWatch);
+    // v1.0.57 — THE CALL THAT NEVER BACKGROUNDS THE APP. On a modern Android an incoming
+    // call is a heads-up notification: the ringtone takes audio focus, the WebView pauses
+    // its media, and no `appStateChange` ever fires — so the lifecycle door above would
+    // miss it entirely and the video would sit frozen. Asked only when the video is NOT
+    // playing (a bridge call per tick while playing would be pure waste), never once armed
+    // (the fast poll owns it from then on), and never for a video THIS APP parked because
+    // nobody answered "עדיין צופים?".
+    const st = playbackState();
+    if (st && !st.playing && !callResume && !idleParkedAt) checkCallResume().catch(() => {});
   }, RESUME_SAVE_MS);
 
   await playItem(item, $('player-host'), {
@@ -7494,8 +7583,18 @@ async function init() {
   // heartbeat notices the pause and pins itself). saveWatchPosition is a no-op while the
   // resume setting is off — the in-session position lives in the paused player itself.
   onAppPause(() => {
-    saveWatchPosition(currentWatch);
+    // v1.0.57: read the playhead ONCE, BEFORE pausing — `saveWatchPosition` needs the live
+    // clock, and the call watcher needs to know whether the video was actually PLAYING when
+    // the app was taken away. After `pauseCurrent()` that answer is always "no", and arming
+    // on it would resume a video the child had deliberately paused before the call.
+    const st = playbackState();
+    saveWatchPosition(currentWatch, st);
     pauseCurrent();
+    // Was it a CALL that took the app away? Asked HERE, while the reason is still current:
+    // by the time the child comes back the mode has returned to normal and nothing would
+    // distinguish a call from the power button. Not awaited — the pause must not wait on a
+    // bridge call.
+    if (st && st.playing) checkCallResume().catch(() => {});
   });
 
   // v1.0.34 idle screen-off: every touch and every remote key is "someone is here".
@@ -7513,6 +7612,12 @@ async function init() {
   onAppResume(async () => {
     // v1.0.31: a scheduled lock may have matured while backgrounded — check before anything.
     await tickScheduledLock().catch(() => {});
+    // v1.0.57 — the call is over and the child is back: carry on with the video. AFTER the
+    // scheduled-lock check on purpose, and that ORDER is the invariant: a break that matured
+    // during the call resets nav to the lock screen, and planCallResume then answers 'disarm'
+    // because the watch view is gone. Resuming first would leave a video playing behind the
+    // lock. (The armed poll covers the call that never backgrounded the app at all.)
+    checkCallResume().catch(() => {});
     // v1.0.36: re-arm the exit lock. The update flow unpins natively (installApk), and a
     // CANCELLED install resumes right back here — still unpinned, on a locked profile.
     // Safe on every resume: applyExitLock never unpins, and the native lockTask is a

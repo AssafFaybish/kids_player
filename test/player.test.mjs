@@ -392,3 +392,66 @@ test('watchedFraction: a bar only when both numbers are usable, clamped to [0,1]
   assert.equal(watchedFraction(60, Infinity), null);
   assert.equal(watchedFraction(undefined, undefined), null);
 });
+
+/* ---------------- interrupted by a call (v1.0.57) ---------------- */
+
+test('isCallAudioMode: telephony AND VoIP count, and ringing already counts', async () => {
+  const { isCallAudioMode } = await import('../www/js/playerlogic.js');
+  // MODE_IN_COMMUNICATION is what WhatsApp/Messenger report — the common case on a tablet
+  // with no SIM at all, and precisely what a TelephonyManager listener would never see
+  // (which is also why the native side reads AudioManager and needs no permission).
+  assert.equal(isCallAudioMode('in_call'), true);
+  assert.equal(isCallAudioMode('in_communication'), true);
+  assert.equal(isCallAudioMode('ringtone'), true, 'the ring already interrupted the video');
+  assert.equal(isCallAudioMode('IN_CALL'), true, 'case must not decide behaviour');
+  assert.equal(isCallAudioMode('normal'), false);
+  assert.equal(isCallAudioMode('other'), false);
+  assert.equal(isCallAudioMode('unknown'), false);
+  assert.equal(isCallAudioMode(null), false);
+  assert.equal(isCallAudioMode(undefined), false);
+});
+
+test('planCallResume: a call arms, and ONLY an affirmative "normal" resumes', async () => {
+  const { planCallResume } = await import('../www/js/playerlogic.js');
+  const now = 1_000_000;
+  const armed = { key: 'k', at: now - 5000 };
+  assert.equal(planCallResume({ mode: 'ringtone', key: 'k', now }), 'arm');
+  assert.equal(planCallResume({ mode: 'in_call', key: 'k', now }), 'arm');
+  assert.equal(planCallResume({ armed, mode: 'normal', key: 'k', now }), 'resume');
+  assert.equal(planCallResume({ armed, mode: 'in_call', key: 'k', now }), null, 'still on the call — wait');
+  // ⚠️ THE HOLE THE MATRIX FOUND, and the reason this test exists: the first version read
+  // "not a call mode ⇒ the call ended", which made 'unknown' — a failed bridge, an APK
+  // built before the native method existed, a browser — mean "play it". Then ANY pause
+  // would resume, which is the exact opposite of the user's "calls only" decision.
+  assert.equal(planCallResume({ armed, mode: 'unknown', key: 'k', now }), null,
+    'unknown is not evidence that a call ended');
+  assert.equal(planCallResume({ armed, mode: 'other', key: 'k', now }), null,
+    'an unrecognised mode (call screening) is not evidence either');
+  // and nothing arms without evidence of a call
+  assert.equal(planCallResume({ mode: 'normal', key: 'k', now }), null);
+  assert.equal(planCallResume({ mode: 'unknown', key: 'k', now }), null);
+});
+
+test('planCallResume: every way for the intent to go stale disarms it', async () => {
+  const { planCallResume } = await import('../www/js/playerlogic.js');
+  const { CALL_RESUME_MAX_MS } = await import('../www/js/config.js');
+  const now = 1_000_000;
+  const armed = { key: 'k', at: now - 5000 };
+  // playing = the child pressed play themselves (or we already resumed). A live intent
+  // left behind would fire at some unrelated later pause.
+  assert.equal(planCallResume({ armed, mode: 'in_call', key: 'k', playing: true, now }), 'disarm');
+  // the child left the video, or a scheduled break took the screen
+  assert.equal(planCallResume({ armed, mode: 'normal', key: 'k', inWatch: false, now }), 'disarm');
+  assert.equal(planCallResume({ armed, mode: 'normal', key: null, now }), 'disarm');
+  // a DIFFERENT video is up now — the intent belongs to one video
+  assert.equal(planCallResume({ armed, mode: 'normal', key: 'other', now }), 'disarm');
+  // it expires: after a quarter of an hour the call is no longer "what just interrupted
+  // us", and starting the video then is a surprise noise, not a convenience
+  assert.equal(planCallResume({ armed: { key: 'k', at: now - CALL_RESUME_MAX_MS - 1 }, mode: 'normal', key: 'k', now }), 'disarm');
+  assert.equal(planCallResume({ armed: { key: 'k', at: now - CALL_RESUME_MAX_MS + 1 }, mode: 'normal', key: 'k', now }), 'resume');
+  assert.equal(planCallResume({ armed: { key: 'k', at: 'nonsense' }, mode: 'normal', key: 'k', now }), 'disarm');
+  // nothing armed and nothing to do
+  assert.equal(planCallResume({ inWatch: false }), null);
+  assert.equal(planCallResume({}), null);
+  assert.equal(planCallResume(), null);
+});

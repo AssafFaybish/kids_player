@@ -383,6 +383,25 @@ export async function isTv() {
 }
 
 /**
+ * v1.0.57 — the device's audio mode, as one lower-case word, for "was this video
+ * interrupted by a CALL?" (the user's decision: calls only, never every backgrounding).
+ *
+ * NEVER THROWS AND NEVER GUESSES 'normal'. An app built before the native method existed,
+ * a browser, a device that refuses the getter — all answer 'unknown', and the pure decision
+ * treats unknown as "no evidence of a call", so the worst case is the pre-v1.0.57 behaviour
+ * (the child taps play). Answering 'normal' instead would make an unrelated pause look like
+ * a call that just ended, and the video would start itself in a quiet room.
+ */
+export async function audioMode() {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.audioMode) return 'unknown';
+  try {
+    const r = await kids.audioMode();
+    return (r && typeof r.value === 'string') ? r.value : 'unknown';
+  } catch { return 'unknown'; }
+}
+
+/**
  * Open an https link OUTSIDE the app (v1.0.14) — the WebView blocks external
  * navigation/popups by design, so parent-facing links need the native intent.
  * Returns true when something actually opened.

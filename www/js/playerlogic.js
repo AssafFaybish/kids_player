@@ -8,7 +8,8 @@
 // Imports NOTHING but config.js (which imports nothing), so this sits safely in the
 // `store/classify/csv/util` band and can be imported by player.js and ui/dpad.js alike.
 import { SEEK_STEP, AUTOPLAY_MAX_FAILURES, TAP_SLOP_PX,
-  RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from './config.js';
+  RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC,
+  CALL_RESUME_MAX_MS } from './config.js';
 
 /**
  * Clamp a seek target into the video.
@@ -331,4 +332,55 @@ export function tvKeyIntent(action, { time = 0, duration = 0, repeat = false } =
     return { kind: 'seek', to: clampSeek(Number(time) + SEEK_STEP, duration), flash: SEEK_STEP + ' ⏩' };
   }
   return { kind: 'ignore' }; // dpad relies on a falsy result to NOT preventDefault
+}
+
+/* ---------------- interrupted by a call (v1.0.57) ---------------- */
+
+/** The audio modes that mean a call is happening, ringing included. */
+const CALL_MODES = new Set(['in_call', 'in_communication', 'ringtone']);
+export const isCallAudioMode = (mode) => CALL_MODES.has(String(mode || '').toLowerCase());
+
+/**
+ * v1.0.57 — PURE: what to do about a video that is not playing while a call is (or was)
+ * happening. User request: "a call comes in mid-video, the video pauses as it does today,
+ * and when the call ends it carries on by itself." User decision: CALLS ONLY — every other
+ * pause (the power button, HOME, the app switcher, the child's own tap) keeps the v1.0.32
+ * behaviour, where the video waits and the child presses play.
+ *
+ *   'arm'     — a call is happening and the video is not playing: remember to come back.
+ *   'resume'  — armed, the call is over, still paused: play it.
+ *   'disarm'  — the intent is stale and must be dropped.
+ *   null      — nothing to do.
+ *
+ * THE RULES THAT MATTER, each closing a way for a video to start itself in a quiet room:
+ *  - 'unknown' IS NOT 'normal'. A browser, an APK built before the native method existed
+ *    and a device that refuses the getter all report unknown, and treating that as "the
+ *    call ended" would resume after ANY pause. Unknown never arms and never resumes.
+ *  - PLAYING DISARMS. If the video is playing, either the child pressed play or we already
+ *    resumed; a live intent left behind would fire at some unrelated later pause.
+ *  - LEAVING THE VIDEO DISARMS. The intent belongs to one video on one screen: a different
+ *    key, or the watch view gone (the child left, a scheduled break took over), drops it.
+ *  - IT EXPIRES. After `maxWaitMs` a call is no longer "the thing that just interrupted
+ *    us" — the tablet has been sitting on a paused video for a quarter of an hour, and
+ *    starting it then would surprise whoever is in the room.
+ */
+export function planCallResume({
+  armed = null, mode = 'unknown', playing = false, inWatch = true,
+  key = null, now = Date.now(), maxWaitMs = CALL_RESUME_MAX_MS
+} = {}) {
+  const call = isCallAudioMode(mode);
+  if (!inWatch || !key) return armed ? 'disarm' : null;
+  if (armed && armed.key !== key) return 'disarm';        // a different video is up now
+  if (playing) return armed ? 'disarm' : null;            // playing: nothing to come back to
+  if (armed) {
+    const waited = Number(now) - Number(armed.at);
+    if (!Number.isFinite(waited) || waited > maxWaitMs) return 'disarm';
+    // ONLY AN AFFIRMATIVE 'normal' RESUMES. The first version read this as "not a call mode
+    // ⇒ the call ended", which quietly made 'unknown' — a failed bridge, an older APK — mean
+    // "play it", against the rule stated above; and 'other' covers modes we do not know
+    // (call screening among them), which is not evidence of an ended call either. Caught by
+    // running the matrix, not by reading it.
+    return String(mode).toLowerCase() === 'normal' ? 'resume' : null;
+  }
+  return call ? 'arm' : null;
 }
