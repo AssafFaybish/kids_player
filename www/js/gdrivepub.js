@@ -25,6 +25,7 @@
 
 import { httpGetJson, httpGetText } from './platform.js';
 import { defaultYtApiKey } from './keys.js';
+import { DRIVE_TREE_MAX_FOLDERS, DRIVE_TREE_MAX_FILES } from './config.js';
 
 const PUB_API = 'https://www.googleapis.com/drive/v3';
 
@@ -44,6 +45,15 @@ const PUB_API = 'https://www.googleapis.com/drive/v3';
 let driveKeyRefused = false;
 export function noteDriveKeyRefused() { driveKeyRefused = true; }
 export function driveKeyUsable() { return !driveKeyRefused; }
+
+/**
+ * v1.0.58 — the one name for "this entry is a FOLDER". Both doors report it: `files.list`
+ * says so in `mimeType`, and the public page says so in the row's href (see
+ * parseDriveFolderHtml). Everything downstream — the tree walk, the media filter — asks
+ * this and never re-derives it.
+ */
+export const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
+export const isDriveFolderEntry = (f) => !!f && f.mimeType === DRIVE_FOLDER_MIME;
 
 /** Drive ids are opaque [A-Za-z0-9_-]; anything else must never reach a URL we build. */
 const DRIVE_ID = /^[A-Za-z0-9_-]{10,80}$/;
@@ -178,8 +188,20 @@ export function parseDriveFolderHtml(html) {
     if (!idm || !nm || !DRIVE_ID.test(idm[1])) continue;
     const fileName = decodeEntities(nm[1]);
     if (!fileName) continue;
+    // v1.0.58 — A SUBFOLDER IS TOLD BY ITS LINK, exactly as classify.driveFolderId tells a
+    // pasted folder from a pasted file: the two id spaces are identical and ONLY the URL
+    // shape separates them (`/drive/folders/<id>` vs `/file/d/<id>`). Measured on the real
+    // page: a folder row carries no `/type/<mime>` icon at all, so the icon-only reading
+    // this parser used to do returned `mimeType: null` for every subfolder — which is why
+    // the header comment's claim that folders are "skipped here" was never actually true,
+    // and why a folder of folders could not be walked.
+    const isFolder = /\/drive\/folders\/[A-Za-z0-9_-]+/.test(b);
     const mm = b.match(/drive-thirdparty\.googleusercontent\.com\/\d+\/type\/([A-Za-z0-9.+_-]+\/[A-Za-z0-9.+_-]+)/);
-    files.push({ id: idm[1], name: fileName, mimeType: mm ? mm[1] : null, size: null });
+    files.push({
+      id: idm[1], name: fileName,
+      mimeType: isFolder ? DRIVE_FOLDER_MIME : (mm ? mm[1] : null),
+      size: null
+    });
   }
   return { files, nextPageToken: '', name: folderName };
 }
@@ -212,9 +234,17 @@ export async function fetchDriveFolder(folderId) {
         if (!got) { noteDriveKeyRefused(); out.length = 0; break; } // blocked/changed shape
         out.push(...got.files);
         token = got.nextPageToken;
-        if (!token) return { ok: true, files: out, name: await keyedFolderName(id, key) };
+        if (!token) break;
       }
       if (out.length) return { ok: true, files: out, name: await keyedFolderName(id, key) };
+      // ⚠️ v1.0.58 — AN EMPTY ANSWER FROM THIS DOOR IS NOT PROOF THAT THE FOLDER IS EMPTY,
+      // and the old code returned `{ok:true, files:[]}` right here, inside the pagination
+      // loop, the moment there was no nextPageToken. `files.list` answers 200 with an EMPTY
+      // list — not an error — when the API key is not allowed to see into a folder that is
+      // shared "anyone with the link", so a family in that state was told "התיקיה ריקה"
+      // about a folder full of songs, and the public page that CAN read it was never tried.
+      // The interpretSheetResponse doctrine, one level deeper: emptiness may only be
+      // reported by a door that actually saw the folder's contents.
     } catch { noteDriveKeyRefused(); /* fall through to the keyless door */ }
   }
   try {
@@ -225,6 +255,78 @@ export async function fetchDriveFolder(folderId) {
   } catch {
     return { ok: false, files: [], name: '', error: 'network' };
   }
+}
+
+/**
+ * v1.0.58 — WALK A FOLDER TREE (user request: "התיקיה מכילה תיקיות של שירים… צריך לתמוך
+ * בתיקיה מקוננת"). Returns every folder that holds media, each with its own files:
+ *   { ok, folders: [{ id, name, depth, parentId, files }], truncated, partial, error }
+ *
+ * BREADTH-FIRST, and that is not a style choice: the caps below cut the walk off, and a
+ * depth-first walk would spend them on one deep branch while the parent's top-level discs
+ * went missing. Breadth-first means a truncated walk still holds the top of the tree —
+ * the part the parent actually pasted.
+ *
+ * THE ROOT'S FAILURE AND A CHILD'S FAILURE ARE DIFFERENT FACTS. An unreadable ROOT is
+ * `ok:false` (the parent is told to check the sharing); an unreadable CHILD sets `partial`
+ * and the walk carries on, because the import is ADDITIVE — the v1.0.56 rule — so the
+ * folders we could read are still worth having, and nothing is ever deleted for absence.
+ *
+ * `seen` is a cycle guard, not an optimisation: a Drive SHORTCUT can point at an ancestor,
+ * and without it the walk would spin until the caps stopped it.
+ *
+ * Fetched in small WAVES rather than one at a time: 33 folders × ~650ms serial is 20
+ * seconds of the parent staring at a spinner, and one at a time is the only reason it
+ * would be. The width is deliberately small — this is an unauthenticated public endpoint
+ * and a burst of parallel requests is how a family earns a 429.
+ */
+export async function fetchDriveFolderTree(rootId, {
+  maxFolders = DRIVE_TREE_MAX_FOLDERS, maxFiles = DRIVE_TREE_MAX_FILES, wave = 3, onProgress = null
+} = {}) {
+  const root = String(rootId || '');
+  if (!DRIVE_ID.test(root)) return { ok: false, folders: [], truncated: false, partial: false, error: 'bad-id' };
+
+  const folders = [];
+  const seen = new Set([root]);
+  let queue = [{ id: root, name: '', depth: 0, parentId: null }];
+  let fileCount = 0;
+  let truncated = false;
+  let partial = false;
+  let rootFailed = false;
+
+  while (queue.length) {
+    const batch = queue.splice(0, Math.max(1, wave));
+    const listings = await Promise.all(batch.map((n) => fetchDriveFolder(n.id).catch(() => ({ ok: false, files: [] }))));
+    for (let i = 0; i < batch.length; i++) {
+      const node = batch[i];
+      const listing = listings[i];
+      if (!listing || !listing.ok) {
+        if (node.depth === 0) rootFailed = true; else partial = true;
+        continue;
+      }
+      const own = [];
+      for (const entry of listing.files) {
+        if (isDriveFolderEntry(entry)) {
+          if (seen.has(entry.id) || !DRIVE_ID.test(String(entry.id || ''))) continue;
+          if (seen.size >= maxFolders) { truncated = true; continue; }
+          seen.add(entry.id);
+          queue.push({ id: entry.id, name: entry.name, depth: node.depth + 1, parentId: node.id });
+          continue;
+        }
+        if (fileCount >= maxFiles) { truncated = true; continue; }
+        fileCount += 1;
+        own.push(entry);
+      }
+      folders.push({
+        id: node.id, name: listing.name || node.name || '',
+        depth: node.depth, parentId: node.parentId, files: own
+      });
+      if (typeof onProgress === 'function') { try { onProgress(folders.length, seen.size); } catch {} }
+    }
+  }
+
+  if (rootFailed) return { ok: false, folders: [], truncated: false, partial: false, error: 'unreadable' };
+  return { ok: true, folders, truncated, partial };
 }
 
 /**

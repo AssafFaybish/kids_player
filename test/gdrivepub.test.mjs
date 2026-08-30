@@ -266,3 +266,137 @@ test('the KEYED folder path still names the folder (files.list answers children 
     { name: 'testpublic', mimeType: 'application/vnd.google-apps.folder', size: null }
   );
 });
+
+/* ---------------- nested folders (v1.0.58) ---------------- */
+
+// The markup below is the REAL shape, copied from a live public folder on 2026-08-30 (the
+// one in the field report). A folder row and a file row differ in exactly one thing that
+// can be trusted: the LINK. A folder carries no `/type/<mime>` icon at all, which is why
+// reading the icon alone answered `mimeType: null` for every subfolder — and why a folder
+// of folders could not be walked.
+const folderRow = (id, name) => `<div class="flip-entry" id="entry-${id}" tabindex="0" role="link">` +
+  `<div class="flip-entry-info"><a href="https://drive.google.com/drive/folders/${id}" target="_blank">` +
+  '<div class="flip-entry-list-icon"><div aria-label="Folder" class="icon-color-1 drive-sprite-folder-list-shared-icon"></div></div>' +
+  `<div class="flip-entry-title">${name}</div></a></div></div>`;
+const fileRow = (id, name, mime = 'audio/mpeg') => `<div class="flip-entry" id="entry-${id}" tabindex="0" role="link">` +
+  `<div class="flip-entry-info"><a href="https://drive.google.com/file/d/${id}/view?usp=drive_web" target="_blank">` +
+  `<div class="flip-entry-list-icon"><img src="https://drive-thirdparty.googleusercontent.com/16/type/${mime}"></div>` +
+  `<div class="flip-entry-title">${name}</div></a></div></div>`;
+const page = (title, rows) => `<html><head><title>${title}</title></head><body>` +
+  `<div class="flip-contents"><div class="flip-entries">${rows.join('')}</div></div></body></html>`;
+
+test('the keyless parser tells a SUBFOLDER from a file by its link (v1.0.58)', async () => {
+  const { parseDriveFolderHtml, isDriveFolderEntry, DRIVE_FOLDER_MIME } = await import('../www/js/gdrivepub.js');
+  const got = parseDriveFolderHtml(page('דיסק און קי', [
+    folderRow('1bV3kI3NK8ry2iKIdaLwD_pOue1aoBkZX', 'B דיסק 21 - גלגולי נשמות'),
+    fileRow('15LqfDGTR0ttsMpugpskUYGE1BMBQJ2hT', '01 פתיחה.mp3'),
+    folderRow('14A5L81xhQG60KKBzlyId0mIi6_QEFy00', 'F דיסק 18')
+  ]));
+  assert.equal(got.files.length, 3);
+  assert.deepEqual(got.files.map(isDriveFolderEntry), [true, false, true]);
+  assert.equal(got.files[0].mimeType, DRIVE_FOLDER_MIME, 'a subfolder must be labelled like the API labels it');
+  assert.equal(got.files[1].mimeType, 'audio/mpeg', 'a file must keep the mime the icon carries');
+  assert.equal(got.name, 'דיסק און קי');
+  // and the empty/unreadable distinction still holds — the reason this parser is not a
+  // simple "did we find rows" (interpretSheetResponse doctrine)
+  assert.deepEqual(parseDriveFolderHtml(page('ריקה', [])).files, []);
+  assert.equal(parseDriveFolderHtml('<html><body>sign in</body></html>'), null);
+});
+
+test('fetchDriveFolderTree walks breadth-first, guards cycles, and honours its caps (v1.0.58)', async (t) => {
+  const { fetchDriveFolderTree } = await import('../www/js/gdrivepub.js');
+  // a synthetic tree served through the module's own transport: ROOT → A,B ; A → 2 files
+  // and a SHORTCUT back to ROOT (the cycle a Drive shortcut really can create) ; B → 1 file
+  const tree = {
+    ROOTaaaaaaaaaa: page('root', [folderRow('AAAAaaaaaaaa', 'A'), folderRow('BBBBbbbbbbbb', 'B')]),
+    AAAAaaaaaaaa: page('A', [fileRow('f1f1f1f1f1f1', 'a1.mp3'), fileRow('f2f2f2f2f2f2', 'a2.mp3'), folderRow('ROOTaaaaaaaaaa', 'back to root')]),
+    BBBBbbbbbbbb: page('B', [fileRow('f3f3f3f3f3f3', 'b1.mp3')])
+  };
+  const real = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('googleapis.com')) return new Response('{}', { status: 403 });
+    const id = (u.match(/[?&]id=([^&#]+)/) || [])[1];
+    calls += 1;
+    return new Response(tree[id] || page('missing', []), { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  t.after(() => { globalThis.fetch = real; });
+
+  const got = await fetchDriveFolderTree('ROOTaaaaaaaaaa');
+  assert.equal(got.ok, true);
+  assert.deepEqual(got.folders.map((f) => f.name), ['root', 'A', 'B'], 'breadth-first: the top of the tree comes first');
+  assert.deepEqual(got.folders.map((f) => f.files.length), [0, 2, 1]);
+  assert.deepEqual(got.folders.map((f) => f.depth), [0, 1, 1]);
+  assert.equal(got.truncated, false);
+  assert.equal(got.partial, false);
+  assert.equal(calls, 3, 'the shortcut back to the root was walked again — that is an infinite tree');
+
+  // the FOLDER cap keeps the walk bounded and SAYS so
+  const capped = await fetchDriveFolderTree('ROOTaaaaaaaaaa', { maxFolders: 2 });
+  assert.equal(capped.truncated, true, 'hitting the folder cap must be reported, never silent');
+  assert.ok(capped.folders.length <= 2);
+  // the FILE cap likewise
+  const few = await fetchDriveFolderTree('ROOTaaaaaaaaaa', { maxFiles: 1 });
+  assert.equal(few.truncated, true);
+  assert.equal(few.folders.reduce((n, f) => n + f.files.length, 0), 1);
+});
+
+test('a tree walk tells an unreadable ROOT from an unreadable CHILD (v1.0.58)', async (t) => {
+  const { fetchDriveFolderTree } = await import('../www/js/gdrivepub.js');
+  const real = globalThis.fetch;
+  t.after(() => { globalThis.fetch = real; });
+  // the ROOT cannot be read → ok:false, and the parent is told to check the sharing
+  globalThis.fetch = async (url) => String(url).includes('googleapis.com')
+    ? new Response('{}', { status: 403 })
+    : new Response('<html><body>sign in</body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  const dead = await fetchDriveFolderTree('ROOTaaaaaaaaaa');
+  assert.equal(dead.ok, false);
+  assert.equal(dead.error, 'unreadable');
+  assert.deepEqual(dead.folders, []);
+
+  // a CHILD that cannot be read is `partial` and the walk carries on: the import is
+  // ADDITIVE, so the folders we could read are still worth having and nothing is deleted
+  const rootPage = page('root', [folderRow('AAAAaaaaaaaa', 'A'), folderRow('BBBBbbbbbbbb', 'B')]);
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('googleapis.com')) return new Response('{}', { status: 403 });
+    const id = (u.match(/[?&]id=([^&#]+)/) || [])[1];
+    if (id === 'ROOTaaaaaaaaaa') return new Response(rootPage, { status: 200, headers: { 'content-type': 'text/html' } });
+    if (id === 'AAAAaaaaaaaa') return new Response(page('A', [fileRow('f1f1f1f1f1f1', 'a1.mp3')]), { status: 200, headers: { 'content-type': 'text/html' } });
+    return new Response('<html><body>sign in</body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  const partial = await fetchDriveFolderTree('ROOTaaaaaaaaaa');
+  assert.equal(partial.ok, true, 'one unreadable subfolder must not throw the whole tree away');
+  assert.equal(partial.partial, true, 'and it must be REPORTED, not silently missing');
+  assert.deepEqual(partial.folders.map((f) => f.name), ['root', 'A']);
+});
+
+test('an EMPTY keyed listing falls through to the door that can read the folder (v1.0.58)', async (t) => {
+  const { fetchDriveFolder } = await import('../www/js/gdrivepub.js');
+  const real = globalThis.fetch;
+  t.after(() => { globalThis.fetch = real; });
+  // ⚠️ THE FIELD BUG (2026-08-30): `files.list` answers 200 with an EMPTY list — not an
+  // error — when the API key may not see into a folder shared "anyone with the link". The
+  // keyed branch returned that as `{ok:true, files:[]}` from inside its pagination loop, so
+  // a folder full of songs was reported as "התיקיה ריקה" and the public page that CAN read
+  // it was never tried. Emptiness may only be reported by a door that saw the contents.
+  let keyed = 0, keyless = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('googleapis.com/drive/v3/files?q=')) {
+      keyed += 1;
+      return new Response(JSON.stringify({ files: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (u.includes('embeddedfolderview')) {
+      keyless += 1;
+      return new Response(page('שירים', [fileRow('f1f1f1f1f1f1', 'a1.mp3')]), { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('', { status: 404 });
+  };
+  const got = await fetchDriveFolder('1MtraCwMOiJfg_yHAXtudQviPVsi45W3_');
+  assert.equal(got.ok, true);
+  assert.equal(got.files.length, 1, 'the empty keyed answer short-circuited the keyless door');
+  assert.equal(got.name, 'שירים');
+  assert.ok(keyless >= 1, 'the keyless door was never tried');
+});

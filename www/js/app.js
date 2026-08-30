@@ -38,7 +38,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
   pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
-  isCustomFolder, planFolderDeletion, planDriveFolderImport, driveFolderOutcome,
+  isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
 import { makePager } from './ui/pager.js';
 import { attachSwipePager } from './ui/swipe.js';
@@ -4420,40 +4420,51 @@ async function deleteCustomFolderFlow(cf) {
  * listing is reported, NEVER treated as an empty folder — that mistake is what deleted
  * families' libraries in the sheet era (interpretSheetResponse doctrine).
  */
-async function importDriveFolder(scope, driveFolderId, { folder = null, first = true } = {}) {
-  const { fetchDriveFolder } = await import('./gdrivepub.js');
+async function importDriveFolder(scope, driveFolderId, { folder = null, first = true, onNote = null } = {}) {
+  const { fetchDriveFolderTree } = await import('./gdrivepub.js');
   const cls = await import('./classify.js');
-  const listing = await fetchDriveFolder(driveFolderId);
-  if (!listing.ok) return { ok: false, message: driveFolderOutcome({ ok: false }), added: 0 };
+  const tree = await fetchDriveFolderTree(driveFolderId, {
+    onProgress: (done, seen) => { if (onNote) try { onNote(done, seen); } catch {} }
+  });
+  if (!tree.ok) return { ok: false, message: driveFolderOutcome({ ok: false }), added: 0 };
 
   const index = await db.loadMergeIndex(scope);
   const denySet = await db.loadDenySet(scope);
-  const plan = planDriveFolderImport({
-    files: listing.files,
+  const existingFolders = await db.listCustomFolders(scope);
+  const plan = planDriveTreeImport({
+    folders: tree.folders,
+    existingFolders,
     existingKeys: new Set(index.keys()),
     denyKeys: denySet,
+    rootId: driveFolderId,
     // the icon URL gives a real mimeType keylessly; the filename is the fallback
     mediaKindOf: (f) => cls.mediaKindFromMime(f.mimeType) || cls.mediaKindFromName(f.name)
   });
 
-  let target = folder;
-  if (!target) {
-    // Name the folder after the Drive folder. An unnamed listing (a shape change) still
-    // gets a usable title rather than an empty tile.
-    const now = Date.now();
-    const title = normalizeFolderTitle(listing.name || '') || 'תיקיה מדרייב';
-    target = {
-      scopeId: scope, folderId: customFolderId(now), title, emoji: '📂',
-      artThumbId: null, artSrcUrl: null, driveFolderId,
-      order: now, createdAt: now
-    };
-    await db.putCustomFolder(target);
-  }
-
-  if (plan.add.length) {
-    const { sortKeyFor } = await import('./order.js');
-    const now = Date.now();
-    const recs = plan.add.map((f, i) => ({
+  const { sortKeyFor } = await import('./order.js');
+  const now = Date.now();
+  let rootFolderId = folder ? folder.folderId : null;
+  let step = 0;
+  for (const node of plan.folders) {
+    // The row the parent's ADD created (if any) is the root's row — reuse it rather than
+    // minting a second folder for the same Drive id.
+    let target = node.existing || (node.isRoot ? folder : null);
+    if (!target) {
+      const order = now + (step += 1);
+      target = {
+        scopeId: scope, folderId: customFolderId(order), title: node.title, emoji: '📂',
+        artThumbId: null, artSrcUrl: null, driveFolderId: node.driveFolderId,
+        // v1.0.58 — a DESCENDANT names the root it came from. The refresh walks ROOTS only:
+        // the root's own walk re-lists this folder anyway, so without this marker a tree of
+        // 33 folders would re-list itself 33 times over, every half hour.
+        driveRootId: node.isRoot ? null : driveFolderId,
+        order, createdAt: order
+      };
+      await db.putCustomFolder(target);
+    }
+    if (node.isRoot) rootFolderId = target.folderId;
+    if (!node.add.length) continue;
+    const recs = node.add.map((f, i) => ({
       scopeId: scope, key: 'file:drive:' + f.driveId, type: 'file', id: null,
       url: `https://drive.google.com/uc?export=download&id=${f.driveId}`,
       srcUrl: `https://drive.google.com/file/d/${f.driveId}/view`,
@@ -4469,11 +4480,24 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
       thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
     }));
     await db.putVideos(recs);
+    // stamp EVERY folder we just refilled, not only the root: each one carries its own
+    // driveFolderId, and the stamp is what the throttle reads
+    await db.putCustomFolder({ ...target, driveSyncedAt: Date.now() });
   }
-  await db.putCustomFolder({ ...target, driveSyncedAt: Date.now() });
+  // the root is stamped even when nothing landed in it — it is the anchor the refresh walks
+  const rootRow = plan.folders.find((n) => n.isRoot);
+  if (rootRow) {
+    const row = rootRow.existing || (folder && folder.driveFolderId === driveFolderId ? folder : null)
+      || (await db.listCustomFolders(scope)).find((f) => f.driveFolderId === driveFolderId);
+    if (row) await db.putCustomFolder({ ...row, driveSyncedAt: Date.now() });
+  }
   return {
-    ok: true, added: plan.add.length, folderId: target.folderId,
-    message: driveFolderOutcome({ ok: true, added: plan.add.length, skipped: plan.skipped, first })
+    ok: true, added: plan.added, folderId: rootFolderId,
+    message: driveFolderOutcome({
+      ok: true, added: plan.added, skipped: plan.skipped, first,
+      folders: plan.folders.filter((n) => !n.isRoot || n.add.length).length,
+      truncated: tree.truncated, partial: tree.partial
+    })
   };
 }
 
@@ -4490,7 +4514,15 @@ async function refreshDriveFolders(scope) {
   if (!scope) return 0;
   let added = 0;
   try {
-    const rows = (await db.listCustomFolders(scope)).filter((f) => f && f.driveFolderId);
+    // v1.0.58 — ROOTS ONLY. Every folder of an imported TREE carries its own
+    // driveFolderId (that is what makes each one refill itself), but the root's walk
+    // already re-lists the whole tree — so refreshing the descendants too would list a
+    // 33-folder tree 33 times over, every half hour, on a family's mobile data. A row
+    // whose root row is GONE (the parent deleted it) refreshes itself again, or the
+    // parent's remaining folders would quietly stop updating.
+    const all = await db.listCustomFolders(scope);
+    const roots = new Set(all.map((f) => f && f.driveFolderId).filter(Boolean));
+    const rows = all.filter((f) => f && f.driveFolderId && !(f.driveRootId && roots.has(f.driveRootId)));
     for (const f of rows) {
       if (f.driveSyncedAt && Date.now() - f.driveSyncedAt < DRIVE_FOLDER_REFRESH_MS) continue;
       const res = await importDriveFolder(scope, f.driveFolderId, { folder: f, first: false });
