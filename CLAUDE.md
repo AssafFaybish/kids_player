@@ -273,6 +273,59 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.57 — **A PAGE OF TILES TURNS WITH A FINGER** (user request: keep the blue arrows,
+  and also swipe left/right on the app screen).
+  - **THE ARROWS STAY, and that is not politeness**: a TV remote produces NO pointer
+    events at all, so they are the only pager on Android TV — and they are what tells a
+    child another page exists. The flick is added beside them, never instead.
+  - **RTL: A SWIPE TO THE RIGHT IS THE *NEXT* PAGE.** The pager puts `prev` first in the
+    DOM and `dir="rtl"` mirrors the row, so the ◀ "next" button sits on the LEFT: the next
+    page lives there, and the finger drags the current page rightwards to bring it in — a
+    Hebrew book, and Android's own RTL ViewPager. Backwards is invisible to every other
+    test (the app would page fine and feel wrong), so the direction itself is pinned.
+  - **ONE PURE DECISION** (`plan.swipePageAction`, node-tested; a second copy anywhere is
+    invariant-banned) with four refusals: the whole TAP band (every tile is a `<button>`
+    and `SWIPE_MIN_PX` must clear `TAP_SLOP_PX` by a wide margin), a vertical scroll that
+    drifts sideways (the v1.0.52 collision from the other side), a finger that was parked
+    on the screen, and **the first/last page, which absorb the gesture silently** — the
+    arrows are `disabled` there and a page that "flips" to itself reads as broken.
+  - **THE HOSTS ARE `touch-action: pan-y`, NEVER `none` AND NEVER LEFT AT `auto`.** With
+    `auto` the browser claims a slightly-diagonal flick as a scroll and cancels it, so the
+    feature would work only for a perfectly straight finger; with `none` the page could not
+    scroll from the grid at all — the exact v1.0.50/51 bug on a new surface.
+  - **THE WATCH VIEW BINDS ITS GRID ALONE**, never the view: the player owns centre-tap
+    pause and double-tap seek, and a page turn must not become a fourth meaning for a
+    finger crossing it. Verified: a swipe over the shield leaves the grid's page alone.
+  - **A CAPTURE-PHASE CLICK SWALLOW** — the flick ENDS on a tile, so without it turning the
+    page also opens that video (guaranteed with a mouse, WebView-dependent on touch). It is
+    a DEADLINE, not a flag: a gesture that produces no click must not leave a live trap that
+    eats the child's next real tap (proven both ways in the browser).
+  - ⚠️ **TWO DEFECTS THE BROWSER CAUGHT AND THE GREEN SUITE COULD NOT**, both the kind that
+    makes an app feel broken rather than wrong:
+    1. **THE TIME CEILING REFUSED REAL SWIPES.** It started at 900ms as a "flick" test.
+       The app flips on RELEASE and cannot track a drag live, so DISTANCE is the whole
+       intent test — and a 5-year-old drags slowly and means it. Now 2500ms, documented as
+       a sanity ceiling (a parked finger that wanders off a tile), not a flick detector.
+    2. **A LOST GESTURE END ATE THE NEXT SWIPE.** `pointerdown` dropped the gesture whenever
+       a start was still standing — written for a second finger, and in practice it
+       swallowed every other swipe once an end went missing. Ends go missing for ordinary
+       reasons: the grid re-renders under the finger (a sync landing, a Drive pull applying)
+       so the pointerup fires on a detached node and never reaches the host, or an incoming
+       call backgrounds the app mid-touch. `pointerdown` now always starts fresh, and
+       multi-touch is refused by the pointerId check on the RELEASE, where it cannot poison
+       the gesture that follows.
+  - ⚠️ **TOOLING LESSON**: in a HIDDEN Browser pane `setTimeout` is throttled ~6× (a 150ms
+    sleep measured as 937ms), which is what made defect 1 visible. Any gesture timing read
+    in that pane is wall-clock inflated — measure `dt` inside the handler, never assume the
+    sleep you asked for. And `git restore` during the plant cycle destroyed both fixes
+    because they were UNCOMMITTED (the v1.0.56 lesson, paid twice): commit BEFORE planting.
+  - 6 unit tests + 1 invariants test (7 wiring halves), every guard proven red on a planted
+    regression (12). Browser-verified end to end on all three grids: both directions, the
+    bounds absorbed, a vertical scroll and a tap-sized move ignored, the click swallow both
+    ways, the player isolated, and a swipe right after an ABANDONED gesture still working.
+    Real gesture ARBITRATION (does `pan-y` actually scroll under a finger) stays a device
+    checklist item — no synthetic pointer event can prove it.
+
 - v1.0.56 — **THE PARENT CAN LOCK THE CHILD INTO THE APP, OR INTO ONE FOLDER** (user
   request: a padlock beside the home button; code to lock, code to unlock; and a timer
   whose last value is remembered).
