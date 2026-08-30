@@ -273,6 +273,68 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.57 — **🕒 "נצפה לאחרונה": THE LAST X VIDEOS THIS CHILD WATCHED** (user request: a
+  folder for quick access back to what they were watching, IN ADDITION to where the video
+  really lives, newest first, and the parent picks X in the settings — default 10).
+  - **THE THIRD DERIVED FOLDER**, built exactly like ⭐ (v1.0.40): no record carries
+    `folderId:'recent'`, so it is resolved from the profile's own state map — no new store,
+    no new index, **no `DB_VERSION` bump**. `playedAt` rides the `profileVideoState` row that
+    already carries the gift rank, the unwrap, the resume position and the ⭐.
+  - **THE NUMBER SYNCS, THE STAMPS DO NOT** (user decision 2026-08-30). `recentLimit` is a
+    parenting choice and travels; `playedAt` is about the tablet in the child's hands, so
+    `drive.serializeStateEntry` never emits it and **`mergeAppliedState` PRESERVES the local
+    one** — that second half is load-bearing: the fold REPLACES the row, so without it every
+    pull emptied 🕒 for any video the other device had touched. The resume position's rule,
+    replayed, and both halves are behaviour-tested.
+  - **WATCHED = 10 SECONDS OF PLAYBACK POSITION, or a video that ENDED.** Position, not
+    elapsed wall-clock: it survives a pause, ignores a video sitting still on screen, and a
+    resumed video is already past it (which is right — they are watching it again). The
+    'ended' path is `force`d because a 6-second clip can never reach the threshold and the
+    player is already torn down there. Stamped ONCE per opening: the tick fires every few
+    seconds and **every write bumps `db.dataVersion()`**, which the home's folder cache keys
+    off — re-stamping would rebuild the home every 5 seconds for the whole video.
+  - **NEWEST FIRST — THE OPPOSITE OF ⭐, AND EACH ORDER FORBIDS THE OTHER.** ⭐ appends
+    because a pre-reader navigates by POSITION; 🕒's whole promise is "what I was just
+    watching is at the front". The cost is real: **THE FOLDER REORDERS ITSELF AFTER EVERY
+    VIDEO**, which is why the watch screen FREEZES a snapshot on entry (`watchCtx.recent`)
+    and carries it across video→video switches. A live re-read makes the chain rock: enter
+    at [A,B,C], watch B → B moves to the front → "next after B" is A → watch A → "next after
+    A" is B, forever. Measured in the browser: the under-player grid kept [3,2,1] while the
+    live order had already become [2,3,1].
+  - **`recentLimit` IS PART OF THE FOLDER-CACHE KEY**, for the same reason `profileId` is: it
+    is a SETTING, so it lives in Preferences and changing it does NOT move
+    `db.dataVersion()`. Without it the parent sets 🕒 to 0 and the child's home keeps the
+    folder until some unrelated write happens to bump the counter. The cache key must name
+    everything the derivation reads.
+  - **ITS MEMBERS ARE PROTECTED FROM THE ROLLING WINDOW** (user decision) — for the active
+    child AND every sibling reading a shared library, each with their OWN limit (the keys are
+    computed at the call site for exactly that reason; unioning "every video ever watched"
+    would gut the window). This also repairs v1.0.39's documented weakness: `posSec` is
+    CLEARED by a video watched to the END, so the most-rewatched video — the one that whole
+    rationale is about — carried no signal at all. A watch stamp does.
+  - ⚠️ **TWO ADJACENT DEFECTS, BOTH THE SAME CLASS: a row shared by four features, rebuilt by
+    a writer that knew about two.**
+    1. **`db.clearPlayPosition` ATE ⭐.** It deleted the row whenever it carried no `giftRank`
+       and no `unwrappedAt` — written in v1.0.32, before favourites existed, and never
+       revisited when v1.0.40 put `favAt`/`favOffAt` on the same row. So a starred,
+       never-gifted video watched to the END with resume on lost its star **silently**, and
+       wrote no `favOffAt` either, so a peer's copy could later re-star it. The predicate is
+       now pure, shared and names every field: `normalize.stateRowIsSpent`. The next feature
+       to share this row extends THAT function.
+    2. **THE SNAPSHOT IMPORT BLIND-PUT A TWO-FIELD RECORD OVER THE LIVE ROW**, erasing the
+       child's ⭐, their resume position and their 🕒 for every video the file mentioned —
+       the bug `drive.mergeAppliedState` exists to prevent on the sync path, on the path
+       nobody had looked at. It folds onto the existing row now. The device-local fields are
+       deliberately NOT taken from the file (the same rule the Drive doc follows).
+  - ⚠️ **DEFAULT ON AT 10 — this arrives with the update for every existing family** (the
+    `SCREEN_OFF_DEFAULT_MIN` precedent) and MUST ride the release notes.
+  - 10 unit tests + 1 invariants test (7 wiring halves), every guard proven red on a planted
+    regression (11). Browser-verified end to end through the real player and the real PIN
+    gate: the stamp landing from both paths, the tile appearing after 🎁 and hidden at zero,
+    the newest-first order, the frozen snapshot while the live order moved, 10 → 2 shrinking
+    the folder on the child's home (which is the cache-key fix), 0 removing it, and a ⭐
+    SURVIVING a video watched to the end with resume on.
+
 - v1.0.56 — **THE PARENT CAN LOCK THE CHILD INTO THE APP, OR INTO ONE FOLDER** (user
   request: a padlock beside the home button; code to lock, code to unlock; and a timer
   whose last value is remembered).
