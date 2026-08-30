@@ -2128,3 +2128,93 @@ export function planFolderDeletion({ title = '', count = 0, mode = 'move' } = {}
   return { needsChoice: true, mode: 'move', moves: n, deletes: 0,
     text: `למחוק את התיקיה "${name}"? ${what} ל"סרטונים נוספים" — שום סרטון לא יימחק.` };
 }
+
+/* ---------------- Drive folders (v1.0.56) ----------------
+   A subscribed Drive folder is just a CUSTOM FOLDER that knows how to refill itself: the
+   folder row carries `driveFolderId`, and its files are ordinary video records filed under
+   its own `cf:<id>`. That reuse is the whole design — paging, parking, search, deletion,
+   the watch-grid chain and the Drive sync all already work on those. */
+
+/**
+ * PURE: compare two filenames the way a human reads a numbered album — "פרק 2" before
+ * "פרק 10". A plain string sort puts 10 before 2, which for a folder of numbered songs
+ * means the child gets them in the wrong order, every time.
+ */
+export function naturalCompare(a, b) {
+  const sa = String(a ?? '');
+  const sb = String(b ?? '');
+  const re = /(\d+)|(\D+)/g;
+  const pa = sa.match(re) || [];
+  const pb = sb.match(re) || [];
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const x = pa[i];
+    const y = pb[i];
+    const nx = /^\d/.test(x);
+    const ny = /^\d/.test(y);
+    if (nx && ny) {
+      const d = Number(x) - Number(y);
+      if (d) return d;
+    } else {
+      const d = x.localeCompare(y, 'he');
+      if (d) return d;
+    }
+  }
+  return pa.length - pb.length;
+}
+
+/**
+ * PURE: which files of a listed Drive folder become records, and in what order.
+ *
+ * ADDITIVE ONLY (user decision 2026-08-29): a file that vanished from Drive is NOT deleted
+ * here — a failed listing that reads as "the folder is empty" is exactly the shape that
+ * deleted families' libraries in the sheet era, and the parent can always delete in-app.
+ * Non-media (a PDF, a subfolder) is filtered; a file already in the library, or one whose
+ * key carries an active deny tombstone, is skipped.
+ *
+ * -> { add: [{driveId,name,media}], skipped: {existing,denied,nonMedia} }
+ */
+export function planDriveFolderImport({ files = [], existingKeys = null, denyKeys = null,
+  mediaKindOf = null } = {}) {
+  const have = existingKeys instanceof Set ? existingKeys : new Set(existingKeys || []);
+  const denied = denyKeys instanceof Set ? denyKeys : new Set(denyKeys || []);
+  const kindOf = typeof mediaKindOf === 'function' ? mediaKindOf : () => null;
+  const add = [];
+  const skipped = { existing: 0, denied: 0, nonMedia: 0 };
+  const rows = [...(files || [])].filter((f) => f && typeof f.id === 'string' && f.id);
+  rows.sort((a, b) => naturalCompare(a.name, b.name));
+  for (const f of rows) {
+    const media = kindOf(f);
+    if (media !== 'audio' && media !== 'video') { skipped.nonMedia += 1; continue; }
+    const key = 'file:drive:' + f.id;
+    if (have.has(key)) { skipped.existing += 1; continue; }
+    if (denied.has(key)) { skipped.denied += 1; continue; }
+    add.push({ driveId: f.id, name: String(f.name || ''), media });
+  }
+  return { add, skipped };
+}
+
+/**
+ * PURE: what the parent is told after a Drive folder is added or refreshed. A ZERO names
+ * its own cause — the v1.0.37 rule: "nothing arrived" and "nothing NEW arrived" and "we
+ * could not read the folder" are three different facts, and only one of them is a problem
+ * the parent can fix (sharing).
+ */
+export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first = true } = {}) {
+  const s = skipped || {};
+  if (!ok) {
+    return 'לא הצלחנו לקרוא את התיקיה מדרייב. ודאו שהיא משותפת "לכל מי שיש לו הקישור"';
+  }
+  if (added > 0) {
+    const what = added === 1 ? 'קובץ אחד' : `${added} קבצים`;
+    return first ? `התיקיה נוספה! ${what} מוכנים` : `נוספו ${what} חדשים`;
+  }
+  if (s.nonMedia && !s.existing && !s.denied) {
+    return 'לא נמצאו בתיקיה קבצי שמע או וידאו (קבצים אחרים לא נתמכים)';
+  }
+  if (s.denied) {
+    const n = s.denied === 1 ? 'קובץ אחד' : `${s.denied} קבצים`;
+    return `לא נוסף כלום — ${n} בתיקיה הוסרו כאן בעבר`;
+  }
+  if (s.existing) return 'אין קבצים חדשים בתיקיה';
+  return 'התיקיה ריקה';
+}

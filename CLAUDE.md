@@ -273,6 +273,51 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.56 — **A WHOLE DRIVE FOLDER IS A SELF-REFILLING FOLDER** (user request: paste a link
+  to a shared Drive folder and its files arrive as a folder named after it; files added
+  there later flow in on their own).
+  - **IT IS A CUSTOM FOLDER THAT KNOWS HOW TO REFILL ITSELF** (`driveFolderId` on the row).
+    No new folder kind, no new store, no new prefix — paging, parking, search, the
+    watch-grid chain, deletion-with-tombstones and the Drive sync all keep working
+    untouched. An invariant pins that `pageAnyFolder` never grew a Drive branch.
+  - **ADDITIVE ONLY** (user decision 2026-08-29): a file the parent removes in DRIVE is
+    never removed from the child's library — only an explicit in-app deletion does that.
+    An unreadable listing **ABORTS and says so**; treating it as an empty folder is the
+    exact shape that deleted families' libraries in the sheet era. Guard-pinned: the
+    importer may not call ANY delete.
+  - ⚠️ **THE KEYLESS DOOR IS THE LOAD-BEARING ONE, and that is a MEASUREMENT.** Both
+    `files.list` and `files.get` answer `403 API_KEY_SERVICE_BLOCKED` with the shipped key,
+    because it is restricted to YouTube — `reason: API_KEY_SERVICE_BLOCKED` says this is
+    the KEY's own restriction (operator-fixable, GOOGLE_CLOUD_SETUP שלב 5), not a
+    Google-wide block. So `embeddedfolderview` is what works today, and one refusal sets a
+    SESSION memo (`noteDriveKeyRefused`) so later folders skip the dead keyed attempt
+    instead of walking the whole transport ladder again — found by watching a real add
+    crawl in the browser, not by reasoning.
+  - **THE PUBLIC PAGE GIVES MORE THAN EXPECTED**: its `<title>` IS the folder's own name
+    (the tile has no other keyless source for it), and each row's icon URL carries the real
+    `mimeType`, so audio-vs-video needs no filename guessing. **Parsed PER ENTRY BLOCK** —
+    zipping three global matches shifts every later name onto the wrong file the moment one
+    entry lacks a title (proven with a planted regression). An EMPTY folder and an
+    UNREADABLE page are told apart by the container class the real page always carries;
+    note `"flip-entries"` does NOT contain `"flip-entry"`, which is what made the first
+    version of that check answer null for an empty folder.
+  - **Natural name order** (`plan.naturalCompare`), so a numbered album plays 1, 2, 10 —
+    never 1, 10, 2. Subfolders and non-media are filtered.
+  - **A ZERO NAMES ITS CAUSE** (the v1.0.37 rule): "no media here", "these were removed
+    here before", "nothing new", "the folder is empty" and "we could not read it — check
+    the sharing" are five different facts and five different sentences, test-pinned distinct.
+  - `classifySourceRow` learns `kind:'drivefolder'`; a folder link can NEVER reach
+    `classifyLink` — file and folder ids are identical and only the URL shape separates
+    them. The old test that pinned a folder link as `'invalid'` was pinning the missing
+    feature (the v1.0.26 playlist lesson) and was updated deliberately.
+  - Two count-pins raised with their reasons: `refreshAfterAdd` 8→9 (a new add path) and
+    `entryRefresh`'s shared render 2→3 (a third branch that writes records).
+  - 5 unit tests + 1 invariants test, every guard proven red on a planted regression (4).
+    Browser-verified against a REAL public Drive folder (listing, name, MIME types, and the
+    honest "no media" outcome for its PDFs) and, through the same real importer with a
+    served listing, the media half: natural order, correct kinds, then a refresh that took
+    a NEW file while two files deleted in Drive correctly SURVIVED.
+
 - v1.0.56 — **THE PARENT CAN MAKE FOLDERS** (user request: until now every single video
   landed in the one fixed "סרטונים נוספים" list; now each manual add ASKS where it goes,
   and a folder can be created on the spot).

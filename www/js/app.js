@@ -37,7 +37,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
   pruneConfirmText, favActive, favouriteKeys,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
-  isCustomFolder, planFolderDeletion } from './plan.js';
+  isCustomFolder, planFolderDeletion, planDriveFolderImport, driveFolderOutcome } from './plan.js';
 import { makePager } from './ui/pager.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
@@ -691,6 +691,15 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
   // pullThenSync reason: all three write the same records, and a detached .then() here would
   // be the v1.0.25 race re-introduced. Silent and best-effort — it covers EVERY profile, not
   // just this one, so a child nobody opens on this device is not left behind.
+  if (activeProfileId !== id) return;
+  // v1.0.56 — Drive-backed folders pick up files the parent added there since. Before the
+  // library sync and AWAITED, for the same reason the sunset was: it writes video records
+  // that the sync then enriches and gifts, and a detached .then() here is the v1.0.25 race.
+  // Silent and self-throttled; a failed listing changes nothing.
+  if (await refreshDriveFolders(libScope)) {
+    if (activeProfileId !== id) return;
+    await renderAfterRemoteChange();
+  }
   if (activeProfileId !== id) return;
   if (!forceSync && !(await shouldSync(id))) return;
   await syncLibrary(id, { force: forceSync, onProgress: (p) => loading.progress(p) });
@@ -3894,6 +3903,97 @@ async function deleteCustomFolderFlow(cf) {
   toast('התיקיה נמחקה');
 }
 
+/**
+ * v1.0.56 — import a public Drive FOLDER as a self-refilling custom folder.
+ *
+ * `first` distinguishes the parent's add (creates the folder row, names it after the Drive
+ * folder) from the periodic refresh (adds only what is new). Shared by both so the two can
+ * never drift — the importChannelAndAsk lesson.
+ *
+ * ADDITIVE ONLY: a file that vanished from Drive is never deleted here. An unreadable
+ * listing is reported, NEVER treated as an empty folder — that mistake is what deleted
+ * families' libraries in the sheet era (interpretSheetResponse doctrine).
+ */
+async function importDriveFolder(scope, driveFolderId, { folder = null, first = true } = {}) {
+  const { fetchDriveFolder } = await import('./gdrivepub.js');
+  const cls = await import('./classify.js');
+  const listing = await fetchDriveFolder(driveFolderId);
+  if (!listing.ok) return { ok: false, message: driveFolderOutcome({ ok: false }), added: 0 };
+
+  const index = await db.loadMergeIndex(scope);
+  const denySet = await db.loadDenySet(scope);
+  const plan = planDriveFolderImport({
+    files: listing.files,
+    existingKeys: new Set(index.keys()),
+    denyKeys: denySet,
+    // the icon URL gives a real mimeType keylessly; the filename is the fallback
+    mediaKindOf: (f) => cls.mediaKindFromMime(f.mimeType) || cls.mediaKindFromName(f.name)
+  });
+
+  let target = folder;
+  if (!target) {
+    // Name the folder after the Drive folder. An unnamed listing (a shape change) still
+    // gets a usable title rather than an empty tile.
+    const now = Date.now();
+    const title = normalizeFolderTitle(listing.name || '') || 'תיקיה מדרייב';
+    target = {
+      scopeId: scope, folderId: customFolderId(now), title, emoji: '📂',
+      artThumbId: null, artSrcUrl: null, driveFolderId,
+      order: now, createdAt: now
+    };
+    await db.putCustomFolder(target);
+  }
+
+  if (plan.add.length) {
+    const { sortKeyFor } = await import('./order.js');
+    const now = Date.now();
+    const recs = plan.add.map((f, i) => ({
+      scopeId: scope, key: 'file:drive:' + f.driveId, type: 'file', id: null,
+      url: `https://drive.google.com/uc?export=download&id=${f.driveId}`,
+      srcUrl: `https://drive.google.com/file/d/${f.driveId}/view`,
+      driveId: f.driveId, media: f.media,
+      title: cls.titleFromFileName(f.name),
+      titleSource: 'sheet', normTitle: normalizeTitle(cls.titleFromFileName(f.name)),
+      folderId: target.folderId, channelId: null,
+      // `i` keeps the folder's NATURAL name order (planDriveFolderImport sorted them):
+      // sortKey renders DESC, so the later index must be the smaller key
+      sortKey: sortKeyFor({ origin: 'manual', addedAt: now }) - i,
+      publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
+      addedAt: now, approvedAt: now,
+      thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
+    }));
+    await db.putVideos(recs);
+  }
+  await db.putCustomFolder({ ...target, driveSyncedAt: Date.now() });
+  return {
+    ok: true, added: plan.add.length, folderId: target.folderId,
+    message: driveFolderOutcome({ ok: true, added: plan.add.length, skipped: plan.skipped, first })
+  };
+}
+
+/**
+ * v1.0.56 — the SUBSCRIPTION half: re-list every Drive-backed folder and pick up files the
+ * parent has since added there (the user's decision: additive, never a mirror).
+ *
+ * It lives in app.js rather than sync2 deliberately — it is not a YouTube stage, it must
+ * not join the quota/backfill machinery, and it is bounded by its own throttle. Silent and
+ * best-effort: a failed listing leaves everything exactly as it was.
+ */
+const DRIVE_FOLDER_REFRESH_MS = 30 * 60 * 1000;
+async function refreshDriveFolders(scope) {
+  if (!scope) return 0;
+  let added = 0;
+  try {
+    const rows = (await db.listCustomFolders(scope)).filter((f) => f && f.driveFolderId);
+    for (const f of rows) {
+      if (f.driveSyncedAt && Date.now() - f.driveSyncedAt < DRIVE_FOLDER_REFRESH_MS) continue;
+      const res = await importDriveFolder(scope, f.driveFolderId, { folder: f, first: false });
+      if (res.ok) added += res.added;
+    }
+  } catch { /* housekeeping must never take the entry refresh down with it */ }
+  return added;
+}
+
 /** Move ONE existing video into a folder — the door for anything that did not arrive
  *  through the add form (a share from YouTube, a links-file import, an old library). */
 async function moveVideoToFolder(rec) {
@@ -5064,6 +5164,24 @@ async function addClassifiedRow(row, { title = '', onNote = () => {}, askFolder 
     return { status: 'added', message: 'נוסף! ✅' };
   }
 
+  // v1.0.56 — A WHOLE DRIVE FOLDER. It becomes a CUSTOM FOLDER that knows how to refill
+  // itself (`driveFolderId` on the row): everything PR-B built — the tile, paging, the
+  // watch-grid chain, search, deletion with tombstones, the Drive sync — applies unchanged.
+  if (row && row.kind === 'drivefolder') {
+    const scope = (await ensureSources()).libraryId;
+    const existing = (await db.listCustomFolders(scope))
+      .find((f) => f.driveFolderId === row.driveFolderId);
+    if (existing) return { status: 'exists', message: 'התיקיה הזו כבר נוספה' };
+    const res = await withChannelWait('resolve', {}, () => importDriveFolder(scope, row.driveFolderId));
+    if (!res.ok) return { status: 'error', message: res.message };
+    await refreshFoldersList();
+    refreshAfterAdd({ parent: true });
+    await refreshParentList();
+    renderHome();
+    maybeSchedulePush();
+    return { status: 'added', message: res.message };
+  }
+
   if (row && row.kind === 'channel') {
     onNote('מזהה את הערוץ…');
     // v1.0.26: a @handle resolve is a real network step (up to a 1.5MB page scrape when
@@ -5117,7 +5235,7 @@ async function addClassifiedRow(row, { title = '', onNote = () => {}, askFolder 
     return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
   }
 
-  return { status: 'unsupported', message: 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ וידאו/שמע — למשל mp4 או mp3)' };
+  return { status: 'unsupported', message: 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, קובץ וידאו/שמע, או תיקיה בגוגל דרייב)' };
 }
 
 /** Add a single video (live immediately — the parent is right here) or a whole channel. */
