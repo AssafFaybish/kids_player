@@ -273,6 +273,15 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+> ⚠️ **VERSION NOTE (2026-08-30): 1.0.61 WAS NEVER CUT.** The three v1.0.61 trains (the
+> channel-sync dialog, re-adding removed content, nested Drive folders) and the v1.0.62
+> swipe feedback were merged together, so ONE release carries all four: 1.0.60 → **1.0.62**.
+> The number was skipped deliberately rather than repeating the v1.0.57 mistake in reverse —
+> this way no label in the code names a version that has not shipped, which is the direction
+> that cannot mislead. A skipped number costs nothing: `update.parseVersion` compares three
+> components, so 1.0.60 → 1.0.62 is an ordinary upgrade, and the what's-new screen simply
+> has no 1.0.61 to show.
+
 - v1.0.62 — **THE PAGE FOLLOWS THE FINGER, AND THE NEXT PAGE COMES IN WITH IT** (user
   request: "משוב, על ידי הזזת הדף ביחס להזזת האצבע, למשתמש לדעת שהוא מזיז את הדף לדף הבא").
   v1.0.57 turned pages on RELEASE with nothing visible until it happened — the child had to
