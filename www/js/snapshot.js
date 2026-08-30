@@ -27,7 +27,10 @@ import {
   loadDenyRecords, tx, profScope, putVideoStates
 } from './db.js';
 
-const LOCALPATH_RE = /^videos\/[A-Za-z0-9_-]{1,90}\.mp4$/;
+// v1.0.56 — audio joined the cache (media.cacheExtFor), so the accepted extensions widen
+// in lockstep. Still an ANCHORED whitelist of shapes we write ourselves: an imported path
+// must never point the player outside the cache directory (traversal/exe pinned by tests).
+const LOCALPATH_RE = /^videos\/[A-Za-z0-9_-]{1,90}\.(mp4|webm|m4v|mov|ogv|mp3|m4a|aac|wav|ogg|oga|opus|flac)$/;
 
 export async function exportProfileSnapshot(profileId, profileMeta = null) {
   const sources = await getSources(profileId);
@@ -199,6 +202,9 @@ export function sanitizeSnapshotVideo(v, { validScopes, profileId, now = Date.no
   return {
     scopeId, key: c.key, type: c.type, id: c.id ?? null, url: c.url ?? null,
     srcUrl: c.srcUrl, driveId: c.driveId ?? null,
+    // v1.0.56 — 'audio'|'video' or nothing (untrusted input: anything else reads as
+    // unknown, and the player's runtime detection covers unknown anyway)
+    media: v.media === 'audio' || v.media === 'video' ? v.media : null,
     title,
     titleSource: v.titleSource || null,
     normTitle: normalizeTitle(title), // from the SANITIZED title — `{}` used to normalize

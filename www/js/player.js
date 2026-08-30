@@ -444,6 +444,16 @@ async function playFile(item, host, opts = {}, seq = 0) {
   let torn = false;
   let hud = null;
   let forcedZero = false;
+  // v1.0.56 — AUDIO files (mp3 from Drive, שירי ערש) play through the same <video>
+  // element, which renders as a black rectangle. `.is-audio` on the wrap shows the CSS
+  // music scene (#audio-scene, pointer-events:none — the HUD-container invariant).
+  // Known upfront from the record when metadata was fetched; CORRECTED at loadedmetadata
+  // either way (videoWidth 0 = no video track), so an unenriched Drive mp3 still gets the
+  // scene and a mislabeled video never hides its picture. cleanup() always clears it —
+  // the YouTube engine and the next file must never inherit the scene.
+  const wrap = $id('player-wrap');
+  const setAudioScene = (on) => { if (wrap) wrap.classList.toggle('is-audio', !!on); };
+  setAudioScene(item.media === 'audio');
   const ctl = {
     getTime: () => video.currentTime || 0,
     getDuration: () => video.duration || 0,
@@ -457,6 +467,7 @@ async function playFile(item, host, opts = {}, seq = 0) {
   const cleanup = () => {
     if (torn) return;
     torn = true;
+    setAudioScene(false);
     if (hud) hud.teardown();
     video.removeEventListener('timeupdate', onTime);
     video.removeEventListener('loadedmetadata', onTime);
@@ -477,6 +488,8 @@ async function playFile(item, host, opts = {}, seq = 0) {
   // F3 + v1.0.32: the start is OUR decision (the resume offset, usually 0) — a
   // media-fragment (#t=30) that survived somewhere WILL seek, so force ours once.
   video.addEventListener('loadedmetadata', () => {
+    // the runtime truth about the media kind — corrects a missing/wrong `media` field
+    setAudioScene(!(video.videoWidth > 0));
     const want = startFrom(opts);
     if (!forcedZero && Math.abs((video.currentTime || 0) - want) > 0.5) {
       try { video.currentTime = want; } catch {}

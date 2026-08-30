@@ -6,9 +6,24 @@ import { loadItems, saveItems, setItemLocalPath } from './store.js';
 
 const CACHE_DIR = 'videos';
 
+/**
+ * v1.0.56 — the cached file's extension, now that audio exists. Android's media stack
+ * guesses the MIME from the extension of a file:// src, so a `.mp4` suffix on an mp3
+ * (the old hardcode) is a decode gamble. PURE + exported for tests. Precedence:
+ * the source URL's own real extension (direct files carry one) → the media kind
+ * (Drive files have no extension anywhere) → the legacy `.mp4`.
+ * Existing caches are untouched: records that already hold a localPath keep playing it.
+ */
+const CACHE_EXT = /\.(mp4|webm|m4v|mov|ogv|mp3|m4a|aac|wav|ogg|oga|opus|flac)(?:\?|#|$)/i;
+export function cacheExtFor(item) {
+  const m = String((item && item.url) || '').match(CACHE_EXT);
+  if (m) return m[1].toLowerCase();
+  return item && item.media === 'audio' ? 'mp3' : 'mp4';
+}
+
 function cacheName(item) {
   const base = String(item.key || item.url).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 90);
-  return `${CACHE_DIR}/${base}.mp4`;
+  return `${CACHE_DIR}/${base}.${cacheExtFor(item)}`;
 }
 
 // The Drive "download" host with a confirm token bypasses the virus-scan interstitial for large files.
@@ -49,12 +64,16 @@ export async function downloadAndCache(item) {
 }
 
 // Best-effort frame grab for a thumbnail (used when a file has no parent-supplied thumb).
+// v1.0.56 — NO fallback dimensions: an AUDIO file reports videoWidth 0, and the old
+// `|| 320` painted nothing onto a 320×180 canvas and persisted a solid-black JPEG as the
+// tile's PERMANENT thumbnail (persistThumb never retries a record that has one). No
+// video track ⇒ no frame ⇒ null, and the tile keeps its placeholder + 🎵 badge.
 export function captureFrame(video) {
   try {
+    if (!video.videoWidth || !video.videoHeight) return null;
     const c = document.createElement('canvas');
-    c.width = video.videoWidth || 320;
-    c.height = video.videoHeight || 180;
-    if (!c.width || !c.height) return null;
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
     c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
     return c.toDataURL('image/jpeg', 0.7);
   } catch { return null; }

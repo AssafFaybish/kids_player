@@ -108,6 +108,10 @@ export function mergeVideoRecord(a, b) {
   out.normTitle = normalizeTitle(out.title);
   out.thumbId = s.thumbId || l.thumbId || null;
   out.thumbUrl = s.thumbUrl || l.thumbUrl || null;
+  // v1.0.56 — `media` ('audio'|'video') survives whichever copy wins: a peer on an older
+  // app carries none, and `out = {...s}` would strip the enrichment on every merge (the
+  // keepForever lesson). `||` keeps it commutative for the Drive doc.
+  out.media = s.media || l.media || null;
   // v1.0.39 — `keepForever` is GROW-ONLY, like unwrappedAt is min-merged forever: the
   // parent marked this video as one the rolling window may never delete. `out = {...s}`
   // alone would lose it whenever the OTHER copy wins (a peer whose `addedAt` is older

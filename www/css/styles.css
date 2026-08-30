@@ -354,6 +354,27 @@ body {
 /* 10-foot UI: the TV watches fullscreen from across the room */
 html.tv .np-title { font-size: 26px; }
 html.tv .np-channel { font-size: 18px; }
+/* v1.0.56 — the audio scene: an mp3 plays through the same <video>, which paints a black
+   rectangle; this covers it with a calm music picture. pointer-events:none ALWAYS (the
+   same container invariant as .player-hud/.player-topbar — nothing over the video may
+   swallow the tap-shield's taps), z-index 1 so the HUD, the topbar and every overlay
+   (autoplay/idle) stay above it. Shown only via `.is-audio`, which player.js owns. */
+.audio-scene {
+  position: absolute; inset: 0; z-index: 1;
+  display: none; align-items: center; justify-content: center; gap: 14px;
+  background: linear-gradient(160deg, #2b2a55 0%, #40306b 55%, #1f2547 100%);
+  pointer-events: none;
+  overflow: hidden;
+}
+.player-wrap.is-audio .audio-scene { display: flex; }
+.audio-disc { font-size: 84px; animation: audio-bob 3.2s ease-in-out infinite; }
+.audio-note { font-size: 34px; opacity: 0.9; animation: audio-float 4s ease-in-out infinite; }
+.audio-note.n2 { font-size: 26px; animation-delay: 1s; }
+.audio-note.n3 { animation-delay: 2s; }
+.audio-note.n4 { font-size: 26px; animation-delay: 3s; }
+@keyframes audio-bob { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-10px) rotate(3deg); } }
+@keyframes audio-float { 0%, 100% { transform: translateY(8px); opacity: 0.55; } 50% { transform: translateY(-14px); opacity: 1; } }
+
 .player-hud {
   position: absolute; inset-inline: 0; bottom: 0; z-index: 3;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.6)); padding-bottom: 8px;

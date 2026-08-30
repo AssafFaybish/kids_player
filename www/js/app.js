@@ -1042,7 +1042,9 @@ function tileEl(item) {
   if (item.type === 'file') {
     const badge = document.createElement('span');
     badge.className = 'badge';
-    badge.textContent = '🎬';
+    // v1.0.56: an audio file's tile says so — its thumb is the placeholder (no video
+    // track ⇒ no captured frame), and 🎬 on a song reads as a broken video.
+    badge.textContent = item.media === 'audio' ? '🎵' : '🎬';
     thumb.appendChild(badge);
   }
   const play = document.createElement('span');
@@ -4549,15 +4551,36 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     const now = Date.now();
     // v1.0.32: the name/image form is gone (user request) — the name comes from the
     // content itself. YouTube: fetched below, like an empty field always was. A direct
-    // file has no metadata to fetch, so its DISPLAY NAME derives from the filename in
-    // the link (pure classify.titleFromFileUrl; Hebrew percent-encoding included) and
-    // its thumbnail from the captured first frame (persistThumb, since v1.0.5).
+    // file's DISPLAY NAME derives from the filename in the link (pure
+    // classify.titleFromFileUrl; Hebrew percent-encoding included) and its thumbnail
+    // from the captured first frame (persistThumb, since v1.0.5).
+    // v1.0.56 — a DRIVE file's link carries no filename at all (the old fallback stored
+    // the literal path segment "view" as the child's caption), so its metadata is
+    // fetched here, while the parent is standing right there: name + audio-or-video.
+    // Best-effort — and an unreadable answer doubles as the honest signal that the file
+    // is probably NOT shared "anyone with the link", which playback needs anyway, so
+    // the outcome message says that instead of a reassuring ✅.
     const known = String(title || '').trim();
-    const display = known || (row.type === 'file'
-      ? (await import('./classify.js')).titleFromFileUrl(row.srcUrl || row.url) : '');
+    let display = known;
+    let media = row.media ?? null;
+    let driveUnread = false;
+    if (row.type === 'file' && row.driveId) {
+      onNote('קוראים את פרטי הקובץ מדרייב…');
+      const { fetchDriveFileMeta } = await import('./gdrivepub.js');
+      const cls = await import('./classify.js');
+      const meta = await fetchDriveFileMeta(row.driveId);
+      if (meta) {
+        if (!display) display = cls.titleFromFileName(meta.name);
+        media = cls.mediaKindFromMime(meta.mimeType) || cls.mediaKindFromName(meta.name) || media;
+      } else {
+        driveUnread = true;
+      }
+    } else if (!display && row.type === 'file') {
+      display = (await import('./classify.js')).titleFromFileUrl(row.srcUrl || row.url);
+    }
     const rec = {
       scopeId: scope, key: row.key, type: row.type, id: row.id ?? null, url: row.url ?? null,
-      srcUrl: row.srcUrl, driveId: row.driveId ?? null,
+      srcUrl: row.srcUrl, driveId: row.driveId ?? null, media,
       title: display, titleSource: display ? 'sheet' : null, normTitle: normalizeTitle(display),
       folderId: 'sheet', channelId: null,
       sortKey: (await import('./order.js')).sortKeyFor({ origin: 'manual', addedAt: now }),
@@ -4574,6 +4597,12 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     await refreshParentList();
     renderHome();
     maybeSchedulePush();
+    if (driveUnread) {
+      return {
+        status: 'added',
+        message: 'נוסף — אבל לא הצלחנו לקרוא את הקובץ מדרייב. ודאו שהקובץ משותף "לכל מי שיש לו הקישור", אחרת הנגינה תיכשל'
+      };
+    }
     return { status: 'added', message: 'נוסף! ✅' };
   }
 
@@ -4630,7 +4659,7 @@ async function addClassifiedRow(row, { title = '', onNote = () => {} } = {}) {
     return { status: 'added', message: channelAddOutcome(approved, count, empty, picked), subscribed: true };
   }
 
-  return { status: 'unsupported', message: 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ mp4)' };
+  return { status: 'unsupported', message: 'הלינק לא נתמך (סרטון YouTube, ערוץ, רשימת השמעה, או קובץ וידאו/שמע — למשל mp4 או mp3)' };
 }
 
 /** Add a single video (live immediately — the parent is right here) or a whole channel. */
