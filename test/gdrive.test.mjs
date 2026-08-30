@@ -529,6 +529,25 @@ test('applying a remote unwrap PRESERVES the local playback position', () => {
   assert.deepEqual(mergeAppliedState(null, { unwrappedAt: 9 }), { unwrappedAt: 9 });
 });
 
+test('the 🕒 watch stamp is DEVICE-LOCAL, in both directions (v1.0.57)', () => {
+  // The user's decision 2026-08-30: "נצפה לאחרונה" is about the tablet in the child's
+  // hands, like the resume position and unlike ⭐. Two halves, and BOTH are load-bearing.
+  // OUT: it never reaches the document — a stamp per video watched would rewrite the
+  // family doc all afternoon, the exact churn the position is kept out for.
+  assert.equal(serializeStateEntry({ playedAt: 7 }), null);
+  assert.deepEqual(serializeStateEntry({ unwrappedAt: 9, playedAt: 7 }), { unwrappedAt: 9 });
+  assert.deepEqual(serializeStateEntry({ favAt: 4, playedAt: 7 }), { favAt: 4 });
+  // IN: the fold REPLACES the local row, so a field the remote cannot carry is a field the
+  // pull would erase. Without this line every pull emptied 🕒 on the tablet for any video
+  // the phone had touched — silently, and only on the devices that actually sync.
+  assert.deepEqual(
+    mergeAppliedState({ playedAt: 7, posSec: 61 }, { unwrappedAt: 9 }),
+    { unwrappedAt: 9, posSec: 61, playedAt: 7 });
+  assert.equal(mergeAppliedState({ playedAt: 7 }, { favAt: 3 }).playedAt, 7);
+  // a stamp alone still contributes nothing to apply — there is no remote half to fold
+  assert.equal(mergeAppliedState({ playedAt: 7 }, {}), null);
+});
+
 /* ---------------- channel-deletion tombstones (v1.0.36) ---------------- */
 // Deleting a subscription used to be pure row ABSENCE, and a union can only ever ADD —
 // so any peer (or stale doc) still holding the row re-subscribed the family to the

@@ -10,6 +10,10 @@
 //  3. Read functions resolve null/[] for "not found"; they reject only on structural errors.
 //  4. deleteVideo() writes videos+denylist+opLog in ONE transaction — the deletion and
 //     its tombstone are atomic or neither happens.
+//  5. The ONE import below is deliberate and stays that way: `stateRowIsSpent` decides
+//     whether a profileVideoState row may be DELETED, and that decision must be
+//     node-testable (this module is not — there is no IndexedDB in node). normalize.js
+//     sits BELOW db in the layer order and imports nothing, so it cannot become a cycle.
 //
 // SCOPING (decision 20): content is keyed by scopeId, the first component of every key.
 //   'lib:p:<profileId>'   — a profile's own library: everything the parent added for that
@@ -26,6 +30,8 @@
 // ['profileId','giftRank']. IndexedDB omits a record from a compound index when any
 // component is missing — so `delete rec.giftRank` on unwrap removes it from the index
 // automatically. The "חדשים 🎁" folder is a pure range scan, no filtering.
+
+import { stateRowIsSpent } from './normalize.js';
 
 export const DB_NAME = 'kidsplayer';
 export const DB_VERSION = 3;
@@ -506,7 +512,16 @@ export async function savePlayPosition(profileId, key, posSec, durSec) {
   });
 }
 
-/** Clear the position (video finished). A record left with nothing else is deleted. */
+/**
+ * Clear the position (video finished). A record left with nothing else is deleted.
+ *
+ * ⚠️ v1.0.57 — THE "NOTHING ELSE" TEST USED TO EAT ⭐. It was written inline in v1.0.32 as
+ * `giftRank === undefined && !unwrappedAt`, before favourites existed, and v1.0.40 added
+ * `favAt`/`favOffAt` to this very row without revisiting it — so a starred video that was
+ * never a gift, watched to the END with resume on, lost its star silently (and wrote no
+ * `favOffAt`, so a peer could later re-star it). The predicate is now pure and shared:
+ * `normalize.stateRowIsSpent`, which names every field this row can carry.
+ */
 export async function clearPlayPosition(profileId, key) {
   await tx(['profileVideoState'], 'readwrite', (s) => {
     const r = s.get([profileId, key]);
@@ -516,10 +531,40 @@ export async function clearPlayPosition(profileId, key) {
       delete rec.posSec;
       delete rec.durSec;
       delete rec.posAt;
-      if (rec.giftRank === undefined && !rec.unwrappedAt) s.delete([profileId, key]);
+      if (stateRowIsSpent(rec)) s.delete([profileId, key]);
       else s.put(rec);
     };
   });
+}
+
+/**
+ * v1.0.57 — the 🕒 "watched recently" stamp, on the SAME per-profile row as the gift state,
+ * the star and the resume position (no new store, no new index, no DB_VERSION bump — the
+ * ⭐ pattern: the folder is derived from the state map app.loadGiftStates already holds).
+ *
+ * DEVICE-LOCAL by design: `drive.serializeStateEntry` never emits it and the apply side
+ * preserves it, so a pull cannot rewrite what this tablet watched. Read-modify-write for
+ * the reason every writer here does it — a blind put would erase a gift or a star.
+ *
+ * `at = null` clears the stamp (the folder's self-heal, when the video is gone everywhere).
+ */
+export async function setPlayed(profileId, key, at = Date.now()) {
+  if (!profileId || !key) return false;
+  await tx(['profileVideoState'], 'readwrite', (s) => {
+    const r = s.get([profileId, key]);
+    r.onsuccess = () => {
+      const rec = r.result || { profileId, key };
+      if (at === null) {
+        if (!r.result) return;             // nothing to clear
+        delete rec.playedAt;
+        if (stateRowIsSpent(rec)) { s.delete([profileId, key]); return; }
+      } else {
+        rec.playedAt = at;
+      }
+      s.put(rec);
+    };
+  });
+  return true;
 }
 
 /** Remove an orphaned gift/unwrap state row (its video no longer exists anywhere). */

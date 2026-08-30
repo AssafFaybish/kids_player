@@ -1804,3 +1804,104 @@ test('evalScheduledLock: switching the feature OFF beats a leftover lockedUntil'
   assert.equal(evalScheduledLock({ afterMin: 0, lockedUntil: Date.now() + 9e6 }).phase, 'off');
   assert.equal(evalScheduledLock({ afterMin: -5, lockedUntil: Date.now() + 9e6 }).phase, 'off');
 });
+
+/* ---------------- 🕒 נצפה לאחרונה (v1.0.57) ---------------- */
+
+test('recentLimitFor: never-written is the DEFAULT, and only an explicit 0 is off', async () => {
+  const { recentLimitFor } = await import('../www/js/plan.js');
+  const { RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT } = await import('../www/js/config.js');
+  // THE TRAP THIS TEST EXISTS FOR (third feature to hit it — screenOffMinutes,
+  // normalizeLockMinutes): Number(null) === 0, so coercing before the unset check turns
+  // "the parent never opened this screen" into an explicit "off" and eats the default.
+  assert.equal(recentLimitFor(null), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(undefined), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(''), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(0), 0, 'an explicit 0 must stay off');
+  assert.equal(recentLimitFor('0'), 0);
+  assert.equal(recentLimitFor(25), 25);
+  assert.equal(recentLimitFor('7'), 7);
+  assert.equal(recentLimitFor(3.7), 3, 'a fraction floors, never rounds up past the parent\'s number');
+  assert.equal(recentLimitFor(9999), RECENT_MAX_LIMIT, 'clamped — past this it stops being a shortcut');
+  // nonsense falls back to the DEFAULT, never to 0: the opposite direction to
+  // keepNewestPerChannel, because there a typo must not propose DELETIONS while here the
+  // worst case is a folder the parent did not ask for — and reading a typo as "off" would
+  // quietly remove a folder the child navigates by.
+  assert.equal(recentLimitFor('abc'), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(NaN), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(-4), RECENT_DEFAULT_LIMIT);
+  // Infinity is NONSENSE, not "a very large number": it cannot be typed into the field, so
+  // it can only arrive from a corrupted or hostile value, and nonsense takes the default
+  // like every other unusable input. Clamping it to the max instead would silently honour
+  // garbage as if the parent had asked for the biggest folder the app allows.
+  assert.equal(recentLimitFor(Infinity), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(RECENT_MAX_LIMIT + 1), RECENT_MAX_LIMIT, 'a real number over the max clamps');
+});
+
+test('recentKeys: newest watch FIRST, capped at the limit', async () => {
+  const { recentKeys } = await import('../www/js/plan.js');
+  const states = new Map([
+    ['a', { playedAt: 300 }],
+    ['b', { playedAt: 100 }],
+    ['c', { playedAt: 500 }],
+    ['d', { favAt: 900 }],            // starred but never watched — not in 🕒
+    ['e', { playedAt: 0 }],           // an explicit zero is not a watch
+    ['f', { playedAt: 'nonsense' }]
+  ]);
+  assert.deepEqual(recentKeys(states, 10), ['c', 'a', 'b']);
+  // the cap keeps the NEWEST, which is the whole promise of the folder
+  assert.deepEqual(recentKeys(states, 2), ['c', 'a']);
+  assert.deepEqual(recentKeys(states, 0), [], 'off means empty, never "all of them"');
+  assert.deepEqual(recentKeys(states, -1), []);
+  assert.deepEqual(recentKeys(states, 'x'), []);
+  // it must read a MAP as readily as an object — giftStates is a Map, and reading it with
+  // Object.entries is precisely how v1.0.39 shipped a silent no-op (CLAUDE.md's own lesson)
+  assert.deepEqual(recentKeys({ a: { playedAt: 1 }, b: { playedAt: 2 } }, 5), ['b', 'a']);
+  assert.deepEqual(recentKeys(null, 5), []);
+  assert.deepEqual(recentKeys(undefined, 5), []);
+});
+
+test('recentKeys order is the OPPOSITE of favouriteKeys, deliberately', async () => {
+  const { recentKeys, favouriteKeys } = await import('../www/js/plan.js');
+  // ⭐ is a shelf the child builds and navigates BY POSITION, so a new star appends
+  // (v1.0.40). 🕒's entire promise is "what I was just watching is at the front". Two
+  // folders, two orders, and each one's rationale forbids the other's.
+  const states = new Map([['old', { favAt: 1, playedAt: 1 }], ['new', { favAt: 2, playedAt: 2 }]]);
+  assert.deepEqual(favouriteKeys(states), ['old', 'new']);
+  assert.deepEqual(recentKeys(states, 5), ['new', 'old']);
+});
+
+test('protectedWindowKeys: 🕒 members are protected from the rolling window (v1.0.57)', async () => {
+  const { protectedWindowKeys } = await import('../www/js/plan.js');
+  // The user's decision 2026-08-30, and it repairs the documented weakness of v1.0.39:
+  // `posSec` is CLEARED by a video watched to the END, so the most-rewatched video — the
+  // one the whole rationale is about — carried no signal at all. A watch stamp does.
+  const guarded = protectedWindowKeys({
+    records: [{ key: 'kept', keepForever: true }],
+    states: new Map([['starred', { favAt: 5 }], ['half', { posSec: 40 }], ['seen', { playedAt: 7 }]]),
+    recent: ['seen', 'sibling-seen']
+  });
+  assert.ok(guarded.has('kept') && guarded.has('starred') && guarded.has('half'));
+  assert.ok(guarded.has('seen'), 'the child\'s own recent video is prunable');
+  assert.ok(guarded.has('sibling-seen'), 'a sibling\'s recent video is prunable on a shared library');
+  // the keys arrive COMPUTED: unioning "every video ever watched" would gut the window
+  const noRecent = protectedWindowKeys({ records: [], states: new Map([['seen', { playedAt: 7 }]]) });
+  assert.ok(!noRecent.has('seen'), 'a watch stamp alone must not protect — only 🕒 membership does');
+  assert.deepEqual([...protectedWindowKeys({ recent: [null, ''] })], []);
+});
+
+test('stateRowIsSpent: the row survives while ANY feature still has something on it', async () => {
+  const { stateRowIsSpent } = await import('../www/js/normalize.js');
+  // ⚠️ THE BUG THIS EXISTS FOR: db.clearPlayPosition (every video watched to the END with
+  // resume on) deleted the row whenever it carried no giftRank and no unwrappedAt — a check
+  // written in v1.0.32, before ⭐ existed. A starred, never-gifted video watched to the end
+  // lost its star silently, and wrote no favOffAt either, so a peer could re-star it.
+  assert.equal(stateRowIsSpent({ favAt: 5 }), false, 'a ⭐ would be deleted with the row');
+  assert.equal(stateRowIsSpent({ favOffAt: 5 }), false, 'an un-star is an EVENT that must travel');
+  assert.equal(stateRowIsSpent({ playedAt: 5 }), false, 'the 🕒 stamp would be deleted with the row');
+  assert.equal(stateRowIsSpent({ giftRank: 0 }), false, 'rank 0 is a real rank');
+  assert.equal(stateRowIsSpent({ unwrappedAt: 5 }), false);
+  assert.equal(stateRowIsSpent({ posSec: 0 }), false, 'a stored 0 position is still stored');
+  assert.equal(stateRowIsSpent({ profileId: 'p', key: 'k' }), true);
+  assert.equal(stateRowIsSpent({}), true);
+  assert.equal(stateRowIsSpent(null), true);
+});
