@@ -301,6 +301,58 @@ public class KidsNativePlugin extends Plugin {
         }
     }
 
+    /* ---------------- background playback (v1.0.63) ---------------- */
+
+    /**
+     * v1.0.63 — keep playing when the app goes to the background (user request), for the
+     * family's OWN audio/video files only. JS decides everything about WHAT plays; this
+     * pair only runs the foreground service that lets Android keep it playing.
+     *
+     * ⚠️ CALLED WHILE THE APP IS STILL FOREGROUND. Since API 31 a backgrounded app may not
+     * start a foreground service at all, so JS starts this when an eligible video begins
+     * playing — not when the screen goes off, which is already too late.
+     */
+    @PluginMethod
+    public void startBackgroundPlayback(PluginCall call) {
+        Activity a = getActivity();
+        if (a == null) { call.resolve(); return; }
+        Intent i = new Intent(a, PlaybackService.class)
+            .setAction(PlaybackService.ACTION_START)
+            .putExtra("title", call.getString("title", ""))
+            .putExtra("playing", call.getBoolean("playing", Boolean.TRUE));
+        try {
+            if (Build.VERSION.SDK_INT >= 26) a.startForegroundService(i);
+            else a.startService(i);
+        } catch (Throwable ignored) {
+            // An OEM or a policy may refuse. Never crash a child's player over it: the
+            // video simply pauses on background, exactly as it did before this feature.
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void stopBackgroundPlayback(PluginCall call) {
+        Activity a = getActivity();
+        if (a != null) {
+            try { a.startService(new Intent(a, PlaybackService.class).setAction(PlaybackService.ACTION_STOP)); }
+            catch (Throwable ignored) {}
+        }
+        call.resolve();
+    }
+
+    /**
+     * A notification button. RETAINED until consumed, like a share intent: the WebView may
+     * be frozen when the parent taps ⏭ with the screen off, and a dropped command is a
+     * button that does nothing.
+     */
+    public static void emitPlaybackCommand(String action) {
+        KidsNativePlugin p = instance;
+        if (p == null) return;
+        JSObject o = new JSObject();
+        o.put("action", action == null ? "" : action);
+        p.notifyListeners("playbackCommand", o, true);
+    }
+
     /* ---------------- share-intent inbox (F12b) ---------------- */
 
     private static final ArrayDeque<JSObject> INBOX = new ArrayDeque<>();

@@ -822,6 +822,14 @@
           <input id="resume-toggle" type="checkbox" />
           <span>להמשיך סרטון מהנקודה שבה הפסקנו (במקום מההתחלה)<b id="resume-owner" class="setting-owner"></b></span>
         </label>
+        <!-- v1.0.63: background playback. OFF by default; the hint states the two things
+             that would otherwise surprise a parent — Android cannot tell the power button
+             from HOME, and YouTube is excluded by design. -->
+        <label class="switch-row">
+          <input id="bgplay-toggle" type="checkbox" />
+          <span>להמשיך להשמיע כשהמסך כבוי או שיצאנו מהאפליקציה<b id="bgplay-owner" class="setting-owner"></b>
+            <small class="setting-hint">רק קבצי שמע ווידאו שלכם — לא סרטוני יוטיוב. תופיע הודעה עם כפתורי ניגון/הקודם/הבא. שימו לב: אנדרואיד לא מבדילה בין כפתור כיבוי המסך לכפתור הבית, אז גם יציאה לבית תמשיך להשמיע.</small></span>
+        </label>
         <!-- v1.0.11: OS screen-pinning kiosk — exiting requires the parent PIN -->
         <label class="switch-row">
           <input id="exit-lock-toggle" type="checkbox" />

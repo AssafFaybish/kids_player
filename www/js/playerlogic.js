@@ -185,6 +185,60 @@ export function shouldFinishNearEnd({
  * @param hasNext        is there another video after this one in the folder?
  * @param nextIsGift     is the next video still a WRAPPED gift?
  */
+/**
+ * v1.0.63 — PURE: may THIS video keep playing while the app is in the background?
+ * -> { play: boolean, why: 'off'|'not-playing'|'youtube'|'no-item'|'ok' }
+ *
+ * ⚠️ **ANDROID CANNOT TELL THE POWER BUTTON FROM `HOME`.** `appStateChange` carries no
+ * reason, so this setting really means "keep playing when the app goes to the background",
+ * and a child who taps HOME will also keep hearing it. That cannot be fixed — it can only
+ * be said plainly, which the setting's own hint does.
+ *
+ * YOUTUBE IS EXCLUDED BY DESIGN (the user's decision): the IFrame player is a WebView that
+ * Android may throttle or evict the moment the app is not foreground, so "background
+ * YouTube" would be a promise the app cannot keep — and it is not a use YouTube's terms
+ * invite. Only the family's OWN audio/video files continue.
+ *
+ * `playing:false` answers 'not-playing' rather than 'off': a video the child had already
+ * paused before the screen went dark must stay paused, or the app starts making noise in a
+ * pocket for a video nobody was watching (the v1.0.57 call-resume rule, same reasoning).
+ */
+export function backgroundPlayDecision({ enabled = false, playing = false, item = null } = {}) {
+  if (!enabled) return { play: false, why: 'off' };
+  if (!item) return { play: false, why: 'no-item' };
+  if (item.type !== 'file') return { play: false, why: 'youtube' };
+  if (!playing) return { play: false, why: 'not-playing' };
+  return { play: true, why: 'ok' };
+}
+
+/**
+ * v1.0.63 — PURE: which video a notification's ⏮/⏭ moves to. -> a key, or null.
+ *
+ * The list is the ORDER THE CHILD IS LOOKING AT — the same keys `pageAnyFolder` gave the
+ * grid under the player — so the notification can never disagree with the screen. Building
+ * it once, when background playback starts, is also what makes ⏮ possible at all: the
+ * autoplay chain's `nextAfter` walks FORWARD from a cursor and has no mirror, and writing
+ * one would be a second answer to "what is in this folder, in what order" (the v1.0.21 bug).
+ *
+ * ⚠️ A WRAPPED GIFT IS SKIPPED, NEVER OPENED. Its whole ritual is that the FIRST TAP
+ * unwraps it and deliberately does not play (v1.0.25); starting it from a notification
+ * would consume the video while leaving the tile wrapped forever. Skipping is the only
+ * answer that costs the child nothing.
+ *
+ * There is no wrap-around: a chain that loops would play all night.
+ */
+export function backgroundSkipTarget({ keys = [], currentKey = null, dir = 'next', isGift = null } = {}) {
+  const list = Array.isArray(keys) ? keys.filter((k) => typeof k === 'string' && k) : [];
+  const at = list.indexOf(String(currentKey || ''));
+  if (at < 0) return null;
+  const step = dir === 'prev' ? -1 : 1;
+  const gift = typeof isGift === 'function' ? isGift : () => false;
+  for (let i = at + step; i >= 0 && i < list.length; i += step) {
+    if (!gift(list[i])) return list[i];
+  }
+  return null;
+}
+
 export function planAutoplay({
   enabled = false, folderId = null, reason = 'ended',
   failures = 0, retriedCurrent = false, hasNext = true, nextIsGift = false

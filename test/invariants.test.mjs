@@ -32,6 +32,28 @@ const MODULES = new Map(FILES.map((p) => [rel(p), src(p)]));
 const stripComments = (b) => b.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 const CODE = new Map([...MODULES].map(([k, v]) => [k, stripComments(v)]));
 
+/**
+ * v1.0.63 — the body of `onAppPause(() => { … })`, extracted by BALANCING BRACES.
+ *
+ * ⚠️ Both guards over this handler used a non-greedy `([\s\S]*?)\}\);`, which ends at the
+ * first `});` in the body — so the moment the handler called anything with an object
+ * literal (`f({ … })`) the extracted body was truncated and the guards reported the
+ * handler had "stopped pausing the player". A guard that breaks on correct code is worse
+ * than no guard: it trains you to edit the test until it passes.
+ */
+function appPauseBody(app) {
+  const at = app.indexOf('onAppPause(() => {');
+  if (at < 0) return null;
+  let i = app.indexOf('{', at);
+  const start = i + 1;
+  let depth = 0;
+  for (; i < app.length; i++) {
+    if (app[i] === '{') depth++;
+    else if (app[i] === '}') { depth--; if (!depth) return app.slice(start, i); }
+  }
+  return null;
+}
+
 /** Anchored function-body slice (v1.0.55). Asserts the anchor still exists, so a rename
  *  fails as "lost the anchor — re-anchor this guard" instead of as a phantom regression
  *  (an unchecked indexOf answers -1, slice(-1) yields one character, and the guard's
@@ -1419,8 +1441,9 @@ test('screen-off pauses the video (v1.0.32) — the lifecycle listener exists an
   // listener a playing video kept its soundtrack running behind a dark screen. Proven to
   // fail on a planted regression (listener removed / a half dropped).
   const app = MODULES.get('www/js/app.js');
-  const m = app.match(/onAppPause\(\(\) => \{([\s\S]*?)\}\);/);
-  assert.ok(m, 'app.js no longer registers an onAppPause listener — screen-off keeps playing');
+  const raw = appPauseBody(app);
+  assert.ok(raw, 'app.js no longer registers an onAppPause listener — screen-off keeps playing');
+  const m = [null, raw];
   // comment lines don't count — the first version of this guard passed with the call
   // commented out, which is exactly the vacuous-guard failure TESTING.md warns about
   const body = m[1].split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
@@ -3363,8 +3386,8 @@ test('a call pauses the video and the END of the call resumes it (v1.0.57)', () 
   // 3) ARMING AT THE PAUSE REQUIRES THE VIDEO TO HAVE BEEN PLAYING. `pauseCurrent()` runs
   //    first in that handler, so a state read afterwards always says "paused" — and arming
   //    on it would resume a video the child had deliberately paused BEFORE the call.
-  const m = app.match(/onAppPause\(\(\) => \{([\s\S]*?)\}\);/);
-  assert.ok(m, 'the onAppPause listener is gone');
+  const m = [null, appPauseBody(app)];
+  assert.ok(m[1], 'the onAppPause listener is gone');
   assert.match(m[1], /const st = playbackState\(\);[\s\S]*?pauseCurrent\(\)/,
     'the playhead is no longer read BEFORE the pause');
   assert.match(m[1], /if \(st && st\.playing\) checkCallResume\(\)/,
@@ -3412,7 +3435,10 @@ test('the audio-mode reader is in BOTH java copies and needs no permission (v1.0
   }
   // READ_PHONE_STATE would be a runtime permission prompt on a child's tablet, to resume a
   // video. AudioManager.getMode() needs none and catches VoIP as well.
-  const manifest = readRepo('android/app/src/main/AndroidManifest.xml');
+  // ⚠️ COMMENT-STRIPPED. The manifest's own comment NAMES the permissions it refuses, so a
+  // raw grep fires on the very text that documents the rule — the v1.0.45 trap, where three
+  // guards tripped on their own comments. Read what the file DECLARES, not what it says.
+  const manifest = readRepo('android/app/src/main/AndroidManifest.xml').replace(/<!--[\s\S]*?-->/g, '');
   assert.doesNotMatch(manifest, /READ_PHONE_STATE|READ_CALL_LOG|PROCESS_OUTGOING_CALLS/,
     'a telephony permission appeared — call detection must stay permission-free');
   for (const [p, body] of CODE) {
@@ -3866,4 +3892,95 @@ test('the swipe viewport never becomes a scroll container (v1.0.62)', () => {
     'renderGridPage lost its ghost parameters');
   assert.match(app, /if \(silent\) return;[\s\S]{0,200}?announceGridRender/,
     'a ghost render updates the pager — the page would look turned before it was');
+});
+
+/* ---------------- background playback (v1.0.63) ---------------- */
+
+test('background playback is opt-in, foreground-armed, and torn down everywhere (v1.0.63)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1) THE DECISION IS MADE FROM CACHED STATE. onAppPause reads the live playhead and must
+  //    stay a synchronous arrow — by the time an awaited setting read returned, the video
+  //    would already be paused.
+  const body = appPauseBody(app);
+  assert.ok(body, 'the onAppPause listener is gone');
+  assert.match(body, /backgroundPlayDecision\(/, 'the pause no longer consults the background decision');
+  assert.doesNotMatch(body, /await |getSetting\(/,
+    'the screen-off handler awaits — it must decide from cached state or the video pauses first');
+  assert.match(body, /if \(!bg\.play\) pauseCurrent\(\)/, 'the pause is no longer conditional on the decision');
+  // ⚠️ the call watcher stays armed EVEN WHEN THE VIDEO KEEPS PLAYING: a call takes audio
+  // focus and the WebView pauses its own media regardless of our service, so an early
+  // return here would leave a background-playing video stopped for good.
+  assert.match(body, /checkCallResume\(\)/, 'a call during background playback would never resume');
+  assert.doesNotMatch(body, /if \(bg\.play\) return/, 'the early return skips the call-resume arming');
+
+  // 2) ARMED WHILE FOREGROUND. API 31+ forbids starting a foreground service from the
+  //    background, so arming when the screen goes off would be too late on every modern
+  //    device — the feature would look implemented and never work.
+  const open = fnSlice(app, 'async function openWatch(');
+  assert.match(open, /armBackgroundPlayback\(/, 'the service is not armed when a video opens');
+  assert.doesNotMatch(body, /armBackgroundPlayback\(/,
+    'the service is armed from onAppPause — API 31+ refuses that, silently');
+
+  // 3) TORN DOWN EVERYWHERE a video stops being the child's current one. A notification left
+  //    on the lock screen for a dead video is a button that does nothing — and on a kiosk
+  //    tablet, a surface the child can reach for no reason.
+  for (const [what, fn] of [
+    ['the watch view is left', "nav.register('watch'"],
+    ['a profile switch', 'async function activateProfile('],
+    ['a scheduled break', 'async function showLockedScreen(']
+  ]) {
+    const at = app.indexOf(fn);
+    assert.ok(at > 0, `${fn} moved — re-anchor this guard`);
+    assert.match(app.slice(at, at + 2600), /disarmBackgroundPlayback\(/,
+      `background playback survives ${what}`);
+  }
+  // the break must also SILENCE it, not merely drop the notification
+  const lock = app.slice(app.indexOf('async function showLockedScreen('), app.indexOf('async function showLockedScreen(') + 2600);
+  assert.match(lock, /pauseCurrent\(\)/, 'a break leaves the music playing — that is not a break');
+  assert.ok(lock.indexOf('disarmBackgroundPlayback') > lock.indexOf("nav.isActive('parent')"),
+    'the teardown runs before the parent-screen guard — a parent mid-configuration is not a break');
+
+  // 4) the idle "עדיין צופים?" prompt is suspended while playing hidden (the user's
+  //    decision): it exists for a child asleep in FRONT of a screen, and there is no screen
+  //    to show a prompt on.
+  const idle = fnSlice(app, 'async function tickIdleSleep(');
+  assert.match(idle, /bgPlayLive && document\.hidden/, 'the idle timer stops a deliberate background listen');
+});
+
+test('the background service is declared, gated, and reachable only from the app (v1.0.63)', () => {
+  const manifest = readRepo('android/app/src/main/AndroidManifest.xml').replace(/<!--[\s\S]*?-->/g, '');
+  const ref = readRepo('native-reference/AndroidManifest.xml').replace(/<!--[\s\S]*?-->/g, '');
+  for (const [name, m] of [['android/', manifest], ['native-reference/', ref]]) {
+    assert.match(m, /android:name="\.PlaybackService"/, `${name}: the service is not declared`);
+    assert.match(m, /android:foregroundServiceType="mediaPlayback"/,
+      `${name}: API 34+ refuses a media foreground service without its type`);
+    assert.match(m, /\.PlaybackService"[\s\S]{0,200}?android:exported="false"/,
+      `${name}: the service is exported — any app on the device could start it`);
+    assert.match(m, /FOREGROUND_SERVICE_MEDIA_PLAYBACK/, `${name}: the API 34 permission is missing`);
+    assert.match(m, /POST_NOTIFICATIONS/, `${name}: the notification permission is missing`);
+  }
+  // ⚠️ THE NOTIFICATION MUST NOT BE A WAY BACK INTO THE APP. Under a containment lock that
+  // would be a way out of a locked folder, and on a kiosk tablet a way back into a session
+  // the parent ended. Three transport buttons, no content intent.
+  const svcA = readRepo('android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java');
+  const svcB = readRepo('native-reference/PlaybackService.java');
+  assert.equal(svcA, svcB, 'the two PlaybackService copies have drifted');
+  const svc = svcA.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(svc, /setContentIntent|getActivity\(/,
+    'the notification can open the app — that is a hole in the containment lock');
+  for (const a of ['ACTION_PREV', 'ACTION_TOGGLE', 'ACTION_NEXT']) {
+    assert.ok(svc.includes(a), `the notification lost its ${a} button`);
+  }
+  assert.match(svc, /IMPORTANCE_LOW/, 'the channel makes noise — a song change would wake a sleeping child');
+  assert.match(svc, /START_NOT_STICKY/,
+    'a sticky service would be restarted by the system for a video that is no longer playing');
+  // the plugin half, in both copies
+  for (const f of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                   'native-reference/KidsNativePlugin.java']) {
+    const src = readRepo(f);
+    assert.match(src, /public void startBackgroundPlayback\(PluginCall call\)/, `${f}: start is missing`);
+    assert.match(src, /public void stopBackgroundPlayback\(PluginCall call\)/, `${f}: stop is missing`);
+    assert.match(src, /emitPlaybackCommand/, `${f}: the notification buttons reach no one`);
+  }
 });

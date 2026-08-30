@@ -100,6 +100,11 @@ const SAFE_ON_TIE = {
   shareApproval: true,  // keep asking before a shared video reaches the child
   autoplay: false,      // stop at the end of the video
   resume: false,        // start from the beginning (v1.0.32 — today's behaviour)
+  // v1.0.63: keep playing when the app goes to the background. FALSE on a tie, and the
+  // reason is the same asymmetry the whole table follows: a tie that answers "off" costs
+  // a parent one tap to turn it back on; a tie that answers "on" leaves a tablet playing
+  // in a bag, at night, on a device where nobody asked for it.
+  bgPlay: false,
   // v1.0.45: hide the websites button. Note this is the TIE rule, not the default — an
   // unwritten `sitesEnabled` reads as ON (the parent asked for it on by default), while
   // two devices disagreeing at the same millisecond resolve to the narrower surface.
