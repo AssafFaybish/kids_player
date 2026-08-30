@@ -2300,3 +2300,157 @@ test('folderSearchScope is total, and never answers with nothing to search', asy
   // a row that names a root nothing else belongs to is not a "tree"
   assert.deepEqual(folderSearchScope({ folderId: 'cf:a', customRows: [{ folderId: 'cf:a', driveFolderId: 'D' }] }), ['cf:a']);
 });
+
+/* ---------------- nested Drive folders (v1.0.61) ---------------- */
+
+test('planDriveTreeImport: a container folder survives, and the tree carries its shape', async () => {
+  const { planDriveTreeImport } = await import('../www/js/plan.js');
+  // ROOT ─ disc 1 (songs) ─ disc 2 (songs) ─ "artwork" (no media, no media below)
+  //                     └─ "bonus" (no songs of its own) ─ "bonus/live" (songs)
+  const folders = [
+    { id: 'ROOT', name: 'אוסף', depth: 0, parentId: null, files: [] },
+    { id: 'D1', name: 'דיסק 1', depth: 1, parentId: 'ROOT', files: [{ id: 'a', name: 'a.mp3' }] },
+    { id: 'D2', name: 'דיסק 2', depth: 1, parentId: 'ROOT', files: [{ id: 'b', name: 'b.mp3' }] },
+    { id: 'ART', name: 'עטיפות', depth: 1, parentId: 'ROOT', files: [{ id: 'p', name: 'p.pdf' }] },
+    { id: 'BON', name: 'בונוס', depth: 1, parentId: 'ROOT', files: [] },
+    { id: 'LIVE', name: 'הופעה', depth: 2, parentId: 'BON', files: [{ id: 'c', name: 'c.mp3' }] }
+  ];
+  const kind = (f) => (/\.mp3$/.test(f.name) ? 'audio' : null);
+  const r = planDriveTreeImport({
+    folders, existingFolders: [], existingKeys: new Set(), denyKeys: new Set(),
+    rootId: 'ROOT', mediaKindOf: kind
+  });
+  const ids = r.folders.map((f) => f.driveFolderId);
+  assert.deepEqual(ids, ['ROOT', 'D1', 'D2', 'BON', 'LIVE'], 'the artwork folder holds no media anywhere below it');
+  // ⚠️ "בונוס" holds NO songs of its own and must still exist: it is the row the parent taps
+  // to reach the live disc. v1.0.58 dropped exactly this folder, correctly, because the tree
+  // was flattened and the row could never be opened.
+  assert.ok(ids.includes('BON'), 'a folder of folders was dropped — its children are unreachable');
+  const by = new Map(r.folders.map((f) => [f.driveFolderId, f]));
+  assert.equal(by.get('ROOT').parentDriveId, null, 'the root must anchor nothing above it');
+  assert.equal(by.get('D1').parentDriveId, 'ROOT');
+  assert.equal(by.get('LIVE').parentDriveId, 'BON', 'depth-2 folders must nest under their real parent');
+  assert.equal(r.added, 3);
+  // and the ROOT still gets a row with nothing at all in the tree — it anchors the refresh
+  const bare = planDriveTreeImport({
+    folders: [{ id: 'ROOT', name: 'ריק', depth: 0, parentId: null, files: [] }],
+    existingFolders: [], existingKeys: new Set(), denyKeys: new Set(), rootId: 'ROOT', mediaKindOf: kind
+  });
+  assert.deepEqual(bare.folders.map((f) => f.driveFolderId), ['ROOT']);
+});
+
+test('folderAncestry / folderWithinLock: the chain, and a lock that covers a subtree', async () => {
+  const { folderAncestry, folderWithinLock } = await import('../www/js/plan.js');
+  const rows = [
+    { folderId: 'cf:root' },
+    { folderId: 'cf:mid', parentFolderId: 'cf:root' },
+    { folderId: 'cf:leaf', parentFolderId: 'cf:mid' },
+    { folderId: 'cf:other' }
+  ];
+  assert.deepEqual(folderAncestry('cf:leaf', rows), ['cf:leaf', 'cf:mid', 'cf:root'], 'self first, then up');
+  assert.deepEqual(folderAncestry('cf:root', rows), ['cf:root']);
+  assert.deepEqual(folderAncestry('cf:nope', rows), [], 'an unknown folder has no chain');
+  assert.deepEqual(folderAncestry('', rows), []);
+  // ⚠️ parentFolderId travels in the Drive doc and is merged LWW PER ROW, so two devices can
+  // briefly produce a chain that points at itself. A lock that hangs is a child stuck.
+  const cyclic = [
+    { folderId: 'cf:a', parentFolderId: 'cf:b' },
+    { folderId: 'cf:b', parentFolderId: 'cf:a' }
+  ];
+  assert.deepEqual(folderAncestry('cf:a', cyclic), ['cf:a', 'cf:b'], 'a cycle must terminate, not hang');
+  // the lock
+  assert.equal(folderWithinLock('cf:leaf', 'cf:root', rows), true, 'a locked collection must let its discs open');
+  assert.equal(folderWithinLock('cf:root', 'cf:root', rows), true);
+  assert.equal(folderWithinLock('cf:other', 'cf:root', rows), false);
+  assert.equal(folderWithinLock('cf:root', 'cf:mid', rows), false, 'a lock never opens UPWARD');
+  assert.equal(folderWithinLock('cf:x', 'cf:root', rows), false, 'an unknown folder is out of bounds — containment errs strict');
+  assert.equal(folderWithinLock('cf:leaf', '', rows), true, 'no lock ⇒ nothing is out of bounds');
+});
+
+test('homeFolderRows: the home shows roots, and never loses an orphan', async () => {
+  const { homeFolderRows } = await import('../www/js/plan.js');
+  const rows = [
+    { folderId: 'cf:root' },
+    { folderId: 'cf:disc1', parentFolderId: 'cf:root' },
+    { folderId: 'cf:disc2', parentFolderId: 'cf:root' },
+    { folderId: 'cf:plain' }
+  ];
+  assert.deepEqual(homeFolderRows(rows).map((r) => r.folderId), ['cf:root', 'cf:plain'],
+    'the discs belong inside the collection, not on the home');
+  // ⚠️ an older app on the same account sweeps container rows it does not understand. A disc
+  // whose parent is GONE falls back to the home — worse placed, never invisible.
+  const orphaned = rows.filter((r) => r.folderId !== 'cf:root');
+  assert.deepEqual(homeFolderRows(orphaned).map((r) => r.folderId), ['cf:disc1', 'cf:disc2', 'cf:plain']);
+  assert.deepEqual(homeFolderRows([]), []);
+  assert.deepEqual(homeFolderRows(), []);
+});
+
+test('folderPageSlots: child folders and videos share ONE pager, folders first', async () => {
+  const { folderPageSlots, folderPageTotal } = await import('../www/js/plan.js');
+  // 32 discs + 4 loose songs at 15 per page
+  const p0 = folderPageSlots({ childCount: 32, page: 0, pageSize: 15 });
+  assert.deepEqual(p0, { folderOffset: 0, folderSlots: 15, videoOffset: 0, videoLimit: 0 });
+  const p1 = folderPageSlots({ childCount: 32, page: 1, pageSize: 15 });
+  assert.deepEqual(p1, { folderOffset: 15, folderSlots: 15, videoOffset: 0, videoLimit: 0 });
+  // the page that STRADDLES the boundary: 2 folders left, then videos fill the rest
+  const p2 = folderPageSlots({ childCount: 32, page: 2, pageSize: 15 });
+  assert.deepEqual(p2, { folderOffset: 30, folderSlots: 2, videoOffset: 0, videoLimit: 13 });
+  const p3 = folderPageSlots({ childCount: 32, page: 3, pageSize: 15 });
+  assert.deepEqual(p3, { folderOffset: 32, folderSlots: 0, videoOffset: 13, videoLimit: 15 });
+  // no children at all ⇒ exactly today's behaviour
+  assert.deepEqual(folderPageSlots({ childCount: 0, page: 2, pageSize: 15 }),
+    { folderOffset: 0, folderSlots: 0, videoOffset: 30, videoLimit: 15 });
+  // ⚠️ videoLimit 0 is a REAL answer on a page of pure folder tiles, and the caller must
+  // still call db.pageFolder — its `total` sizes the pager (pageFolder answers {items:[],
+  // total} for a zero limit, the v1.0.58 fix).
+  assert.equal(p0.videoLimit, 0);
+  assert.deepEqual(folderPageSlots({}), { folderOffset: 0, folderSlots: 0, videoOffset: 0, videoLimit: 15 });
+  // totals
+  assert.equal(folderPageTotal({ childCount: 32, videoTotal: 4, pageSize: 15 }), 3);
+  assert.equal(folderPageTotal({ childCount: 0, videoTotal: 0, pageSize: 15 }), 1, 'an empty folder is still one page');
+  assert.equal(folderPageTotal({ childCount: 15, videoTotal: 0, pageSize: 15 }), 1);
+});
+
+test('folderSearchScope: the subtree, standing folder first, and a lock still narrows it', async () => {
+  const { folderSearchScope } = await import('../www/js/plan.js');
+  const rows = [
+    { folderId: 'cf:root', driveFolderId: 'D0' },
+    { folderId: 'cf:d1', parentFolderId: 'cf:root', driveFolderId: 'D1', driveRootId: 'D0' },
+    { folderId: 'cf:d2', parentFolderId: 'cf:root', driveFolderId: 'D2', driveRootId: 'D0' },
+    { folderId: 'cf:live', parentFolderId: 'cf:d2', driveFolderId: 'D3', driveRootId: 'D0' },
+    { folderId: 'cf:elsewhere' }
+  ];
+  const fromDisc = folderSearchScope({ folderId: 'cf:d1', customRows: rows });
+  assert.equal(fromDisc[0], 'cf:d1', 'the folder the child is standing in is searched FIRST');
+  assert.deepEqual(new Set(fromDisc), new Set(['cf:d1', 'cf:root', 'cf:d2', 'cf:live']),
+    'from a disc the WHOLE collection is searched — the root row is hidden from the child');
+  assert.ok(!fromDisc.includes('cf:elsewhere'), 'the scope must never leak into another collection');
+  // a folder that nests nothing is its own scope
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:elsewhere', customRows: rows }), ['cf:elsewhere']);
+  // ⚠️ a folder LOCK narrows it to one folder, always: a sibling's result is a way to reach
+  // that folder's grid through the watch screen's pager (the v1.0.58 rule).
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:d1', customRows: rows, locked: true }), ['cf:d1']);
+  assert.deepEqual(folderSearchScope({ folderId: '', customRows: rows }), []);
+});
+
+test('planFolderDeletion: deleting a collection says it takes the folders too', async () => {
+  const { planFolderDeletion } = await import('../www/js/plan.js');
+  // ⚠️ after nesting, "delete this folder" can mean 32 discs and 751 songs. A parent who
+  // reads only the folder's own name has been told the smallest true thing, not the
+  // relevant one.
+  const many = planFolderDeletion({ title: 'אוסף', count: 751, mode: 'move', children: 32 });
+  assert.match(many.text, /32 התיקיות שבתוכה/);
+  assert.match(many.text, /751 הסרטונים/);
+  assert.equal(many.children, 32);
+  const one = planFolderDeletion({ title: 'אוסף', count: 5, mode: 'purge', children: 1 });
+  assert.match(one.text, /ואת התיקיה שבתוכה/, 'one child folder must not read as "1 התיקיות"');
+  assert.match(one.text, /לצמיתות/);
+  // a container with no songs of its own still needs an answer, and says what it is
+  const bare = planFolderDeletion({ title: 'אוסף', count: 0, children: 32 });
+  assert.equal(bare.needsChoice, true, 'deleting 32 folders must not go through unasked');
+  assert.match(bare.text, /32 התיקיות/);
+  assert.ok(!/היא ריקה/.test(bare.text), 'a folder holding 32 folders is not "empty"');
+  // and a plain empty folder is untouched by all of this
+  assert.deepEqual(planFolderDeletion({ title: 'ריקה', count: 0 }).needsChoice, false);
+  assert.match(planFolderDeletion({ title: 'ריקה', count: 0 }).text, /היא ריקה/);
+});
