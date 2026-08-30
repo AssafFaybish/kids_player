@@ -1125,10 +1125,13 @@ async function sweepEmptyFolders() {
   // filed under a folder that no longer exists the moment it is approved — invisible on
   // every screen and unreachable forever, which is the failure deleteCustomFolderFlow's
   // own comment exists to prevent.
-  const parked = [
-    ...(await db.pagePending(scope, { offset: 0, limit: 5000 }).then((r) => r.items).catch(() => [])),
-    ...(await db.pageRejected(scope, { limit: 5000 }).catch(() => []))
-  ];
+  // ⚠️ BOTH readers answer `{ items, total }`. Spreading the OBJECT throws "not iterable"
+  // AFTER the promise's .catch has had its chance, so the throw escaped to the caller's
+  // `.catch(() => {})` and the whole sweep silently did nothing — measured in the browser,
+  // suite green (no node test executes app.js).
+  const pending = await db.pagePending(scope, { offset: 0, limit: 5000 }).catch(() => ({ items: [] }));
+  const rejected = await db.pageRejected(scope, { limit: 5000 }).catch(() => ({ items: [] }));
+  const parked = [...(pending.items || []), ...(rejected.items || [])];
   for (const rec of parked) {
     const home = rec && rec.homeFolderId;
     if (home && counts.has(home)) counts.set(home, (counts.get(home) || 0) + 1);
