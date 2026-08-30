@@ -312,13 +312,18 @@ test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
   // that deleted families' libraries in the sheet era — an unreadable listing reads as an
   // empty folder and sweeps everything.
   const imp = fnSlice(app, 'async function importDriveFolder(');
-  assert.match(imp, /planDriveFolderImport\(/, 'the import stopped using its pure decision');
+  // v1.0.58: the importer now walks a TREE, so it calls planDriveTreeImport — which must
+  // itself route every file through planDriveFolderImport, so "which files are media, which
+  // are already here, which were removed before" keeps exactly ONE answer in this app.
+  assert.match(imp, /planDriveTreeImport\(/, 'the import stopped using its pure decision');
+  assert.match(fnSlice(plan, 'export function planDriveTreeImport('), /planDriveFolderImport\(/,
+    'the tree planner re-implements the per-file decision instead of reusing it');
   for (const banned of [/deleteVideo\(/, /deleteVideoRaw\(/, /deleteVideosWithTombstones\(/]) {
     assert.doesNotMatch(imp, banned,
       'the Drive-folder import deletes videos — it is ADDITIVE ONLY (a failed listing must never sweep)');
   }
   // an unreadable listing must ABORT, never proceed as "the folder is empty"
-  assert.match(imp, /if \(!listing\.ok\)/, 'an unreadable listing is no longer distinguished from an empty one');
+  assert.match(imp, /if \(!tree\.ok\)/, 'an unreadable listing is no longer distinguished from an empty one');
   assert.match(CODE.get('www/js/gdrivepub.js'), /ok: false, files: \[\]/,
     'fetchDriveFolder collapsed "could not read" into "nothing there"');
 
@@ -327,8 +332,21 @@ test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
   // folder carries the DRIVE folder's name (regression activated the day the operator
   // widened the API key, which is exactly when the keyed branch started running).
   const fetchFolder = fnSlice(CODE.get('www/js/gdrivepub.js'), 'export async function fetchDriveFolder(');
-  assert.equal((fetchFolder.match(/keyedFolderName\(/g) || []).length, 2,
-    'the keyed folder path no longer resolves the folder name on both of its returns');
+  assert.match(fetchFolder, /return \{ ok: true, files: out, name: await keyedFolderName\(id, key\) \}/,
+    'the keyed folder path no longer resolves the folder name — the tile loses the name the parent gave it in Drive');
+  // ⚠️ v1.0.58 — AND IT MAY ONLY RETURN WHEN IT ACTUALLY SAW SOMETHING. `files.list` answers
+  // 200 with an EMPTY list (not an error) when the key cannot see into a link-shared folder,
+  // and the keyed branch used to return that as `{ok:true, files:[]}` from inside its own
+  // pagination loop — so a folder full of songs was reported as "התיקיה ריקה" and the public
+  // page that CAN read it was never tried. Reported from the field 2026-08-30. The guard
+  // pins the SHAPE that makes emptiness fall through: exactly one keyed return, taken only
+  // when `out.length`, and the keyless door after it.
+  assert.equal((fetchFolder.match(/return \{ ok: true, files: out/g) || []).length, 1,
+    'the keyed branch has more than one success return — one of them can report an empty listing');
+  assert.match(fetchFolder, /if \(out\.length\) return \{ ok: true, files: out/,
+    'the keyed branch returns without checking that it read anything — an empty answer will short-circuit the keyless door');
+  assert.match(fetchFolder.slice(fetchFolder.indexOf('if (out.length)')), /parseDriveFolderHtml\(/,
+    'the keyless door no longer follows the keyed one — an empty keyed answer has nowhere to fall through to');
 
   // the zero must NAME its cause (the v1.0.37 rule) — four different facts, four sentences
   assert.match(plan, /export function driveFolderOutcome\(/, 'the outcome text is no longer pure');
@@ -373,7 +391,11 @@ test('public-Drive access lives in ONE module and never touches OAuth (v1.0.56)'
   const gd = MODULES.get('www/js/gdrivepub.js');
   assert.ok(gd, 'gdrivepub.js is gone — public-Drive metadata lost its one home');
   const deps = [...new Set([...importsOf('www/js/gdrivepub.js'), ...dynamicImportsOf('www/js/gdrivepub.js')])];
-  const allowed = new Set(['www/js/platform.js', 'www/js/keys.js']);
+  // v1.0.58: config.js joins the allowlist — it is the BOTTOM tier (pure constants, no
+  // imports of its own), and the tree walk's safety caps belong there where an operator
+  // can see them, not hidden in a default parameter. The ban this guard exists for is
+  // unchanged: gauth/db/drive must never appear here.
+  const allowed = new Set(['www/js/platform.js', 'www/js/keys.js', 'www/js/config.js']);
   assert.deepEqual(deps.filter((d) => !allowed.has(d)), [],
     'gdrivepub.js imports above its tier (gauth/db/drive belong nowhere near it): ' + deps);
   assert.doesNotMatch(CODE.get('www/js/gdrivepub.js'), /Authorization/,
@@ -3330,5 +3352,59 @@ test('the audio-mode reader is in BOTH java copies and needs no permission (v1.0
     'a telephony permission appeared — call detection must stay permission-free');
   for (const [p, body] of CODE) {
     assert.doesNotMatch(body, /TelephonyManager/, `${p} reaches for telephony instead of the audio mode`);
+  }
+});
+
+test('a NESTED Drive folder becomes a list of ordinary folders (v1.0.58)', () => {
+  const app = CODE.get('www/js/app.js');
+  const pub = CODE.get('www/js/gdrivepub.js');
+
+  // 1) NO NEW FOLDER KIND. The whole v1.0.56 promise — paging, search, the watch-grid
+  //    chain, deletion with tombstones, the Drive sync — rests on a Drive folder being an
+  //    ordinary `cf:` custom folder. A tree must flatten INTO that, never grow a second
+  //    shape, and the app must still have no folder-inside-a-folder screen.
+  assert.doesNotMatch(fnSlice(app, 'async function pageAnyFolder('), /driveFolderId|driveRootId/,
+    'paging grew a Drive branch — a nested import must still be ordinary cf: folders');
+  assert.doesNotMatch(fnSlice(app, 'async function nextAfter('), /driveFolderId|driveRootId/,
+    'the watch chain grew a Drive branch');
+
+  // 2) THE REFRESH WALKS ROOTS ONLY. Every folder of a tree carries its own driveFolderId
+  //    (that is what makes each refill itself), but the root's walk already re-lists the
+  //    whole tree — so refreshing descendants too would list a 33-folder tree 33 times
+  //    over, every half hour, on a family's mobile data.
+  const ref = fnSlice(app, 'async function refreshDriveFolders(');
+  assert.match(ref, /driveRootId/, 'the refresh no longer skips the descendants of a tree');
+  assert.match(ref, /roots\.has\(f\.driveRootId\)/,
+    'a descendant whose ROOT row is gone must refresh itself again, or it silently stops updating');
+  assert.match(ref, /driveSyncedAt/, 'the refresh lost its throttle');
+
+  // 3) ONE NAME FOR "THIS ENTRY IS A FOLDER", and both doors report it: files.list in
+  //    `mimeType`, the public page in the row's href. A second opinion anywhere is how the
+  //    keyless door came to answer `null` for every subfolder in the first place.
+  assert.match(pub, /export const DRIVE_FOLDER_MIME = 'application\/vnd\.google-apps\.folder'/,
+    'the folder mime lost its single home');
+  assert.match(pub, /const isFolder = \/\\\/drive\\\/folders\\\/\[A-Za-z0-9_-\]\+\/\.test\(b\)/,
+    'the keyless parser no longer tells a subfolder by its LINK — the icon alone cannot');
+  for (const [p, body] of CODE) {
+    if (p === 'www/js/gdrivepub.js') continue;
+    assert.doesNotMatch(body, /vnd\.google-apps\.folder/, `${p} hard-codes the folder mime instead of asking gdrivepub`);
+  }
+
+  // 4) THE WALK IS BOUNDED, and the bound is a named constant an operator can see rather
+  //    than a magic number hidden in a default (the v1.0.37 "a constant with no consumer is
+  //    a lie" rule, in the other direction).
+  assert.match(pub, /DRIVE_TREE_MAX_FOLDERS/, 'the tree walk lost its folder cap');
+  assert.match(pub, /DRIVE_TREE_MAX_FILES/, 'the tree walk lost its file cap');
+  assert.match(CODE.get('www/js/config.js'), /export const DRIVE_TREE_MAX_FOLDERS/, 'the caps left config.js');
+  const walk = fnSlice(pub, 'export async function fetchDriveFolderTree(');
+  assert.match(walk, /seen\.has\(entry\.id\)/, 'the cycle guard is gone — a Drive shortcut can loop the walk forever');
+  assert.match(walk, /truncated = true/, 'hitting a cap is no longer recorded, so the parent cannot be told');
+  assert.match(walk, /node\.depth === 0\) rootFailed = true; else partial = true/,
+    'an unreadable ROOT and an unreadable CHILD collapsed into one fact');
+
+  // 5) STILL ADDITIVE — the v1.0.56 decision, now across a whole tree.
+  const imp = fnSlice(app, 'async function importDriveFolder(');
+  for (const banned of [/deleteVideo\(/, /deleteVideoRaw\(/, /deleteVideosWithTombstones\(/, /deleteCustomFolder\(/]) {
+    assert.doesNotMatch(imp, banned, 'the tree import deletes — it is ADDITIVE ONLY');
   }
 });

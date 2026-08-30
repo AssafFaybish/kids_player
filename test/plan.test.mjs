@@ -1982,3 +1982,93 @@ test('stateRowIsSpent: the row survives while ANY feature still has something on
   assert.equal(stateRowIsSpent({}), true);
   assert.equal(stateRowIsSpent(null), true);
 });
+
+/* ---------------- nested Drive folders (v1.0.58) ---------------- */
+
+test('uniqueFolderTitle: two discs with the same name get readable, STABLE titles', async () => {
+  const { uniqueFolderTitle } = await import('../www/js/plan.js');
+  assert.equal(uniqueFolderTitle('דיסק 21', []), 'דיסק 21');
+  assert.equal(uniqueFolderTitle('דיסק 21', ['דיסק 21']), 'דיסק 21 (2)');
+  assert.equal(uniqueFolderTitle('דיסק 21', ['דיסק 21', 'דיסק 21 (2)']), 'דיסק 21 (3)');
+  // DETERMINISTIC: the same inputs give the same answer, so a re-import lands on the title
+  // that is already there instead of drifting a suffix upward on every refresh
+  assert.equal(uniqueFolderTitle('דיסק 21', ['דיסק 21']), uniqueFolderTitle('דיסק 21', ['דיסק 21']));
+  assert.equal(uniqueFolderTitle('', []), 'תיקיה', 'a nameless folder still gets a usable tile');
+});
+
+test('planDriveTreeImport: a folder per subfolder, and the ROOT anchors the refresh (v1.0.58)', async () => {
+  const { planDriveTreeImport } = await import('../www/js/plan.js');
+  const audio = (id, name) => ({ id, name, mimeType: 'audio/mpeg' });
+  const folders = [
+    { id: 'ROOT', name: 'הרב מאיר אליהו', depth: 0, files: [{ id: 'ds', name: '.DS_Store', mimeType: 'application/octet-stream' }] },
+    { id: 'S1', name: 'דיסק 21', depth: 1, files: [audio('a', 'א.mp3'), audio('b', 'ב.mp3')] },
+    { id: 'S2', name: 'דיסק 21', depth: 1, files: [audio('c', 'ג.mp3')] },   // same NAME, other folder
+    { id: 'S3', name: 'רק תיקיות', depth: 1, files: [] }
+  ];
+  const r = planDriveTreeImport({
+    folders, existingFolders: [], existingKeys: new Set(), denyKeys: new Set(), rootId: 'ROOT',
+    mediaKindOf: (f) => (f.mimeType === 'audio/mpeg' ? 'audio' : null)
+  });
+  assert.deepEqual(r.folders.map((f) => f.driveFolderId), ['ROOT', 'S1', 'S2'],
+    'a folder that holds only subfolders must not become a tile of its own');
+  assert.deepEqual(r.folders.map((f) => f.title), ['הרב מאיר אליהו', 'דיסק 21', 'דיסק 21 (2)']);
+  // THE ROOT GETS A ROW EVEN WITH NO MEDIA: it holds nothing, so the child never sees it
+  // (a custom folder with 0 videos is hidden — the v1.0.21 rule), but it is what the
+  // refresh walks. Without it a disc added to the Drive folder later would never arrive.
+  assert.equal(r.folders[0].isRoot, true);
+  assert.equal(r.folders[0].add.length, 0);
+  assert.equal(r.added, 3);
+  assert.equal(r.skipped.nonMedia, 1, 'the .DS_Store is counted, not silently dropped');
+});
+
+test('planDriveTreeImport: a re-import REUSES the rows it already made (v1.0.58)', async () => {
+  const { planDriveTreeImport } = await import('../www/js/plan.js');
+  const audio = (id, name) => ({ id, name, mimeType: 'audio/mpeg' });
+  const folders = [
+    { id: 'ROOT', name: 'שורש', depth: 0, files: [] },
+    { id: 'S1', name: 'דיסק 21', depth: 1, files: [audio('a', 'א.mp3'), audio('b', 'ב.mp3')] }
+  ];
+  const existingFolders = [
+    { folderId: 'cf:1', title: 'שורש', driveFolderId: 'ROOT' },
+    { folderId: 'cf:2', title: 'דיסק 21 — שם שההורה שינה', driveFolderId: 'S1' }
+  ];
+  const r = planDriveTreeImport({
+    folders, existingFolders, existingKeys: new Set(['file:drive:a']), denyKeys: new Set(),
+    rootId: 'ROOT', mediaKindOf: () => 'audio'
+  });
+  // identity is the driveFolderId, never the title — so a folder the PARENT renamed keeps
+  // its name across every refresh instead of being duplicated under the Drive name
+  assert.deepEqual(r.folders.map((f) => f.existing && f.existing.folderId), ['cf:1', 'cf:2']);
+  assert.deepEqual(r.folders.map((f) => f.title), ['שורש', 'דיסק 21 — שם שההורה שינה']);
+  assert.equal(r.added, 1, 'only the file that was not already here');
+  assert.equal(r.skipped.existing, 1);
+  // and the denied half of the shared per-file decision still applies inside a tree
+  const denied = planDriveTreeImport({
+    folders, existingFolders, existingKeys: new Set(), denyKeys: new Set(['file:drive:b']),
+    rootId: 'ROOT', mediaKindOf: () => 'audio'
+  });
+  assert.equal(denied.added, 1);
+  assert.equal(denied.skipped.denied, 1);
+});
+
+test('driveFolderOutcome: a nested import names its shape, and a cut-short walk SAYS so', async () => {
+  const { driveFolderOutcome } = await import('../www/js/plan.js');
+  const msgs = new Set();
+  const add = (m) => { assert.ok(!msgs.has(m), 'two different outcomes share one sentence: ' + m); msgs.add(m); return m; };
+  add(driveFolderOutcome({ added: 751, folders: 32, first: true }));
+  add(driveFolderOutcome({ added: 28, folders: 1, first: true }));
+  add(driveFolderOutcome({ added: 12, folders: 4, first: false }));
+  add(driveFolderOutcome({ added: 500, folders: 20, first: true, truncated: true }));
+  add(driveFolderOutcome({ added: 0, partial: true }));
+  add(driveFolderOutcome({ added: 0, skipped: { nonMedia: 3 } }));
+  add(driveFolderOutcome({ added: 0, skipped: {} }));
+  add(driveFolderOutcome({ ok: false }));
+  // the shape is NAMED when there is more than one folder, and the counts are real
+  assert.match(driveFolderOutcome({ added: 751, folders: 32, first: true }), /751/);
+  assert.match(driveFolderOutcome({ added: 751, folders: 32, first: true }), /32 תיקיות/);
+  // a cut-short walk must never read as a complete one
+  assert.match(driveFolderOutcome({ added: 500, folders: 20, truncated: true }), /גדולה מאוד/);
+  assert.match(driveFolderOutcome({ added: 5, folders: 2, partial: true }), /לא נקראו/);
+  // nothing leaks undefined/NaN into a sentence a parent reads
+  for (const m of msgs) assert.doesNotMatch(m, /undefined|NaN|null/);
+});

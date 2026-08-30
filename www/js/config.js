@@ -66,6 +66,15 @@ export const CALL_RESUME_POLL_MS = 1500;
 // starting it then would be a surprise noise in the room rather than a convenience.
 export const CALL_RESUME_MAX_MS = 15 * 60 * 1000;
 
+/* v1.0.58 — a pasted Drive folder may hold FOLDERS of songs (user request), so the import
+   walks the tree to any depth. These are the safety ceilings, not expectations: the folder
+   that prompted the feature is 33 folders / ~480 files, and the point of a bound is that a
+   backup folder pasted by mistake cannot pull thousands of files or spend hundreds of
+   requests. Hitting one is SAID, never silent (the v1.0.37 rule) — the parent is told the
+   folder was too big rather than left wondering what is missing. */
+export const DRIVE_TREE_MAX_FOLDERS = 100;
+export const DRIVE_TREE_MAX_FILES = 2000;
+
 /* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
    is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
    Long enough that a parent who changes their mind has a real window; short enough that

@@ -2292,20 +2292,109 @@ export function planDriveFolderImport({ files = [], existingKeys = null, denyKey
 }
 
 /**
+ * v1.0.58 — PURE: a UNIQUE folder title. A Drive tree can hold two folders with the same
+ * name in different branches, and two identical tiles on the child's home is a screen the
+ * parent cannot read. Deterministic (" (2)", " (3)") so a re-import lands on the SAME title
+ * instead of drifting a suffix upward on every refresh — identity is the driveFolderId, and
+ * this only decides what a human reads.
+ */
+export function uniqueFolderTitle(want, taken, { max = 60 } = {}) {
+  const base = String(want || '').trim().slice(0, max) || 'תיקיה';
+  const used = new Set([...(taken || [])].map((t) => normalizeTitle(String(t || ''))));
+  if (!used.has(normalizeTitle(base))) return base;
+  for (let n = 2; n < 500; n++) {
+    const cand = `${base} (${n})`;
+    if (!used.has(normalizeTitle(cand))) return cand;
+  }
+  return base;
+}
+
+/**
+ * v1.0.58 — PURE: turn a walked Drive TREE into app folders and their files.
+ *
+ * THE USER'S DECISION (2026-08-30): a folder per Drive subfolder, not one flat list. The
+ * app has no folder-inside-a-folder screen and deliberately gains none — the tree is
+ * FLATTENED INTO A LIST of ordinary custom folders, each carrying its own `driveFolderId`,
+ * which is what lets everything built in v1.0.56 (paging, search, the watch-grid chain,
+ * deletion with tombstones, the Drive sync) keep working with no new branch anywhere.
+ *
+ * Which folders get a row:
+ *  - the ROOT always, even with no media of its own. It holds nothing, so the child never
+ *    sees it (a custom folder with 0 videos is hidden — the v1.0.21 rule), but it is what
+ *    ANCHORS the refresh: without a row for it, a disc added to the Drive folder later
+ *    would never be noticed, and the user asked for exactly that to keep working.
+ *  - any descendant that holds at least one media file. A folder of folders contributes
+ *    nothing but its children.
+ *
+ * Files are routed through `planDriveFolderImport` — the SAME decision the flat import
+ * uses — so "which files are media, which are already here, which were removed before"
+ * has exactly one answer in this app.
+ */
+export function planDriveTreeImport({ folders = [], existingFolders = [], existingKeys = null,
+  denyKeys = null, mediaKindOf = null, rootId = null } = {}) {
+  const byDriveId = new Map();
+  for (const f of existingFolders || []) if (f && f.driveFolderId) byDriveId.set(f.driveFolderId, f);
+  const taken = (existingFolders || []).map((f) => (f && f.title) || '').filter(Boolean);
+  const kindOf = typeof mediaKindOf === 'function' ? mediaKindOf : () => null;
+
+  const out = [];
+  const totals = { existing: 0, denied: 0, nonMedia: 0 };
+  let added = 0;
+  for (const node of folders || []) {
+    if (!node || typeof node.id !== 'string' || !node.id) continue;
+    const plan = planDriveFolderImport({
+      files: node.files || [], existingKeys, denyKeys, mediaKindOf: kindOf
+    });
+    totals.existing += plan.skipped.existing;
+    totals.denied += plan.skipped.denied;
+    totals.nonMedia += plan.skipped.nonMedia;
+    const mediaHere = plan.add.length + plan.skipped.existing + plan.skipped.denied;
+    const isRoot = node.id === rootId || node.depth === 0;
+    if (!isRoot && !mediaHere) continue; // a folder of folders is not a folder here
+    const existing = byDriveId.get(node.id) || null;
+    let title = existing ? existing.title : '';
+    if (!existing) {
+      title = uniqueFolderTitle(normalizeFolderTitle(node.name || '') || 'תיקיה מדרייב', taken);
+      taken.push(title);
+    }
+    added += plan.add.length;
+    out.push({
+      driveFolderId: node.id, title, isRoot, depth: Number(node.depth) || 0,
+      existing, add: plan.add, skipped: plan.skipped
+    });
+  }
+  return { folders: out, added, skipped: totals };
+}
+
+/**
  * PURE: what the parent is told after a Drive folder is added or refreshed. A ZERO names
  * its own cause — the v1.0.37 rule: "nothing arrived" and "nothing NEW arrived" and "we
  * could not read the folder" are three different facts, and only one of them is a problem
  * the parent can fix (sharing).
  */
-export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first = true } = {}) {
+export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first = true,
+  folders = 0, truncated = false, partial = false } = {}) {
   const s = skipped || {};
   if (!ok) {
     return 'לא הצלחנו לקרוא את התיקיה מדרייב. ודאו שהיא משותפת "לכל מי שיש לו הקישור"';
   }
+  // v1.0.58 — a NESTED import says how it was laid out, because the parent pasted ONE link
+  // and is about to find several folders on the child's home; and a walk that was cut short
+  // or could not read part of the tree SAYS SO (the v1.0.37 rule) instead of quietly
+  // delivering less than the folder holds.
+  const notes = [];
+  if (truncated) notes.push('התיקיה גדולה מאוד, אז נוספה רק ההתחלה');
+  if (partial) notes.push('חלק מתת-התיקיות לא נקראו — ודאו שכולן משותפות');
+  const tail = notes.length ? ' · ' + notes.join(' · ') : '';
   if (added > 0) {
     const what = added === 1 ? 'קובץ אחד' : `${added} קבצים`;
-    return first ? `התיקיה נוספה! ${what} מוכנים` : `נוספו ${what} חדשים`;
+    if (folders > 1) {
+      const where = `ב-${folders} תיקיות`;
+      return (first ? `התיקיה נוספה! ${what} ${where}` : `נוספו ${what} חדשים ${where}`) + tail;
+    }
+    return (first ? `התיקיה נוספה! ${what} מוכנים` : `נוספו ${what} חדשים`) + tail;
   }
+  if (partial) return 'לא הצלחנו לקרוא את תת-התיקיות. ודאו שהן משותפות "לכל מי שיש לו הקישור"';
   if (s.nonMedia && !s.existing && !s.denied) {
     return 'לא נמצאו בתיקיה קבצי שמע או וידאו (קבצים אחרים לא נתמכים)';
   }
