@@ -3412,7 +3412,10 @@ test('the audio-mode reader is in BOTH java copies and needs no permission (v1.0
   }
   // READ_PHONE_STATE would be a runtime permission prompt on a child's tablet, to resume a
   // video. AudioManager.getMode() needs none and catches VoIP as well.
-  const manifest = readRepo('android/app/src/main/AndroidManifest.xml');
+  // ⚠️ COMMENT-STRIPPED. The manifest's own comment NAMES the permissions it refuses, so a
+  // raw grep fires on the very text that documents the rule — the v1.0.45 trap, where three
+  // guards tripped on their own comments. Read what the file DECLARES, not what it says.
+  const manifest = readRepo('android/app/src/main/AndroidManifest.xml').replace(/<!--[\s\S]*?-->/g, '');
   assert.doesNotMatch(manifest, /READ_PHONE_STATE|READ_CALL_LOG|PROCESS_OUTGOING_CALLS/,
     'a telephony permission appeared — call detection must stay permission-free');
   for (const [p, body] of CODE) {
