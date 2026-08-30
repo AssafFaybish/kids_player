@@ -1964,8 +1964,15 @@ export function deniedReAddPrompt(opts) {
   // Destructured from `(opts || {})`, never a `= {}` default parameter: that only fires for
   // `undefined`, so an explicit `null` from a caller reading an absent record would throw
   // — the same trap as `Number(null) === 0` in screenOffMinutes.
-  const { denied = false, exists = false, count = 1 } = opts || {};
+  const { denied = false, exists = false, count = 1, source = '' } = opts || {};
   const n = Math.max(0, Number(count) | 0);
+  // v1.0.61 — the plural sentence names WHERE the parent is standing. It was written for the
+  // links file and says "בקובץ … מהלינקים בקובץ"; a Drive folder import reused it verbatim and
+  // told a parent importing a FOLDER of songs about links in a file they never opened. The
+  // words are the feature (the v1.0.27 rule), so the noun follows the door.
+  const where = source === 'drive-folder'
+    ? { in: 'בתיקיה', of: 'מהקבצים בתיקיה' }
+    : { in: 'בקובץ', of: 'מהלינקים בקובץ' };
   if (!denied || exists || !n) return { ask: false };
   // "בכל המכשירים" is not decoration: un-denying is not a local act, and a parent who
   // thinks otherwise would be surprised on the other tablet.
@@ -1979,8 +1986,8 @@ export function deniedReAddPrompt(opts) {
   }
   return {
     ask: true, emoji: '♻️',
-    title: `${n} מהסרטונים בקובץ הוסרו בעבר — להחזיר אותם?`,
-    text: `${n} מהלינקים בקובץ מפנים לסרטונים שמחקתם בעבר, ולכן הם לא נוספו. `
+    title: `${n} מהסרטונים ${where.in} הוסרו בעבר — להחזיר אותם?`,
+    text: `${n} ${where.of} מפנים לסרטונים שמחקתם בעבר, ולכן הם לא נוספו. `
       + '"החזרה" תבטל את המחיקה שלהם בכל המכשירים; השאר נוספו כרגיל.',
     ok: 'החזרה', cancel: 'לא, להשאיר מוסרים'
   };

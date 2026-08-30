@@ -273,6 +273,49 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.61 — **CONTENT THE PARENT REMOVED CAN BE ADDED AGAIN, AND EVERY DOOR ASKS** (user
+  request: "תוכן זה הוסר בעבר, האם להוסיף אותו שוב כעת?").
+  - **THREE PATHS ALREADY ASKED AND THREE REFUSED IN SILENCE.** Paste, YouTube search and a
+    single Drive file have gone through `plan.deniedReAddPrompt` since v1.0.38. A **share**
+    answered `'denied'` and stopped; a **Drive folder import** skipped the files and said so
+    only when NOTHING else arrived; a **channel add** offered `offerDeniedRestore` only when
+    the channel imported ZERO videos — so a channel where 12 of 40 had been removed here
+    imported the 28 and reported the 12 **nowhere** (`channelAddOutcome` returns from its
+    `if (n)` branch long before it reaches the denied clause). That gate is now gone from
+    both the channel and the playlist branch.
+  - ⚠️ **THE SHARE ASKS *AFTER* THE PARENT CODE, AND THAT ORDER IS THE WHOLE SAFETY
+    PROPERTY.** A share arrives from any app, on a tablet a child is holding. Asking at the
+    deny check — where the refusal used to live — would hand the child a one-tap way to
+    revoke a deletion tombstone by sharing the video back, and **a revoked tombstone travels
+    to every device**. So `routeShare` now only *computes* `denied` there and puts the
+    question below `decision`, where a parent has provably passed the PIN. With **no**
+    interactive handler (browser preview, a thrown handler) nobody has authenticated and the
+    old refusal stands. Guard-pinned by INDEX, not by presence.
+  - **THE DRIVE IMPORT ASKS ONCE FOR THE BATCH** (the links-file precedent): a tree walk can
+    meet dozens of removed files, and dozens of dialogs is a parent tapping "yes" without
+    reading. The keys come from the PLAN (`planDriveFolderImport`/`planDriveTreeImport` now
+    return `deniedKeys`, not just a count) because the caller cannot recompute them — the
+    walk that produced them is a network operation — and the plan is **re-run** after the
+    revoke, so nothing downstream needs to know this happened. Only on a FIRST import
+    (`&& first`): the 30-minute refresh runs unattended and must never raise a dialog at
+    nobody.
+  - ⚠️ **THE PLURAL SENTENCE WAS THE LINKS-FILE COPY, VERBATIM** — it told a parent importing
+    a FOLDER of songs about "מהלינקים בקובץ", a file they never opened. Found in the browser,
+    not by reading. `deniedReAddPrompt` takes a `source` now and the noun follows the door
+    (the v1.0.27 rule: the words ARE the feature).
+  - The v1.0.38 rule is unchanged and still holds: un-denying is **never automatic** — every
+    one of the five paths is an explicit parental answer, and the guard that every `unDeny`
+    in the UI layer sits next to a question covers the two new ones.
+  - 4 unit tests + 2 invariants guards (plus the v1.0.37 restore guard deliberately flipped),
+    every guard proven red on a planted regression (6 — one of which was caught VACUOUS by
+    its own plant: `plan = planDriveTreeImport(` also matched the import's own opening
+    declaration, so the guard stayed green with the entire re-run deleted). Browser-verified
+    end to end through the real PIN gate and a REAL 23-file Drive folder: a share of a
+    deleted video asking only after the code and adding it on "החזרה"; the same share
+    declined leaving the tombstone and storing nothing; three deleted songs re-offered as one
+    question with the honest count and restored; and two declined, staying removed with
+    "לא נוסף כלום — 2 קבצים בתיקיה הוסרו כאן בעבר".
+
 - v1.0.58 REVIEW PASS — **THREE DEFECTS REACHED MAIN, AND A FOURTH WAS BORN FIXING THEM.**
   Found by reading the shipped diff with fresh eyes; every one is now guard-pinned and
   proven red on a planted regression. **All four are the same shape: a green suite over code

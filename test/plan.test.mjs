@@ -2055,6 +2055,36 @@ test('planDriveTreeImport: a re-import REUSES the rows it already made (v1.0.58)
   assert.deepEqual(denied.deniedKeys, ['file:drive:b']);
 });
 
+test('deniedReAddPrompt: the words follow the door the parent came through (v1.0.61)', async () => {
+  const { deniedReAddPrompt } = await import('../www/js/plan.js');
+  // nothing to ask about
+  assert.equal(deniedReAddPrompt({ denied: false }).ask, false);
+  assert.equal(deniedReAddPrompt({ denied: true, exists: true }).ask, false);
+  assert.equal(deniedReAddPrompt({ denied: true, count: 0 }).ask, false);
+  // an explicit null must not throw — the destructure is from (opts || {}) for exactly this
+  assert.equal(deniedReAddPrompt(null).ask, false);
+  // one key: the singular sentence names no container at all
+  const one = deniedReAddPrompt({ denied: true, count: 1 });
+  assert.equal(one.ask, true);
+  assert.match(one.text, /בכל המכשירים/, 'un-denying is not a local act and the parent must be told');
+  // many: the noun follows the source. The plural copy was written for the links FILE, and a
+  // Drive folder import reused it verbatim — telling a parent importing a FOLDER about links
+  // in a file they never opened (found in the browser, not by reading).
+  const file = deniedReAddPrompt({ denied: true, count: 3 });
+  const folder = deniedReAddPrompt({ denied: true, count: 3, source: 'drive-folder' });
+  assert.match(file.title, /בקובץ/);
+  assert.match(file.text, /מהלינקים בקובץ/);
+  assert.match(folder.title, /בתיקיה/);
+  assert.match(folder.text, /מהקבצים בתיקיה/);
+  assert.ok(!folder.title.includes('בקובץ') && !folder.text.includes('בקובץ'),
+    'a Drive folder import still talks about a file');
+  for (const p of [file, folder]) {
+    assert.match(p.title, /^3 /, 'the count in the sentence must be the honest one');
+    assert.match(p.text, /בכל המכשירים/);
+    assert.match(p.text, /השאר נוספו כרגיל/, 'the parent must know the rest of the batch arrived');
+  }
+});
+
 test('planDriveFolderImport: the refused keys travel with the count (v1.0.61)', async () => {
   const { planDriveFolderImport } = await import('../www/js/plan.js');
   const files = [
