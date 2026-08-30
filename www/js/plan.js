@@ -2637,6 +2637,55 @@ export function folderSearchScope({ folderId = null, customRows = [], locked = f
   return [fid, ...ids.filter((id) => id !== fid)];
 }
 
+/**
+ * v1.0.61 — PURE: the words of "⚙️ איך לסנכרן את הערוץ?" (user report: the button hid the
+ * row and asked nothing).
+ *
+ * ⚠️ THE QUESTION IS THE SUBSCRIPTION MODE, NOT THE BACKLOG. The old flow asked "what do I
+ * do with these N videos?" and could only be raised when N > 0 — so a channel whose queue
+ * was empty (Shorts-only, a peer's row this device has not synced yet, an auto-approved
+ * default, or simply a null library scope) was marked "decided" with NO dialog at all and
+ * stayed on manual forever. A mode is a property of the SUBSCRIPTION and can always be
+ * asked; the backlog is a consequence, and the same answer settles it.
+ *
+ * Three answers, and the third is a real button (the v1.0.23 rule — mapping an answer onto
+ * an accidental dismiss lets a child poking the scrim decide what reaches them). "אחר כך"
+ * writes NOTHING, so the row stays where the parent can find it again.
+ */
+export function channelSyncModeDialog({ name = '', pending = 0 } = {}) {
+  const who = String(name || '').trim() || 'הערוץ';
+  const n = Math.max(0, Number(pending) | 0);
+  const waiting = n
+    ? `יש ${n === 1 ? 'סרטון אחד שממתין' : `${n} סרטונים שממתינים`} לאישור. `
+    : 'עדיין אין סרטונים שממתינים. ';
+  // singular/plural written out rather than built with hebCount — that helper appends
+  // "אחד" AFTER its noun, which only reads correctly when the noun phrase ends there
+  const auto = !n ? 'אוטומטי: כל סרטון חדש שיעלה בערוץ ייכנס מעצמו, בלי לשאול. '
+    : n === 1 ? 'אוטומטי: הוא ייכנס עכשיו, וגם כל סרטון חדש שיעלה בערוץ — בלי לשאול שוב. '
+    : 'אוטומטי: הם ייכנסו עכשיו, וגם כל סרטון חדש שיעלה בערוץ — בלי לשאול שוב. ';
+  const manual = !n ? 'ידני: כל סרטון חדש ימתין לאישור שלכם בלשונית "ממתינים".'
+    : n === 1 ? 'ידני: תחליטו עכשיו אם להשאיר אותו, וכל סרטון חדש ימתין לאישור.'
+    : 'ידני: תבחרו עכשיו אילו להשאיר, וכל סרטון חדש ימתין לאישור.';
+  return {
+    title: `איך לסנכרן את ${who}?`,
+    text: waiting + auto + manual,
+    ok: 'אוטומטי', third: 'ידני', cancel: 'אחר כך'
+  };
+}
+
+/** PURE: what the parent is told after answering. A zero names itself (the v1.0.37 rule):
+ *  "nothing was waiting" and "N were approved" are different facts. */
+export function channelSyncModeOutcome({ auto = false, approved = 0, name = '' } = {}) {
+  const who = String(name || '').trim() || 'הערוץ';
+  const n = Math.max(0, Number(approved) | 0);
+  if (auto) {
+    return n
+      ? `${who} יסונכרן אוטומטית · ${n === 1 ? 'סרטון אחד אושר' : `${n} סרטונים אושרו`}`
+      : `${who} יסונכרן אוטומטית — כל סרטון חדש ייכנס מעצמו`;
+  }
+  return `${who} יסונכרן ידנית — כל סרטון חדש ימתין לאישור שלכם`;
+}
+
 /* ---------------- downloaded-file cache (v1.0.58) ----------------
    A video is only ever downloaded when STREAMING it failed, so most families cache
    nothing — but a family whose Drive audio streams badly can accumulate hundreds of

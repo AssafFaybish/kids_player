@@ -39,6 +39,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
   pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys,
   planCacheSweep, planEmptyFolderSweep, deleteLocalChoice, formatBytes, folderSearchScope,
+  channelSyncModeDialog, channelSyncModeOutcome,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText,
@@ -4646,14 +4647,48 @@ async function markChannelDecided(channelId) {
 
 /** A tap on a row in "ערוצים חדשים": the same three-way dialog the add flow raises. */
 async function decideNewChannel(lc) {
-  const res = await offerChannelApproval(lc.channelId);
-  // A channel with an EMPTY queue has nothing to decide (Shorts-only, or auto-approved
-  // meanwhile) — the dialog never opened, and a row that does nothing on tap reads as
-  // broken. Treat the tap itself as the review.
-  if (res.count === 0) {
-    await markChannelDecided(lc.channelId);
-    toast('אין סרטונים שממתינים בערוץ הזה — הועבר לרשימת הערוצים');
+  // ⚠️ v1.0.61 — THE QUESTION IS THE SUBSCRIPTION MODE, ASKED ALWAYS (user report: the
+  // button hid the row and asked nothing, leaving the channel on manual forever).
+  //
+  // It used to delegate to `offerChannelApproval`, which asks about the BACKLOG and returns
+  // BEFORE opening any dialog when the queue is empty — and then this function read
+  // `count === 0` as "the tap was the review", stamped `decidedAt` and moved the row on. Six
+  // different states reach an empty queue: a Shorts-only channel, a peer's row this device
+  // has not synced yet, an auto-approved default, a pending record parked in the PROFILE
+  // scope, `pagePending`'s 5000 cap — and a null library scope, which is the exact failure
+  // an invariant was already written about. In every one of them the parent answered
+  // nothing and the channel silently stayed manual.
+  //
+  // A MODE is a property of the subscription and can always be asked; the backlog is a
+  // consequence, and the same answer settles it.
+  const scope = await currentLibScope();
+  if (!scope) { toast('לא הצלחנו לקרוא את הספרייה — נסו שוב בעוד רגע'); return; }
+  const ch = (await db.getChannel(lc.channelId)) || {};
+  const name = lc.titleOverride || ch.title || (lc.kind === 'playlist' ? 'רשימת ההשמעה' : 'הערוץ');
+  const keys = await pendingKeysOfChannel(lc.channelId);
+  const q = channelSyncModeDialog({ name, pending: keys.length });
+  const answer = await askKid({ emoji: '⚙️', title: q.title, text: q.text, ok: q.ok, third: q.third, cancel: q.cancel });
+  // 'אחר כך' — and a dismiss, which is also what askKid answers when another modal is
+  // already open — writes NOTHING, so the row stays where the parent can find it again.
+  if (answer !== 'ok' && answer !== 'third') return;
+
+  const auto = answer === 'ok';
+  const row = (await db.listLibraryChannels(scope)).find((c) => c.channelId === lc.channelId);
+  // BOTH fields, always: `autoApprove` is the sync mode (and IS the ✅ in the channel list),
+  // `decidedAt` is what clears the row out of "ערוצים חדשים". The old empty-queue path wrote
+  // only the second, which is precisely why the row vanished while nothing was decided.
+  if (row) {
+    await db.putLibraryChannel({
+      ...row, autoApprove: auto, autoApproveSource: 'ui', decidedAt: row.decidedAt || Date.now()
+    });
   }
+  let approved = 0;
+  if (keys.length) {
+    if (auto) { await approveChannelBacklog(keys); approved = keys.length; }
+    else await pickChannelVideos(lc.channelId, '"' + name + '"');
+  }
+  maybeSchedulePush();
+  toast(channelSyncModeOutcome({ auto, approved, name }));
   await Promise.all([refreshChannelsList(), refreshPendingList()]);
   renderHome();
 }
