@@ -6,7 +6,7 @@
 
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
-import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL } from './config.js';
+import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO } from './config.js';
 
 /**
  * v1.0.37 — PURE: the caps a sync actually enforces.
@@ -494,6 +494,47 @@ export function favouriteKeys(states) {
     .filter(([, st]) => favActive(st))
     .sort((x, y) => (Number(x[1].favAt) || 0) - (Number(y[1].favAt) || 0))
     .map(([key]) => key);
+}
+
+/* ---------------- swipe paging (v1.0.57) ---------------- */
+
+/**
+ * v1.0.57 — PURE: what a finished drag over a paged grid means.
+ *
+ * DIRECTION IS RTL, and it is not a style choice: the ◀ "next" arrow sits on the LEFT of
+ * the pager (the DOM puts `prev` first, and `dir="rtl"` mirrors the row), so the next page
+ * lives to the left and the finger drags the current page RIGHTWARDS to bring it in — a
+ * Hebrew book, and Android's own RTL ViewPager. `dx > 0` is therefore 'next'.
+ *
+ * Three refusals, each closing a different collision:
+ *   - travel below SWIPE_MIN_PX: the surface is covered in <button> tiles, so anything a
+ *     child could mean as a TAP (TAP_SLOP_PX = 14) must never also turn a page;
+ *   - vertical dominance: the page scrolls under the same finger, and a scroll that drifts
+ *     sideways is still a scroll — the v1.0.52 lesson, from the other side;
+ *   - slower than SWIPE_MAX_MS: a flick, not a finger resting on the screen mid-read.
+ *
+ * BOUNDS LIVE HERE, not in the caller: the first and last page must absorb the gesture
+ * silently (the arrows are `disabled` there, and a page that "flips" to itself reads as a
+ * broken screen). An UNKNOWN duration does not refuse the gesture — the isTapGesture rule:
+ * an odd WebView that reports no clock must not cost the child every swipe, and the worst
+ * case is a page turn they can undo with one flick back.
+ */
+export function swipePageAction({ dx, dy, dt, page, total } = {}) {
+  const x = Number(dx);
+  const y = Number(dy);
+  const p = Number(page);
+  const n = Number(total);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (!Number.isFinite(p) || !Number.isFinite(n)) return null;
+  const ms = Number(dt);
+  if (Number.isFinite(ms) && ms > SWIPE_MAX_MS) return null;
+  if (Math.abs(x) < SWIPE_MIN_PX) return null;
+  if (Math.abs(x) < Math.abs(y) * SWIPE_RATIO) return null;
+  if (n <= 1) return null;
+  const dir = x > 0 ? 'next' : 'prev';
+  if (dir === 'next' && p >= n - 1) return null;
+  if (dir === 'prev' && p <= 0) return null;
+  return dir;
 }
 
 /* ---------------- rolling window (v1.0.39) ---------------- */

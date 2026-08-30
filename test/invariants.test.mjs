@@ -3099,3 +3099,61 @@ test('the full-tablet break lock: pinned while shown, code-gated exit, released 
   assert.ok(!parentTap.includes('replace'),
     'onLockedParentTap replaces the lock view — cancelling the code drops the child on the gallery');
 });
+
+test('swipe paging is wired to the three grids and nothing else (v1.0.57)', () => {
+  // The gesture shares every surface it lives on with a tap on a <button> tile, a vertical
+  // scroll, and — one view over — the player's own three-meaning finger language. Each
+  // half below is a way for the feature to look right and behave wrong on a device, which
+  // is precisely what node cannot see.
+  const swipe = CODE.get('www/js/ui/swipe.js');
+  const app = CODE.get('www/js/app.js');
+  assert.ok(swipe, 'ui/swipe.js is gone');
+
+  // 1) ONE geometry decision. A second copy — an inline dx check in a handler — is a
+  //    second answer to "was that a swipe or a tap", and the two will disagree.
+  assert.match(swipe, /import \{ swipePageAction \} from '\.\.\/plan\.js'/,
+    'ui/swipe.js no longer delegates to the pure decision');
+  assert.match(swipe, /swipePageAction\(\{/, 'ui/swipe.js stopped calling the pure decision');
+  for (const [p, body] of CODE) {
+    if (p === 'www/js/ui/swipe.js' || p === 'www/js/plan.js') continue;
+    assert.doesNotMatch(body, /swipePageAction/, `${p} decides swipes on its own`);
+  }
+
+  // 2) pointercancel next to pointerup — the v1.0.22 seek-bar invariant, same disease: the
+  //    OS steals drags, no pointerup arrives, and a start left standing pairs with some
+  //    later unrelated release and turns a page nobody asked for.
+  assert.match(swipe, /addEventListener\('pointercancel'/,
+    'the swipe never releases a stolen gesture — a later release will turn a page');
+  assert.match(swipe, /addEventListener\('pointerup'/, 'the swipe lost its end event');
+
+  // 3) The click swallow, in CAPTURE phase. A tile is a <button> and the flick ENDS on one:
+  //    without this, turning the page also opens whatever video the finger released over.
+  //    Bubbling would be too late — the tile's own handler is bound deeper than the host.
+  const click = swipe.slice(swipe.indexOf("addEventListener('click'"));
+  assert.ok(click.includes('preventDefault') && click.includes('stopPropagation'),
+    'the post-swipe click is no longer swallowed — a page turn opens a video');
+  assert.match(click, /\}, true\)/, 'the click swallow left the capture phase — the tile fires first');
+
+  // 4) THE WATCH SURFACE IS THE GRID, NEVER THE PLAYER. Centre tap pauses, double tap
+  //    seeks ±10s, and the shield is what v1.0.52 spent three releases getting right — a
+  //    page turn must never become a fourth meaning for a finger crossing it.
+  const hosts = [...app.matchAll(/attachSwipePager\(\$\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.deepEqual(hosts, ['view-gallery', 'view-folder', 'watch-grid'],
+    'the swipe hosts changed — the watch view must bind its GRID, never the player');
+
+  // 5) The count the swipe reads is the count the arrows were drawn from. The home pager is
+  //    hand-written markup with no object holding it, so updateHomePager must publish it or
+  //    a flick walks the child past the last page onto an empty grid.
+  assert.match(fnSlice(app, 'function updateHomePager('), /homePages\s*=/,
+    'updateHomePager no longer publishes the page count the swipe reads');
+  assert.match(CODE.get('www/js/ui/pager.js'), /state:\s*\(\)\s*=>\s*\(\{ page, total \}\)/,
+    'makePager no longer exposes its live page state to the swipe');
+
+  // 6) `pan-y`, never `none` and never left to `auto`: with `auto` the browser claims a
+  //    slightly-diagonal flick as a scroll and cancels it; with `none` the page cannot
+  //    scroll from the grid at all — the exact v1.0.50/51 bug, on a new surface.
+  const css = readRepoCode('www/css/styles.css');
+  const rule = css.match(/#view-gallery, #view-folder, #watch-grid \{ touch-action: ([a-z-]+); \}/);
+  assert.ok(rule, 'the swipe hosts lost their touch-action rule');
+  assert.equal(rule[1], 'pan-y', 'the swipe hosts must be pan-y — `none` kills scrolling, `auto` kills the swipe');
+});

@@ -18,6 +18,17 @@ export const TAP_SINGLE_DELAY = 280;
 // finger (~2mm), far below a deliberate swipe.
 export const TAP_SLOP_PX = 14;
 
+/* Swipe paging (v1.0.57) — a flick left/right turns a page of tiles, next to the arrows.
+   INVARIANT: SWIPE_MIN_PX > TAP_SLOP_PX, and by a wide margin. The two gestures share
+   every surface (a tile is a <button>), so a travel that reads as a tap must never also
+   read as a swipe. SWIPE_RATIO is what keeps a VERTICAL scroll from turning pages: the
+   page scrolls under the same finger, and a scroll that drifts sideways is still a scroll.
+   The time bound makes it a FLICK — a slow drag across the screen while reading is not a
+   page turn. */
+export const SWIPE_MIN_PX = 56;   // horizontal travel that counts as a deliberate flick
+export const SWIPE_MAX_MS = 900;  // slower than this is a drag, not a flick
+export const SWIPE_RATIO = 1.4;   // |dx| must beat |dy| by this much to be "horizontal"
+
 /* Continuous play (v1.0.25) — OFF by default, per profile, synced.
    The countdown is the child's only visible way out of a chain: it must be long enough
    for a 5-year-old to notice the screen changed and reach the stop button, and short

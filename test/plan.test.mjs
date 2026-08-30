@@ -1804,3 +1804,73 @@ test('evalScheduledLock: switching the feature OFF beats a leftover lockedUntil'
   assert.equal(evalScheduledLock({ afterMin: 0, lockedUntil: Date.now() + 9e6 }).phase, 'off');
   assert.equal(evalScheduledLock({ afterMin: -5, lockedUntil: Date.now() + 9e6 }).phase, 'off');
 });
+
+/* ---------------- swipe paging (v1.0.57) ---------------- */
+
+test('swipePageAction: RTL direction — a flick RIGHT turns to the NEXT page', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  // The pager puts `prev` first in the DOM and dir="rtl" mirrors the row, so the ◀ "next"
+  // button sits on the LEFT: the next page lives there, and the finger drags the current
+  // page rightwards to bring it in (a Hebrew book; Android's own RTL ViewPager).
+  // Getting this backwards is invisible to every other test — the app would page fine and
+  // feel wrong — so it is pinned by direction, not by "a swipe does something".
+  const mid = { dt: 200, page: 1, total: 4 };
+  assert.equal(swipePageAction({ dx: 90, dy: 0, ...mid }), 'next');
+  assert.equal(swipePageAction({ dx: -90, dy: 0, ...mid }), 'prev');
+});
+
+test('swipePageAction: a TAP can never be a page turn', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  const { TAP_SLOP_PX, SWIPE_MIN_PX } = await import('../www/js/config.js');
+  // Every tile is a <button> and both gestures share the surface. The whole tap band must
+  // be refused, with room to spare — a child's finger wobbles.
+  assert.ok(SWIPE_MIN_PX > TAP_SLOP_PX * 2, 'the swipe threshold no longer clears the tap slop');
+  for (const dx of [0, 5, TAP_SLOP_PX, SWIPE_MIN_PX - 1]) {
+    assert.equal(swipePageAction({ dx, dy: 0, dt: 120, page: 1, total: 4 }), null, `dx=${dx} turned a page`);
+    assert.equal(swipePageAction({ dx: -dx, dy: 0, dt: 120, page: 1, total: 4 }), null, `dx=-${dx} turned a page`);
+  }
+  assert.equal(swipePageAction({ dx: SWIPE_MIN_PX, dy: 0, dt: 120, page: 1, total: 4 }), 'next');
+});
+
+test('swipePageAction: a vertical SCROLL that drifts sideways is still a scroll', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  // The child scrolls the grid with the same finger on the same surface. A scroll must
+  // never turn a page — the v1.0.52 collision, from the other side.
+  assert.equal(swipePageAction({ dx: 70, dy: 300, dt: 300, page: 1, total: 4 }), null);
+  assert.equal(swipePageAction({ dx: 70, dy: 70, dt: 300, page: 1, total: 4 }), null, 'a 45° drag is ambiguous, not a page turn');
+  // clearly horizontal, with the vertical wobble a real finger has
+  assert.equal(swipePageAction({ dx: 200, dy: 40, dt: 300, page: 1, total: 4 }), 'next');
+});
+
+test('swipePageAction: a slow DRAG is not a flick, but an unknown clock never costs a swipe', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  const { SWIPE_MAX_MS } = await import('../www/js/config.js');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: SWIPE_MAX_MS + 1, page: 1, total: 4 }), null);
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: SWIPE_MAX_MS, page: 1, total: 4 }), 'next');
+  // FAIL OPEN on a missing duration — the isTapGesture rule: an odd WebView reporting no
+  // clock must not cost the child every swipe, and a stray page turn is one flick to undo.
+  assert.equal(swipePageAction({ dx: 200, dy: 0, page: 1, total: 4 }), 'next');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: NaN, page: 1, total: 4 }), 'next');
+});
+
+test('swipePageAction: the first and last pages absorb the gesture silently', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  // The arrows are `disabled` at the ends; a swipe that "flipped" to the same page would
+  // read as a broken screen. Bounds live in the helper so no caller can forget them.
+  assert.equal(swipePageAction({ dx: -200, dy: 0, dt: 200, page: 0, total: 4 }), null, 'paged before the first page');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 200, page: 3, total: 4 }), null, 'paged past the last page');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 200, page: 0, total: 1 }), null, 'a single page cannot turn');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 200, page: 0, total: 4 }), 'next');
+  assert.equal(swipePageAction({ dx: -200, dy: 0, dt: 200, page: 3, total: 4 }), 'prev');
+});
+
+test('swipePageAction: junk geometry is refused, and the call is total', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  for (const bad of [
+    {}, undefined, { dx: NaN, dy: 0, page: 1, total: 4 }, { dx: 200, dy: NaN, page: 1, total: 4 },
+    { dx: 200, dy: 0, page: NaN, total: 4 }, { dx: 200, dy: 0, page: 1, total: null },
+    { dx: Infinity, dy: 0, page: 1, total: 4 }
+  ]) {
+    assert.equal(swipePageAction(bad), null, `junk turned a page: ${JSON.stringify(bad)}`);
+  }
+});

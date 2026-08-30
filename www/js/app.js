@@ -40,6 +40,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
 import { makePager } from './ui/pager.js';
+import { attachSwipePager } from './ui/swipe.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
 import * as db from './db.js';
@@ -63,6 +64,7 @@ const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
 let items = [];                       // legacy Preferences list — parent screen only
 let source = { mode: 'manual', url: '' };
 let page = 0;                         // home page (folder tiles OR flat single-folder)
+let homePages = 1;                    // v1.0.57: page COUNT, for the swipe (updateHomePager)
 let currentWatch = null;
 let profiles = [];
 let createSel = null;
@@ -2210,7 +2212,9 @@ async function renderHome() {
   const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
   grid.classList.toggle('hidden', empty);
-  if (empty) { $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
+  // v1.0.57: homePages back to 1 here too — this early return skips updateHomePager, and a
+  // count left over from the previous profile would let a swipe page an empty home.
+  if (empty) { homePages = 1; $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
   if (shouldFlattenHome(folders)) {
     // shouldFlattenHome only says yes for a SINGLE non-🎁 folder, so folders[0] is it
@@ -2229,6 +2233,10 @@ async function renderHome() {
 }
 
 function updateHomePager(total) {
+  // v1.0.57: the swipe reads this. The home pager is hand-written markup (the exit button
+  // lives inside its bar), so unlike the folder/watch pagers it has no object holding the
+  // count — and a swipe that guessed the count could walk the child past the last page.
+  homePages = Math.max(1, Number(total) || 1);
   const controls = $('pg-controls');
   if (total > 1) {
     controls.classList.remove('hidden');
@@ -6717,6 +6725,34 @@ function wire() {
 
   $('pg-prev').addEventListener('click', () => { page -= 1; renderHome(); });
   $('pg-next').addEventListener('click', () => { page += 1; renderHome(); });
+
+  // v1.0.57 — THE SAME PAGE TURN, BY FINGER (user request). Bound ONCE here, on elements
+  // that live in index.html and are never replaced, so no render can leak a listener.
+  //
+  // The home and the folder listen on the WHOLE VIEW: the user asked to swipe "on the app
+  // screen", and a child's flick starts wherever their hand is — over the grid, over the
+  // gap beside it, over the pager bar. The WATCH view deliberately listens on its GRID
+  // ALONE: the player above it owns its own gesture language (centre tap pauses, double
+  // tap seeks ±10s, and the shield is the surface v1.0.52 spent three releases getting
+  // right), and a page flip must never be a fourth meaning for a finger crossing it.
+  //
+  // Every state getter reads the LIVE numbers at gesture end — the pager object for the
+  // two that have one, `homePages` for the hand-written home pager (its markup predates
+  // makePager and carries the exit button, so it is not one).
+  attachSwipePager($('view-gallery'), (dir) => {
+    page += dir === 'next' ? 1 : -1;
+    renderHome();
+  }, () => ({ page, total: homePages }));
+
+  attachSwipePager($('view-folder'), (dir) => {
+    folderPage += dir === 'next' ? 1 : -1;
+    renderFolderView().catch(() => {});
+  }, () => (folderPagerObj ? folderPagerObj.state() : null));
+
+  attachSwipePager($('watch-grid'), (dir) => {
+    watchPage += dir === 'next' ? 1 : -1;
+    renderWatchGrid(currentWatch);
+  }, () => (watchPager ? watchPager.state() : null));
   $('exit-btn').addEventListener('click', askExit);
   // v1.0.32: the picker's exit button — same flow as hardware back there (user request)
   $('profiles-exit').addEventListener('click', askExit);
