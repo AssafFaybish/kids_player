@@ -229,6 +229,24 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Swipe paging (v1.0.57 — the browser proved the decision and the wiring; these are the
+### parts only a real finger on a real panel can answer)
+- [ ] **A flick turns the page in all three grids**: home, a folder, and the grid under the
+      player. RTL — a swipe to the RIGHT goes to the NEXT page (the ◀ arrow's direction),
+      left goes back. The blue arrows still work and still disable at the ends.
+- [ ] **A vertical scroll never turns a page** — with a real finger on a scrolling folder,
+      including a scroll that drifts sideways. This is browser gesture ARBITRATION
+      (`touch-action: pan-y`), which no synthetic pointer event can prove.
+- [ ] **The flick that ends on a tile does not open that video**, and an ordinary tap still
+      does. Try both fast and slow flicks — the ceiling is deliberately loose (2500ms), so
+      an unhurried deliberate drag must still turn the page.
+- [ ] **A swipe across the PLAYER changes nothing**: centre tap still pauses, double tap
+      still seeks ±10s, and the under-player grid keeps its page.
+- [ ] **In the bottom gesture inset**: a flick started at the very bottom of the screen
+      belongs to Android (back / home). It must not leave the app in a state where the NEXT
+      swipe is ignored — the v1.0.57 lost-end bug, whose fix is pinned but whose trigger is
+      the OS.
+
 ### Drive files + audio (v1.0.56 — the browser proves the scene and the parsers, NOT these)
 - [ ] **A Drive mp3 plays and looks like music**: share an mp3 in Drive as "anyone with the
       link", paste the link in הוספה → the tile carries its REAL name (from the file's
