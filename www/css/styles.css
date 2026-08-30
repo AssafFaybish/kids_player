@@ -116,6 +116,15 @@ body {
   margin: 0 auto;
 }
 
+/* v1.0.57 — the surfaces ui/swipe.js listens on. `pan-y` is NOT decoration and never
+   `none`: it hands VERTICAL panning to the browser (these screens scroll) and keeps
+   HORIZONTAL gestures for us. With the default `auto` the browser may claim a
+   slightly-diagonal flick as a scroll and fire pointercancel, so the page turn would work
+   only for a perfectly straight finger; with `none` the page could not scroll from the
+   grid at all — the exact bug v1.0.50/51 could not find and v1.0.52 fixed on the player's
+   shield. Same split, other surface. */
+#view-gallery, #view-folder, #watch-grid { touch-action: pan-y; }
+
 /* ---------- Search (v1.0.7) ---------- */
 .search-launcher {
   display: flex; align-items: center; justify-content: center; gap: 6px;

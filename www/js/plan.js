@@ -6,7 +6,8 @@
 
 import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
-import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL } from './config.js';
+import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO,
+  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT } from './config.js';
 
 /**
  * v1.0.37 — PURE: the caps a sync actually enforces.
@@ -496,6 +497,95 @@ export function favouriteKeys(states) {
     .map(([key]) => key);
 }
 
+/* ---------------- swipe paging (v1.0.57) ---------------- */
+
+/**
+ * v1.0.57 — PURE: what a finished drag over a paged grid means.
+ *
+ * DIRECTION IS RTL, and it is not a style choice: the ◀ "next" arrow sits on the LEFT of
+ * the pager (the DOM puts `prev` first, and `dir="rtl"` mirrors the row), so the next page
+ * lives to the left and the finger drags the current page RIGHTWARDS to bring it in — a
+ * Hebrew book, and Android's own RTL ViewPager. `dx > 0` is therefore 'next'.
+ *
+ * Three refusals, each closing a different collision:
+ *   - travel below SWIPE_MIN_PX: the surface is covered in <button> tiles, so anything a
+ *     child could mean as a TAP (TAP_SLOP_PX = 14) must never also turn a page;
+ *   - vertical dominance: the page scrolls under the same finger, and a scroll that drifts
+ *     sideways is still a scroll — the v1.0.52 lesson, from the other side;
+ *   - slower than SWIPE_MAX_MS: a finger that was RESTING on the screen and wandered off a
+ *     tile. Deliberately a loose ceiling and not a flick test — see config.js: measuring a
+ *     real swipe is what corrected that, and a slow deliberate drag is a page turn.
+ *
+ * BOUNDS LIVE HERE, not in the caller: the first and last page must absorb the gesture
+ * silently (the arrows are `disabled` there, and a page that "flips" to itself reads as a
+ * broken screen). An UNKNOWN duration does not refuse the gesture — the isTapGesture rule:
+ * an odd WebView that reports no clock must not cost the child every swipe, and the worst
+ * case is a page turn they can undo with one flick back.
+ */
+export function swipePageAction({ dx, dy, dt, page, total } = {}) {
+  const x = Number(dx);
+  const y = Number(dy);
+  const p = Number(page);
+  const n = Number(total);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (!Number.isFinite(p) || !Number.isFinite(n)) return null;
+  const ms = Number(dt);
+  if (Number.isFinite(ms) && ms > SWIPE_MAX_MS) return null;
+  if (Math.abs(x) < SWIPE_MIN_PX) return null;
+  if (Math.abs(x) < Math.abs(y) * SWIPE_RATIO) return null;
+  if (n <= 1) return null;
+  const dir = x > 0 ? 'next' : 'prev';
+  if (dir === 'next' && p >= n - 1) return null;
+  if (dir === 'prev' && p <= 0) return null;
+  return dir;
+}
+
+/* ---------------- 🕒 נצפה לאחרונה (v1.0.57) ---------------- */
+
+/**
+ * v1.0.57 — PURE: how many videos the "watched recently" folder holds. 0 = OFF.
+ *
+ * ⚠️ THE UNSET CHECK MUST PRECEDE THE COERCION, and this is the third feature to say so
+ * (`plan.screenOffMinutes`, `plan.normalizeLockMinutes`): `Number(null) === 0`, so reading
+ * the value first would turn "the parent never opened this screen" into an explicit
+ * "off" and silently discard the default.
+ *
+ * A nonsense value falls back to the DEFAULT, never to 0 — the `planRejectedPurge` rule,
+ * pointing the opposite way to `keepNewestPerChannel` because the directions are not
+ * symmetric: there, a typo must not start proposing DELETIONS; here, the worst a wrong
+ * value can do is show a shortcut folder nobody asked for, while reading a typo as OFF
+ * would quietly remove a folder the child navigates by.
+ */
+export function recentLimitFor(raw, { def = RECENT_DEFAULT_LIMIT, max = RECENT_MAX_LIMIT } = {}) {
+  if (raw === null || raw === undefined || raw === '') return def; // never written
+  const n = Number(raw);
+  if (n === 0) return 0;                       // an explicit 0 IS the answer: off
+  if (!Number.isFinite(n) || n < 0) return def;
+  return Math.min(max, Math.max(1, Math.floor(n)));
+}
+
+/**
+ * v1.0.57 — PURE: the folder's contents, newest watch FIRST (the user's explicit order).
+ *
+ * The OPPOSITE of ⭐'s ascending order, and deliberately: ⭐ is a shelf the child builds and
+ * navigates by position, while this folder's whole promise is "what I was just watching is
+ * at the front". The cost is stated where it matters: THE FOLDER REORDERS ITSELF AFTER
+ * EVERY VIDEO, which is why the watch-grid chain runs on a snapshot (see app.openWatch) —
+ * a live re-read would make "the next video" the one that just moved, forever.
+ */
+export function recentKeys(states, limit) {
+  const n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0) return [];
+  const entries = states instanceof Map
+    ? [...states.entries()]
+    : Object.entries(states && typeof states === 'object' ? states : {});
+  return entries
+    .filter(([key, st]) => key && st && Number(st.playedAt) > 0)
+    .sort((x, y) => (Number(y[1].playedAt) || 0) - (Number(x[1].playedAt) || 0))
+    .slice(0, Math.floor(n))
+    .map(([key]) => key);
+}
+
 /* ---------------- rolling window (v1.0.39) ---------------- */
 
 /**
@@ -617,9 +707,17 @@ export function planChannelWindow({ records, keep, protectedKeys = new Set() }) 
  * only the active one: on a legacy shared scope, one child's window must never prune the
  * sibling's favourite (the same cross-profile rule `db.deleteVideoStates` follows).
  */
-export function protectedWindowKeys({ records = [], states = null, statesByProfile = null } = {}) {
+export function protectedWindowKeys({ records = [], states = null, statesByProfile = null, recent = null } = {}) {
   const out = new Set();
   for (const rec of records) if (rec && rec.key && rec.keepForever) out.add(rec.key);
+  // v1.0.57 — WHATEVER IS IN 🕒 RIGHT NOW IS PROTECTED (the user's decision 2026-08-30).
+  // A watch stamp is the honest play signal this feature has always lacked: `posSec` below
+  // is cleared by a video watched to the END (resumeSaveDecision), so the most-rewatched
+  // video — exactly the one the rationale is about — carries no position at all. The keys
+  // arrive COMPUTED because the limit is per profile and a sibling on a legacy shared
+  // library has their own; unioning "every video ever watched" instead would quietly gut
+  // the window it is protecting from.
+  for (const key of (Array.isArray(recent) ? recent : [])) if (key) out.add(key);
   const readEntries = (s) => (s instanceof Map
     ? [...s.entries()]
     : Object.entries(s && typeof s === 'object' ? s : {}));

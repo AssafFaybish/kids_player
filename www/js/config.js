@@ -18,6 +18,22 @@ export const TAP_SINGLE_DELAY = 280;
 // finger (~2mm), far below a deliberate swipe.
 export const TAP_SLOP_PX = 14;
 
+/* Swipe paging (v1.0.57) — a flick left/right turns a page of tiles, next to the arrows.
+   INVARIANT: SWIPE_MIN_PX > TAP_SLOP_PX, and by a wide margin. The two gestures share
+   every surface (a tile is a <button>), so a travel that reads as a tap must never also
+   read as a swipe. SWIPE_RATIO is what keeps a VERTICAL scroll from turning pages: the
+   page scrolls under the same finger, and a scroll that drifts sideways is still a scroll.
+   SWIPE_MAX_MS IS A SANITY CEILING, NOT A FLICK DETECTOR, and the difference was measured
+   (2026-08-30, browser): the first version used 900ms on the theory that "a page turn is a
+   flick" — and refused real swipes. The app cannot track a drag live (it flips on release),
+   so DISTANCE is the whole "did you mean it" test; a 5-year-old dragging deliberately and
+   slowly across a tablet is a page turn, not a mistake. What the ceiling still catches is a
+   finger PARKED on the screen for seconds that then wanders off a tile — reversible either
+   way, which is why erring long is the safe direction here. */
+export const SWIPE_MIN_PX = 56;   // horizontal travel that counts as a deliberate swipe
+export const SWIPE_MAX_MS = 2500; // beyond this the finger was resting, not swiping
+export const SWIPE_RATIO = 1.4;   // |dx| must beat |dy| by this much to be "horizontal"
+
 /* Continuous play (v1.0.25) — OFF by default, per profile, synced.
    The countdown is the child's only visible way out of a chain: it must be long enough
    for a 5-year-old to notice the screen changed and reach the stop button, and short
@@ -76,6 +92,21 @@ export const SCHED_LOCK_DEFAULT_DURATION_MIN = 20;
 export const SCREEN_OFF_DEFAULT_MIN = 10;
 export const SCREEN_OFF_PROMPT_SEC = 45;
 
+
+/* v1.0.57 — 🕒 "נצפה לאחרונה": the last N videos this child watched, in their own folder at
+   the top of the home, IN ADDITION to wherever the video really lives (user request).
+   Per profile, SYNCED (the number is a parenting choice); the WATCH STAMPS THEMSELVES ARE
+   DEVICE-LOCAL, exactly like the resume position and for the same reason — "what was
+   watched here" is about the tablet in the child's hands, and pushing a timestamp per
+   video watched would rewrite the family document all afternoon (user decision 2026-08-30).
+   ⚠️ DEFAULT IS ON at 10, so this arrives with the update for every existing family — the
+   SCREEN_OFF_DEFAULT_MIN precedent, and it must ride the release notes the same way. */
+export const RECENT_DEFAULT_LIMIT = 10;
+export const RECENT_MAX_LIMIT = 50;   // beyond this the folder stops being a shortcut
+// A video counts as WATCHED after this many seconds of playback (user decision): a child's
+// mistaken tap, or a two-second peek, must not evict something they actually watched from a
+// 10-slot folder. A video that ENDS counts regardless — a 6-second clip can never reach it.
+export const RECENT_MIN_PLAY_SEC = 10;
 
 /* v1.0.39 — ROLLING WINDOW: keep only the newest N videos per channel.
    0 = OFF, and OFF IS THE DEFAULT. This is the only feature in the app that deletes the

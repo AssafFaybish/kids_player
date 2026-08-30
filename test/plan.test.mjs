@@ -1804,3 +1804,181 @@ test('evalScheduledLock: switching the feature OFF beats a leftover lockedUntil'
   assert.equal(evalScheduledLock({ afterMin: 0, lockedUntil: Date.now() + 9e6 }).phase, 'off');
   assert.equal(evalScheduledLock({ afterMin: -5, lockedUntil: Date.now() + 9e6 }).phase, 'off');
 });
+
+/* ---------------- swipe paging (v1.0.57) ---------------- */
+
+test('swipePageAction: RTL direction — a flick RIGHT turns to the NEXT page', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  // The pager puts `prev` first in the DOM and dir="rtl" mirrors the row, so the ◀ "next"
+  // button sits on the LEFT: the next page lives there, and the finger drags the current
+  // page rightwards to bring it in (a Hebrew book; Android's own RTL ViewPager).
+  // Getting this backwards is invisible to every other test — the app would page fine and
+  // feel wrong — so it is pinned by direction, not by "a swipe does something".
+  const mid = { dt: 200, page: 1, total: 4 };
+  assert.equal(swipePageAction({ dx: 90, dy: 0, ...mid }), 'next');
+  assert.equal(swipePageAction({ dx: -90, dy: 0, ...mid }), 'prev');
+});
+
+test('swipePageAction: a TAP can never be a page turn', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  const { TAP_SLOP_PX, SWIPE_MIN_PX } = await import('../www/js/config.js');
+  // Every tile is a <button> and both gestures share the surface. The whole tap band must
+  // be refused, with room to spare — a child's finger wobbles.
+  assert.ok(SWIPE_MIN_PX > TAP_SLOP_PX * 2, 'the swipe threshold no longer clears the tap slop');
+  for (const dx of [0, 5, TAP_SLOP_PX, SWIPE_MIN_PX - 1]) {
+    assert.equal(swipePageAction({ dx, dy: 0, dt: 120, page: 1, total: 4 }), null, `dx=${dx} turned a page`);
+    assert.equal(swipePageAction({ dx: -dx, dy: 0, dt: 120, page: 1, total: 4 }), null, `dx=-${dx} turned a page`);
+  }
+  assert.equal(swipePageAction({ dx: SWIPE_MIN_PX, dy: 0, dt: 120, page: 1, total: 4 }), 'next');
+});
+
+test('swipePageAction: a vertical SCROLL that drifts sideways is still a scroll', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  // The child scrolls the grid with the same finger on the same surface. A scroll must
+  // never turn a page — the v1.0.52 collision, from the other side.
+  assert.equal(swipePageAction({ dx: 70, dy: 300, dt: 300, page: 1, total: 4 }), null);
+  assert.equal(swipePageAction({ dx: 70, dy: 70, dt: 300, page: 1, total: 4 }), null, 'a 45° drag is ambiguous, not a page turn');
+  // clearly horizontal, with the vertical wobble a real finger has
+  assert.equal(swipePageAction({ dx: 200, dy: 40, dt: 300, page: 1, total: 4 }), 'next');
+});
+
+test('swipePageAction: a parked finger is refused, but an unknown clock never costs a swipe', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  const { SWIPE_MAX_MS } = await import('../www/js/config.js');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: SWIPE_MAX_MS + 1, page: 1, total: 4 }), null);
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: SWIPE_MAX_MS, page: 1, total: 4 }), 'next');
+  // MEASURED, not assumed (2026-08-30): the ceiling started at 900ms as a "flick" test and
+  // refused real swipes in the browser. A small child drags slowly and means it, and the
+  // app flips on RELEASE — distance is the whole intent test, so the ceiling must stay
+  // loose enough to pass an unhurried deliberate drag.
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 1200, page: 1, total: 4 }), 'next',
+    'an unhurried but deliberate drag is a page turn');
+  assert.ok(SWIPE_MAX_MS >= 2000, 'the ceiling tightened back into the range of a real slow swipe');
+  // FAIL OPEN on a missing duration — the isTapGesture rule: an odd WebView reporting no
+  // clock must not cost the child every swipe, and a stray page turn is one flick to undo.
+  assert.equal(swipePageAction({ dx: 200, dy: 0, page: 1, total: 4 }), 'next');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: NaN, page: 1, total: 4 }), 'next');
+});
+
+test('swipePageAction: the first and last pages absorb the gesture silently', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  // The arrows are `disabled` at the ends; a swipe that "flipped" to the same page would
+  // read as a broken screen. Bounds live in the helper so no caller can forget them.
+  assert.equal(swipePageAction({ dx: -200, dy: 0, dt: 200, page: 0, total: 4 }), null, 'paged before the first page');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 200, page: 3, total: 4 }), null, 'paged past the last page');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 200, page: 0, total: 1 }), null, 'a single page cannot turn');
+  assert.equal(swipePageAction({ dx: 200, dy: 0, dt: 200, page: 0, total: 4 }), 'next');
+  assert.equal(swipePageAction({ dx: -200, dy: 0, dt: 200, page: 3, total: 4 }), 'prev');
+});
+
+test('swipePageAction: junk geometry is refused, and the call is total', async () => {
+  const { swipePageAction } = await import('../www/js/plan.js');
+  for (const bad of [
+    {}, undefined, { dx: NaN, dy: 0, page: 1, total: 4 }, { dx: 200, dy: NaN, page: 1, total: 4 },
+    { dx: 200, dy: 0, page: NaN, total: 4 }, { dx: 200, dy: 0, page: 1, total: null },
+    { dx: Infinity, dy: 0, page: 1, total: 4 }
+  ]) {
+    assert.equal(swipePageAction(bad), null, `junk turned a page: ${JSON.stringify(bad)}`);
+  }
+});
+
+/* ---------------- 🕒 נצפה לאחרונה (v1.0.57) ---------------- */
+
+test('recentLimitFor: never-written is the DEFAULT, and only an explicit 0 is off', async () => {
+  const { recentLimitFor } = await import('../www/js/plan.js');
+  const { RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT } = await import('../www/js/config.js');
+  // THE TRAP THIS TEST EXISTS FOR (third feature to hit it — screenOffMinutes,
+  // normalizeLockMinutes): Number(null) === 0, so coercing before the unset check turns
+  // "the parent never opened this screen" into an explicit "off" and eats the default.
+  assert.equal(recentLimitFor(null), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(undefined), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(''), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(0), 0, 'an explicit 0 must stay off');
+  assert.equal(recentLimitFor('0'), 0);
+  assert.equal(recentLimitFor(25), 25);
+  assert.equal(recentLimitFor('7'), 7);
+  assert.equal(recentLimitFor(3.7), 3, 'a fraction floors, never rounds up past the parent\'s number');
+  assert.equal(recentLimitFor(9999), RECENT_MAX_LIMIT, 'clamped — past this it stops being a shortcut');
+  // nonsense falls back to the DEFAULT, never to 0: the opposite direction to
+  // keepNewestPerChannel, because there a typo must not propose DELETIONS while here the
+  // worst case is a folder the parent did not ask for — and reading a typo as "off" would
+  // quietly remove a folder the child navigates by.
+  assert.equal(recentLimitFor('abc'), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(NaN), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(-4), RECENT_DEFAULT_LIMIT);
+  // Infinity is NONSENSE, not "a very large number": it cannot be typed into the field, so
+  // it can only arrive from a corrupted or hostile value, and nonsense takes the default
+  // like every other unusable input. Clamping it to the max instead would silently honour
+  // garbage as if the parent had asked for the biggest folder the app allows.
+  assert.equal(recentLimitFor(Infinity), RECENT_DEFAULT_LIMIT);
+  assert.equal(recentLimitFor(RECENT_MAX_LIMIT + 1), RECENT_MAX_LIMIT, 'a real number over the max clamps');
+});
+
+test('recentKeys: newest watch FIRST, capped at the limit', async () => {
+  const { recentKeys } = await import('../www/js/plan.js');
+  const states = new Map([
+    ['a', { playedAt: 300 }],
+    ['b', { playedAt: 100 }],
+    ['c', { playedAt: 500 }],
+    ['d', { favAt: 900 }],            // starred but never watched — not in 🕒
+    ['e', { playedAt: 0 }],           // an explicit zero is not a watch
+    ['f', { playedAt: 'nonsense' }]
+  ]);
+  assert.deepEqual(recentKeys(states, 10), ['c', 'a', 'b']);
+  // the cap keeps the NEWEST, which is the whole promise of the folder
+  assert.deepEqual(recentKeys(states, 2), ['c', 'a']);
+  assert.deepEqual(recentKeys(states, 0), [], 'off means empty, never "all of them"');
+  assert.deepEqual(recentKeys(states, -1), []);
+  assert.deepEqual(recentKeys(states, 'x'), []);
+  // it must read a MAP as readily as an object — giftStates is a Map, and reading it with
+  // Object.entries is precisely how v1.0.39 shipped a silent no-op (CLAUDE.md's own lesson)
+  assert.deepEqual(recentKeys({ a: { playedAt: 1 }, b: { playedAt: 2 } }, 5), ['b', 'a']);
+  assert.deepEqual(recentKeys(null, 5), []);
+  assert.deepEqual(recentKeys(undefined, 5), []);
+});
+
+test('recentKeys order is the OPPOSITE of favouriteKeys, deliberately', async () => {
+  const { recentKeys, favouriteKeys } = await import('../www/js/plan.js');
+  // ⭐ is a shelf the child builds and navigates BY POSITION, so a new star appends
+  // (v1.0.40). 🕒's entire promise is "what I was just watching is at the front". Two
+  // folders, two orders, and each one's rationale forbids the other's.
+  const states = new Map([['old', { favAt: 1, playedAt: 1 }], ['new', { favAt: 2, playedAt: 2 }]]);
+  assert.deepEqual(favouriteKeys(states), ['old', 'new']);
+  assert.deepEqual(recentKeys(states, 5), ['new', 'old']);
+});
+
+test('protectedWindowKeys: 🕒 members are protected from the rolling window (v1.0.57)', async () => {
+  const { protectedWindowKeys } = await import('../www/js/plan.js');
+  // The user's decision 2026-08-30, and it repairs the documented weakness of v1.0.39:
+  // `posSec` is CLEARED by a video watched to the END, so the most-rewatched video — the
+  // one the whole rationale is about — carried no signal at all. A watch stamp does.
+  const guarded = protectedWindowKeys({
+    records: [{ key: 'kept', keepForever: true }],
+    states: new Map([['starred', { favAt: 5 }], ['half', { posSec: 40 }], ['seen', { playedAt: 7 }]]),
+    recent: ['seen', 'sibling-seen']
+  });
+  assert.ok(guarded.has('kept') && guarded.has('starred') && guarded.has('half'));
+  assert.ok(guarded.has('seen'), 'the child\'s own recent video is prunable');
+  assert.ok(guarded.has('sibling-seen'), 'a sibling\'s recent video is prunable on a shared library');
+  // the keys arrive COMPUTED: unioning "every video ever watched" would gut the window
+  const noRecent = protectedWindowKeys({ records: [], states: new Map([['seen', { playedAt: 7 }]]) });
+  assert.ok(!noRecent.has('seen'), 'a watch stamp alone must not protect — only 🕒 membership does');
+  assert.deepEqual([...protectedWindowKeys({ recent: [null, ''] })], []);
+});
+
+test('stateRowIsSpent: the row survives while ANY feature still has something on it', async () => {
+  const { stateRowIsSpent } = await import('../www/js/normalize.js');
+  // ⚠️ THE BUG THIS EXISTS FOR: db.clearPlayPosition (every video watched to the END with
+  // resume on) deleted the row whenever it carried no giftRank and no unwrappedAt — a check
+  // written in v1.0.32, before ⭐ existed. A starred, never-gifted video watched to the end
+  // lost its star silently, and wrote no favOffAt either, so a peer could re-star it.
+  assert.equal(stateRowIsSpent({ favAt: 5 }), false, 'a ⭐ would be deleted with the row');
+  assert.equal(stateRowIsSpent({ favOffAt: 5 }), false, 'an un-star is an EVENT that must travel');
+  assert.equal(stateRowIsSpent({ playedAt: 5 }), false, 'the 🕒 stamp would be deleted with the row');
+  assert.equal(stateRowIsSpent({ giftRank: 0 }), false, 'rank 0 is a real rank');
+  assert.equal(stateRowIsSpent({ unwrappedAt: 5 }), false);
+  assert.equal(stateRowIsSpent({ posSec: 0 }), false, 'a stored 0 position is still stored');
+  assert.equal(stateRowIsSpent({ profileId: 'p', key: 'k' }), true);
+  assert.equal(stateRowIsSpent({}), true);
+  assert.equal(stateRowIsSpent(null), true);
+});

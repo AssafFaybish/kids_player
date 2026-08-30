@@ -273,6 +273,119 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.57 — **A PAGE OF TILES TURNS WITH A FINGER** (user request: keep the blue arrows,
+  and also swipe left/right on the app screen).
+  - **THE ARROWS STAY, and that is not politeness**: a TV remote produces NO pointer
+    events at all, so they are the only pager on Android TV — and they are what tells a
+    child another page exists. The flick is added beside them, never instead.
+  - **RTL: A SWIPE TO THE RIGHT IS THE *NEXT* PAGE.** The pager puts `prev` first in the
+    DOM and `dir="rtl"` mirrors the row, so the ◀ "next" button sits on the LEFT: the next
+    page lives there, and the finger drags the current page rightwards to bring it in — a
+    Hebrew book, and Android's own RTL ViewPager. Backwards is invisible to every other
+    test (the app would page fine and feel wrong), so the direction itself is pinned.
+  - **ONE PURE DECISION** (`plan.swipePageAction`, node-tested; a second copy anywhere is
+    invariant-banned) with four refusals: the whole TAP band (every tile is a `<button>`
+    and `SWIPE_MIN_PX` must clear `TAP_SLOP_PX` by a wide margin), a vertical scroll that
+    drifts sideways (the v1.0.52 collision from the other side), a finger that was parked
+    on the screen, and **the first/last page, which absorb the gesture silently** — the
+    arrows are `disabled` there and a page that "flips" to itself reads as broken.
+  - **THE HOSTS ARE `touch-action: pan-y`, NEVER `none` AND NEVER LEFT AT `auto`.** With
+    `auto` the browser claims a slightly-diagonal flick as a scroll and cancels it, so the
+    feature would work only for a perfectly straight finger; with `none` the page could not
+    scroll from the grid at all — the exact v1.0.50/51 bug on a new surface.
+  - **THE WATCH VIEW BINDS ITS GRID ALONE**, never the view: the player owns centre-tap
+    pause and double-tap seek, and a page turn must not become a fourth meaning for a
+    finger crossing it. Verified: a swipe over the shield leaves the grid's page alone.
+  - **A CAPTURE-PHASE CLICK SWALLOW** — the flick ENDS on a tile, so without it turning the
+    page also opens that video (guaranteed with a mouse, WebView-dependent on touch). It is
+    a DEADLINE, not a flag: a gesture that produces no click must not leave a live trap that
+    eats the child's next real tap (proven both ways in the browser).
+  - ⚠️ **TWO DEFECTS THE BROWSER CAUGHT AND THE GREEN SUITE COULD NOT**, both the kind that
+    makes an app feel broken rather than wrong:
+    1. **THE TIME CEILING REFUSED REAL SWIPES.** It started at 900ms as a "flick" test.
+       The app flips on RELEASE and cannot track a drag live, so DISTANCE is the whole
+       intent test — and a 5-year-old drags slowly and means it. Now 2500ms, documented as
+       a sanity ceiling (a parked finger that wanders off a tile), not a flick detector.
+    2. **A LOST GESTURE END ATE THE NEXT SWIPE.** `pointerdown` dropped the gesture whenever
+       a start was still standing — written for a second finger, and in practice it
+       swallowed every other swipe once an end went missing. Ends go missing for ordinary
+       reasons: the grid re-renders under the finger (a sync landing, a Drive pull applying)
+       so the pointerup fires on a detached node and never reaches the host, or an incoming
+       call backgrounds the app mid-touch. `pointerdown` now always starts fresh, and
+       multi-touch is refused by the pointerId check on the RELEASE, where it cannot poison
+       the gesture that follows.
+  - ⚠️ **TOOLING LESSON**: in a HIDDEN Browser pane `setTimeout` is throttled ~6× (a 150ms
+    sleep measured as 937ms), which is what made defect 1 visible. Any gesture timing read
+    in that pane is wall-clock inflated — measure `dt` inside the handler, never assume the
+    sleep you asked for. And `git restore` during the plant cycle destroyed both fixes
+    because they were UNCOMMITTED (the v1.0.56 lesson, paid twice): commit BEFORE planting.
+  - 6 unit tests + 1 invariants test (7 wiring halves), every guard proven red on a planted
+    regression (12). Browser-verified end to end on all three grids: both directions, the
+    bounds absorbed, a vertical scroll and a tap-sized move ignored, the click swallow both
+    ways, the player isolated, and a swipe right after an ABANDONED gesture still working.
+    Real gesture ARBITRATION (does `pan-y` actually scroll under a finger) stays a device
+    checklist item — no synthetic pointer event can prove it.
+- v1.0.57 — **🕒 "נצפה לאחרונה": THE LAST X VIDEOS THIS CHILD WATCHED** (user request: a
+  folder for quick access back to what they were watching, IN ADDITION to where the video
+  really lives, newest first, and the parent picks X in the settings — default 10).
+  - **THE THIRD DERIVED FOLDER**, built exactly like ⭐ (v1.0.40): no record carries
+    `folderId:'recent'`, so it is resolved from the profile's own state map — no new store,
+    no new index, **no `DB_VERSION` bump**. `playedAt` rides the `profileVideoState` row that
+    already carries the gift rank, the unwrap, the resume position and the ⭐.
+  - **THE NUMBER SYNCS, THE STAMPS DO NOT** (user decision 2026-08-30). `recentLimit` is a
+    parenting choice and travels; `playedAt` is about the tablet in the child's hands, so
+    `drive.serializeStateEntry` never emits it and **`mergeAppliedState` PRESERVES the local
+    one** — that second half is load-bearing: the fold REPLACES the row, so without it every
+    pull emptied 🕒 for any video the other device had touched. The resume position's rule,
+    replayed, and both halves are behaviour-tested.
+  - **WATCHED = 10 SECONDS OF PLAYBACK POSITION, or a video that ENDED.** Position, not
+    elapsed wall-clock: it survives a pause, ignores a video sitting still on screen, and a
+    resumed video is already past it (which is right — they are watching it again). The
+    'ended' path is `force`d because a 6-second clip can never reach the threshold and the
+    player is already torn down there. Stamped ONCE per opening: the tick fires every few
+    seconds and **every write bumps `db.dataVersion()`**, which the home's folder cache keys
+    off — re-stamping would rebuild the home every 5 seconds for the whole video.
+  - **NEWEST FIRST — THE OPPOSITE OF ⭐, AND EACH ORDER FORBIDS THE OTHER.** ⭐ appends
+    because a pre-reader navigates by POSITION; 🕒's whole promise is "what I was just
+    watching is at the front". The cost is real: **THE FOLDER REORDERS ITSELF AFTER EVERY
+    VIDEO**, which is why the watch screen FREEZES a snapshot on entry (`watchCtx.recent`)
+    and carries it across video→video switches. A live re-read makes the chain rock: enter
+    at [A,B,C], watch B → B moves to the front → "next after B" is A → watch A → "next after
+    A" is B, forever. Measured in the browser: the under-player grid kept [3,2,1] while the
+    live order had already become [2,3,1].
+  - **`recentLimit` IS PART OF THE FOLDER-CACHE KEY**, for the same reason `profileId` is: it
+    is a SETTING, so it lives in Preferences and changing it does NOT move
+    `db.dataVersion()`. Without it the parent sets 🕒 to 0 and the child's home keeps the
+    folder until some unrelated write happens to bump the counter. The cache key must name
+    everything the derivation reads.
+  - **ITS MEMBERS ARE PROTECTED FROM THE ROLLING WINDOW** (user decision) — for the active
+    child AND every sibling reading a shared library, each with their OWN limit (the keys are
+    computed at the call site for exactly that reason; unioning "every video ever watched"
+    would gut the window). This also repairs v1.0.39's documented weakness: `posSec` is
+    CLEARED by a video watched to the END, so the most-rewatched video — the one that whole
+    rationale is about — carried no signal at all. A watch stamp does.
+  - ⚠️ **TWO ADJACENT DEFECTS, BOTH THE SAME CLASS: a row shared by four features, rebuilt by
+    a writer that knew about two.**
+    1. **`db.clearPlayPosition` ATE ⭐.** It deleted the row whenever it carried no `giftRank`
+       and no `unwrappedAt` — written in v1.0.32, before favourites existed, and never
+       revisited when v1.0.40 put `favAt`/`favOffAt` on the same row. So a starred,
+       never-gifted video watched to the END with resume on lost its star **silently**, and
+       wrote no `favOffAt` either, so a peer's copy could later re-star it. The predicate is
+       now pure, shared and names every field: `normalize.stateRowIsSpent`. The next feature
+       to share this row extends THAT function.
+    2. **THE SNAPSHOT IMPORT BLIND-PUT A TWO-FIELD RECORD OVER THE LIVE ROW**, erasing the
+       child's ⭐, their resume position and their 🕒 for every video the file mentioned —
+       the bug `drive.mergeAppliedState` exists to prevent on the sync path, on the path
+       nobody had looked at. It folds onto the existing row now. The device-local fields are
+       deliberately NOT taken from the file (the same rule the Drive doc follows).
+  - ⚠️ **DEFAULT ON AT 10 — this arrives with the update for every existing family** (the
+    `SCREEN_OFF_DEFAULT_MIN` precedent) and MUST ride the release notes.
+  - 10 unit tests + 1 invariants test (7 wiring halves), every guard proven red on a planted
+    regression (11). Browser-verified end to end through the real player and the real PIN
+    gate: the stamp landing from both paths, the tile appearing after 🎁 and hidden at zero,
+    the newest-first order, the frozen snapshot while the live order moved, 10 → 2 shrinking
+    the folder on the child's home (which is the cache-key fix), 0 removing it, and a ⭐
+    SURVIVING a video watched to the end with resume on.
 - v1.0.57 — **A CALL PAUSES THE VIDEO, AND THE END OF THE CALL RESUMES IT** (user request).
   - **CALLS ONLY** (user decision 2026-08-30). Every other pause — the power button, HOME,
     the app switcher, the child's own tap — keeps the v1.0.32 behaviour exactly: the video

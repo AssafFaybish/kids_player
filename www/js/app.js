@@ -21,7 +21,8 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
-  KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS } from './config.js';
+  KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
+  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -35,11 +36,12 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
-  pruneConfirmText, favActive, favouriteKeys,
+  pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
 import { makePager } from './ui/pager.js';
+import { attachSwipePager } from './ui/swipe.js';
 import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
 import * as db from './db.js';
@@ -63,6 +65,7 @@ const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
 let items = [];                       // legacy Preferences list — parent screen only
 let source = { mode: 'manual', url: '' };
 let page = 0;                         // home page (folder tiles OR flat single-folder)
+let homePages = 1;                    // v1.0.57: page COUNT, for the swipe (updateHomePager)
 let currentWatch = null;
 let profiles = [];
 let createSel = null;
@@ -76,6 +79,7 @@ let folderPage = 0;
 let folderPagerObj = null;
 let giftStates = new Map();           // key -> profileVideoState record (gifts F9, resume v1.0.32)
 let resumeEnabled = false;            // the active profile's synced 'resume' setting (v1.0.32)
+let recentLimit = RECENT_DEFAULT_LIMIT; // v1.0.57: 🕒 folder size, per profile, synced (0 = off)
 // v1.0.12 grouping of loose singles — record arrays built by ONE bulk read in
 // buildFolders and paginated directly (no per-key IDB reads on render).
 let singleGroups = new Map();         // channelId -> records of its grouped singles
@@ -869,7 +873,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -1484,6 +1488,11 @@ async function loadGiftStates() {
   // v1.0.32: the resume flag rides the same load — tileEl is synchronous and needs both.
   try { resumeEnabled = (await getSetting(activeProfileId, 'resume', false)) === true; }
   catch { resumeEnabled = false; }
+  // v1.0.57: and 🕒's size. buildFolders, the pager and the watch stamp all need it
+  // synchronously, and it must be re-read HERE rather than cached once per launch — a peer
+  // can change it (the number is synced) and a profile switch changes whose number it is.
+  try { recentLimit = recentLimitFor(await getSetting(activeProfileId, 'recentLimit', null)); }
+  catch { recentLimit = RECENT_DEFAULT_LIMIT; }
   const dbi = await db.openDb();
   await new Promise((resolve) => {
     const range = IDBKeyRange.bound([activeProfileId, ''], [activeProfileId, '￿']);
@@ -1517,6 +1526,37 @@ function clearWatchPosition(item) {
     else giftStates.delete(item.key);
   }
   db.clearPlayPosition(activeProfileId, item.key).catch(() => {});
+}
+
+/**
+ * v1.0.57 — 🕒: stamp this video as WATCHED once the child has actually watched some of it.
+ *
+ * The threshold is playback POSITION, not elapsed wall-clock, and that is the honest
+ * measure: it survives a pause, it does not count a video sitting still on screen, and a
+ * resumed video is already past it — which is right, the child is watching it again.
+ *
+ * Called from the same interval that banks the resume position, but NOT through it: that
+ * one is gated on the resume SETTING, and this folder must work for a family that never
+ * turns resume on. Stamped ONCE per opening (`stampedWatch`) — the interval fires every few
+ * seconds and each write bumps `db.dataVersion()`, which is what the folder cache keys off,
+ * so re-stamping would rebuild the home every 5 seconds for the whole video.
+ *
+ * Nothing is written while the feature is OFF: the same rule `saveWatchPosition` follows
+ * for its position, so a family that set 0 gets no state they did not ask for.
+ */
+let stampedWatch = null; // key stamped for the CURRENT opening (cleared by openWatch)
+function stampWatched(item, { force = false } = {}) {
+  if (!item || !item.key || !activeProfileId || recentLimit <= 0) return;
+  if (stampedWatch === item.key) return;
+  if (!force) {
+    const st = playbackState();
+    if (!st || !(Number(st.time) >= RECENT_MIN_PLAY_SEC)) return;
+  }
+  stampedWatch = item.key;
+  const at = Date.now();
+  const prev = giftStates.get(item.key) || { profileId: activeProfileId, key: item.key };
+  giftStates.set(item.key, { ...prev, playedAt: at }); // mirror first — the folder renders from here
+  db.setPlayed(activeProfileId, item.key, at).catch(() => {});
 }
 
 /** Read the live playhead and persist it for `item`, per the pure decision. */
@@ -2111,7 +2151,14 @@ let foldersCache = null;
 
 async function buildFolders() {
   const cache = foldersCache;
-  if (cache && cache.profileId === activeProfileId && cache.seq === db.dataVersion()) {
+  // v1.0.57 — `recentLimit` IS PART OF THE KEY, for the same reason `profileId` is: it is a
+  // SETTING, and settings live in Preferences, so changing it does NOT move
+  // `db.dataVersion()`. Without it the parent could set 🕒 to 0 (or to 20) and the child's
+  // home would keep showing the folder exactly as it was until some unrelated write
+  // happened to bump the counter — the cross-profile bug this cache already carries a
+  // guard for, in a new disguise. The key must name everything the derivation reads.
+  if (cache && cache.profileId === activeProfileId && cache.seq === db.dataVersion()
+      && cache.recentLimit === recentLimit) {
     libScope = cache.libScope;
     singleGroups = cache.singleGroups;
     absorbedSingles = cache.absorbedSingles;
@@ -2137,6 +2184,14 @@ async function buildFolders() {
   // universal "favourite" sign, and it was never what collided. The DRAWING belongs to the
   // mixed-bag folder below, which is what used to wear this star.
   if (favCount > 0) out.push({ id: 'fav', title: 'מועדפים', emoji: '⭐', count: favCount, isFav: true });
+  // v1.0.57 — 🕒 THIRD, after the app's two other derived views and before anything stored.
+  // It is a SHORTCUT to carry on watching, so it belongs where the child's thumb already
+  // goes. Hidden at zero like every other folder (the v1.0.21 rule), which also means a
+  // family with the feature off never sees it at all.
+  const recentCount = recentKeys(giftStates, recentLimit).length;
+  if (recentCount > 0) {
+    out.push({ id: 'recent', title: 'נצפה לאחרונה', emoji: '🕒', count: recentCount, isRecent: true });
+  }
 
   const src = await db.getSources(pid);
   const lib = (src && src.libraryId) || null;
@@ -2257,7 +2312,7 @@ async function buildFolders() {
   // while we were deriving, `seq` is already stale and the next render redoes the work
   // (never serves a list that never matched the store).
   foldersCache = {
-    seq, profileId: pid, libScope: lib, folders: out.slice(),
+    seq, profileId: pid, recentLimit, libScope: lib, folders: out.slice(),
     singleGroups: groups, absorbedSingles: absorbed, looseSingles: loose
   };
   return out;
@@ -2289,7 +2344,9 @@ async function renderHome() {
   const empty = folders.length === 0;
   $('empty-state').classList.toggle('hidden', !empty);
   grid.classList.toggle('hidden', empty);
-  if (empty) { $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
+  // v1.0.57: homePages back to 1 here too — this early return skips updateHomePager, and a
+  // count left over from the previous profile would let a swipe page an empty home.
+  if (empty) { homePages = 1; $('pg-controls').classList.add('hidden'); grid.innerHTML = ''; return; }
 
   if (shouldFlattenHome(folders)) {
     // shouldFlattenHome only says yes for a SINGLE non-🎁 folder, so folders[0] is it
@@ -2308,6 +2365,10 @@ async function renderHome() {
 }
 
 function updateHomePager(total) {
+  // v1.0.57: the swipe reads this. The home pager is hand-written markup (the exit button
+  // lives inside its bar), so unlike the folder/watch pagers it has no object holding the
+  // count — and a swipe that guessed the count could walk the child past the last page.
+  homePages = Math.max(1, Number(total) || 1);
   const controls = $('pg-controls');
   if (total > 1) {
     controls.classList.remove('hidden');
@@ -2373,6 +2434,36 @@ async function pageFavFolder({ offset, limit }) {
 }
 
 /**
+ * v1.0.57 — 🕒 "נצפה לאחרונה", the third derived folder. Same shape as 🎁 and ⭐: no record
+ * carries `folderId:'recent'`, so it is resolved from the profile's own state map.
+ *
+ * `keys` may be a FROZEN SNAPSHOT (the watch screen passes one) — see openWatch. The folder
+ * view passes nothing and gets the live order, which is what a child opening 🕒 expects.
+ *
+ * The self-heal clears ONLY the watch stamp when the video is gone everywhere: this row
+ * also carries the gift rank, the unwrap and the ⭐, and deleting it wholesale would re-gift
+ * a video the child already opened (the ⭐ pager's lesson, and now `stateRowIsSpent` makes
+ * the row survive correctly when something else is still on it).
+ */
+async function pageRecentFolder({ offset, limit, keys = null }) {
+  const all = keys || recentKeys(giftStates, recentLimit);
+  const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+  const items = [];
+  for (const key of all.slice(offset, offset + limit)) {
+    const rec = await db.findLiveByKey(key, prefer);
+    if (rec) items.push(rec);
+    else {
+      try {
+        await db.setPlayed(activeProfileId, key, null);
+        const st = giftStates.get(key);
+        if (st) { const next = { ...st }; delete next.playedAt; giftStates.set(key, next); }
+      } catch {}
+    }
+  }
+  return { items, total: all.length };
+}
+
+/**
  * One pagination entry point for every folder kind (v1.0.12):
  *   new      — 🎁 "חדשים": the sparse gift index, resolved to live records (v1.0.21);
  *   grp:<id> — a virtual folder of loose singles sharing a channel (array slice);
@@ -2387,10 +2478,11 @@ async function pageFavFolder({ offset, limit }) {
  * a gift left the UNDER-PLAYER GRID EMPTY (v1.0.21 field bug) — the child lost every way
  * to pick the next video. One entry point means one gift implementation.
  */
-async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE } = {}) {
+async function pageAnyFolder(scope, fid, { offset = 0, limit = PAGE_SIZE, recentSnapshot = null } = {}) {
   const slice = (arr) => ({ items: arr.slice(offset, offset + limit), total: arr.length });
   if (fid === 'new') return pageGiftFolder({ offset, limit });
   if (fid === 'fav') return pageFavFolder({ offset, limit });
+  if (fid === 'recent') return pageRecentFolder({ offset, limit, keys: recentSnapshot });
   if (String(fid).startsWith('grp:')) return slice(singleGroups.get(String(fid).slice(4)) || []);
   if (fid === 'sheet' && looseSingles.length) return slice(looseSingles);
 
@@ -2424,6 +2516,18 @@ async function nextAfter(scope, fid, current) {
   // the grid renders, so the chain can never disagree with what is on screen.
   if (fid === 'fav') {
     const keys = favouriteKeys(giftStates);
+    const at = keys.indexOf(current.key);
+    if (at < 0 || at + 1 >= keys.length) return null;
+    return db.findLiveByKey(keys[at + 1], [libScope, db.profScope(activeProfileId)].filter(Boolean));
+  }
+  // v1.0.57 — 🕒 IS CHAINED, BUT ONLY OFF THE FROZEN SNAPSHOT. This folder is ordered by
+  // "most recently watched", so watching a video MOVES IT TO THE FRONT: a live re-read here
+  // would find the just-watched video at index 0 and hand back index 1 — the video before
+  // it — and the chain would rock between the same two videos forever. `watchCtx.recent` is
+  // the order as it stood when the child entered, which is also the order the grid under
+  // the player is showing them.
+  if (fid === 'recent') {
+    const keys = watchCtx.recent || [];
     const at = keys.indexOf(current.key);
     if (at < 0 || at + 1 >= keys.length) return null;
     return db.findLiveByKey(keys[at + 1], [libScope, db.profScope(activeProfileId)].filter(Boolean));
@@ -2607,8 +2711,18 @@ async function renderWatchGrid(current) {
     fid = (current && (current.homeFolderId || current.folderId)) || fid;
     watchCtx = { scope, folderId: fid };
   }
+  // v1.0.57 — the same fallback for 🕒, reachable for a different reason: the folder can be
+  // emptied under the child by the parent turning it off on ANOTHER device mid-video (the
+  // setting is synced), or by its videos being deleted. An empty snapshot means an empty
+  // grid, which is the v1.0.21 bug — the child loses every way to pick the next video.
+  if (fid === 'recent' && !(watchCtx.recent || []).length) {
+    fid = (current && (current.homeFolderId || current.folderId)) || fid;
+    watchCtx = { scope, folderId: fid };
+  }
 
-  const res = await pageAnyFolder(scope, fid, { offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH });
+  const res = await pageAnyFolder(scope, fid, {
+    offset: watchPage * PAGE_WATCH, limit: PAGE_WATCH, recentSnapshot: watchCtx.recent || null
+  });
   const total = Math.max(1, Math.ceil(res.total / PAGE_WATCH));
   if (watchPage >= total) watchPage = total - 1;
 
@@ -2702,6 +2816,12 @@ async function onVideoFinished(reason = 'ended') {
   // tile's progress bar) is gone. Player teardown already ran, so playbackState() is
   // null and no later save can resurrect it. An 'error' exit keeps the position.
   if (reason === 'ended' && resumeEnabled) clearWatchPosition(item);
+
+  // v1.0.57 — a video that ENDED was watched, whatever its length: the interval's
+  // RECENT_MIN_PLAY_SEC threshold can never be reached by a 6-second clip, and the player
+  // is already torn down here so `playbackState()` is null. `force` is what says "the
+  // evidence is that it finished", not a bypass of the rule.
+  if (reason === 'ended') stampWatched(item, { force: true });
 
   let enabled = false;
   try { enabled = (await getSetting(activeProfileId, 'autoplay', false)) === true; } catch {}
@@ -2821,6 +2941,9 @@ async function openWatch(item) {
   // them. video→video from the under-player grid keeps the existing context.
   // …and 🎁 'new' is a VIEW, not a folder: paging it after the gift is unwrapped came up
   // short or empty, so a gift browses where the video actually lives (resolveWatchContext).
+  // captured BEFORE resolveWatchContext replaces the object (v1.0.57 — the 🕒 snapshot)
+  const wasWatching = nav.isActive('watch');
+  const prevRecent = watchCtx && watchCtx.recent;
   watchCtx = resolveWatchContext({
     item,
     isWatching: nav.isActive('watch'),
@@ -2829,6 +2952,18 @@ async function openWatch(item) {
     libScope,
     profileScope: db.profScope(activeProfileId)
   });
+  // v1.0.57 — 🕒 IS FROZEN ON ENTRY AND CARRIED ACROSS VIDEO→VIDEO SWITCHES.
+  //
+  // This folder is ordered by "most recently watched", so every video the child finishes
+  // REORDERS it — and the grid under the player, the ✋ chain and `nextAfter` all read it.
+  // Re-reading it on a switch is what makes the chain rock: enter at [A,B,C], tap B, B moves
+  // to the front → "next after B" becomes A, watch A → A moves to the front → "next after A"
+  // is B again, forever. So the order is captured where the child's journey through this
+  // folder STARTS, and `resolveWatchContext` (which replaces watchCtx wholesale, dropping
+  // anything hung on it) must not be allowed to lose it mid-journey.
+  watchCtx.recent = watchCtx.folderId !== 'recent' ? null
+    : (wasWatching && prevRecent) || recentKeys(giftStates, recentLimit);
+  stampedWatch = null; // a new opening earns its own stamp (the same video, watched again, counts)
   // replace() when already watching: back always returns to the gallery, never
   // through the chain of watched videos. nav scrolls to top — the F4 fix: the
   // user actually SEES the player instead of staying scrolled at the grid.
@@ -2857,6 +2992,7 @@ async function openWatch(item) {
   posTimer = setInterval(() => {
     if (!nav.isActive('watch') || !currentWatch) return;
     saveWatchPosition(currentWatch);
+    stampWatched(currentWatch); // v1.0.57 — 🕒, independent of the resume setting
     // v1.0.57 — THE CALL THAT NEVER BACKGROUNDS THE APP. On a modern Android an incoming
     // call is a heads-up notification: the ringtone takes audio focus, the WebView pauses
     // its media, and no `appStateChange` ever fires — so the lifecycle door above would
@@ -3551,6 +3687,9 @@ async function refreshParent() {
   // v1.0.39: the OPPOSITE default — never-written reads as 0 (off), because this is the
   // one setting that deletes the child's videos.
   $('keep-newest').value = String(keepNewestPerChannel(await getSetting(activeProfileId, 'keepNewest', null)));
+  // v1.0.57: back to the screenOffMinutes direction — never-written is the DEFAULT (10),
+  // and only an explicit 0 turns 🕒 off. Nothing here deletes anything.
+  $('recent-limit').value = String(recentLimitFor(await getSetting(activeProfileId, 'recentLimit', null)));
   await labelProfileSettings();
   // v1.0.22: a same-name collision that ALREADY happened (both devices offline at once)
   // cannot be blocked retroactively, and merging or renaming it silently would be worse —
@@ -4513,14 +4652,28 @@ async function channelsOverWindow() {
   // v1.0.40 — the SIBLINGS' stars count too. A legacy shared library (`lib:<hash>`) is read
   // by several profiles, so pruning under child A's window would otherwise delete a video
   // child B had starred — the same cross-profile rule db.deleteVideoStates follows.
-  const statesByProfile = [];
+  // v1.0.57: the profile ID is kept ALONGSIDE its state map — 🕒's size is per profile, so
+  // protecting a sibling's recent list needs to know whose list it is (and how long).
+  const siblings = [];
   for (const p of await getProfiles()) {
     if (p.id === activeProfileId) continue; // the active one is `giftStates`, already loaded
     const src = await db.getSources(p.id).catch(() => null);
     if (!src || src.libraryId !== scope) continue;
-    statesByProfile.push(await db.loadVideoStates(p.id).catch(() => null));
+    const states = await db.loadVideoStates(p.id).catch(() => null);
+    if (states) siblings.push({ pid: p.id, states });
   }
-  const guarded = protectedWindowKeys({ records, states: giftStates, statesByProfile });
+  const statesByProfile = siblings.map((s) => s.states);
+  // v1.0.57 — and whatever is in 🕒 RIGHT NOW, for this child AND for every sibling reading
+  // this library. The keys are computed here rather than inside the pure helper because the
+  // limit is per profile: `recentLimit` is the active child's, and each sibling's own number
+  // decides how much of their history is protected. A sibling whose 🕒 is off protects
+  // nothing, which is correct — they have no such folder.
+  const recent = recentKeys(giftStates, recentLimit);
+  for (const s of siblings) {
+    const lim = recentLimitFor(await getSetting(s.pid, 'recentLimit', null).catch(() => null));
+    recent.push(...recentKeys(s.states, lim));
+  }
+  const guarded = protectedWindowKeys({ records, states: giftStates, statesByProfile, recent });
   const plan = planChannelWindow({ records, keep, protectedKeys: guarded });
   return { keep, ...plan };
 }
@@ -6806,6 +6959,34 @@ function wire() {
 
   $('pg-prev').addEventListener('click', () => { page -= 1; renderHome(); });
   $('pg-next').addEventListener('click', () => { page += 1; renderHome(); });
+
+  // v1.0.57 — THE SAME PAGE TURN, BY FINGER (user request). Bound ONCE here, on elements
+  // that live in index.html and are never replaced, so no render can leak a listener.
+  //
+  // The home and the folder listen on the WHOLE VIEW: the user asked to swipe "on the app
+  // screen", and a child's flick starts wherever their hand is — over the grid, over the
+  // gap beside it, over the pager bar. The WATCH view deliberately listens on its GRID
+  // ALONE: the player above it owns its own gesture language (centre tap pauses, double
+  // tap seeks ±10s, and the shield is the surface v1.0.52 spent three releases getting
+  // right), and a page flip must never be a fourth meaning for a finger crossing it.
+  //
+  // Every state getter reads the LIVE numbers at gesture end — the pager object for the
+  // two that have one, `homePages` for the hand-written home pager (its markup predates
+  // makePager and carries the exit button, so it is not one).
+  attachSwipePager($('view-gallery'), (dir) => {
+    page += dir === 'next' ? 1 : -1;
+    renderHome();
+  }, () => ({ page, total: homePages }));
+
+  attachSwipePager($('view-folder'), (dir) => {
+    folderPage += dir === 'next' ? 1 : -1;
+    renderFolderView().catch(() => {});
+  }, () => (folderPagerObj ? folderPagerObj.state() : null));
+
+  attachSwipePager($('watch-grid'), (dir) => {
+    watchPage += dir === 'next' ? 1 : -1;
+    renderWatchGrid(currentWatch);
+  }, () => (watchPager ? watchPager.state() : null));
   $('exit-btn').addEventListener('click', askExit);
   // v1.0.32: the picker's exit button — same flow as hardware back there (user request)
   $('profiles-exit').addEventListener('click', askExit);
@@ -7337,6 +7518,22 @@ function wire() {
       : `המגבלה כבויה — שום סרטון לא יימחק. להפעלה הקלידו מספר מ-10 ומעלה (מומלץ ${KEEP_NEWEST_SUGGESTED})`;
     msg.className = 'form-msg ok';
     await refreshWindowBox();
+  });
+  // v1.0.57 — 🕒's size. Writing it must also REBUILD THE HOME: the folder appears,
+  // disappears or changes count on the child's screen the moment this changes, and the
+  // parent is standing right here expecting to see that.
+  $('recent-limit').addEventListener('change', async () => {
+    const v = recentLimitFor($('recent-limit').value);
+    $('recent-limit').value = String(v);
+    await putSetting(activeProfileId, 'recentLimit', v);
+    recentLimit = v; // buildFolders and the stamp read the cached number
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = v > 0
+      ? `התיקייה "נצפה לאחרונה" תציג את ${v} הסרטונים האחרונים שנצפו במכשיר הזה 🕒`
+      : 'התיקייה "נצפה לאחרונה" כבויה ולא תופיע במסך הבית';
+    msg.className = 'form-msg ok';
+    await renderAfterRemoteChange();
   });
   $('exit-lock-toggle').addEventListener('change', async (e) => {
     const on = e.target.checked;
