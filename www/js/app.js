@@ -23,7 +23,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
-  CACHE_SWEEP_EVERY_MS } from './config.js';
+  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -38,7 +38,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
   pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys,
-  planCacheSweep, planEmptyFolderSweep, deleteLocalChoice, formatBytes,
+  planCacheSweep, planEmptyFolderSweep, deleteLocalChoice, formatBytes, folderSearchScope,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText } from './plan.js';
@@ -2703,6 +2703,7 @@ async function renderGridPage(grid, scope, fid, which) {
 // The kid searches the APPROVED library only (live records + visible channel folders)
 // — no network, no external content; ranking is pure (search.js, node-tested).
 let searchIndex = null; // { videos: [records], folders: [{...folder, normTitle}] }
+let searchFolderId = null; // v1.0.58: set while the search screen is scoped to one folder
 let searchTimer = null;
 
 async function buildSearchIndex() {
@@ -2753,10 +2754,87 @@ async function buildSearchIndex() {
   searchIndex = { videos, folders: folderEntries };
 }
 
-async function openSearch() {
+/**
+ * v1.0.58 — SEARCH INSIDE A FOLDER (user request), reusing the home's search screen rather
+ * than growing a second one: same input, same ranking (`search.rankItems`), same result
+ * tiles. Only the INDEX is different, and that is the whole feature.
+ *
+ * THE CANDIDATES COME FROM `pageAnyFolder`, NOT FROM A SECOND READING OF THE FOLDER RULES.
+ * That function is THE pagination entry point and already knows every folder kind — the
+ * gift and ⭐ views that carry no `folderId`, a channel's absorbed singles, the trimmed
+ * loose list. Filtering the merge index by folderId instead would have been a second answer
+ * to "what is in this folder", and the two would disagree exactly where it hurts (the
+ * v1.0.21 lesson, which cost the child every way out of a gift).
+ *
+ * Bounded by config caps: a folder search must never become "load the family's library".
+ */
+async function buildFolderSearchIndex(fid) {
+  const locked = !!(containState.active && containState.mode === 'folder');
+  const customRows = libScope ? await db.listCustomFolders(libScope).catch(() => []) : [];
+  const ids = folderSearchScope({ folderId: fid, customRows, locked });
+  const seen = new Set();
+  const videos = [];
+  for (const id of ids) {
+    if (videos.length >= FOLDER_SEARCH_MAX_TOTAL) break;
+    let res = null;
+    try {
+      res = await pageAnyFolder(scopeForFolder(id), id, { offset: 0, limit: FOLDER_SEARCH_MAX_PER_FOLDER });
+    } catch { res = null; }
+    for (const rec of (res && res.items) || []) {
+      if (!rec || !rec.key || seen.has(rec.key)) continue;   // one video, two folders: once
+      seen.add(rec.key);
+      videos.push(rec);
+      if (videos.length >= FOLDER_SEARCH_MAX_TOTAL) break;
+    }
+  }
+  // The NESTED FOLDERS are results too (the user's decision): in a 32-disc collection,
+  // typing the disc's name should open it in one tap. Never under a folder lock — a folder
+  // result is a way to reach another folder, which is the one thing the lock forbids, and
+  // never the folder the child is already standing in.
+  const folderEntries = [];
+  if (!locked) {
+    for (const id of ids) {
+      if (id === fid) continue;
+      const f = folders.find((x) => x.id === id);
+      if (!f || !f.title) continue;
+      folderEntries.push({
+        id, scope: f.scope || libScope,
+        key: 'folder:' + id.slice(id.indexOf(':') + 1),
+        title: f.title, normTitle: normalizeTitle(f.title),
+        logoUrl: f.logoUrl || '', emoji: f.emoji || '📁', count: f.count || 0,
+        custom: !!f.custom, artThumbId: f.artThumbId || null
+      });
+    }
+  }
+  searchIndex = { videos, folders: folderEntries };
+}
+
+/**
+ * v1.0.58 — open the shared search screen SCOPED to one folder. `searchFolderId` is what
+ * every later render keys off, and it is cleared by the home's own search (openSearch), so
+ * the two can never blur into each other.
+ */
+async function openFolderSearch() {
+  if (!folderId) return;
+  searchFolderId = folderId;
   searchIndex = null;
   nav.go('search');
+  const f = folders.find((x) => x.id === folderId);
+  const name = (f && f.title) || '';
   $('search-input').value = '';
+  $('search-input').placeholder = name ? `חיפוש ב"${name}" 🔍` : 'מה מחפשים? 🔍';
+  $('search-results').innerHTML = '';
+  $('search-empty').classList.add('hidden');
+  buildFolderSearchIndex(folderId).catch(() => {});
+  setTimeout(() => { try { $('search-input').focus(); } catch {} }, 60);
+}
+
+async function openSearch() {
+  searchIndex = null;
+  searchFolderId = null; // v1.0.58: the home's search is never scoped to a folder
+  nav.go('search');
+  $('search-input').value = '';
+  $('search-input').placeholder = 'מה מחפשים? 🔍';
   $('search-results').innerHTML = '';
   $('search-empty').classList.add('hidden');
   buildSearchIndex().catch(() => {});
@@ -2764,7 +2842,12 @@ async function openSearch() {
 }
 
 async function renderSearchResults() {
-  if (!searchIndex) { try { await buildSearchIndex(); } catch { return; } }
+  if (!searchIndex) {
+    // v1.0.58: whichever index this screen was opened for — a folder search that had to
+    // rebuild must never silently fall back to the whole library.
+    try { await (searchFolderId ? buildFolderSearchIndex(searchFolderId) : buildSearchIndex()); }
+    catch { return; }
+  }
   const q = $('search-input').value;
   // channel folders first (few, big targets), then videos by match accuracy
   const folderHits = rankItems(q, searchIndex.folders, { limit: 6 });
@@ -7315,6 +7398,7 @@ function wire() {
 
   // v1.0.7: home search
   $('search-open').addEventListener('click', openSearch);
+  $('folder-search').addEventListener('click', () => { openFolderSearch().catch(() => {}); });
   $('search-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
   $('sites-open').addEventListener('click', () => { openSitesView().catch(() => {}); });
   $('sites-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });

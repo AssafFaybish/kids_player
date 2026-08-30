@@ -229,6 +229,13 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Search inside a folder (v1.0.58 — the browser proved the scoping; these need a device)
+- [ ] **TV**: the 🔍 in the folder header is reachable with the D-pad, and typing works with
+      the remote (the folder header now has four controls — check none is unreachable).
+- [ ] On a phone in **portrait**, the folder header still fits: 🏠 · name · 🔍 · 🔒.
+- [ ] Search inside a 700-song imported collection and tap a result **from another disc** →
+      it plays, and the under-player grid pages THAT disc.
+
 ### Downloads, cache and folder pictures (v1.0.58 — the browser proved the logic against a
 ### simulated device; only a real tablet proves the filesystem)
 - [ ] **A real download**: play a direct/Drive file whose streaming fails → it downloads,

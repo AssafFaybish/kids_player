@@ -2406,6 +2406,42 @@ export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first
   return 'התיקיה ריקה';
 }
 
+/**
+ * v1.0.58 — PURE: which folders a search STARTED INSIDE ONE FOLDER may look at.
+ *
+ * ⚠️ "NESTED" HAS EXACTLY ONE MEANING IN THIS APP, and it is worth stating because the
+ * phrase suggests otherwise: there is no folder hierarchy. Folders are flat (`ch:`, `cf:`,
+ * `grp:`, `pl:`) and the app has no folder-inside-a-folder screen. The ONLY parent/child
+ * relation in the data is the one an imported Drive tree leaves behind — every folder of
+ * one import carries `driveRootId` pointing at the root it came from (v1.0.58).
+ *
+ * So: inside a folder of an imported collection, the scope is THE WHOLE COLLECTION (the
+ * user's decision 2026-08-30). Reading it strictly downwards would make the feature
+ * useless exactly where it was asked for — the root row is hidden from the child when it
+ * holds no songs of its own, so from a disc there would be no way to reach the other 31.
+ * Anywhere else the scope is the folder itself, which is what "search in this folder" means
+ * when nothing nests.
+ *
+ * ⚠️ A FOLDER LOCK NARROWS IT TO ONE FOLDER, ALWAYS. The global search is hidden under a
+ * folder lock precisely because "search reaches ANOTHER folder"; a scoped search may stay
+ * (the user's decision) only for as long as it cannot do that — and a result from a sibling
+ * folder is a way to reach that folder's grid through the watch screen.
+ */
+export function folderSearchScope({ folderId = null, customRows = [], locked = false } = {}) {
+  const fid = String(folderId || '');
+  if (!fid) return [];
+  if (locked) return [fid];
+  const rows = Array.isArray(customRows) ? customRows.filter(Boolean) : [];
+  const here = rows.find((r) => r.folderId === fid);
+  const rootDriveId = here && (here.driveRootId || here.driveFolderId);
+  if (!rootDriveId) return [fid];
+  const tree = rows.filter((r) => r.driveFolderId === rootDriveId || r.driveRootId === rootDriveId);
+  if (tree.length <= 1) return [fid];
+  // the folder the child is standing in comes FIRST: its own songs are the likeliest answer
+  const ids = tree.map((r) => r.folderId).filter(Boolean);
+  return [fid, ...ids.filter((id) => id !== fid)];
+}
+
 /* ---------------- downloaded-file cache (v1.0.58) ----------------
    A video is only ever downloaded when STREAMING it failed, so most families cache
    nothing — but a family whose Drive audio streams badly can accumulate hundreds of

@@ -2176,3 +2176,61 @@ test('artUrlCandidate: https only, and never a page pretending to be a picture',
   assert.equal(artUrlCandidate(''), null);
   assert.equal(artUrlCandidate(null), null);
 });
+
+/* ---------------- search inside a folder (v1.0.58) ---------------- */
+
+test('folderSearchScope: a Drive collection is searched WHOLE, from any of its folders', async () => {
+  const { folderSearchScope } = await import('../www/js/plan.js');
+  // ⚠️ "NESTED" HAS ONE MEANING IN THIS APP: the folders of one imported Drive tree, which
+  // all carry `driveRootId` pointing at the root. Nothing else nests — there is no
+  // folder-inside-a-folder screen and this feature deliberately does not add one.
+  const rows = [
+    { folderId: 'cf:root', driveFolderId: 'D' },
+    { folderId: 'cf:d1', driveFolderId: 'X1', driveRootId: 'D' },
+    { folderId: 'cf:d2', driveFolderId: 'X2', driveRootId: 'D' },
+    { folderId: 'cf:plain' },
+    { folderId: 'cf:elsewhere', driveFolderId: 'Z' }
+  ];
+  // From a DISC the scope is the whole collection (the user's decision 2026-08-30): the
+  // root row is hidden from the child when it holds no songs of its own, so a strictly
+  // downward reading would leave no way to search the other discs from anywhere.
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:d1', customRows: rows }), ['cf:d1', 'cf:root', 'cf:d2']);
+  // THE FOLDER THE CHILD IS STANDING IN COMES FIRST — its own songs are the likeliest answer
+  assert.equal(folderSearchScope({ folderId: 'cf:d2', customRows: rows })[0], 'cf:d2');
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:root', customRows: rows }).sort(),
+    ['cf:d1', 'cf:d2', 'cf:root']);
+  // a folder that nests nothing is simply itself — which is what "search in this folder"
+  // means when there is nothing under it
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:plain', customRows: rows }), ['cf:plain']);
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:elsewhere', customRows: rows }), ['cf:elsewhere'],
+    'a lone imported folder must not drag in another collection');
+  assert.deepEqual(folderSearchScope({ folderId: 'ch:UC1', customRows: rows }), ['ch:UC1']);
+  // and it never reaches a DIFFERENT collection
+  assert.ok(!folderSearchScope({ folderId: 'cf:d1', customRows: rows }).includes('cf:elsewhere'));
+});
+
+test('folderSearchScope: a FOLDER LOCK narrows it to one folder, always', async () => {
+  const { folderSearchScope } = await import('../www/js/plan.js');
+  // The home's search is HIDDEN under a folder lock, and its own comment says why: "search
+  // reaches ANOTHER folder". A scoped search may stay (the user's decision) only for as
+  // long as it cannot do that — and a result from a sibling folder IS a way to reach that
+  // folder's grid, through the watch screen's under-player pager.
+  const rows = [
+    { folderId: 'cf:root', driveFolderId: 'D' },
+    { folderId: 'cf:d1', driveFolderId: 'X1', driveRootId: 'D' },
+    { folderId: 'cf:d2', driveFolderId: 'X2', driveRootId: 'D' }
+  ];
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:d1', customRows: rows, locked: true }), ['cf:d1']);
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:root', customRows: rows, locked: true }), ['cf:root']);
+});
+
+test('folderSearchScope is total, and never answers with nothing to search', async () => {
+  const { folderSearchScope } = await import('../www/js/plan.js');
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:x' }), ['cf:x'], 'no rows at all still searches the folder');
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:x', customRows: null }), ['cf:x']);
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:x', customRows: [null, undefined] }), ['cf:x']);
+  assert.deepEqual(folderSearchScope({}), []);
+  assert.deepEqual(folderSearchScope(), []);
+  // a row that names a root nothing else belongs to is not a "tree"
+  assert.deepEqual(folderSearchScope({ folderId: 'cf:a', customRows: [{ folderId: 'cf:a', driveFolderId: 'D' }] }), ['cf:a']);
+});
