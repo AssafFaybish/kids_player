@@ -273,6 +273,81 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.61 — **A DRIVE TREE NESTS, EXACTLY AS IT DOES IN DRIVE** (user request, with a
+  screenshot of 32 disc folders spread over 8 pages of the child's home).
+  - ⚠️ **THIS REVERSES A v1.0.58 DECISION, DELIBERATELY.** That release flattened the tree
+    into sibling `cf:` rows and said so in five places (plan.js, config.js, this file twice)
+    — because the app had no folder-inside-a-folder screen and gaining one was out of scope.
+    The user's decision on 2026-08-30 is the opposite, so every one of those statements and
+    both machine guards were rewritten, not deleted quietly. **The cost lands on the child**:
+    a disc used to be one tap from the home and is now two. The win is a home of ONE tile.
+  - **`parentFolderId` ON THE `customFolders` ROW IS THE WHOLE DATA MODEL** — a `cf:` id, or
+    null for a root. **No `DB_VERSION` bump** (the store is schemaless per row and a row
+    without the field reads as a root), and it travels for free: custom folders are
+    serialized wholesale and merged LWW by `updatedAt`. **The walk has always returned
+    `parentId`; nothing ever persisted it**, which is the entire reason the tree arrived flat.
+  - **A FOLDER THAT HOLDS ONLY FOLDERS NOW GETS A ROW.** v1.0.58 dropped it ("a folder of
+    folders is not a folder here") and was right to: flattened, such a row could never be
+    opened. Nested, it is exactly the row the parent taps. It survives if it holds media OR
+    any descendant does, and hidden-at-zero (v1.0.21) counts CHILDREN as well as videos —
+    otherwise the collection the user wants on the home is the one thing hidden.
+  - **`pageAnyFolder` AND `nextAfter` DID NOT CHANGE, AND A GUARD PINS THAT.** The child
+    tiles are concatenated onto the page in `renderGridPage` through pure
+    `folderPageSlots`/`folderPageTotal` — folders first, **ONE pager** (32 discs need paging
+    themselves, and a 5-year-old cannot be asked to tell two pagers apart). A page filled
+    entirely by folder tiles asks `pageFolder` for `limit: 0` and MUST still call it —
+    `res.total` sizes the pager, and the v1.0.58 zero-limit fix is what makes that safe.
+  - **THE STACK ENTRY IS THE AUTHORITY, NOT THE MODULE GLOBAL.** `folder` now sits on the
+    stack more than once, so `onEnter` reads `entry.params.folderId` and the page rides
+    `entry.params.page` — without it a back-pop repaints the disc the child just left. And
+    **the header moved out of `openFolder` into the render** (`paintFolderHeader`): a
+    back-pop never runs `openFolder`, so the collection's discs appeared under the DISC's
+    name. Both found in the browser; the grid was right and the header lied.
+  - **THE FOLDER LOCK IS AN ANCESTRY TEST** (`folderAncestry` / `folderWithinLock`, pure,
+    cycle-guarded because `parentFolderId` is merged LWW per row and two devices can
+    briefly produce a chain that points at itself — a lock that hangs is a child stuck).
+    Equality would lock a child into a collection's front door and refuse every disc inside
+    it. **`containmentChrome.hideHome` became conditional** for the same reason: 🏠 is
+    hidden only AT the lock's own folder, and inside a subfolder it reappears as the way
+    back up — its handler already pops to the parent, so showing it is the entire fix.
+  - **DELETING A COLLECTION DELETES THE FOLDERS INSIDE IT** (the user's decision: it works
+    like Drive). `folderSubtreeIds` is the downward twin of `folderAncestry` and the ONE
+    walk the cascade and the search scope share. Every child row gets its own `cfDel:`
+    tombstone (absence alone is re-added by any peer that has not pulled — v1.0.36), the
+    confirm NAMES what it takes ("ואת 32 התיקיות שבתוכה"), and both answers reach every
+    video in the subtree — a move that re-homed only the top folder would orphan 751 songs.
+  - **THE EMPTY-FOLDER SWEEP LEARNED TWO EXEMPTIONS**, and the second is a bug fix that
+    predates nesting: a folder with CHILDREN is not empty, and **ANY Drive-backed row is
+    exempt, not just the root anchor** — `planDriveFolderImport` counts DENIED files as
+    media present, so a swept disc returns on the next refresh with a NEW id, and the sweep
+    and the refresh would tombstone-and-mint against each other every 30 minutes, on every
+    device.
+  - **THE SNAPSHOT WAS ALREADY DROPPING THE TREE**, which nesting only made visible:
+    `driveFolderId`/`driveRootId` were absent from the whitelist, so a restored folder never
+    refreshed again. All three fields travel now, and `parentFolderId` is VALIDATED (an
+    untrusted string from a file that the ancestry walk follows; a row naming ITSELF as its
+    parent would vanish from the home forever).
+  - **THE MIGRATION IS THE IMPORT ITSELF**: an existing row is matched by `driveFolderId`
+    and gains its parent IN PLACE, so a flat tree nests itself on the next add or refresh —
+    no dataver step. An older app on the same account ignores the unknown field and shows
+    every folder on the home (degraded, never broken), and `homeFolderRows` falls back to
+    the home for a child whose parent row is GONE: worse placed, never invisible.
+  - ⚠️ **TWO DEFECTS THE BROWSER CAUGHT AND 707 GREEN TESTS COULD NOT**, both "the feature
+    does nothing" (the v1.0.59 lesson, again): `homeFolderRows` read only `folderId`, but
+    the home renders TILE objects whose id field is `id` — so every parent lookup missed
+    and all 32 discs stayed on the home; and the parent's folder list told a parent that
+    the row holding 32 discs was "ריקה — לא מוצגת לילד" while it sat on the child's home.
+    A third was caught by a PLANT: the first version of the pagination guard checked only
+    that the helpers were CALLED, and stayed green with the child lookup replaced by `[]`.
+  - 6 unit tests + 5 invariants guards, every guard proven red on a planted regression (7).
+    Verified in the browser against the REAL 32-disc collection: 751 files in 32 discs under
+    ONE home tile reading "32 תיקיות"; the collection opening onto 3 pages of discs; a disc
+    opening onto its songs; back returning to the right page AND the right header; search
+    from inside a disc finding 4 hits across the collection; a lock on the collection
+    letting its discs open while hiding 🏠 only at the top; a relaunch landing inside the
+    lock fully painted; the sweep run an hour into the future deleting NOTHING; and the
+    cascade taking 34 folders to 1 with 33 tombstones while all 751 songs moved unharmed.
+
 - v1.0.61 — **CONTENT THE PARENT REMOVED CAN BE ADDED AGAIN, AND EVERY DOOR ASKS** (user
   request: "תוכן זה הוסר בעבר, האם להוסיף אותו שוב כעת?").
   - **THREE PATHS ALREADY ASKED AND THREE REFUSED IN SILENCE.** Paste, YouTube search and a

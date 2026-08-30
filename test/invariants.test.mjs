@@ -3669,6 +3669,14 @@ test('nesting is rendered, never paged: pageAnyFolder and nextAfter stay flat', 
   assert.match(grid, /folderPageSlots\(/, 'renderGridPage no longer merges child folders');
   assert.match(grid, /folderPageTotal\(/, 'the pager is sized without counting the child folders');
   assert.match(grid, /folderTile\(/, 'the child folders are computed but never drawn');
+  // ⚠️ WHERE the children come from, not just that the helpers are called. The first version
+  // of this guard checked only the three calls above, and stayed green with the lookup
+  // replaced by an empty array — the feature rendering nothing, which is precisely the
+  // "a feature that does nothing" shape this suite exists to catch (v1.0.59).
+  assert.match(grid, /folders\.filter\(\(f\) => f\.parentFolderId === fid\)/,
+    'the child folders are not looked up from `folders` — the merge would silently render none');
+  assert.match(grid, /which === 'home' \? \[\]/,
+    'the HOME must pass no children: its own tiles are already the roots, and nesting them twice would duplicate them');
 });
 
 test('the folder view is driven by its STACK ENTRY, not by the module global (v1.0.61)', () => {
