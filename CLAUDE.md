@@ -273,6 +273,39 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.66 — **THE NOTIFICATION SHOWS THE SONG'S PICTURE AND THE APP'S OWN MARK** (user
+  request, with a screenshot of the row sitting anonymously under Spotify's).
+  - **TWO DIFFERENT ICONS, and only one of them existed.** The **small icon** is the
+    status-bar glyph — v1.0.63 used the generic `android.R.drawable.ic_media_play`, which is
+    why the row was unidentifiable. The **large icon** is the big square picture Spotify
+    shows, and it was **never set at all**.
+  - ⚠️ **THE SMALL ICON MUST BE A FLAT WHITE SILHOUETTE, NEVER `@mipmap/ic_launcher`.**
+    Android draws it from the ALPHA channel only and tints it, so the coloured launcher icon
+    arrives as a featureless blob. A dedicated vector (`ic_notification.xml`) draws a screen
+    with a play triangle — verified by extracting the COMPILED png from the APK and looking
+    at it at 96/48/24px, because a vector that parses is not a vector that reads.
+  - ⚠️ **AN AUDIO FILE NEVER HAS A PICTURE OF ITS OWN, WHICH IS THE WHOLE PROBLEM HERE.**
+    `captureFrame` returns null for a track with no video (v1.0.56) — and background
+    playback is *for* mp3s. Measured on the real library: **0 of the audio records carry a
+    thumbId**. So the FOLDER's picture is the fallback that actually shows: the parent chose
+    it, and it is what the child saw on the tile they tapped. Then the app icon.
+  - ⚠️ **AND ON A DRIVE-IMPORTED COLLECTION THERE IS USUALLY NO FOLDER PICTURE EITHER** —
+    measured: 0 of 34 imported folders had one (an import gives them 📂, not art). So for a
+    typical music library the app icon is what appears, until the parent sets a picture with
+    the v1.0.58 🖼️ editor. Said plainly rather than promising artwork that will not come.
+  - **THE PICTURE CROSSES THE BRIDGE AS BASE64** because it lives in IndexedDB inside the
+    WebView, which the service cannot open — the same wall that makes full Android Auto a
+    second playback engine (v1.0.65). Byte-identical round trip verified in the browser.
+    Capped (`BG_ART_MAX_BYTES`), decoded with `inSampleSize`, cached against its own string
+    so a play/pause tap does not re-decode, and TOTAL — a bad image is "no artwork", never a
+    crashed playback service.
+  - **RE-SENT ON EVERY PUBLISH**: the service rebuilds the whole notification, so omitting
+    the artwork on a play/pause tap would blank the picture. Guard-pinned.
+  - Album art is set in TWO places for the same reason the actions are: `setLargeIcon` feeds
+    the notification, `METADATA_KEY_ALBUM_ART` feeds the lock-screen widget and the car.
+  - 1 invariants guard (12 assertions), proven red five ways. APK builds, and the drawable
+    is confirmed PACKAGED (a vector in the wrong folder fails silently, not loudly).
+
 - v1.0.65 — **A REAL `MediaSession`, SO A CAR CAN CONTROL THE MUSIC** (user request: "האם
   תוכל לספק תמיכה ב-android auto… לבחור שיר מהצג של הרכב?").
   - ⚠️ **VIDEO ON A CAR SCREEN IS IMPOSSIBLE, and not for want of effort.** Android Auto

@@ -467,7 +467,8 @@ export async function startBackgroundPlayback(title, playing, meta = null) {
       title: String(title || ''), playing: playing !== false,
       // v1.0.65 — the folder name and the playhead. The system EXTRAPOLATES the position
       // from the speed it is given, so a car's progress bar advances without us ticking.
-      subtitle: String(m.subtitle || ''), posMs: ms(m.posSec), durMs: ms(m.durSec)
+      subtitle: String(m.subtitle || ''), artB64: String(m.artB64 || ''),
+      posMs: ms(m.posSec), durMs: ms(m.durSec)
     });
     return true;
   } catch { return false; }
