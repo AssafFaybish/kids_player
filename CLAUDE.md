@@ -273,6 +273,32 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.69 — **THE SEEK BUTTONS WEAR A RING WITH "10" IN IT** (user request, with a
+  screenshot of Spotify's ⟲15 sitting directly beside our plain rewind triangle).
+  - ⚠️ **A `VectorDrawable` HAS NO `<text>` ELEMENT**, so the digits cannot be written — the
+    "1" and the "0" are hand-built PATHS. Verified by rasterising the artwork at **24px and
+    magnifying it ten times**, because a path that parses is not a path that reads (the
+    `ic_notification` lesson, v1.0.66, one icon over).
+  - Flat white on transparent: a notification action icon is drawn from its ALPHA channel and
+    tinted, so any colour is discarded. Guard-pinned, along with the four shapes the artwork
+    needs (ring, arrowhead, and both digits) and a ban on the system triangles returning.
+  - **NO RASTER FALLBACKS HERE, AND THAT IS NOT AN OVERSIGHT.** `ic_notification.xml` gets
+    PNGs because it uses `android:fillType`, an API-24 attribute, which makes AAPT emit them
+    and move the vector to `drawable-anydpi-v24`. Nothing in these two needs it: VectorDrawable,
+    arc path commands and `strokeLineCap` are all API 21+ and minSdk is 22. Said out loud in
+    the drawables themselves so the difference is not read as a mistake.
+  - ⚠️ **AND IT REMOVED A LATENT CRASH ON THE APP'S OWN MINIMUM.** `iconOf()` built an
+    `Icon`, whose `Notification.Action.Builder` overload is **API 23+**, while the app
+    declares minSdk 22 — and `buildNotification` runs OUTSIDE the try that guards
+    `startForeground`, so on a 5.1 device that was a `NoSuchMethodError`, not a missing
+    icon. The int-based builder works on every version and is what both the seek icons and
+    the play/pause glyph use now.
+  - ⚠️ **A GUARD FIRED ON ITS OWN COMMENT FOR THE THIRD TIME THIS SESSION**: the drawable's
+    comment explains that there is no `<text>` element, and the guard banning `<text>`
+    matched that sentence. It reads the file comment-stripped now.
+  - 1 invariants guard extended (8 assertions), proven red three ways. APK builds and both
+    drawables are confirmed PACKAGED.
+
 > ⚠️ **VERSION NOTE (2026-08-31): 1.0.67 WAS NEVER CUT** — the third deliberate skip, after
 > 1.0.61 and 1.0.65. The website locks (labelled `v1.0.67`) and the notification seek
 > (`v1.0.68`) were merged back to back, so ONE release carries both: 1.0.66 → **1.0.68**.

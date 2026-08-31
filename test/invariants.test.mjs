@@ -3981,6 +3981,28 @@ test('the background service is declared, gated, and reachable only from the app
   }
   assert.match(svc, /onSkipToNext\(\)\s*\{[^}]*"fwd"/,
     'a car skip button does nothing — map it to the same ten seconds rather than leaving it dead');
+  // v1.0.69 — the seek buttons wear a RING WITH "10" IN IT, not the system's rewind/forward
+  // triangles (user request, from a screenshot of Spotify's ⟲15 beside our plain triangle).
+  for (const [name, res] of [['back', 'ic_seek_back_10'], ['forward', 'ic_seek_fwd_10']]) {
+    assert.match(svc, new RegExp('R\\.drawable\\.' + res),
+      `the ${name} button is not using the app's own ten-second icon`);
+    // ⚠️ COMMENT-STRIPPED. The file's own comment explains that a VectorDrawable has no
+    // <text> element — and a raw grep fires on that explanation. The v1.0.45 trap, and the
+    // third time in one session; read what the file DRAWS, not what it says.
+    const icon = readRepo('android/app/src/main/res/drawable/' + res + '.xml')
+      .replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(icon, /<vector/, `${res} is not a vector`);
+    // ⚠️ A NOTIFICATION ACTION ICON IS DRAWN FROM ITS ALPHA AND TINTED, so any colour is
+    // thrown away — the ic_notification lesson (v1.0.66), one icon over.
+    assert.doesNotMatch(icon, /android:(fill|stroke)Color="(?!#FFFFFFFF)/,
+      `${res} uses a colour the system will discard`);
+    // the "10" must be SHAPES: a VectorDrawable has no <text> element, so a digit written
+    // as text would silently render nothing at all
+    assert.doesNotMatch(icon, /<text/, `${res} tries to render text — a VectorDrawable cannot`);
+    assert.ok((icon.match(/<path/g) || []).length >= 4,
+      `${res} lost a path — the ring, the arrowhead and both digits are four separate shapes`);
+  }
+  assert.doesNotMatch(svc, /ic_media_rew|ic_media_ff/, 'the plain system triangles came back');
   assert.match(svc, /IMPORTANCE_LOW/, 'the channel makes noise — a song change would wake a sleeping child');
   assert.match(svc, /START_NOT_STICKY/,
     'a sticky service would be restarted by the system for a video that is no longer playing');
