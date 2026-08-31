@@ -417,6 +417,18 @@ html.tv .np-channel { font-size: 18px; }
 .audio-note.n4 { font-size: 26px; animation-delay: 3s; }
 @keyframes audio-bob { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-10px) rotate(3deg); } }
 @keyframes audio-float { 0%, 100% { transform: translateY(8px); opacity: 0.55; } 50% { transform: translateY(-14px); opacity: 1; } }
+/* v1.0.70 — THE SCENE HOLDS STILL WHEN THE SOUND DOES (user request: "התמונה רק תזוז
+   כאשר השמע מתנגן"). A picture that keeps bobbing over a paused track says the wrong
+   thing to a child who just pressed pause — it is the only moving thing on the screen,
+   and movement reads as "still playing".
+
+   `animation-play-state` FREEZES mid-cycle rather than resetting: the radio stays exactly
+   where it was and resumes from there, which is what "paused" looks like. Setting
+   `animation: none` instead would snap every element back to its start — a visible jump
+   on every pause. The class is driven by the media element's OWN play/pause events, so it
+   follows every source: the tap-shield, the HUD, the notification, a call, screen-off. */
+.player-wrap.is-paused .audio-disc,
+.player-wrap.is-paused .audio-note { animation-play-state: paused; }
 
 .player-hud {
   position: absolute; inset-inline: 0; bottom: 0; z-index: 3;

@@ -490,6 +490,12 @@ async function playFile(item, host, opts = {}, seq = 0) {
   const wrap = $id('player-wrap');
   const setAudioScene = (on) => { if (wrap) wrap.classList.toggle('is-audio', !!on); };
   setAudioScene(item.media === 'audio');
+  // v1.0.70 — THE SCENE MOVES ONLY WHILE THE SOUND DOES (user request). Driven by the media
+  // element's OWN play/pause events rather than by whoever called pause, so it follows every
+  // source at once: the tap-shield, the HUD, the notification's ⏯, a call, screen-off, and
+  // the pause the browser performs by itself when a track ends.
+  const setPausedScene = () => { if (wrap) wrap.classList.toggle('is-paused', !!video.paused); };
+  setPausedScene();
   const ctl = {
     getTime: () => video.currentTime || 0,
     getDuration: () => video.duration || 0,
@@ -508,11 +514,17 @@ async function playFile(item, host, opts = {}, seq = 0) {
     if (torn) return;
     torn = true;
     setAudioScene(false);
+    // the wrap is shared with the YouTube engine and the next file — a stale `is-paused`
+    // would freeze the NEXT track's scene (the same reason cleanup always clears is-audio)
+    if (wrap) wrap.classList.remove('is-paused');
     if (hud) hud.teardown();
     video.removeEventListener('timeupdate', onTime);
     video.removeEventListener('loadedmetadata', onTime);
     video.removeEventListener('play', onTime);
     video.removeEventListener('pause', onTime);
+    video.removeEventListener('play', setPausedScene);
+    video.removeEventListener('pause', setPausedScene);
+    video.removeEventListener('ended', setPausedScene);
     try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
   };
   const finish = (reason = 'ended') => { const first = !torn; cleanup(); if (first && onExit) onExit(reason); };
@@ -523,6 +535,9 @@ async function playFile(item, host, opts = {}, seq = 0) {
   video.addEventListener('loadedmetadata', onTime);
   video.addEventListener('play', onTime);
   video.addEventListener('pause', onTime);
+  video.addEventListener('play', setPausedScene);
+  video.addEventListener('pause', setPausedScene);
+  video.addEventListener('ended', setPausedScene);
   // wrapped: the DOM hands the listener an Event, which would arrive as the exit REASON
   video.addEventListener('ended', () => finish('ended'));
   // F3 + v1.0.32: the start is OUR decision (the resume offset, usually 0) — a

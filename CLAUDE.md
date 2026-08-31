@@ -273,6 +273,36 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.70 — **THREE FIELD REPORTS, AND THE FIRST WAS A FEATURE THAT COULD NEVER BE TURNED
+  ON.** All three are the same shape: correct-looking code on a surface no browser renders.
+  - ⚠️ **THE SITE LOCK WAS UNREACHABLE.** v1.0.67 emitted `webLockRequest` from exactly two
+    places, and BOTH sat inside `if (childLocked)` — so a lock could only be released, never
+    ENGAGED. Reported as "אני לא רואה שיש נעילה לאתר אינטרנט ספציפי", and that is precisely
+    what it was: nothing to see. The browser verification covered the SITES lock end to end
+    and never touched the SITE lock, because the viewer is a native overlay — **a
+    device-only surface hid a dead feature, not merely an unverified one.** The viewer's bar
+    now carries a dedicated 🔓/🔒 button, and the ⏎ close button is hidden while locked.
+  - ⚠️ **THE LOCK SCREEN DRAWS THE SESSION'S ACTIONS, NEVER THE NOTIFICATION'S.** v1.0.69
+    gave the notification its ring-with-10 icons and the lock screen kept showing the
+    system's ⏮/⏭ triangles, because `ACTION_SKIP_TO_NEXT/PREVIOUS` were advertised in the
+    `PlaybackState` and **a standard action can only ever wear a standard icon**. They are
+    gone from the advertised set, and ⏪10/⏩10 are published as **custom actions**, which is
+    the one mechanism that carries an app's own drawable onto the lock screen and a car
+    display. The callbacks stay: a steering wheel's physical ⏮/⏭ keys arrive whether or not
+    the action is advertised — advertising decides what is DRAWN.
+  - **THE AUDIO SCENE HOLDS STILL WHEN THE SOUND DOES** (user request). A picture that keeps
+    bobbing over a paused track is the only moving thing on the screen, and movement reads
+    as "still playing". `animation-play-state: paused` FREEZES mid-cycle rather than
+    resetting — `animation: none` would snap every element back to its start, a visible jump
+    on every pause. Driven by the media element's OWN play/pause/ended events, so it follows
+    every source at once: the shield, the HUD, the notification's ⏯, a call, screen-off. The
+    class is cleared on teardown for the same reason `is-audio` is — the wrap is shared, and
+    a stale one would freeze the NEXT track's scene.
+  - 1 invariants guard (11 assertions) + the v1.0.65 action guard reshaped, every guard
+    proven red on a planted regression (4 — one of which reproduces the original dead
+    feature exactly). Browser-verified for the half a browser can see: the scene runs, then
+    freezes with the animation still applied rather than reset.
+
 - v1.0.69 — **THE SEEK BUTTONS WEAR A RING WITH "10" IN IT** (user request, with a
   screenshot of Spotify's ⟲15 sitting directly beside our plain rewind triangle).
   - ⚠️ **A `VectorDrawable` HAS NO `<text>` ELEMENT**, so the digits cannot be written — the

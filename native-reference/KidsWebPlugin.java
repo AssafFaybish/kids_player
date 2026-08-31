@@ -292,10 +292,7 @@ public class KidsWebPlugin extends Plugin {
         // entirely, and teaching one child two meanings for one picture is how a 5-year-old
         // learns to ignore both.
         Button back = new Button(a);
-        // v1.0.67 — under a site lock this is the parent's door, not the child's: it says so
-        // with a padlock, and tapping it asks JS to run the code screen. Leaving the "חזרה"
-        // label on a button that refuses to go back is how a child learns the app is broken.
-        back.setText(childLocked ? "🔒  הורים" : "🏠  חזרה");
+        back.setText("🏠  חזרה");
         back.setAllCaps(false);
         back.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
@@ -308,7 +305,39 @@ public class KidsWebPlugin extends Plugin {
         back.setMinimumHeight(dp(a, 48));   // a child's finger, not a cursor
         back.setElevation(dp(a, 2));
         back.setOnClickListener(v -> closeOverlay());
+        // ⚠️ HIDDEN, NOT ABSENT, WHILE LOCKED: it is the child's way out, and a lock that
+        // leaves it on screen is a lock with a visible door. closeOverlay() refuses anyway —
+        // hiding is the affordance, the refusal is the boundary.
+        back.setVisibility(childLocked ? View.GONE : View.VISIBLE);
         bar.addView(back);
+
+        // v1.0.70 — THE PADLOCK, and it must exist BEFORE a lock does. v1.0.67 shipped with
+        // the lock request emitted only from paths that already required `childLocked`, so
+        // there was no way to ENGAGE one at all: the feature was unreachable. Reported from
+        // a device ("אני לא רואה שיש נעילה לאתר אינטרנט ספציפי").
+        //
+        // Not in parent mode: that session exists so a parent can complete a login with
+        // navigation unrestricted, and locking a child into an unrestricted browser would
+        // undo every rule this viewer enforces.
+        if (!parentMode) {
+            Button lock = new Button(a);
+            lock.setText(childLocked ? "🔒" : "🔓");
+            lock.setAllCaps(false);
+            lock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+            lock.setTextColor(Color.parseColor("#4b41d6"));
+            android.graphics.drawable.GradientDrawable lp = new android.graphics.drawable.GradientDrawable();
+            lp.setColor(Color.WHITE);
+            lp.setCornerRadius(dp(a, 22));
+            lock.setBackground(lp);
+            lock.setPadding(dp(a, 14), dp(a, 6), dp(a, 14), dp(a, 6));
+            lock.setMinimumHeight(dp(a, 48));   // a child's finger, not a cursor
+            lock.setElevation(dp(a, 2));
+            lock.setContentDescription(childLocked ? "שחרור הנעילה" : "נעילה על האתר");
+            // JS owns the code screen and the duration dialog — and the code is NEVER
+            // verified here (an invariant bans the word from this file).
+            lock.setOnClickListener(v -> notifyListeners("webLockRequest", new JSObject()));
+            bar.addView(lock);
+        }
 
         titleView = new TextView(a);
         titleView.setTextColor(Color.WHITE);
