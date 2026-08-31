@@ -33,10 +33,10 @@ let tvHud = null;   // v1.0.9: the live HUD's controls, for TV-remote keys (dpad
  */
 export function handleTvKey(action, { repeat = false } = {}) {
   if (!tvHud) return false;
-  const { ctl, reveal, renderProgress, flash } = tvHud;
+  const { ctl, reveal, renderProgress, flash, toggleWithFlash } = tvHud;
   const intent = tvKeyIntent(action, { time: ctl.getTime(), duration: ctl.getDuration(), repeat });
   if (intent.kind === 'ignore') return false;
-  if (intent.kind === 'toggle') ctl.togglePlay();
+  if (intent.kind === 'toggle') toggleWithFlash();
   if (intent.kind === 'seek') { ctl.seekTo(intent.to); flash(intent.flash); renderProgress(); }
   reveal();
   return true;
@@ -203,12 +203,34 @@ function setupHud(ctl) {
     if (playing !== lastPlaying) { lastPlaying = playing; reveal(); } // pin on pause, re-arm on play
   };
 
-  const flash = (txt) => {
+  /**
+   * The centre-screen confirmation. ONE element and ONE timer for both kinds, so a seek
+   * landing on top of a pause cannot leave two badges fighting over the middle of the video.
+   *
+   * v1.0.71 — `kind: 'toggle'` is the play/pause badge (user request: the same YouTube
+   * feedback the ±10 seek already had). It is a ROUND glyph rather than the seek's pill,
+   * because the two must be told apart at a glance by a child who cannot read: the seek
+   * says a number, and this says a shape.
+   */
+  const flash = (txt, kind = 'seek') => {
     if (!fb) return;
     fb.textContent = txt;
+    fb.classList.toggle('is-toggle', kind === 'toggle');
     fb.classList.add('show');
     clearTimeout(fbTimer);
     fbTimer = setTimeout(() => fb.classList.remove('show'), 550);
+  };
+
+  /**
+   * Pause/resume, with the badge. ⚠️ THE STATE IS READ BEFORE THE TOGGLE: `togglePlay()`
+   * starts an ASYNCHRONOUS play on both engines, so asking afterwards can still answer
+   * "paused" and the badge would contradict what just happened. What the child did is what
+   * gets shown — which is also what YouTube shows.
+   */
+  const toggleWithFlash = () => {
+    const wasPlaying = ctl.isPlaying();
+    ctl.togglePlay();
+    flash(wasPlaying ? '⏸' : '▶', 'toggle');
   };
 
   // Any touch anywhere in the player (buttons included — capture phase) reveals the
@@ -265,7 +287,7 @@ function setupHud(ctl) {
       lastTap = now;
       const visible = wasVisible;
       const center = x > r.width * 0.25 && x < r.width * 0.75;
-      tapTimer = setTimeout(() => { if (visible && center) { ctl.togglePlay(); reveal(); } }, TAP_SINGLE_DELAY);
+      tapTimer = setTimeout(() => { if (visible && center) { toggleWithFlash(); reveal(); } }, TAP_SINGLE_DELAY);
     }
   };
 
@@ -280,7 +302,7 @@ function setupHud(ctl) {
   document.addEventListener('fullscreenchange', onFsChange);
   document.addEventListener('webkitfullscreenchange', onFsChange);
 
-  tvHud = { ctl, reveal, renderProgress, flash }; // v1.0.9: TV-remote hook
+  tvHud = { ctl, reveal, renderProgress, flash, toggleWithFlash }; // v1.0.9: TV-remote hook
 
   const teardown = () => {
     tvHud = null;
