@@ -4095,3 +4095,72 @@ test('the playback notification carries the app mark and real artwork (v1.0.66)'
   assert.match(cmd, /artB64: await backgroundArtwork\(/,
     'the toggle omits the artwork — the picture would vanish on the first play/pause');
 });
+
+test('the website locks close every door, and strand nobody (v1.0.67)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1) HIDING IS THE AFFORDANCE, THE HANDLER IS THE BOUNDARY. A TV remote reaches a hidden
+  //    control and a stale render can show one, so the sites screen's 🏠 must REFUSE, not
+  //    merely disappear — the same split openFolder makes for the folder lock.
+  const back = app.slice(app.indexOf("$('sites-back').addEventListener"));
+  assert.match(back.slice(0, 500), /containState\.mode === 'sites'[\s\S]{0,60}?return;/,
+    'the sites screen 🏠 only hides under a websites lock — a remote could still press it');
+  // hardware back, the other half
+  const reg = app.slice(app.indexOf("nav.register('sites'"), app.indexOf("nav.register('sites'") + 700);
+  assert.match(reg, /onBack: \(\) => containState\.active/,
+    'hardware back walks out of the websites lock');
+  // and "go home" itself, the funnel every other caller uses
+  const gg = fnSlice(app, 'function goGallery(');
+  assert.match(gg, /mode === 'sites' \|\| containState\.mode === 'site'/,
+    'goGallery still returns a locked child to the videos');
+
+  // 2) IT SURVIVES A RESTART — force-closing the app is the first thing a child tries.
+  //    A 'site' lock REOPENS the site (the user's decision); landing on the list would let
+  //    the child simply not tap it and sit outside the lock.
+  const act = fnSlice(app, 'async function activateProfile(');
+  assert.match(act, /mode === 'sites' \|\| containState\.mode === 'site'/,
+    'a website lock no longer survives a relaunch');
+  assert.match(act, /openLockedSite\(containState\.siteUrl\)/, 'a site lock does not reopen its site');
+
+  // 3) ⚠️ FAIL OPEN, AND IN THIS ORDER. Both refusals must come BEFORE the viewer check:
+  //    with it on top an orphaned lock never reached the release, and the child was left on
+  //    a locked screen with no 🏠 holding a lock on a site that could never open.
+  const open = fnSlice(app, 'async function openLockedSite(');
+  const rulesAt = open.indexOf('rulesForLockedSite(');
+  const availAt = open.indexOf('siteViewerAvailable()');
+  assert.ok(rulesAt > 0 && availAt > rulesAt,
+    'the viewer check runs before the fail-open release — a child can be stranded behind an unopenable lock');
+  assert.match(open, /if \(!rules\.length\) return release\(/, 'a deleted site leaves the lock standing');
+  assert.match(open, /clearContainment\(\)/, 'nothing releases an unenforceable lock');
+
+  // 4) the RULES are narrowed, which is what "locked inside this site" means
+  assert.match(open, /rules,/, 'openLockedSite passes the full rule set — an approved link would carry the child out');
+  assert.match(open, /locked: true/, 'the viewer is opened unlocked — its back button would still close it');
+});
+
+test('the site viewer refuses the CHILD, never the app (v1.0.67)', () => {
+  const a = readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java');
+  const b = readRepo('native-reference/KidsWebPlugin.java');
+  assert.equal(a, b, 'the two KidsWebPlugin copies have drifted');
+  const src = a.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // ⚠️ THE APP'S OWN CLOSE MUST ALWAYS WORK. v1.0.45 closes the viewer before the break
+  // screen and calls that "the one wiring step that decides whether the browser respects
+  // screen time at all" — a site lock holds the CHILD in, never the app.
+  assert.match(src, /public void close\(PluginCall call\)[\s\S]{0,220}?forceClose\(\)/,
+    'the plugin close() honours the child lock — screen time could no longer close the viewer');
+  assert.match(src, /private void closeOverlay\(\)[\s\S]{0,200}?if \(childLocked\)/,
+    'the child\'s own close is no longer gated by the lock');
+  // hardware back must stop falling through to a close
+  const hb = src.slice(src.indexOf('static boolean handleBack()'));
+  assert.match(hb.slice(0, 700), /childLocked[\s\S]{0,120}?return true;/,
+    'hardware back still closes the viewer once the site history runs out');
+  // and the bar must not keep a "go back" label on a button that refuses to go back
+  assert.match(src, /childLocked \? "🔒/, 'the locked bar still reads as a way out');
+  // the lock reaches JS, which owns the code screen — never a second PIN in Java
+  assert.match(src, /webLockRequest/, 'the padlock reaches nothing');
+  // ⚠️ WORD-BOUNDED ON BOTH SIDES. The first version was /\bpin\b|PIN/i, whose second
+  // alternative has no boundary at all — it fired on `lastActivityPing`, i.e. on correct
+  // code. A guard that trips on what it is meant to permit trains you to delete it.
+  assert.doesNotMatch(src, /\bpin\b/i, 'the parent code must be verified in ONE place, and it is JS');
+});
