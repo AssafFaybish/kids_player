@@ -273,6 +273,31 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.71 — **A CENTRE TAP SAYS WHAT IT DID** (user request: the same YouTube feedback the
+  ±10 seek already gave). The ±10 badge has existed since v1.0.9, so the gesture a child uses
+  MOST — pause and resume — was the one with no confirmation at all.
+  - **ONE ELEMENT AND ONE TIMER FOR BOTH KINDS** (`#seek-feedback`, `flash(txt, kind)`): a
+    seek landing on top of a pause would otherwise leave two badges fighting over the middle
+    of the video. Count-pinned.
+  - **THEY ARE TOLD APART BY SHAPE, NOT BY TEXT.** The seek is a pill saying a number; the
+    toggle is a ROUND glyph. The child this is for cannot read the number, so the difference
+    has to be something they can see at a glance.
+  - ⚠️ **THE STATE IS READ BEFORE THE TOGGLE.** `togglePlay()` starts an ASYNCHRONOUS play on
+    both engines, so asking afterwards can still answer "paused" — the badge would contradict
+    the thing that just happened. What the child DID is what gets shown, which is also what
+    YouTube shows. Guard-pinned and proven red on exactly that inversion.
+  - **BOTH SURFACES WITH NO VISIBLE CONTROL USE IT**: the centre tap and the TV remote's OK.
+    The HUD's own play/pause button deliberately does NOT — that button is already the
+    indicator, and flashing a badge over it would say the same thing twice.
+  - ⚠️ **TWO GUARDS IN THIS ONE TEST USED A CHARACTER WINDOW AND BOTH WERE WRONG.** One
+    missed a declaration sitting 10 characters past a 200-char guess (a guard failing on
+    correct code); the other matched a `border-radius: 50%` belonging to a LATER rule and
+    stayed green with the badge planted square. Both are anchored to the CSS rule's own
+    braces now. A window into a stylesheet is a guess about formatting.
+  - 1 invariants guard (9 assertions), proven red three ways. Browser-verified on the live
+    player at a real 820px viewport: ⏸ on pause, ▶ on resume, the video really stopping and
+    starting, and a double-tap right still showing the PILL "10 ⏩" while moving exactly 10s.
+
 - v1.0.70 — **THREE FIELD REPORTS, AND THE FIRST WAS A FEATURE THAT COULD NEVER BE TURNED
   ON.** All three are the same shape: correct-looking code on a surface no browser renders.
   - ⚠️ **THE SITE LOCK WAS UNREACHABLE.** v1.0.67 emitted `webLockRequest` from exactly two

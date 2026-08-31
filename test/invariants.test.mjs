@@ -4271,3 +4271,43 @@ test('the site lock can actually be ENGAGED, and the scene stops with the sound 
   assert.match(css, /is-paused[\s\S]{0,120}?animation-play-state:\s*paused/,
     'the scene is stopped with something other than animation-play-state — anything else snaps it back to the start');
 });
+
+test('a centre tap SAYS what it did, and the two badges stay apart (v1.0.71)', () => {
+  // The ±10 seek has confirmed itself since v1.0.9; pause/resume did not, so the one gesture
+  // a child uses most was the one with no feedback (user request: make it like YouTube).
+  const player = CODE.get('www/js/player.js');
+  const fn = fnSlice(player, 'const toggleWithFlash = () => {');
+  assert.ok(fn, 'toggleWithFlash is gone — the centre tap is silent again');
+  // ⚠️ THE STATE IS READ BEFORE THE TOGGLE. togglePlay() starts an ASYNCHRONOUS play on both
+  // engines, so asking afterwards can still answer "paused" and the badge would contradict
+  // what just happened.
+  assert.match(fn, /const wasPlaying = ctl\.isPlaying\(\);[\s\S]{0,80}?ctl\.togglePlay\(\)/,
+    'the badge is decided after the toggle — an async play would make it lie');
+  assert.match(fn, /flash\(wasPlaying \? '⏸' : '▶', 'toggle'\)/, 'the badge no longer shows the action taken');
+
+  // BOTH surfaces with no visible control use it: the centre tap and the TV remote's OK.
+  // (The HUD button is deliberately NOT one — the button itself is the indicator.)
+  assert.match(player, /if \(visible && center\) \{ toggleWithFlash\(\)/,
+    'the centre tap toggles without saying so');
+  assert.match(player, /intent\.kind === 'toggle'\) toggleWithFlash\(\)/,
+    'the TV remote toggles without saying so');
+
+  // ONE element and ONE timer for both kinds, or a seek landing on a pause leaves two
+  // badges fighting over the middle of the video
+  assert.equal((player.match(/getElementById\('seek-feedback'\)|\$id\('seek-feedback'\)/g) || []).length, 1,
+    'a second feedback element appeared — the two badges would overlap');
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  // …and they must be told apart by SHAPE, because the child this is for cannot read the
+  // seek's number
+  // ⚠️ ANCHORED TO THE RULE'S OWN BRACES. A character window matched a `border-radius: 50%`
+  // belonging to a LATER rule (.ctl-btn), so the guard stayed green with the badge planted
+  // square — the second window in this one test to be wrong that way.
+  const round = css.slice(css.indexOf('.seek-feedback.is-toggle {'));
+  assert.match(round.slice(0, round.indexOf('}')), /border-radius:\s*50%/,
+    'the play/pause badge is not round — it would be indistinguishable from the seek pill');
+  // matched inside the rule's own braces rather than a character window — the declaration
+  // sat 10 characters past a 200-char guess, which is a guard failing on correct code
+  const base = css.slice(css.indexOf('.seek-feedback {'));
+  assert.match(base.slice(0, base.indexOf('}')), /pointer-events:\s*none/,
+    'the badge takes pointer events — it sits over the video and would swallow the next tap');
+});
