@@ -185,6 +185,27 @@ export function matchRule(rules, url) {
   return best ? best.rule : null;
 }
 
+/**
+ * v1.0.67 — PURE: the rules that remain in force while the child is LOCKED INTO ONE SITE
+ * (user decision 2026-08-31: "רק באתר הנוכחי").
+ *
+ * This is a NARROWING and can only ever remove reach: it keeps the rule that covers the
+ * locked page — the longest match, the same one `matchRule` would pick — plus any rule for
+ * the SAME host, so a site whose approved sections are separate rules still works end to
+ * end. Everything else falls away, which is what stops an approved link from carrying the
+ * child out of the site the parent locked them into.
+ *
+ * An unmatched url yields `[]`, and an empty rule list is a viewer that can navigate
+ * NOWHERE — the strict direction, and the caller must therefore refuse to engage a lock it
+ * cannot describe rather than open a browser that blocks its own page.
+ */
+export function rulesForLockedSite(rules, url) {
+  const here = matchRule(rules, url);
+  if (!here) return [];
+  const host = here.host;
+  return (rules || []).filter((r) => r && r.host === host);
+}
+
 /** May the child NAVIGATE here? Any rule is enough. */
 export function navAllowed(rules, url) {
   return matchRule(rules, url) !== null;

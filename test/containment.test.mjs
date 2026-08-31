@@ -49,7 +49,8 @@ test('a corrupted lock FAILS OPEN — a child is never stranded behind an uniden
 
 test('the chrome says exactly what the child loses, per mode', () => {
   const off = containmentChrome({ active: false });
-  assert.deepEqual(off, { hideExit: false, hideChip: false, hideHome: false, locked: false });
+  // v1.0.67 added hideSites — the OFF answer must still deny nothing
+  assert.deepEqual(off, { hideExit: false, hideChip: false, hideHome: false, hideSites: false, locked: false });
 
   const app = containmentChrome({ active: true, mode: 'app' });
   assert.equal(app.hideExit, true, 'the child must not leave the app');

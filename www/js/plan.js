@@ -2882,7 +2882,13 @@ export function planEmptyFolderSweep({ folders = [], counts = null, now = Date.n
    the scheduled break: a lock is about the tablet in the child's hands, and syncing
    "locked until X" would lock a sibling's device too. */
 
-export const CONTAIN_MODES = ['app', 'folder'];
+// v1.0.67 — two more containment modes, both about the websites surface (user request):
+//   'sites' — the child is held on the websites SCREEN. They may open any approved site and
+//             come back, but not return to the videos and not leave the app. The exact
+//             sibling of 'folder', one surface over.
+//   'site'  — the child is held INSIDE one site. They browse it as usual; the viewer will
+//             not close, and the navigation rules narrow to that site alone.
+export const CONTAIN_MODES = ['app', 'folder', 'sites', 'site'];
 
 /**
  * PURE: is a containment lock active, and what does it hold?
@@ -2896,15 +2902,20 @@ export const CONTAIN_MODES = ['app', 'folder'];
  *    still contains them.
  * -> { active, mode, folderId, msLeft, expired }
  */
-export function evalContainment({ now = Date.now(), mode = null, folderId = null, until = 0 } = {}) {
-  const off = { active: false, mode: null, folderId: null, msLeft: 0, expired: false };
+export function evalContainment({ now = Date.now(), mode = null, folderId = null, siteUrl = null, until = 0 } = {}) {
+  const off = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0, expired: false };
   const m = CONTAIN_MODES.includes(mode) ? mode : null;
   if (!m) return off;
   const fid = typeof folderId === 'string' && folderId ? folderId : null;
   if (m === 'folder' && !fid) return off;
+  // v1.0.67 — a 'site' lock is meaningless without the site, exactly as 'folder' is without
+  // the folder: an active-but-targetless lock would hold the child somewhere undefined.
+  const su = typeof siteUrl === 'string' && /^https:/i.test(siteUrl) ? siteUrl : null;
+  if (m === 'site' && !su) return off;
   const u = Number(until) || 0;
   if (u > 0 && now >= u) return { ...off, expired: true };
-  return { active: true, mode: m, folderId: m === 'folder' ? fid : null, msLeft: u > 0 ? u - now : 0, expired: false };
+  return { active: true, mode: m, folderId: m === 'folder' ? fid : null,
+    siteUrl: m === 'site' ? su : null, msLeft: u > 0 ? u - now : 0, expired: false };
 }
 
 /**
@@ -2916,7 +2927,9 @@ export function evalContainment({ now = Date.now(), mode = null, folderId = null
  * the code screen.
  */
 export function containmentChrome({ active = false, mode = null, atLockFolder = true } = {}) {
-  if (!active) return { hideExit: false, hideChip: false, hideHome: false, locked: false };
+  if (!active) {
+    return { hideExit: false, hideChip: false, hideHome: false, hideSites: false, locked: false };
+  }
   return {
     hideExit: true,                 // the child may not leave the app
     hideChip: true,                 // …nor switch to a sibling's profile
@@ -2926,7 +2939,11 @@ export function containmentChrome({ active = false, mode = null, atLockFolder = 
     // which in immersive mode costs an edge swipe. So it is hidden only AT the lock's own
     // folder, where it would genuinely be a way out. `atLockFolder` defaults TRUE so a
     // caller that does not know its position gets the strict answer (the containment rule).
-    hideHome: mode === 'folder' && atLockFolder !== false,
+    hideHome: (mode === 'folder' && atLockFolder !== false) || mode === 'sites',
+    // v1.0.67 — under a SITES lock the websites screen IS where the child lives, so its 🏠
+    // (which returns to the videos) goes away; under a FOLDER lock the launcher itself was
+    // already hidden, because a website reaches outside the folder entirely.
+    hideSites: mode === 'folder',
     locked: true
   };
 }
