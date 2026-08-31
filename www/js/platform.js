@@ -530,11 +530,14 @@ export function siteViewerAvailable() {
 }
 
 /** Opens the viewer. Resolves as soon as it is up — closing arrives via onSiteEvent. */
-export async function openSiteViewer({ url, rules = [], title = '', parentMode = false }) {
+export async function openSiteViewer({ url, rules = [], title = '', parentMode = false, locked = false }) {
   const kw = plugin('KidsWeb');
   if (!kw || !kw.open) return false;
   try {
-    await kw.open({ url, rules, title, parentMode: !!parentMode });
+    // v1.0.67 — `locked` turns the bar's back button into a padlock and stops hardware back
+    // from closing the viewer. It contains the CHILD only: the app's own close (screen time,
+    // a profile switch, the release flow) is a different native path and always works.
+    await kw.open({ url, rules, title, parentMode: !!parentMode, locked: !!locked });
     return true;
   } catch { return false; }
 }
