@@ -363,6 +363,12 @@ public class KidsNativePlugin extends Plugin {
         Intent i = new Intent(a, PlaybackService.class)
             .setAction(PlaybackService.ACTION_START)
             .putExtra("title", call.getString("title", ""))
+            // v1.0.65 — the folder's name, shown as the "artist" line on a car display and
+            // on the lock-screen widget. A song with no context is the one thing a driver
+            // glancing at the screen cannot use.
+            .putExtra("subtitle", call.getString("subtitle", ""))
+            .putExtra("posMs", call.getInt("posMs", 0).longValue())
+            .putExtra("durMs", call.getInt("durMs", 0).longValue())
             .putExtra("playing", call.getBoolean("playing", Boolean.TRUE));
         try {
             if (Build.VERSION.SDK_INT >= 26) a.startForegroundService(i);

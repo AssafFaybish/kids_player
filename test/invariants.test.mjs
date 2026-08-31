@@ -4020,3 +4020,37 @@ test('a declared runtime permission is actually REQUESTED (v1.0.64)', () => {
   assert.match(css, /\.form-msg\.warn\s*\{[^}]*color/,
     'the warn message has no colour — it would read as "nothing happened"');
 });
+
+test('the playback service publishes a real MediaSession (v1.0.65)', () => {
+  // A plain Notification cannot reach a car: media buttons from a steering wheel or head
+  // unit are routed to whichever MediaSession is ACTIVE and nowhere else, and the
+  // lock-screen media widget is drawn from a session too. v1.0.63 shipped without one.
+  const a = readRepo('android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java');
+  const b = readRepo('native-reference/PlaybackService.java');
+  assert.equal(a, b, 'the two PlaybackService copies have drifted');
+  const src = a.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  assert.match(src, /new MediaSession\(/, 'the service publishes no MediaSession — a car cannot control it');
+  assert.match(src, /setActive\(true\)/, 'the session is never activated — media buttons reach only an ACTIVE session');
+  assert.match(src, /setMediaSession\(/,
+    'the notification is not backed by the session — no lock-screen media widget');
+  // the ACTIONS a car renders come from the PlaybackState, NOT from the notification's own
+  // action list; both surfaces must offer the same three.
+  for (const act of ['ACTION_PLAY_PAUSE', 'ACTION_SKIP_TO_NEXT', 'ACTION_SKIP_TO_PREVIOUS']) {
+    assert.ok(src.includes(act), `the session does not advertise ${act} — the car button is dead`);
+  }
+  // every session callback must reach the SAME command path the notification buttons use
+  for (const cb of ['onPlay', 'onPause', 'onSkipToNext', 'onSkipToPrevious']) {
+    assert.match(src, new RegExp(cb + '\\(\\)\\s*\\{[^}]*emitPlaybackCommand'),
+      `${cb} does not forward to JS — the car button would do nothing`);
+  }
+  // ⚠️ released with the service. A session that outlives it keeps taking the car's media
+  // buttons for a video that is not playing.
+  assert.match(src, /public void onDestroy\(\)/, 'the service never releases its session');
+  assert.match(src, /releaseSession\(\)[\s\S]{0,80}?super\.onDestroy\(\)/,
+    'onDestroy does not release the session before tearing down');
+  // NO new dependency: the framework session is API 21+ and minSdk is 22
+  const gradle = readRepo('android/app/build.gradle');
+  assert.doesNotMatch(gradle, /androidx\.media[:3]|exoplayer/,
+    'a media library was added — the framework MediaSession already covers this');
+});
