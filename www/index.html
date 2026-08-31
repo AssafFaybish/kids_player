@@ -329,6 +329,10 @@
     <section id="view-sites" class="view">
       <header class="top-bar search-bar">
         <button id="sites-back" class="round-btn" type="button" aria-label="חזרה">🏠</button>
+        <!-- v1.0.67: lock the child ONTO this screen (same button, same code gate as the
+             folder's padlock) — they may open any approved site and come back, but not
+             return to the videos and not leave the app. -->
+        <button id="sites-lock-btn" class="round-btn lock-btn" type="button" aria-label="נעילה על אתרי האינטרנט">🔓</button>
         <div class="brand">
           <span class="brand-logo">🌐</span>
           <span class="brand-title">אתרי אינטרנט</span>

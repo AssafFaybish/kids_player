@@ -94,6 +94,12 @@ public class KidsWebPlugin extends Plugin {
     private volatile List<Rule> rules = new ArrayList<>();
     private volatile String currentPageUrl = "";
     private volatile boolean parentMode = false;
+    // v1.0.67 — the child is LOCKED INSIDE this site (user request). It changes exactly two
+    // things natively: the bar's back button becomes a padlock that asks JS for the parent
+    // code, and hardware back stops falling through to a close once the site's own history
+    // is exhausted. It does NOT change what may be navigated — JS narrows the RULES it
+    // hands over, so the safety boundary keeps one implementation.
+    private volatile boolean childLocked = false;
     /** The column holding the bar + the page; hidden while a video is fullscreen. */
     private LinearLayout chromeCol;
     private View customView;                                  // the fullscreen video surface
@@ -119,7 +125,11 @@ public class KidsWebPlugin extends Plugin {
         // fullscreen surface strands the child on a black screen.
         if (instance.customView != null) { instance.exitFullscreen(); return true; }
         if (instance.web != null && instance.web.canGoBack()) { instance.web.goBack(); return true; }
-        instance.closeOverlay();
+        // v1.0.67 — under a site lock the history running out is NOT a way out. Back is
+        // swallowed (returning true keeps it from reaching nav.handleBack), exactly as the
+        // folder lock swallows it one layer up.
+        if (instance.childLocked) { instance.notifyListeners("webLockRequest", new JSObject()); return true; }
+        instance.forceClose();
         return true;
     }
 
@@ -172,6 +182,7 @@ public class KidsWebPlugin extends Plugin {
         final String url = call.getString("url");
         if (url == null || !url.startsWith("https://")) { call.reject("bad-url"); return; }
         final boolean parent = Boolean.TRUE.equals(call.getBoolean("parentMode", false));
+        final boolean locked = Boolean.TRUE.equals(call.getBoolean("locked", false));
         final String title = call.getString("title", "");
         final List<Rule> parsed = readRules(call.getArray("rules"));
 
@@ -181,7 +192,11 @@ public class KidsWebPlugin extends Plugin {
                 // unrestricted. They are decided when the overlay is BUILT, so a reopen
                 // that changes the mode must rebuild — otherwise parent mode can wear the
                 // child's colours and the one visual cue about it is a lie.
-                if (overlay != null && parentMode != parent) closeOverlay();
+                // The bar is rebuilt when the MODE changes, and a lock changes the bar's
+                // button from "go back" to a padlock — so it must force a rebuild too, or
+                // a locked session would keep a live way out drawn on screen.
+                if (overlay != null && (parentMode != parent || childLocked != locked)) forceClose();
+                childLocked = locked;
                 rules = parsed;              // replace, never mutate (see the field's note)
                 currentPageUrl = url;        // before the first subresource can be requested
                 parentMode = parent;
@@ -196,11 +211,17 @@ public class KidsWebPlugin extends Plugin {
         });
     }
 
+    /**
+     * The APP asking to close — screen time, a profile switch, the release flow. This must
+     * ALWAYS work: v1.0.45 closes the viewer before the break screen, and its own comment
+     * calls that "the one wiring step that decides whether the browser respects screen time
+     * at all". A site lock holds the CHILD in, never the app.
+     */
     @PluginMethod
     public void close(PluginCall call) {
         Activity a = getActivity();
         if (a == null) { call.reject("no-activity"); return; }
-        a.runOnUiThread(() -> { closeOverlay(); call.resolve(); });
+        a.runOnUiThread(() -> { forceClose(); call.resolve(); });
     }
 
     @PluginMethod
@@ -271,7 +292,10 @@ public class KidsWebPlugin extends Plugin {
         // entirely, and teaching one child two meanings for one picture is how a 5-year-old
         // learns to ignore both.
         Button back = new Button(a);
-        back.setText("🏠  חזרה");
+        // v1.0.67 — under a site lock this is the parent's door, not the child's: it says so
+        // with a padlock, and tapping it asks JS to run the code screen. Leaving the "חזרה"
+        // label on a button that refuses to go back is how a child learns the app is broken.
+        back.setText(childLocked ? "🔒  הורים" : "🏠  חזרה");
         back.setAllCaps(false);
         back.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
@@ -353,7 +377,15 @@ public class KidsWebPlugin extends Plugin {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
+    /** The child asked to leave. Under a site lock, that is the one thing they may not do. */
     private void closeOverlay() {
+        if (childLocked) { notifyListeners("webLockRequest", new JSObject()); return; }
+        forceClose();
+    }
+
+    /** Close regardless of the lock — for the app's own reasons only. */
+    private void forceClose() {
+        childLocked = false;   // the overlay is going; a stale flag would mis-build the next
         if (overlay == null) return;
         exitFullscreen();                   // never leave a detached video surface behind
         try {

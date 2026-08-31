@@ -273,6 +273,58 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.67 — **THE LOCK REACHES THE WEBSITES TOO: ONTO THE LIST, AND INTO ONE SITE** (user
+  request: "לנעול את הילד בתוך האתר, הילד יוכל לגלוש כרגיל אך לא לצאת ממנו").
+  - **TWO NEW MODES, ONE MECHANISM.** `CONTAIN_MODES` grows to `['app','folder','sites','site']`.
+    `'sites'` is the exact sibling of `'folder'` one surface over — the child is held on the
+    websites screen and may open any approved site and come back (the user's decision), but
+    not return to the videos and not leave the app. `'site'` holds them INSIDE one site.
+  - **A `'site'` LOCK WITHOUT A URL IS OFF**, exactly as `'folder'` is without a folderId: an
+    active-but-targetless lock holds a child somewhere undefined. https only — the weblock rule.
+  - **"BROWSE NORMALLY BUT NOT LEAVE" IS TWO NARROWINGS, and neither weakens the safety
+    boundary.** `weblock.rulesForLockedSite` keeps the locked page's own rule plus any rule
+    for the SAME host (so a site whose sections are separate rules still works end to end)
+    and drops the rest — an approved link to ANOTHER site can no longer carry the child out
+    (the user's decision 2026-08-31). It can only ever REMOVE reach, so `matchRule` keeps one
+    implementation. The second narrowing is native: the viewer will not close for the child.
+  - ⚠️ **THE VIEWER'S CLOSE SPLITS IN TWO, AND THAT SPLIT IS THE FEATURE.** `closeOverlay()`
+    is the CHILD asking — refused under a lock, and it asks JS for the parent code instead;
+    `forceClose()` is the APP demanding, and it always works. v1.0.45's own comment calls the
+    screen-time close "the one wiring step that decides whether the browser respects screen
+    time at all", so a site lock holds the child in and never the app. Guard-pinned both ways.
+  - **HARDWARE BACK STOPS FALLING THROUGH.** Inside the viewer back means: leave fullscreen →
+    walk the site's history → close. Under a lock that last step is swallowed. And the bar's
+    button becomes **🔒 הורים**: leaving a "חזרה" label on a control that refuses to go back
+    is how a child learns the app is broken.
+  - **THE CODE SCREEN CANNOT BE SHOWN UNDER THE VIEWER** — it is a native overlay laid over
+    the whole app — so the padlock closes the viewer first, and **backing out REOPENS the
+    site**. Without that, tapping the padlock and changing your mind would itself be the way
+    out. The PIN is never verified in Java (guard-banned): one implementation, in JS.
+  - **BOTH LOCKS SURVIVE A RESTART**, because force-closing the app is the first thing a child
+    tries. A `'site'` lock REOPENS the site (the user's decision) — landing on the list would
+    let the child simply not tap it and sit outside the lock.
+  - ⚠️ **AND IT FAILS OPEN, IN THIS ORDER.** If the parent deleted the site, or the viewer is
+    unavailable at all, the lock RELEASES itself and says so. Measured in the browser: with
+    the availability check written first, an orphaned lock never reached the release and the
+    child sat on a locked screen with no 🏠 holding a lock on a site that could never open.
+    Containment errs strict everywhere else; a lock nobody can identify errs open (v1.0.56).
+  - ⚠️ **`renderSitesView` IS SYNCHRONOUS, AND `await f().catch()` ON IT THROWS.** The
+    exception escaped `activateProfile`, the boot's own catch fired, and a locked child's
+    relaunch landed on the PROFILE PICKER — outside the lock the persistence exists to
+    enforce. 732 green tests, a built APK and `node --check` all passed on it; only running
+    the real boot with a lock engaged showed it.
+  - ⚠️ **A GUARD OF MINE TRIPPED ON CORRECT CODE**: `/\bpin\b|PIN/i` bans the parent code from
+    Java, but the second alternative has no word boundary and fired on `lastActivityPing`. A
+    guard that trips on what it is meant to permit trains you to delete it; bounded now, and
+    re-proven against a real `pin` field planted in Java.
+  - 3 unit tests + 2 invariants guards, every guard proven red on a planted regression (5).
+    Java compiles. Browser-verified end to end through the real code gate: the sites lock
+    engaging, its 🏠 refusing even when clicked, hardware back swallowed, exit and chip gone
+    while the site tile stayed tappable, a relaunch landing inside the lock fully painted, the
+    release restoring every door, and an orphaned site lock releasing itself with an honest
+    message. **The site viewer itself is a DEVICE checklist item** — the native overlay does
+    not exist in a browser.
+
 > ⚠️ **VERSION NOTE (2026-08-31): 1.0.65 WAS NEVER CUT** — the same deliberate skip as
 > 1.0.61. The MediaSession (labelled `v1.0.65`) and the notification artwork (`v1.0.66`)
 > were merged back to back, so ONE release carries both: 1.0.64 → **1.0.66**. The rule this

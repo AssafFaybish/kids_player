@@ -2588,3 +2588,63 @@ test('the live drag and the fallback flick agree about direction (v1.0.62)', asy
     assert.equal(armed, flick, `the two paths disagree at dx=${dx}`);
   }
 });
+
+/* ---------------- site containment (v1.0.67) ---------------- */
+
+test('evalContainment: the two website modes, and a targetless one is OFF', async () => {
+  const { evalContainment, CONTAIN_MODES } = await import('../www/js/plan.js');
+  assert.deepEqual(CONTAIN_MODES, ['app', 'folder', 'sites', 'site']);
+  const now = 1_800_000_000_000;
+  // the websites SCREEN: no target needed, the screen is the target
+  const sites = evalContainment({ now, mode: 'sites', until: 0 });
+  assert.equal(sites.active, true);
+  assert.equal(sites.folderId, null);
+  assert.equal(sites.siteUrl, null);
+  // ONE site: the url is the target, exactly as folderId is for a folder
+  const site = evalContainment({ now, mode: 'site', siteUrl: 'https://example.com/kids/', until: 0 });
+  assert.equal(site.active, true);
+  assert.equal(site.siteUrl, 'https://example.com/kids/');
+  // ⚠️ an active-but-TARGETLESS lock would hold the child somewhere undefined — the same
+  // refusal 'folder' already makes without a folderId
+  assert.equal(evalContainment({ now, mode: 'site', until: 0 }).active, false);
+  assert.equal(evalContainment({ now, mode: 'site', siteUrl: '', until: 0 }).active, false);
+  // …and only https: these bytes drive a browser on a child's tablet (the weblock rule)
+  assert.equal(evalContainment({ now, mode: 'site', siteUrl: 'http://example.com/' }).active, false);
+  assert.equal(evalContainment({ now, mode: 'site', siteUrl: 'javascript:alert(1)' }).active, false);
+  // expiry works the same for the new modes
+  assert.equal(evalContainment({ now, mode: 'sites', until: now - 1 }).expired, true);
+  assert.equal(evalContainment({ now, mode: 'site', siteUrl: 'https://a.com/', until: now + 1000 }).msLeft, 1000);
+});
+
+test('containmentChrome: the sites screen keeps its list, the folder lock hides it', async () => {
+  const { containmentChrome } = await import('../www/js/plan.js');
+  const sites = containmentChrome({ active: true, mode: 'sites' });
+  // the child lives on the websites screen: its 🏠 returns to the VIDEOS and must go
+  assert.equal(sites.hideHome, true);
+  assert.equal(sites.hideSites, false, 'the launcher is the screen the child is locked to');
+  assert.equal(sites.hideExit, true);
+  // a FOLDER lock hides the websites launcher — a site reaches outside the folder entirely
+  assert.equal(containmentChrome({ active: true, mode: 'folder' }).hideSites, true);
+  // app mode keeps every surface open, websites included
+  assert.equal(containmentChrome({ active: true, mode: 'app' }).hideSites, false);
+  assert.equal(containmentChrome({ active: false }).hideSites, false);
+});
+
+test('rulesForLockedSite: a narrowing, never a widening (v1.0.67)', async () => {
+  const { rulesForLockedSite } = await import('../www/js/weblock.js');
+  const rules = [
+    { host: 'kids.example.com', port: 443, segments: [] },
+    { host: 'kids.example.com', port: 443, segments: ['games'] },
+    { host: 'other.example.com', port: 443, segments: [] }
+  ];
+  const kept = rulesForLockedSite(rules, 'https://kids.example.com/games/one');
+  assert.equal(kept.length, 2, 'both rules of the locked host survive');
+  assert.ok(kept.every((r) => r.host === 'kids.example.com'));
+  assert.ok(!kept.some((r) => r.host === 'other.example.com'),
+    'an approved link to ANOTHER site would carry the child out of the site they are locked into');
+  // ⚠️ an unmatched url yields NOTHING — the strict direction. The caller must refuse to
+  // engage a lock it cannot describe rather than open a browser that blocks its own page.
+  assert.deepEqual(rulesForLockedSite(rules, 'https://nowhere.example.com/'), []);
+  assert.deepEqual(rulesForLockedSite([], 'https://kids.example.com/'), []);
+  assert.deepEqual(rulesForLockedSite(rules, 'not a url'), []);
+});

@@ -15,7 +15,7 @@ import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefR
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
   setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
-  extractSiteIconFromHtml } from './weblock.js';
+  extractSiteIconFromHtml, rulesForLockedSite } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
@@ -125,6 +125,14 @@ function goGallery() {
     folderId = containState.folderId;
     renderFolderView().catch(() => {});
     nav.reset('folder');
+    return;
+  }
+  // v1.0.67 — the same funnel, for the websites locks: "go home" under them means the
+  // websites screen, never the videos. Covers every caller at once, which is why the
+  // folder case lives here too rather than in each of them.
+  if (containState.active && (containState.mode === 'sites' || containState.mode === 'site')) {
+    nav.reset('sites');
+    renderSitesView();
     return;
   }
   renderHome();
@@ -460,13 +468,14 @@ function startLockTicker() {
 const containModeKey = (pid) => 'contain:' + pid + ':mode';
 const containFolderKey = (pid) => 'contain:' + pid + ':folder';
 const containUntilKey = (pid) => 'contain:' + pid + ':until';
+const containSiteKey = (pid) => 'contain:' + pid + ':site';   // v1.0.67: the locked site's url
 const CONTAIN_LAST_MIN = 'contain:lastMin'; // feature 5: the remembered default
 
 // Runtime OWNERSHIP of the OS pin, the breakPinHeld pattern (v1.0.55): the release must
 // follow what THIS lock actually pinned, never a re-read of some setting — and it must
 // never unpin a session the kiosk owns.
 let containPinHeld = false;
-let containState = { active: false, mode: null, folderId: null, msLeft: 0 };
+let containState = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0 };
 
 async function readContainment(pid = activeProfileId) {
   if (!pid) return evalContainment({});
@@ -474,6 +483,7 @@ async function readContainment(pid = activeProfileId) {
     return evalContainment({
       mode: await prefGet(containModeKey(pid)),
       folderId: await prefGet(containFolderKey(pid)),
+      siteUrl: await prefGet(containSiteKey(pid)),
       until: Number(await prefGet(containUntilKey(pid))) || 0
     });
   } catch { return evalContainment({}); }
@@ -481,7 +491,7 @@ async function readContainment(pid = activeProfileId) {
 
 async function clearContainment(pid = activeProfileId) {
   if (!pid) return;
-  for (const k of [containModeKey(pid), containFolderKey(pid), containUntilKey(pid)]) {
+  for (const k of [containModeKey(pid), containFolderKey(pid), containSiteKey(pid), containUntilKey(pid)]) {
     await prefRemove(k).catch(() => {});
   }
   // Release ONLY the pin this lock took, and NEVER under the kiosk (the v1.0.36 rule:
@@ -494,7 +504,7 @@ async function clearContainment(pid = activeProfileId) {
     }
   } catch { /* browser preview / plugin absent */ }
   containPinHeld = false;
-  containState = { active: false, mode: null, folderId: null, msLeft: 0 };
+  containState = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0 };
 }
 
 /**
@@ -523,7 +533,7 @@ async function refreshContainUi() {
   // first is a place where 🏠 would be an escape.
   const atLockFolder = !containState.folderId || folderId === containState.folderId;
   const chrome = containmentChrome({ ...containState, atLockFolder });
-  for (const id of ['lock-btn', 'folder-lock-btn']) {
+  for (const id of ['lock-btn', 'folder-lock-btn', 'sites-lock-btn']) {
     const b = $(id);
     if (!b) continue;
     b.textContent = chrome.locked ? '🔒' : '🔓';
@@ -559,7 +569,12 @@ async function refreshContainUi() {
   // the approved-websites launcher is a whole second surface (refreshSitesLauncher
   // re-reads on every render, hence a re-assert here rather than a one-time toggle)
   const sites = $('sites-open');
-  if (sites && inFolderLock) sites.classList.add('hidden');
+  if (sites && chrome.hideSites) sites.classList.add('hidden');
+  // v1.0.67 — the sites screen's own 🏠 goes back to the VIDEOS, so a websites lock closes
+  // it exactly as a folder lock closes the watch screen's.
+  const inSitesLock = containState.active && (containState.mode === 'sites' || containState.mode === 'site');
+  const sitesBack = $('sites-back');
+  if (sitesBack) sitesBack.classList.toggle('hidden', inSitesLock);
 }
 
 /** The padlock tap: engage (code → how long?) or release (code). */
@@ -581,12 +596,26 @@ async function onLockTap(scope) {
     });
     return;
   }
-  const mode = scope === 'folder' ? 'folder' : 'app';
+  const mode = ['folder', 'sites', 'site'].includes(scope) ? scope : 'app';
   const fid = mode === 'folder' ? folderId : null;
   if (mode === 'folder' && !fid) return;
+  // v1.0.67 — a SITE lock needs the page the child is on, and it must be describable as
+  // rules: `rulesForLockedSite` answering [] would open a browser that blocks its own page,
+  // so refusing to engage is the only safe direction.
+  let siteUrl = null;
+  if (mode === 'site') {
+    siteUrl = lockCandidateSiteUrl;
+    if (!siteUrl || !rulesForLockedSite(siteRulePayload(), siteUrl).length) {
+      toast('אי אפשר לנעול על הדף הזה'); return;
+    }
+  }
+  const titles = {
+    folder: 'קוד הורים לנעילה על התיקיה', sites: 'קוד הורים לנעילה על אתרי האינטרנט',
+    site: 'קוד הורים לנעילה על האתר', app: 'קוד הורים לנעילת האפליקציה'
+  };
   startPin((await hasPin()) ? 'verify' : 'setup', {
-    title: mode === 'folder' ? 'קוד הורים לנעילה על התיקיה' : 'קוד הורים לנעילת האפליקציה',
-    onSuccess: () => { askLockDuration(mode, fid).catch(() => {}); }
+    title: titles[mode],
+    onSuccess: () => { askLockDuration(mode, fid, siteUrl).catch(() => {}); }
   });
 }
 
@@ -596,13 +625,16 @@ let lockSetupCtx = null;
  * "How long?" — asked EVERY time (the user's requirement), pre-filled with the last
  * answer, which is remembered per device. 0 is a real answer: until the parent unlocks.
  */
-async function askLockDuration(mode, fid) {
+async function askLockDuration(mode, fid, siteUrl = null) {
   const last = normalizeLockMinutes(await prefGet(CONTAIN_LAST_MIN), 0);
-  lockSetupCtx = { mode, folderId: fid, minutes: last };
-  const title = mode === 'folder' ? 'נעילה על התיקיה' : 'נעילת האפליקציה';
+  lockSetupCtx = { mode, folderId: fid, siteUrl, minutes: last };
+  const title = { folder: 'נעילה על התיקיה', sites: 'נעילה על אתרי האינטרנט',
+    site: 'נעילה על האתר', app: 'נעילת האפליקציה' }[mode];
   const f = mode === 'folder' ? (folders.find((x) => x.id === fid) || {}) : {};
   $('ls-title').textContent = 'לכמה זמן לנעול?';
-  $('ls-sub').textContent = title + (mode === 'folder' && f.title ? ' — "' + f.title + '"' : '');
+  $('ls-sub').textContent = title
+    + (mode === 'folder' && f.title ? ' — "' + f.title + '"' : '')
+    + (mode === 'site' && siteUrl ? ' — ' + siteHostLabel(siteUrl) : '');
   $('ls-min').value = String(last);
   renderLockPresets();
   paintLockExplain();
@@ -646,12 +678,15 @@ async function commitLockSetup() {
   const pid = activeProfileId;
   await prefSet(containModeKey(pid), ctx.mode);
   if (ctx.mode === 'folder') await prefSet(containFolderKey(pid), ctx.folderId);
+  if (ctx.mode === 'site') await prefSet(containSiteKey(pid), ctx.siteUrl);
   await prefSet(containUntilKey(pid), String(minutes > 0 ? Date.now() + minutes * 60000 : 0));
   await prefSet(CONTAIN_LAST_MIN, String(minutes)); // remembered for next time
   lockSetupCtx = null;
   await applyContainment();
-  // Land the child where the lock holds them: inside the folder, or on their home.
+  // Land the child where the lock holds them.
   if (ctx.mode === 'folder') { folderId = ctx.folderId; nav.reset('folder'); await renderFolderView(); }
+  else if (ctx.mode === 'sites') { nav.reset('sites'); renderSitesView(); }
+  else if (ctx.mode === 'site') { nav.reset('sites'); renderSitesView(); await openLockedSite(ctx.siteUrl); }
   else { nav.reset('gallery'); renderHome(); }
   toast(minutes > 0 ? 'נעול ל-' + minutes + ' דקות 🔒' : 'נעול עד שחרור 🔒');
 }
@@ -1536,7 +1571,13 @@ function registerViews() {
   nav.register('locksetup', { onLeave: () => { lockSetupCtx = null; } });
   // v1.0.45: the websites grid re-renders on entry so a site removed in the parent screen
   // (or arriving from another device) is gone the moment the child comes back to it.
-  nav.register('sites', { onEnter: () => { renderSitesView(); } });
+  nav.register('sites', {
+    onEnter: () => { renderSitesView(); },
+    // v1.0.67 — swallow hardware back while the child is locked to this screen (or to a
+    // site whose viewer they just left through the app's own path), the same half of the
+    // folder lock that hiding 🏠 cannot cover.
+    onBack: () => containState.active && (containState.mode === 'sites' || containState.mode === 'site')
+  });
   nav.register('watch', {
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
@@ -2103,7 +2144,54 @@ async function openSiteForKid(rec) {
   const ok = await openSiteViewer({
     url: rec.url, rules: siteRulePayload(), title: rec.title || '', parentMode: false
   });
-  if (ok) siteViewerOpen = true;
+  if (ok) { siteViewerOpen = true; lockCandidateSiteUrl = rec.url; }
+}
+
+// v1.0.67 — the page a site lock would be engaged on. Tracked from the viewer's own
+// navigation, because the parent taps the padlock while standing on a page, and the app's
+// JS cannot ask a native WebView where it is.
+let lockCandidateSiteUrl = null;
+
+/** A short, human label for a locked site — the host, which is what a parent recognises. */
+function siteHostLabel(url) {
+  try { return new URL(url).host.replace(/^www\./, ''); } catch { return url || ''; }
+}
+
+/**
+ * Open the site the child is LOCKED into.
+ *
+ * Two narrowings, and both are the lock:
+ *  - the RULES are cut to that site alone (`rulesForLockedSite`), so an approved link to
+ *    another site cannot carry the child out — the user's decision 2026-08-31;
+ *  - `locked: true` makes the native bar's button a padlock and stops hardware back from
+ *    falling through to a close.
+ *
+ * If the site can no longer be described by any rule — the parent deleted it while the lock
+ * stood — the lock is RELEASED rather than leaving a child staring at a blocked page they
+ * cannot leave. Containment errs strict everywhere else; here it errs OPEN, the v1.0.56 rule
+ * for a lock that can no longer be identified.
+ */
+async function openLockedSite(url) {
+  // ⚠️ THE FAIL-OPEN CHECKS COME FIRST, BOTH OF THEM, AND THE ORDER IS THE WHOLE POINT.
+  // Measured in the browser: with the viewer check on top, an orphaned lock never reached
+  // the release below — the child was left on a locked websites screen, no 🏠, holding a
+  // lock on a site that could never open. A lock the app CANNOT ENFORCE must not strand a
+  // child (the v1.0.56 rule); containment errs strict everywhere except here.
+  await loadSiteEntries();
+  const rules = rulesForLockedSite(siteRulePayload(), url);
+  const release = async (why) => {
+    await clearContainment();
+    await refreshContainUi();
+    toast(why);
+    return false;
+  };
+  if (!rules.length) return release('האתר הנעול כבר לא קיים — הנעילה שוחררה 🔓');
+  if (!siteViewerAvailable()) return release('אי אפשר לפתוח אתרים כאן — הנעילה שוחררה 🔓');
+  await armScheduledLock();
+  idleLastInputAt = Date.now();
+  const ok = await openSiteViewer({ url, rules, title: siteHostLabel(url), parentMode: false, locked: true });
+  if (ok) { siteViewerOpen = true; lockCandidateSiteUrl = url; }
+  return !!ok;
 }
 
 /** Reopen a page for the CHILD with the current rules — used after a parent approval. */
@@ -2113,6 +2201,63 @@ async function reopenForKid(url) {
   idleLastInputAt = Date.now();
   const ok = await openSiteViewer({ url, rules: siteRulePayload(), title: '', parentMode: false });
   if (ok) siteViewerOpen = true;
+}
+
+/**
+ * The padlock in the site viewer's bar (v1.0.67).
+ *
+ * ⚠️ THE VIEWER MUST CLOSE BEFORE THE CODE SCREEN, and that is not a preference: the viewer
+ * is a NATIVE overlay laid over the whole app, so the PIN would render invisibly beneath it
+ * — the same wiring the screen-time break already depends on (v1.0.45). The close goes
+ * through the APP's own path, which a site lock never blocks.
+ *
+ * Backing out REOPENS the site. Without that, tapping the padlock and changing your mind
+ * would be a way out of the lock — the child would simply be left in the app.
+ */
+async function onSiteLockTap() {
+  if (!activeProfileId) return;
+  const wasLocked = containState.active && containState.mode === 'site';
+  const url = wasLocked ? containState.siteUrl : lockCandidateSiteUrl;
+  await closeSiteViewer().catch(() => {});
+  siteViewerOpen = false;
+  let settled = false;   // onDone fires exactly once, for success AND for cancel
+  if (wasLocked) {
+    startPin((await hasPin()) ? 'verify' : 'setup', {
+      title: 'קוד הורים לשחרור הנעילה',
+      onSuccess: async () => {
+        settled = true;
+        await clearContainment();
+        if (nav.isActive('pin')) nav.back();
+        nav.reset('sites');
+        renderSitesView();
+        await refreshContainUi();
+        toast('הנעילה שוחררה 🔓');
+      },
+      onDone: () => { if (!settled && url) openLockedSite(url).catch(() => {}); }
+    });
+    return;
+  }
+  if (!url || !rulesForLockedSite(siteRulePayload(), url).length) {
+    toast('אי אפשר לנעול על הדף הזה');
+    if (url) await openLockedSiteOrPlain(url);
+    return;
+  }
+  startPin((await hasPin()) ? 'verify' : 'setup', {
+    title: 'קוד הורים לנעילה על האתר',
+    onSuccess: () => { settled = true; askLockDuration('site', null, url).catch(() => {}); },
+    // the parent backed out of the code screen, or out of the duration dialog: the child
+    // was browsing a moment ago and must be put back where they were
+    onDone: () => { if (!settled) openLockedSiteOrPlain(url).catch(() => {}); }
+  });
+}
+
+/** Reopen `url` under the lock if one is engaged, otherwise as an ordinary visit. */
+async function openLockedSiteOrPlain(url) {
+  if (containState.active && containState.mode === 'site') return openLockedSite(url);
+  await loadSiteEntries();
+  const ok = await openSiteViewer({ url, rules: siteRulePayload(), title: siteHostLabel(url), parentMode: false });
+  if (ok) { siteViewerOpen = true; lockCandidateSiteUrl = url; }
+  return !!ok;
 }
 
 /** Open for the PARENT: navigation unrestricted, so an SSO login can complete. */
@@ -7720,6 +7865,16 @@ async function activateProfile(id) {
     await renderHome().catch(() => {});
     await openFolder(containLanding).catch(() => {});
   }
+  // v1.0.67 — THE WEBSITE LOCKS SURVIVE A RESTART TOO, which is what makes them a lock
+  // rather than a suggestion: force-closing the app is the first thing a child tries.
+  // A 'site' lock REOPENS the site (the user's decision 2026-08-31) — landing on the list
+  // would let them simply not tap it and sit outside the lock; openLockedSite releases the
+  // lock by itself if the parent has since deleted the site.
+  if (containState.active && (containState.mode === 'sites' || containState.mode === 'site')) {
+    nav.reset('sites');
+    renderSitesView();
+    if (containState.mode === 'site') await openLockedSite(containState.siteUrl).catch(() => {});
+  }
 
   // v1.0.7: shares queued before a profile was active drain AFTER the gallery is up —
   // their interactive PIN flow must not fight the activation navigation.
@@ -7872,7 +8027,13 @@ function wire() {
   $('folder-search').addEventListener('click', () => { openFolderSearch().catch(() => {}); });
   $('search-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
   $('sites-open').addEventListener('click', () => { openSitesView().catch(() => {}); });
-  $('sites-back').addEventListener('click', () => { if (!nav.back()) goGallery(); });
+  $('sites-back').addEventListener('click', () => {
+    // v1.0.67 — under a websites lock the videos are not a destination. The button is
+    // hidden by containmentChrome, but hiding is the affordance and THIS is the boundary:
+    // a TV remote can reach a hidden-but-present control, and a stale render can show it.
+    if (containState.active && (containState.mode === 'sites' || containState.mode === 'site')) return;
+    if (!nav.back()) goGallery();
+  });
   $('sites-enabled').addEventListener('change', async () => {
     await putSetting(activeProfileId, 'sitesEnabled', $('sites-enabled').checked);
     await refreshSitesPanel();
@@ -8238,6 +8399,7 @@ function wire() {
   // v1.0.56 — the containment padlocks (home + folder header) and the duration dialog.
   $('lock-btn').addEventListener('click', () => { onLockTap('app').catch(() => {}); });
   $('folder-lock-btn').addEventListener('click', () => { onLockTap('folder').catch(() => {}); });
+  $('sites-lock-btn').addEventListener('click', () => { onLockTap('sites').catch(() => {}); });
   $('ls-ok').addEventListener('click', () => { commitLockSetup().catch(() => {}); });
   $('ls-cancel').addEventListener('click', () => { if (nav.isActive('locksetup')) nav.back(); });
   $('ls-min').addEventListener('input', () => {
@@ -8658,6 +8820,11 @@ async function init() {
      - `webClosed`: the flag gates tickIdleSleep; leaving it stuck true would make the
        idle timer count forever against a viewer that is gone. */
   onSiteEvent('webActivity', () => { idleLastInputAt = Date.now(); });
+  // v1.0.67 — the padlock in the viewer's bar asks JS to run the code screen. The viewer is
+  // a NATIVE overlay sitting ON TOP of this WebView, so the code screen is invisible beneath
+  // it: it must be closed first (by the app, which a lock never blocks) and reopened if the
+  // parent backs out.
+  onSiteEvent('webLockRequest', () => { onSiteLockTap().catch(() => {}); });
   onSiteEvent('webClosed', () => { siteViewerOpen = false; });
   onSiteEvent('webBlocked', (e) => {
     const url = e && e.url;
