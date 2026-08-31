@@ -482,24 +482,20 @@ test('backgroundPlayDecision: opt-in, own files only, and never a paused video',
   assert.equal(backgroundPlayDecision().play, false);
 });
 
-test('backgroundSkipTarget: ⏮/⏭ walk the list the child is looking at, skipping gifts', async () => {
-  const { backgroundSkipTarget } = await import('../www/js/playerlogic.js');
-  const keys = ['a', 'b', 'c', 'd'];
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'next' }), 'c');
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'prev' }), 'a');
-  // ⚠️ NO WRAP-AROUND, in either direction: a chain that looped would play all night
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'd', dir: 'next' }), null);
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'a', dir: 'prev' }), null);
-  // ⚠️ A WRAPPED GIFT IS SKIPPED, NEVER OPENED. Its whole ritual is that the FIRST TAP
-  // unwraps it and deliberately does not play (v1.0.25) — starting it from a notification
-  // would consume the video while leaving the tile wrapped forever.
-  const gift = (k) => k === 'c';
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'next', isGift: gift }), 'd');
-  // …and a run of gifts is skipped over, not stopped at
-  const allGifts = (k) => k === 'c' || k === 'd';
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'b', dir: 'next', isGift: allGifts }), null);
-  // a video that is not in the list at all (the folder changed under us) moves nothing
-  assert.equal(backgroundSkipTarget({ keys, currentKey: 'zz', dir: 'next' }), null);
-  assert.equal(backgroundSkipTarget({ keys: [], currentKey: 'a' }), null);
-  assert.equal(backgroundSkipTarget({}), null);
+test('seekRelative goes through the CLAMP, on every engine (v1.0.68)', async () => {
+  const { tvKeyIntent } = await import('../www/js/playerlogic.js');
+  const { SEEK_STEP } = await import('../www/js/config.js');
+  // ⚠️ The notification's ⏪/⏩ are a THIRD seek surface (touch, remote, now this), and the
+  // clamp is what stops a forward seek running past the end — where the engine fires ENDED
+  // → finish() → onExit and the child is EJECTED from the video (v1.0.22, paid for once).
+  const near = tvKeyIntent('fwd', { time: 100, duration: 101 });
+  assert.equal(near.kind, 'seek');
+  assert.ok(near.to < 101, 'a forward seek near the end must be clamped, or the child is ejected');
+  // …and the step is the SAME ten seconds a double-tap on the video gives, so the
+  // notification and the screen can never disagree about what a skip means
+  assert.equal(tvKeyIntent('fwd', { time: 10, duration: 600 }).to, 10 + SEEK_STEP);
+  assert.equal(tvKeyIntent('back', { time: 60, duration: 600 }).to, 60 - SEEK_STEP);
+  assert.equal(tvKeyIntent('back', { time: 2, duration: 600 }).to, 0, 'never before the start');
+  // an unknown action must not seek at all — the notification can only ever send two
+  assert.equal(tvKeyIntent('sideways', { time: 10, duration: 600 }).kind, 'ignore');
 });

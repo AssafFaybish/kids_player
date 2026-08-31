@@ -3969,9 +3969,18 @@ test('the background service is declared, gated, and reachable only from the app
   const svc = svcA.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.doesNotMatch(svc, /setContentIntent|getActivity\(/,
     'the notification can open the app — that is a hole in the containment lock');
-  for (const a of ['ACTION_PREV', 'ACTION_TOGGLE', 'ACTION_NEXT']) {
+  // v1.0.68 — ⏪10 / ⏯ / ⏩10 (user request, replacing skip-track): the library is mostly
+  // long recordings, where moving INSIDE the track is what a parent actually needs.
+  for (const a of ['ACTION_BACK', 'ACTION_TOGGLE', 'ACTION_FWD']) {
     assert.ok(svc.includes(a), `the notification lost its ${a} button`);
   }
+  // the CAR reads the PlaybackState, never the notification's action list — both surfaces
+  // must offer the seek, and a head unit's own ⏮/⏭ must land on something rather than sit dead
+  for (const a of ['ACTION_REWIND', 'ACTION_FAST_FORWARD']) {
+    assert.ok(svc.includes(a), `the session does not advertise ${a} — the car button is dead`);
+  }
+  assert.match(svc, /onSkipToNext\(\)\s*\{[^}]*"fwd"/,
+    'a car skip button does nothing — map it to the same ten seconds rather than leaving it dead');
   assert.match(svc, /IMPORTANCE_LOW/, 'the channel makes noise — a song change would wake a sleeping child');
   assert.match(svc, /START_NOT_STICKY/,
     'a sticky service would be restarted by the system for a video that is no longer playing');

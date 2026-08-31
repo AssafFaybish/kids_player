@@ -9,7 +9,7 @@ import {
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, getSettings, putSetting } from './settings.js';
-import { playItem, stop, playbackState, pauseCurrent, resumeCurrent } from './player.js';
+import { playItem, stop, playbackState, pauseCurrent, resumeCurrent, seekRelative } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
@@ -23,13 +23,13 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
-  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_TRACK_MAX, BG_ART_MAX_BYTES } from './config.js';
+  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
-  fullscreenOrientation, planCallResume, backgroundPlayDecision, backgroundSkipTarget } from './playerlogic.js';
+  fullscreenOrientation, planCallResume, backgroundPlayDecision } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -3481,26 +3481,6 @@ async function toggleFavourite() {
 
 /* ---------------- background playback (v1.0.63) ---------------- */
 
-// The ORDER THE CHILD IS LOOKING AT, as keys — what ⏮/⏭ on the notification moves through.
-// Built once when background playback arms, from `pageAnyFolder` (THE pagination entry
-// point), so the notification can never disagree with the grid under the player. The
-// autoplay chain's `nextAfter` walks FORWARD from a cursor and has no reverse; writing one
-// would be a second answer to "what is in this folder, in what order" (the v1.0.21 bug).
-let bgTrack = [];
-
-async function buildBackgroundTrack() {
-  bgTrack = [];
-  const scope = watchCtx.scope;
-  const fid = watchCtx.folderId;
-  if (!scope || !fid) return;
-  try {
-    const res = await pageAnyFolder(scope, fid, {
-      offset: 0, limit: BG_TRACK_MAX, recentSnapshot: watchCtx.recent || null
-    });
-    bgTrack = (res.items || []).map((r) => r && r.key).filter(Boolean);
-  } catch { bgTrack = []; }
-}
-
 /**
  * Arm or refresh the foreground service for the video now playing.
  *
@@ -3555,7 +3535,6 @@ async function backgroundArtwork(item) {
 async function armBackgroundPlayback(item) {
   const want = backgroundPlayDecision({ enabled: bgPlayEnabled, playing: true, item });
   if (!want.play) { await disarmBackgroundPlayback(); return; }
-  await buildBackgroundTrack();
   const st = playbackState();
   const ok = await startBackgroundPlayback(item.title || '', true, {
     subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(item),
@@ -3565,7 +3544,6 @@ async function armBackgroundPlayback(item) {
 }
 
 async function disarmBackgroundPlayback() {
-  bgTrack = [];
   if (!bgPlayLive) return;
   bgPlayLive = false;
   await stopBackgroundPlayback().catch(() => {});
@@ -3592,20 +3570,19 @@ async function handlePlaybackCommand(action) {
     else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true, meta); }
     return;
   }
-  if (action !== 'next' && action !== 'prev') return;
-  const key = backgroundSkipTarget({
-    keys: bgTrack, currentKey: currentWatch.key, dir: action,
-    // a wrapped gift is SKIPPED, never opened: its ritual is the first tap unwrapping it
-    // (v1.0.25), and playing it from a notification would consume the video while leaving
-    // the tile wrapped forever
-    isGift: (k) => { const st = giftStates.get(k); return !!(st && st.giftRank && !st.unwrappedAt); }
+  // v1.0.68 — ⏪/⏩ move INSIDE the track (user request, replacing skip-track). The seek is
+  // clamped inside player.seekRelative, which is the invariant this app has already paid
+  // for once: an unclamped forward seek runs past the end and EJECTS the child from the
+  // video. Nothing is awaited before it, so the position cannot go stale under us.
+  if (action !== 'fwd' && action !== 'back') return;
+  if (seekRelative(action) === null) return;
+  const st = playbackState();
+  if (!st) return;
+  // republish, or the car's progress bar keeps extrapolating from the OLD position
+  await startBackgroundPlayback(currentWatch.title || '', st.playing, {
+    subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(currentWatch),
+    posSec: st.time, durSec: st.duration
   });
-  if (!key) return;
-  const scopes = [libScope, activeProfileId ? db.profScope(activeProfileId) : null].filter(Boolean);
-  const rec = await db.findLiveByKey(key, scopes).catch(() => null);
-  if (!rec) return;
-  if (!nav.isActive('watch') || !currentWatch) return;   // re-checked AFTER the awaits
-  await openWatch(rec);
 }
 
 async function openWatch(item) {

@@ -90,6 +90,27 @@ export function playbackState() {
  * on, the child taps play and continues. Deliberately NOT stop(): stop() destroys the
  * player, and coming back to a black hole is the "הסרטון נעלם" the user reported.
  */
+/**
+ * v1.0.68 — seek ±SEEK_STEP from OUTSIDE the player: the notification's ⏪/⏩ (user request,
+ * replacing the track-skip buttons). -> the new position, or null when nothing is playing.
+ *
+ * ⚠️ IT GOES THROUGH `tvKeyIntent`, WHICH CLAMPS. That is not tidiness: an unclamped forward
+ * seek runs past the end, the engine fires ENDED → `finish()` → `onExit`, and the child is
+ * EJECTED from the video (the v1.0.22 bug this app has paid for once, on the TV remote). A
+ * notification is a THIRD seek surface, and it must not be the one that reintroduces it.
+ *
+ * Works for both engines because it only ever touches `current.ctl`, the same handle the
+ * HUD and the remote use.
+ */
+export function seekRelative(action) {
+  if (!current || !current.ctl) return null;
+  const c = current.ctl;
+  const intent = tvKeyIntent(action, { time: c.getTime(), duration: c.getDuration() });
+  if (intent.kind !== 'seek') return null;
+  c.seekTo(intent.to);
+  return intent.to;
+}
+
 export function pauseCurrent() {
   if (!current || !current.ctl || !current.ctl.pause) return;
   try { current.ctl.pause(); } catch {}
