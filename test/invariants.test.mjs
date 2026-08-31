@@ -4299,7 +4299,11 @@ test('a centre tap SAYS what it did, and the two badges stay apart (v1.0.71)', (
   const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
   // …and they must be told apart by SHAPE, because the child this is for cannot read the
   // seek's number
-  assert.match(css, /\.seek-feedback\.is-toggle[\s\S]{0,200}?border-radius:\s*50%/,
+  // ⚠️ ANCHORED TO THE RULE'S OWN BRACES. A character window matched a `border-radius: 50%`
+  // belonging to a LATER rule (.ctl-btn), so the guard stayed green with the badge planted
+  // square — the second window in this one test to be wrong that way.
+  const round = css.slice(css.indexOf('.seek-feedback.is-toggle {'));
+  assert.match(round.slice(0, round.indexOf('}')), /border-radius:\s*50%/,
     'the play/pause badge is not round — it would be indistinguishable from the seek pill');
   // matched inside the rule's own braces rather than a character window — the declaration
   // sat 10 characters past a 200-char guess, which is a guard failing on correct code
