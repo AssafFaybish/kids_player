@@ -273,6 +273,43 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.65 — **A REAL `MediaSession`, SO A CAR CAN CONTROL THE MUSIC** (user request: "האם
+  תוכל לספק תמיכה ב-android auto… לבחור שיר מהצג של הרכב?").
+  - ⚠️ **VIDEO ON A CAR SCREEN IS IMPOSSIBLE, and not for want of effort.** Android Auto
+    permits third-party apps in fixed categories only (media=audio, navigation, messaging);
+    there is no video surface at all. Video exists on Android Automotive OS — an OS built
+    INTO the car, not a phone projection — and is blocked there while driving. Recorded so
+    nobody re-opens this as a feature request.
+  - ⚠️ **"MIRROR THE APP LIKE SPOTIFY" IS A MISREADING OF WHAT SPOTIFY DOES.** Auto renders
+    ITS OWN UI from a content tree the app serves through a `MediaBrowserService` /
+    `MediaLibraryService`. Nothing is mirrored, and there is no cheaper path: a UI the app
+    designs would never pass Auto's distraction rules. Browsing the library from the car
+    therefore means ExoPlayer + a library service + exporting the library where native code
+    can read it — the whole library lives in **IndexedDB inside the WebView**, which a
+    service running with no Activity cannot open. That is a SECOND playback engine, and the
+    user declined it (2026-08-31).
+  - **WHAT WAS BUILT INSTEAD**, and it is the prerequisite either way: the framework
+    `android.media.session.MediaSession` (API 21+, **no new dependency** — androidx.media
+    would have pulled in a library for something the platform already has). It gives the
+    car's steering-wheel and head-unit buttons over Bluetooth, the standard lock-screen
+    media widget instead of a custom notification, and the track name + a progress bar on
+    the car display.
+  - **THE ACTIONS A CAR RENDERS COME FROM THE `PlaybackState`, NOT from the notification's
+    own action list** — two separate surfaces that must advertise the same three controls or
+    a button exists on one and is dead on the other. Guard-pinned, both halves.
+  - **THE POSITION IS PUBLISHED, NEVER TICKED.** The system extrapolates from the position
+    and the playback SPEED, so a car's progress bar advances with no timer of ours — on a
+    child's tablet a per-second bridge call is a wake-up paid for nothing.
+  - **THE SESSION IS RELEASED IN `onDestroy`**: one that outlives its service keeps taking
+    the car's media buttons for a video that is not playing — the "a control for a dead
+    video" rule this feature follows everywhere else.
+  - The subtitle is the FOLDER'S name, from `folders` — the same list the home renders — so
+    the notification, the lock screen and the car can never disagree about where a song is
+    from.
+  - 1 invariants guard (9 assertions), proven red four ways (an inactive session, a
+    notification not backed by it, a dead skip callback, and a session outliving the
+    service). Java proven to COMPILE. **The car itself is a device checklist item.**
+
 - v1.0.64 — **THE PLAYBACK NOTIFICATION NEVER APPEARED, AND THE REASON IS A ONE-LINE
   MISUNDERSTANDING** (field report on the v1.0.63 release: "שמעתי שיר ולחצתי על כפתור
   הבית, השיר המשיך להתנגן — יופי. אבל לא הופיע לי כפתור").

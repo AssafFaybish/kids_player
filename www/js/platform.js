@@ -457,11 +457,18 @@ export async function ensureNotificationPermission() {
   } catch { return true; }
 }
 
-export async function startBackgroundPlayback(title, playing) {
+export async function startBackgroundPlayback(title, playing, meta = null) {
   const kids = plugin('KidsNative');
   if (!kids || !kids.startBackgroundPlayback) return false;
+  const m = meta || {};
+  const ms = (v) => Math.max(0, Math.round(Number(v) * 1000) || 0);
   try {
-    await kids.startBackgroundPlayback({ title: String(title || ''), playing: playing !== false });
+    await kids.startBackgroundPlayback({
+      title: String(title || ''), playing: playing !== false,
+      // v1.0.65 — the folder name and the playhead. The system EXTRAPOLATES the position
+      // from the speed it is given, so a car's progress bar advances without us ticking.
+      subtitle: String(m.subtitle || ''), posMs: ms(m.posSec), durMs: ms(m.durSec)
+    });
     return true;
   } catch { return false; }
 }

@@ -3363,11 +3363,28 @@ async function buildBackgroundTrack() {
  * foreground service at all, so this runs when an eligible video OPENS — not when the
  * screen goes off, which is already too late.
  */
+/**
+ * v1.0.65 — what the lock screen and a car display show BESIDE the title: the folder the
+ * child is in. One helper, so the notification, the widget and the car can never disagree —
+ * and it reuses `folders`, the list the home screen renders, rather than reading the folder
+ * rules a second time.
+ */
+function backgroundSubtitle() {
+  const fid = watchCtx.folderId;
+  if (!fid) return '';
+  const f = folders.find((x) => x.id === fid);
+  return (f && f.title) || '';
+}
+
 async function armBackgroundPlayback(item) {
   const want = backgroundPlayDecision({ enabled: bgPlayEnabled, playing: true, item });
   if (!want.play) { await disarmBackgroundPlayback(); return; }
   await buildBackgroundTrack();
-  const ok = await startBackgroundPlayback(item.title || '', true);
+  const st = playbackState();
+  const ok = await startBackgroundPlayback(item.title || '', true, {
+    subtitle: backgroundSubtitle(),
+    posSec: st && st.time, durSec: st && st.duration
+  });
   bgPlayLive = !!ok;
 }
 
@@ -3391,8 +3408,9 @@ async function handlePlaybackCommand(action) {
   if (action === 'toggle') {
     const st = playbackState();
     if (!st) return;
-    if (st.playing) { pauseCurrent(); await startBackgroundPlayback(currentWatch.title || '', false); }
-    else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true); }
+    const meta = { subtitle: backgroundSubtitle(), posSec: st.time, durSec: st.duration };
+    if (st.playing) { pauseCurrent(); await startBackgroundPlayback(currentWatch.title || '', false, meta); }
+    else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true, meta); }
     return;
   }
   if (action !== 'next' && action !== 'prev') return;

@@ -31,6 +31,9 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.media.MediaMetadata;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -45,13 +48,81 @@ public class PlaybackService extends Service {
     private static final String CHANNEL_ID = "kids_playback";
     private static final int NOTIFICATION_ID = 4711;
 
+    // v1.0.65 — A REAL MediaSession, not just a notification (user request: control the
+    // music from the car). Framework MediaSession, API 21+, so it costs NO new dependency:
+    // androidx.media would have pulled a library in for something the platform already has.
+    //
+    // What it buys, none of which a plain Notification can do:
+    //   • the car's steering-wheel and head-unit buttons over Bluetooth — media button
+    //     events are routed to whichever session is ACTIVE, and nowhere else;
+    //   • the standard lock-screen media widget instead of a custom notification;
+    //   • the track name and progress on the car display, extrapolated by the system from
+    //     the position + speed we publish, so we need not tick every second.
+    //
+    // ⚠️ It is ALSO the exact prerequisite Android Auto requires. Auto talks only to a
+    // MediaBrowserService/MediaLibraryService fronted by a session like this one, so this
+    // work is a foundation rather than a detour — but a session ALONE does not put the app
+    // on the car screen, and nothing here should be read as claiming otherwise.
+    private MediaSession session;
+
     @Override
     public IBinder onBind(Intent intent) { return null; }
+
+    private MediaSession ensureSession() {
+        if (session != null) return session;
+        try {
+            session = new MediaSession(this, "KidsPlayer");
+            session.setCallback(new MediaSession.Callback() {
+                @Override public void onPlay() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
+                @Override public void onPause() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
+                @Override public void onStop() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
+                @Override public void onSkipToNext() { KidsNativePlugin.emitPlaybackCommand("next"); }
+                @Override public void onSkipToPrevious() { KidsNativePlugin.emitPlaybackCommand("prev"); }
+            });
+            if (Build.VERSION.SDK_INT < 26) {
+                // Pre-Oreo needs these flags for the session to receive media buttons and
+                // transport controls at all; from 26 they are implied and deprecated.
+                session.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
+                    | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+            }
+        } catch (Throwable ignored) { session = null; }
+        return session;
+    }
+
+    /**
+     * Publish what is playing and where it is. The system EXTRAPOLATES the position from the
+     * speed we set, so a car's progress bar advances without us ticking every second — which
+     * on a child's tablet is a bridge call and a wake-up we do not need to pay for.
+     */
+    private void publishSession(String title, String subtitle, boolean playing, long posMs, long durMs) {
+        MediaSession s = ensureSession();
+        if (s == null) return;
+        try {
+            MediaMetadata.Builder md = new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title == null ? "" : title)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle == null ? "" : subtitle)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, title == null ? "" : title)
+                .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, subtitle == null ? "" : subtitle);
+            if (durMs > 0) md.putLong(MediaMetadata.METADATA_KEY_DURATION, durMs);
+            s.setMetadata(md.build());
+            // The ACTIONS are what a car renders as buttons — the notification's own actions
+            // do not reach it. Both lists must agree or the two surfaces disagree.
+            PlaybackState.Builder st = new PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
+                    | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP
+                    | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
+                    Math.max(0, posMs), playing ? 1.0f : 0f);
+            s.setPlaybackState(st.build());
+            s.setActive(true);   // media buttons reach only an ACTIVE session
+        } catch (Throwable ignored) {}
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            releaseSession();
             stopForegroundCompat();
             stopSelf();
             return START_NOT_STICKY;
@@ -65,8 +136,12 @@ public class PlaybackService extends Service {
             return START_NOT_STICKY;
         }
         String title = intent == null ? null : intent.getStringExtra("title");
+        String subtitle = intent == null ? null : intent.getStringExtra("subtitle");
         boolean playing = intent == null || intent.getBooleanExtra("playing", true);
-        startForegroundCompat(buildNotification(title, playing));
+        long posMs = intent == null ? 0 : intent.getLongExtra("posMs", 0);
+        long durMs = intent == null ? 0 : intent.getLongExtra("durMs", 0);
+        publishSession(title, subtitle, playing, posMs, durMs);
+        startForegroundCompat(buildNotification(title, subtitle, playing));
         // NOT sticky: a service the SYSTEM restarts after killing the app would resume a
         // notification for a video no longer playing, with a JS side that no longer exists.
         return START_NOT_STICKY;
@@ -86,6 +161,22 @@ public class PlaybackService extends Service {
         }
     }
 
+    private void releaseSession() {
+        MediaSession s = session;
+        session = null;
+        if (s == null) return;
+        try { s.setActive(false); s.release(); } catch (Throwable ignored) {}
+    }
+
+    @Override
+    public void onDestroy() {
+        // A session that outlives its service keeps taking the car's media buttons for a
+        // video that is not playing — the "control for a dead video" this feature avoids
+        // everywhere else.
+        releaseSession();
+        super.onDestroy();
+    }
+
     private void stopForegroundCompat() {
         try {
             if (Build.VERSION.SDK_INT >= 24) stopForeground(Service.STOP_FOREGROUND_REMOVE);
@@ -100,13 +191,13 @@ public class PlaybackService extends Service {
         return PendingIntent.getService(this, requestCode, i, flags);
     }
 
-    private Notification buildNotification(String title, boolean playing) {
+    private Notification buildNotification(String title, String subtitle, boolean playing) {
         ensureChannel();
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
             ? new Notification.Builder(this, CHANNEL_ID)
             : new Notification.Builder(this);
         b.setContentTitle(title == null || title.isEmpty() ? getString(R.string.app_name) : title)
-         .setContentText(getString(R.string.app_name))
+         .setContentText(subtitle == null || subtitle.isEmpty() ? getString(R.string.app_name) : subtitle)
          .setSmallIcon(android.R.drawable.ic_media_play)
          .setOngoing(true)
          .setShowWhen(false);
@@ -123,6 +214,11 @@ public class PlaybackService extends Service {
                 iconOf(android.R.drawable.ic_media_next), "הבא", commandIntent(ACTION_NEXT, 3)).build());
         if (Build.VERSION.SDK_INT >= 21) {
             Notification.MediaStyle style = new Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2);
+            // Handing the session token to MediaStyle is what turns this from a custom
+            // notification into the SYSTEM media notification — and it is what puts the
+            // standard widget on the lock screen.
+            MediaSession s = ensureSession();
+            if (s != null) style.setMediaSession(s.getSessionToken());
             b.setStyle(style);
         }
         return b.build();
