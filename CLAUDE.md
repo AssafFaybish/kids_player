@@ -273,6 +273,12 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+> ⚠️ **VERSION NOTE (2026-08-31): 1.0.65 WAS NEVER CUT** — the same deliberate skip as
+> 1.0.61. The MediaSession (labelled `v1.0.65`) and the notification artwork (`v1.0.66`)
+> were merged back to back, so ONE release carries both: 1.0.64 → **1.0.66**. The rule this
+> repo now follows is to cut the HIGHEST label in the tree, so no comment in the source ever
+> names a version that has not shipped — the direction that cannot mislead.
+
 - v1.0.66 — **THE NOTIFICATION SHOWS THE SONG'S PICTURE AND THE APP'S OWN MARK** (user
   request, with a screenshot of the row sitting anonymously under Spotify's).
   - **TWO DIFFERENT ICONS, and only one of them existed.** The **small icon** is the
