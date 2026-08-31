@@ -4064,6 +4064,28 @@ test('the playback service publishes a real MediaSession (v1.0.65)', () => {
     'a media library was added — the framework MediaSession already covers this');
 });
 
+test('EVERY seek surface goes through the clamp (v1.0.68)', () => {
+  // ⚠️ THE CLAMP IS THE INVARIANT, NOT THE PURE HELPER'S EXISTENCE. Testing tvKeyIntent
+  // proves the DECISION clamps; it says nothing about whether a caller uses it. Planting a
+  // hand-rolled `c.getTime() + 10` inside seekRelative left the suite fully green — so this
+  // guard pins the WIRING, which is where the v1.0.22 bug actually lived: an unclamped
+  // forward seek runs past the end, the engine fires ENDED → finish() → onExit, and the
+  // child is EJECTED from the video they were watching.
+  const player = CODE.get('www/js/player.js');
+  const fn = fnSlice(player, 'export function seekRelative(');
+  assert.ok(fn, 'seekRelative is gone — the notification can no longer seek');
+  assert.match(fn, /tvKeyIntent\(/,
+    'seekRelative computes its own target — every seek in this app goes through the clamp');
+  assert.doesNotMatch(fn, /getTime\(\)\s*[+-]/,
+    'seekRelative does arithmetic on the playhead itself — that is the unclamped seek that ejects the child');
+  assert.match(fn, /intent\.kind !== 'seek'/, 'a non-seek intent still reaches seekTo');
+  // and the notification handler must not seek some other way
+  const app = CODE.get('www/js/app.js');
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  assert.match(cmd, /seekRelative\(action\)/, 'the notification seeks without the shared helper');
+  assert.doesNotMatch(cmd, /seekTo\(/, 'the handler reaches past seekRelative straight into the player');
+});
+
 test('the playback notification carries the app mark and real artwork (v1.0.66)', () => {
   const a = readRepo('android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java');
   const b = readRepo('native-reference/PlaybackService.java');
