@@ -4054,3 +4054,44 @@ test('the playback service publishes a real MediaSession (v1.0.65)', () => {
   assert.doesNotMatch(gradle, /androidx\.media[:3]|exoplayer/,
     'a media library was added — the framework MediaSession already covers this');
 });
+
+test('the playback notification carries the app mark and real artwork (v1.0.66)', () => {
+  const a = readRepo('android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java');
+  const b = readRepo('native-reference/PlaybackService.java');
+  assert.equal(a, b, 'the two PlaybackService copies have drifted');
+  const src = a.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // ⚠️ THE SMALL ICON MUST BE OUR OWN SILHOUETTE, never the launcher icon: Android draws a
+  // small icon from its ALPHA channel only and tints it, so a coloured mipmap arrives as a
+  // featureless white blob. And never the generic system glyph again — the report was of a
+  // row sitting anonymously under Spotify's.
+  assert.match(src, /setSmallIcon\(R\.drawable\.ic_notification\)/, 'the notification lost its own mark');
+  assert.doesNotMatch(src, /setSmallIcon\(android\.R\.drawable|setSmallIcon\(R\.mipmap/,
+    'the small icon is the system glyph or the launcher icon — one is anonymous, the other a white blob');
+  const icon = readRepo('android/app/src/main/res/drawable/ic_notification.xml');
+  assert.match(icon, /<vector/, 'the notification icon is not a vector');
+  assert.doesNotMatch(icon, /android:fillColor="(?!#FFFFFFFF)/,
+    'the icon uses a colour — a small icon is a silhouette and the colour is thrown away');
+
+  // the big picture: two surfaces again — the notification's large icon AND the session's
+  // album art, which is what a car display and the lock-screen widget read.
+  assert.match(src, /setLargeIcon\(artwork\)/, 'the notification shows no artwork');
+  assert.match(src, /METADATA_KEY_ALBUM_ART/, 'the car and lock screen get no artwork');
+  assert.match(src, /decodeArtwork\(/, 'nothing decodes the artwork bytes');
+  // TOTAL: a picture is a nicety and must never take the service down
+  const dec = src.slice(src.indexOf('private Bitmap decodeArtwork'));
+  assert.match(dec.slice(0, 900), /catch \(Throwable/, 'a bad image can crash the playback service');
+
+  // JS: the fallback chain, and the reason it exists
+  const app = CODE.get('www/js/app.js');
+  const fn = fnSlice(app, 'async function backgroundArtwork(');
+  assert.ok(fn, 'backgroundArtwork is gone');
+  assert.match(fn, /item\.thumbId/, 'the song\'s own picture is no longer preferred');
+  assert.match(fn, /artThumbId/,
+    'the folder picture fallback is gone — an audio file NEVER has a thumbnail of its own, so this is the only picture most tracks can show');
+  assert.match(fn, /BG_ART_MAX_BYTES/, 'an unbounded image crosses the bridge as base64 on every track change');
+  // a play/pause tap must not blank the picture: the service rebuilds the whole notification
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  assert.match(cmd, /artB64: await backgroundArtwork\(/,
+    'the toggle omits the artwork — the picture would vanish on the first play/pause');
+});

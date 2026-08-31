@@ -63,6 +63,11 @@ export const SWIPE_RATIO = 1.4;   // |dx| must beat |dy| by this much to be "hor
    reaches by pressing ⏭ two hundred times, which is not a case worth a second read. */
 export const BG_TRACK_MAX = 300;
 
+/* v1.0.66 — the biggest picture worth sending to the playback notification. It crosses the
+   bridge as base64 (≈1.33x the bytes) on every track change, and the system draws it at
+   roughly 128dp — so a multi-megabyte frame would be paid for in full and thrown away. */
+export const BG_ART_MAX_BYTES = 512 * 1024;
+
 export const SWIPE_ARM_PX = 18;          // travel before the grid starts to move (> TAP_SLOP_PX)
 export const SWIPE_COMMIT_RATIO = 0.33;  // release past this fraction of the width ⇒ turn
 export const SWIPE_RUBBER = 0.35;        // resistance factor when there is no page that way

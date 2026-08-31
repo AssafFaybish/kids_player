@@ -367,6 +367,7 @@ public class KidsNativePlugin extends Plugin {
             // on the lock-screen widget. A song with no context is the one thing a driver
             // glancing at the screen cannot use.
             .putExtra("subtitle", call.getString("subtitle", ""))
+            .putExtra("artB64", call.getString("artB64", ""))
             .putExtra("posMs", call.getInt("posMs", 0).longValue())
             .putExtra("durMs", call.getInt("durMs", 0).longValue())
             .putExtra("playing", call.getBoolean("playing", Boolean.TRUE));

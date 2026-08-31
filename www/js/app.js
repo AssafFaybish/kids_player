@@ -23,7 +23,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
-  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_TRACK_MAX } from './config.js';
+  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_TRACK_MAX, BG_ART_MAX_BYTES } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
@@ -3376,13 +3376,44 @@ function backgroundSubtitle() {
   return (f && f.title) || '';
 }
 
+/**
+ * v1.0.66 — the picture for the notification, the lock-screen widget and a car display,
+ * as base64. -> '' when there is nothing, and the system shows the app icon.
+ *
+ * ⚠️ MOST AUDIO FILES HAVE NO PICTURE OF THEIR OWN. `captureFrame` returns null for a track
+ * with no video (v1.0.56), so an mp3 — the whole point of background playback — never gets a
+ * thumbnail. The FOLDER's picture is the honest stand-in: the parent chose it, it is usually
+ * present, and it is what the child sees on the tile they tapped.
+ *
+ * Read once per track. The bytes cross the bridge as base64 because the picture lives in
+ * IndexedDB inside the WebView, which the service cannot open.
+ */
+async function backgroundArtwork(item) {
+  const ids = [];
+  if (item && item.thumbId) ids.push(item.thumbId);
+  const f = folders.find((x) => x.id === watchCtx.folderId);
+  if (f && f.artThumbId) ids.push(f.artThumbId);
+  for (const id of ids) {
+    try {
+      const blob = await db.getThumbBlob(id);
+      if (!blob) continue;
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      if (!buf.length || buf.length > BG_ART_MAX_BYTES) continue;
+      let bin = '';
+      for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+      return btoa(bin);
+    } catch { /* a picture is a nicety — never let it break playback */ }
+  }
+  return '';
+}
+
 async function armBackgroundPlayback(item) {
   const want = backgroundPlayDecision({ enabled: bgPlayEnabled, playing: true, item });
   if (!want.play) { await disarmBackgroundPlayback(); return; }
   await buildBackgroundTrack();
   const st = playbackState();
   const ok = await startBackgroundPlayback(item.title || '', true, {
-    subtitle: backgroundSubtitle(),
+    subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(item),
     posSec: st && st.time, durSec: st && st.duration
   });
   bgPlayLive = !!ok;
@@ -3408,7 +3439,10 @@ async function handlePlaybackCommand(action) {
   if (action === 'toggle') {
     const st = playbackState();
     if (!st) return;
-    const meta = { subtitle: backgroundSubtitle(), posSec: st.time, durSec: st.duration };
+    // the artwork is re-sent on every publish: the service replaces its whole notification,
+    // so omitting it here would blank the picture on the first play/pause tap
+    const meta = { subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(currentWatch),
+      posSec: st.time, durSec: st.duration };
     if (st.playing) { pauseCurrent(); await startBackgroundPlayback(currentWatch.title || '', false, meta); }
     else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true, meta); }
     return;

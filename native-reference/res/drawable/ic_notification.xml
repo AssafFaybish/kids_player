@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.0.65 — the STATUS-BAR icon for the playback notification.
+
+     It must be a flat white SILHOUETTE: Android draws a small icon using its alpha channel
+     only and tints it, so the coloured launcher icon would arrive as a featureless blob.
+     That is why this is a dedicated drawable and not @mipmap/ic_launcher.
+
+     The mark is a screen with a play triangle — the app is a video player, and at 24dp a
+     shape a parent can identify in a crowded shade matters more than detail. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <!-- the screen: an outer rect with an inner one cut out (evenOdd) -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:fillType="evenOdd"
+      android:pathData="M2,4 H22 V19 H2 Z M4,6 H20 V17 H4 Z" />
+  <!-- the play triangle inside it -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M10,8.2 L15.6,11.5 L10,14.8 Z" />
+</vector>

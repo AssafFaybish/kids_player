@@ -31,11 +31,14 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Base64;
 
 public class PlaybackService extends Service {
 
@@ -64,6 +67,16 @@ public class PlaybackService extends Service {
     // work is a foundation rather than a detour — but a session ALONE does not put the app
     // on the car screen, and nothing here should be read as claiming otherwise.
     private MediaSession session;
+
+    // v1.0.66 — the artwork shown as the notification's large icon, on the lock-screen
+    // widget and on a car display. It arrives from JS as base64 because the picture lives in
+    // IndexedDB INSIDE the WebView, which native code cannot open — the same wall that makes
+    // full Android Auto a second playback engine (v1.0.65).
+    //
+    // Cached against the string it was decoded from, so a play/pause tap does not re-decode
+    // a bitmap that has not changed; a track change brings new bytes and a new decode.
+    private Bitmap artwork;
+    private String artworkKey;
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
@@ -94,6 +107,27 @@ public class PlaybackService extends Service {
      * speed we set, so a car's progress bar advances without us ticking every second — which
      * on a child's tablet is a bridge call and a wake-up we do not need to pay for.
      */
+    /**
+     * base64 -> Bitmap, or null. TOTAL: a picture is a nicety and must never take the
+     * service down — a truncated string, an unsupported format or an image too large for
+     * the heap all end as "no artwork", and the app icon takes its place.
+     */
+    private Bitmap decodeArtwork(String b64) {
+        if (b64 == null || b64.isEmpty()) { artwork = null; artworkKey = null; return null; }
+        if (b64.equals(artworkKey) && artwork != null) return artwork;
+        try {
+            byte[] raw = Base64.decode(b64, Base64.DEFAULT);
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            // A notification icon is displayed small; decoding a 4K frame at full size would
+            // be megabytes of heap on a cheap tablet for something ~128dp wide.
+            o.inSampleSize = raw.length > 400_000 ? 4 : raw.length > 120_000 ? 2 : 1;
+            Bitmap bm = BitmapFactory.decodeByteArray(raw, 0, raw.length, o);
+            artwork = bm;
+            artworkKey = bm == null ? null : b64;
+            return bm;
+        } catch (Throwable ignored) { artwork = null; artworkKey = null; return null; }
+    }
+
     private void publishSession(String title, String subtitle, boolean playing, long posMs, long durMs) {
         MediaSession s = ensureSession();
         if (s == null) return;
@@ -104,6 +138,9 @@ public class PlaybackService extends Service {
                 .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, title == null ? "" : title)
                 .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, subtitle == null ? "" : subtitle);
             if (durMs > 0) md.putLong(MediaMetadata.METADATA_KEY_DURATION, durMs);
+            // ALBUM_ART is what a CAR display and the lock-screen widget read; the
+            // notification's own large icon is set separately below. Two surfaces again.
+            if (artwork != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, artwork);
             s.setMetadata(md.build());
             // The ACTIONS are what a car renders as buttons — the notification's own actions
             // do not reach it. Both lists must agree or the two surfaces disagree.
@@ -140,6 +177,7 @@ public class PlaybackService extends Service {
         boolean playing = intent == null || intent.getBooleanExtra("playing", true);
         long posMs = intent == null ? 0 : intent.getLongExtra("posMs", 0);
         long durMs = intent == null ? 0 : intent.getLongExtra("durMs", 0);
+        decodeArtwork(intent == null ? null : intent.getStringExtra("artB64"));
         publishSession(title, subtitle, playing, posMs, durMs);
         startForegroundCompat(buildNotification(title, subtitle, playing));
         // NOT sticky: a service the SYSTEM restarts after killing the app would resume a
@@ -198,10 +236,17 @@ public class PlaybackService extends Service {
             : new Notification.Builder(this);
         b.setContentTitle(title == null || title.isEmpty() ? getString(R.string.app_name) : title)
          .setContentText(subtitle == null || subtitle.isEmpty() ? getString(R.string.app_name) : subtitle)
-         .setSmallIcon(android.R.drawable.ic_media_play)
+         // v1.0.66 — the app's OWN mark instead of the generic system play glyph, so the
+         // row is identifiable at a glance in a crowded shade (user request, with a
+         // screenshot of it sitting anonymously under Spotify's).
+         .setSmallIcon(R.drawable.ic_notification)
          .setOngoing(true)
          .setShowWhen(false);
         if (Build.VERSION.SDK_INT >= 21) b.setVisibility(Notification.VISIBILITY_PUBLIC);
+        // The big square picture. Absent for most audio files — captureFrame cannot take a
+        // frame from a track with no video — so JS falls back to the FOLDER's picture, and
+        // the system falls back to the app icon when there is neither.
+        if (artwork != null) b.setLargeIcon(artwork);
         // ⚠️ NO setContentIntent: tapping the notification must not open (or re-open) the
         // app. Under a containment lock that would be a way out of a locked folder, and on
         // a kiosk tablet a way back into a session the parent ended.
