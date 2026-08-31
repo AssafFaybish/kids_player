@@ -260,12 +260,12 @@ public class PlaybackService extends Service {
         // app. Under a containment lock that would be a way out of a locked folder, and on
         // a kiosk tablet a way back into a session the parent ended.
         b.addAction(new Notification.Action.Builder(
-                iconOf(android.R.drawable.ic_media_rew), "10 שניות אחורה", commandIntent(ACTION_BACK, 1)).build());
+                R.drawable.ic_seek_back_10, "10 שניות אחורה", commandIntent(ACTION_BACK, 1)).build());
         b.addAction(new Notification.Action.Builder(
-                iconOf(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play),
+                playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
                 playing ? "השהיה" : "ניגון", commandIntent(ACTION_TOGGLE, 2)).build());
         b.addAction(new Notification.Action.Builder(
-                iconOf(android.R.drawable.ic_media_ff), "10 שניות קדימה", commandIntent(ACTION_FWD, 3)).build());
+                R.drawable.ic_seek_fwd_10, "10 שניות קדימה", commandIntent(ACTION_FWD, 3)).build());
         if (Build.VERSION.SDK_INT >= 21) {
             Notification.MediaStyle style = new Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2);
             // Handing the session token to MediaStyle is what turns this from a custom
@@ -276,11 +276,6 @@ public class PlaybackService extends Service {
             b.setStyle(style);
         }
         return b.build();
-    }
-
-    /** Notification.Action.Builder takes an Icon on API 23+ and an int below it. */
-    private android.graphics.drawable.Icon iconOf(int res) {
-        return Build.VERSION.SDK_INT >= 23 ? android.graphics.drawable.Icon.createWithResource(this, res) : null;
     }
 
     private void ensureChannel() {

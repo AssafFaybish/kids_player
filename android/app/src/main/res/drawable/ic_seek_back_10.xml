@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.0.69 — "back 10 seconds" for the playback notification (user request, with a
+     screenshot of Spotify's ⟲15 next to our plain rewind triangle).
+
+     ⚠️ THE "10" IS DRAWN AS SHAPES, because a VectorDrawable cannot render TEXT — there is
+     no <text> element. The digits are therefore hand-built paths, and they were verified by
+     RASTERISING this artwork at 24px and magnifying it, because a path that parses is not a
+     path that reads (the ic_notification lesson, v1.0.66).
+
+     Flat white on transparent: a notification action icon is drawn from its ALPHA channel
+     and tinted by the system, so colour here would be thrown away.
+
+     No raster fallbacks are generated for this file, unlike ic_notification.xml — that one
+     uses android:fillType, an API-24 attribute, so AAPT emits PNGs for older devices and
+     moves the vector to drawable-anydpi-v24. Nothing here needs it: VectorDrawable, arc
+     path commands and strokeLineCap are all API 21+, and minSdk is 22. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <!-- the ring, open at the top -->
+  <path
+      android:strokeColor="#FFFFFFFF"
+      android:strokeWidth="1.7"
+      android:strokeLineCap="round"
+      android:pathData="M7.96,4.41 A8.6,8.6 0 1,0 16.04,4.41" />
+  <!-- the arrowhead on the LEFT of the gap: the direction of travel is backwards -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M4.6,4.4 L8.4,2.5 L8.4,6.3 Z" />
+  <!-- 1 -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M9.0,17.0 L9.0,11.3 L7.6,12.1 L7.6,10.4 L9.6,9.4 L10.7,9.4 L10.7,17.0 Z" />
+  <!-- 0 -->
+  <path
+      android:strokeColor="#FFFFFFFF"
+      android:strokeWidth="1.7"
+      android:pathData="M12.2,13.2 A2.0,3.8 0 1,1 16.2,13.2 A2.0,3.8 0 1,1 12.2,13.2 Z" />
+</vector>
