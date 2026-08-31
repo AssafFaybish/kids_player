@@ -273,6 +273,12 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+> ⚠️ **VERSION NOTE (2026-08-31): 1.0.67 WAS NEVER CUT** — the third deliberate skip, after
+> 1.0.61 and 1.0.65. The website locks (labelled `v1.0.67`) and the notification seek
+> (`v1.0.68`) were merged back to back, so ONE release carries both: 1.0.66 → **1.0.68**.
+> The standing rule: cut the HIGHEST label in the tree, so no comment in the source ever
+> names a version that has not shipped.
+
 - v1.0.68 — **THE NOTIFICATION SEEKS TEN SECONDS INSTEAD OF SKIPPING TRACKS** (user
   request, from a screenshot of Spotify's own ⟲15/⟳15 sitting directly above ours).
   - **WHY IT IS THE RIGHT TRADE FOR THIS LIBRARY**: the content is mostly long recordings —
