@@ -44,9 +44,13 @@ public class PlaybackService extends Service {
 
     public static final String ACTION_START = "com.assaf.kidsplayer.PLAYBACK_START";
     public static final String ACTION_STOP  = "com.assaf.kidsplayer.PLAYBACK_STOP";
-    public static final String ACTION_PREV  = "com.assaf.kidsplayer.PLAYBACK_PREV";
+    // v1.0.68 — ⏪10 / ⏯ / ⏩10 (user request, replacing skip-track). The library is mostly
+    // long recordings, where moving inside the track is what a parent actually needs; the
+    // step is SEEK_STEP, the same 10 seconds a double-tap on the video gives, so the
+    // notification and the screen never disagree about what a skip means.
+    public static final String ACTION_BACK  = "com.assaf.kidsplayer.PLAYBACK_BACK10";
     public static final String ACTION_TOGGLE = "com.assaf.kidsplayer.PLAYBACK_TOGGLE";
-    public static final String ACTION_NEXT  = "com.assaf.kidsplayer.PLAYBACK_NEXT";
+    public static final String ACTION_FWD   = "com.assaf.kidsplayer.PLAYBACK_FWD10";
 
     private static final String CHANNEL_ID = "kids_playback";
     private static final int NOTIFICATION_ID = 4711;
@@ -89,8 +93,12 @@ public class PlaybackService extends Service {
                 @Override public void onPlay() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
                 @Override public void onPause() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
                 @Override public void onStop() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
-                @Override public void onSkipToNext() { KidsNativePlugin.emitPlaybackCommand("next"); }
-                @Override public void onSkipToPrevious() { KidsNativePlugin.emitPlaybackCommand("prev"); }
+                @Override public void onRewind() { KidsNativePlugin.emitPlaybackCommand("back"); }
+                @Override public void onFastForward() { KidsNativePlugin.emitPlaybackCommand("fwd"); }
+                // A car's own ⏮/⏭ still mean something sensible: the same ten seconds. The
+                // alternative — advertising nothing — leaves two dead buttons on a head unit.
+                @Override public void onSkipToNext() { KidsNativePlugin.emitPlaybackCommand("fwd"); }
+                @Override public void onSkipToPrevious() { KidsNativePlugin.emitPlaybackCommand("back"); }
             });
             if (Build.VERSION.SDK_INT < 26) {
                 // Pre-Oreo needs these flags for the session to receive media buttons and
@@ -147,6 +155,7 @@ public class PlaybackService extends Service {
             PlaybackState.Builder st = new PlaybackState.Builder()
                 .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
                     | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP
+                    | PlaybackState.ACTION_REWIND | PlaybackState.ACTION_FAST_FORWARD
                     | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
                 .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
                     Math.max(0, posMs), playing ? 1.0f : 0f);
@@ -167,8 +176,8 @@ public class PlaybackService extends Service {
         // A button on the notification: hand it to JS, which owns every playback decision
         // (which video is next, whether it is a gift, whether the folder has run out). The
         // service deliberately knows none of that — one answer, in one place.
-        if (ACTION_PREV.equals(action) || ACTION_TOGGLE.equals(action) || ACTION_NEXT.equals(action)) {
-            String cmd = ACTION_PREV.equals(action) ? "prev" : ACTION_NEXT.equals(action) ? "next" : "toggle";
+        if (ACTION_BACK.equals(action) || ACTION_TOGGLE.equals(action) || ACTION_FWD.equals(action)) {
+            String cmd = ACTION_BACK.equals(action) ? "back" : ACTION_FWD.equals(action) ? "fwd" : "toggle";
             KidsNativePlugin.emitPlaybackCommand(cmd);
             return START_NOT_STICKY;
         }
@@ -251,12 +260,12 @@ public class PlaybackService extends Service {
         // app. Under a containment lock that would be a way out of a locked folder, and on
         // a kiosk tablet a way back into a session the parent ended.
         b.addAction(new Notification.Action.Builder(
-                iconOf(android.R.drawable.ic_media_previous), "הקודם", commandIntent(ACTION_PREV, 1)).build());
+                iconOf(android.R.drawable.ic_media_rew), "10 שניות אחורה", commandIntent(ACTION_BACK, 1)).build());
         b.addAction(new Notification.Action.Builder(
                 iconOf(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play),
                 playing ? "השהיה" : "ניגון", commandIntent(ACTION_TOGGLE, 2)).build());
         b.addAction(new Notification.Action.Builder(
-                iconOf(android.R.drawable.ic_media_next), "הבא", commandIntent(ACTION_NEXT, 3)).build());
+                iconOf(android.R.drawable.ic_media_ff), "10 שניות קדימה", commandIntent(ACTION_FWD, 3)).build());
         if (Build.VERSION.SDK_INT >= 21) {
             Notification.MediaStyle style = new Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2);
             // Handing the session token to MediaStyle is what turns this from a custom

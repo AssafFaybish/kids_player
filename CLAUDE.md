@@ -273,6 +273,35 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.68 — **THE NOTIFICATION SEEKS TEN SECONDS INSTEAD OF SKIPPING TRACKS** (user
+  request, from a screenshot of Spotify's own ⟲15/⟳15 sitting directly above ours).
+  - **WHY IT IS THE RIGHT TRADE FOR THIS LIBRARY**: the content is mostly long recordings —
+    45-minute discs, not three-minute songs — and moving INSIDE the track is what a parent
+    reaches for. The cost is real and worth stating: **there is no longer any way to change
+    track from the notification**; that needs the app.
+  - **THE STEP IS `SEEK_STEP` (10s), THE SAME ONE A DOUBLE-TAP ON THE VIDEO GIVES**, so the
+    notification and the screen can never disagree about what a skip means.
+  - ⚠️ **THIS IS A THIRD SEEK SURFACE, AND THE CLAMP IS NOT OPTIONAL.** `player.seekRelative`
+    goes through `tvKeyIntent`, which clamps: an unclamped forward seek runs past the end,
+    the engine fires ENDED → `finish()` → `onExit`, and the child is EJECTED from the video —
+    the v1.0.22 bug this app has already paid for once, on the TV remote.
+  - ⚠️ **AND THE FIRST GUARD FOR IT WAS VACUOUS.** The unit test covers `tvKeyIntent`, which
+    proves the DECISION clamps and says nothing about whether the caller uses it: planting a
+    hand-rolled `c.getTime() + 10` inside `seekRelative` left the whole suite GREEN. The
+    guard now pins the WIRING — where the bug actually lives — and is proven red on exactly
+    that plant.
+  - **A CAR'S OWN ⏮/⏭ MAP TO THE SAME TEN SECONDS** rather than sitting dead: a head unit
+    renders what the `PlaybackState` advertises, and the alternative is two buttons that do
+    nothing. `ACTION_REWIND`/`ACTION_FAST_FORWARD` are advertised alongside them.
+  - **THE SEEK REPUBLISHES THE STATE**, or the car's progress bar keeps extrapolating from
+    the position before the jump (the v1.0.65 rule: the position is published, never ticked).
+  - **THE SKIP MACHINERY IS REMOVED, NOT LEFT DANGLING**: `bgTrack`, `buildBackgroundTrack`,
+    `playerlogic.backgroundSkipTarget` and `BG_TRACK_MAX` each had exactly one consumer, and
+    a constant with no consumer is a lie (the v1.0.37 rule). Two tests that pinned the old
+    buttons were updated deliberately rather than deleted.
+  - 1 unit test + 1 new invariants guard (plus the v1.0.63 button pin reshaped), proven red
+    on a planted regression (3 — one of which is what exposed the vacuous guard). APK builds.
+
 - v1.0.67 — **THE LOCK REACHES THE WEBSITES TOO: ONTO THE LIST, AND INTO ONE SITE** (user
   request: "לנעול את הילד בתוך האתר, הילד יוכל לגלוש כרגיל אך לא לצאת ממנו").
   - **TWO NEW MODES, ONE MECHANISM.** `CONTAIN_MODES` grows to `['app','folder','sites','site']`.

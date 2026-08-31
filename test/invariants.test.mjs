@@ -3969,9 +3969,18 @@ test('the background service is declared, gated, and reachable only from the app
   const svc = svcA.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.doesNotMatch(svc, /setContentIntent|getActivity\(/,
     'the notification can open the app — that is a hole in the containment lock');
-  for (const a of ['ACTION_PREV', 'ACTION_TOGGLE', 'ACTION_NEXT']) {
+  // v1.0.68 — ⏪10 / ⏯ / ⏩10 (user request, replacing skip-track): the library is mostly
+  // long recordings, where moving INSIDE the track is what a parent actually needs.
+  for (const a of ['ACTION_BACK', 'ACTION_TOGGLE', 'ACTION_FWD']) {
     assert.ok(svc.includes(a), `the notification lost its ${a} button`);
   }
+  // the CAR reads the PlaybackState, never the notification's action list — both surfaces
+  // must offer the seek, and a head unit's own ⏮/⏭ must land on something rather than sit dead
+  for (const a of ['ACTION_REWIND', 'ACTION_FAST_FORWARD']) {
+    assert.ok(svc.includes(a), `the session does not advertise ${a} — the car button is dead`);
+  }
+  assert.match(svc, /onSkipToNext\(\)\s*\{[^}]*"fwd"/,
+    'a car skip button does nothing — map it to the same ten seconds rather than leaving it dead');
   assert.match(svc, /IMPORTANCE_LOW/, 'the channel makes noise — a song change would wake a sleeping child');
   assert.match(svc, /START_NOT_STICKY/,
     'a sticky service would be restarted by the system for a video that is no longer playing');
@@ -4053,6 +4062,28 @@ test('the playback service publishes a real MediaSession (v1.0.65)', () => {
   const gradle = readRepo('android/app/build.gradle');
   assert.doesNotMatch(gradle, /androidx\.media[:3]|exoplayer/,
     'a media library was added — the framework MediaSession already covers this');
+});
+
+test('EVERY seek surface goes through the clamp (v1.0.68)', () => {
+  // ⚠️ THE CLAMP IS THE INVARIANT, NOT THE PURE HELPER'S EXISTENCE. Testing tvKeyIntent
+  // proves the DECISION clamps; it says nothing about whether a caller uses it. Planting a
+  // hand-rolled `c.getTime() + 10` inside seekRelative left the suite fully green — so this
+  // guard pins the WIRING, which is where the v1.0.22 bug actually lived: an unclamped
+  // forward seek runs past the end, the engine fires ENDED → finish() → onExit, and the
+  // child is EJECTED from the video they were watching.
+  const player = CODE.get('www/js/player.js');
+  const fn = fnSlice(player, 'export function seekRelative(');
+  assert.ok(fn, 'seekRelative is gone — the notification can no longer seek');
+  assert.match(fn, /tvKeyIntent\(/,
+    'seekRelative computes its own target — every seek in this app goes through the clamp');
+  assert.doesNotMatch(fn, /getTime\(\)\s*[+-]/,
+    'seekRelative does arithmetic on the playhead itself — that is the unclamped seek that ejects the child');
+  assert.match(fn, /intent\.kind !== 'seek'/, 'a non-seek intent still reaches seekTo');
+  // and the notification handler must not seek some other way
+  const app = CODE.get('www/js/app.js');
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  assert.match(cmd, /seekRelative\(action\)/, 'the notification seeks without the shared helper');
+  assert.doesNotMatch(cmd, /seekTo\(/, 'the handler reaches past seekRelative straight into the player');
 });
 
 test('the playback notification carries the app mark and real artwork (v1.0.66)', () => {

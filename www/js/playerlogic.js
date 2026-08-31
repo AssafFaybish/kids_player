@@ -211,33 +211,6 @@ export function backgroundPlayDecision({ enabled = false, playing = false, item 
   return { play: true, why: 'ok' };
 }
 
-/**
- * v1.0.63 — PURE: which video a notification's ⏮/⏭ moves to. -> a key, or null.
- *
- * The list is the ORDER THE CHILD IS LOOKING AT — the same keys `pageAnyFolder` gave the
- * grid under the player — so the notification can never disagree with the screen. Building
- * it once, when background playback starts, is also what makes ⏮ possible at all: the
- * autoplay chain's `nextAfter` walks FORWARD from a cursor and has no mirror, and writing
- * one would be a second answer to "what is in this folder, in what order" (the v1.0.21 bug).
- *
- * ⚠️ A WRAPPED GIFT IS SKIPPED, NEVER OPENED. Its whole ritual is that the FIRST TAP
- * unwraps it and deliberately does not play (v1.0.25); starting it from a notification
- * would consume the video while leaving the tile wrapped forever. Skipping is the only
- * answer that costs the child nothing.
- *
- * There is no wrap-around: a chain that loops would play all night.
- */
-export function backgroundSkipTarget({ keys = [], currentKey = null, dir = 'next', isGift = null } = {}) {
-  const list = Array.isArray(keys) ? keys.filter((k) => typeof k === 'string' && k) : [];
-  const at = list.indexOf(String(currentKey || ''));
-  if (at < 0) return null;
-  const step = dir === 'prev' ? -1 : 1;
-  const gift = typeof isGift === 'function' ? isGift : () => false;
-  for (let i = at + step; i >= 0 && i < list.length; i += step) {
-    if (!gift(list[i])) return list[i];
-  }
-  return null;
-}
 
 export function planAutoplay({
   enabled = false, folderId = null, reason = 'ended',
