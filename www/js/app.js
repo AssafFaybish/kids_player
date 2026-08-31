@@ -132,7 +132,7 @@ function goGallery() {
   // folder case lives here too rather than in each of them.
   if (containState.active && (containState.mode === 'sites' || containState.mode === 'site')) {
     nav.reset('sites');
-    renderSitesView().catch(() => {});
+    renderSitesView();
     return;
   }
   renderHome();
@@ -685,8 +685,8 @@ async function commitLockSetup() {
   await applyContainment();
   // Land the child where the lock holds them.
   if (ctx.mode === 'folder') { folderId = ctx.folderId; nav.reset('folder'); await renderFolderView(); }
-  else if (ctx.mode === 'sites') { nav.reset('sites'); await renderSitesView(); }
-  else if (ctx.mode === 'site') { nav.reset('sites'); await renderSitesView(); await openLockedSite(ctx.siteUrl); }
+  else if (ctx.mode === 'sites') { nav.reset('sites'); renderSitesView(); }
+  else if (ctx.mode === 'site') { nav.reset('sites'); renderSitesView(); await openLockedSite(ctx.siteUrl); }
   else { nav.reset('gallery'); renderHome(); }
   toast(minutes > 0 ? 'נעול ל-' + minutes + ' דקות 🔒' : 'נעול עד שחרור 🔒');
 }
@@ -2223,7 +2223,7 @@ async function onSiteLockTap() {
         await clearContainment();
         if (nav.isActive('pin')) nav.back();
         nav.reset('sites');
-        await renderSitesView();
+        renderSitesView();
         await refreshContainUi();
         toast('הנעילה שוחררה 🔓');
       },
@@ -7866,7 +7866,7 @@ async function activateProfile(id) {
   // lock by itself if the parent has since deleted the site.
   if (containState.active && (containState.mode === 'sites' || containState.mode === 'site')) {
     nav.reset('sites');
-    await renderSitesView().catch(() => {});
+    renderSitesView();
     if (containState.mode === 'site') await openLockedSite(containState.siteUrl).catch(() => {});
   }
 
