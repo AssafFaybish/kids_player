@@ -2172,15 +2172,21 @@ function siteHostLabel(url) {
  * for a lock that can no longer be identified.
  */
 async function openLockedSite(url) {
-  if (!siteViewerAvailable()) { await siteViewerUnavailableNote(); return false; }
+  // ⚠️ THE FAIL-OPEN CHECKS COME FIRST, BOTH OF THEM, AND THE ORDER IS THE WHOLE POINT.
+  // Measured in the browser: with the viewer check on top, an orphaned lock never reached
+  // the release below — the child was left on a locked websites screen, no 🏠, holding a
+  // lock on a site that could never open. A lock the app CANNOT ENFORCE must not strand a
+  // child (the v1.0.56 rule); containment errs strict everywhere except here.
   await loadSiteEntries();
   const rules = rulesForLockedSite(siteRulePayload(), url);
-  if (!rules.length) {
+  const release = async (why) => {
     await clearContainment();
     await refreshContainUi();
-    toast('האתר הנעול כבר לא קיים — הנעילה שוחררה 🔓');
+    toast(why);
     return false;
-  }
+  };
+  if (!rules.length) return release('האתר הנעול כבר לא קיים — הנעילה שוחררה 🔓');
+  if (!siteViewerAvailable()) return release('אי אפשר לפתוח אתרים כאן — הנעילה שוחררה 🔓');
   await armScheduledLock();
   idleLastInputAt = Date.now();
   const ok = await openSiteViewer({ url, rules, title: siteHostLabel(url), parentMode: false, locked: true });
