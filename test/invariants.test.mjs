@@ -4065,15 +4065,29 @@ test('the playback service publishes a real MediaSession (v1.0.65)', () => {
   assert.match(src, /setActive\(true\)/, 'the session is never activated — media buttons reach only an ACTIVE session');
   assert.match(src, /setMediaSession\(/,
     'the notification is not backed by the session — no lock-screen media widget');
-  // the ACTIONS a car renders come from the PlaybackState, NOT from the notification's own
-  // action list; both surfaces must offer the same three.
-  for (const act of ['ACTION_PLAY_PAUSE', 'ACTION_SKIP_TO_NEXT', 'ACTION_SKIP_TO_PREVIOUS']) {
-    assert.ok(src.includes(act), `the session does not advertise ${act} — the car button is dead`);
+  // The ACTIONS a car and the lock screen render come from the PlaybackState, NOT from the
+  // notification's own action list — two surfaces that must both be fed.
+  //
+  // ⚠️ v1.0.70 REMOVED SKIP_TO_NEXT/PREVIOUS FROM THE ADVERTISED SET, DELIBERATELY, and that
+  // removal IS a fix: a STANDARD action can only ever wear a STANDARD icon, so advertising
+  // them made the lock screen draw the system's ⏮/⏭ triangles no matter what the
+  // notification's own ring-with-10 icons said. Reported from a device. CUSTOM actions are
+  // the one mechanism that carries our drawable onto those surfaces.
+  assert.ok(src.includes('ACTION_PLAY_PAUSE'), 'the session does not advertise play/pause');
+  assert.doesNotMatch(src, /setActions\([\s\S]{0,400}?ACTION_SKIP_TO/,
+    'a standard skip action is advertised again — the lock screen will draw ITS triangles over our icons');
+  for (const cust of ['addCustomAction', 'ic_seek_back_10', 'ic_seek_fwd_10']) {
+    assert.ok(src.includes(cust),
+      `the seek buttons are not published as custom actions — the lock screen and the car cannot show our icon`);
   }
+  assert.match(src, /onCustomAction\(String action/,
+    'the custom actions are published but nothing handles them — the buttons would be dead');
   // every session callback must reach the SAME command path the notification buttons use
-  for (const cb of ['onPlay', 'onPause', 'onSkipToNext', 'onSkipToPrevious']) {
+  // a steering wheel's PHYSICAL ⏮/⏭ keys arrive whether or not the action is advertised
+  // (advertising decides what is DRAWN), so they must still land on something
+  for (const cb of ['onPlay', 'onPause', 'onSkipToNext', 'onSkipToPrevious', 'onRewind', 'onFastForward']) {
     assert.match(src, new RegExp(cb + '\\(\\)\\s*\\{[^}]*emitPlaybackCommand'),
-      `${cb} does not forward to JS — the car button would do nothing`);
+      `${cb} does not forward to JS — that hardware button would do nothing`);
   }
   // ⚠️ released with the service. A session that outlives it keeps taking the car's media
   // buttons for a video that is not playing.
@@ -4216,4 +4230,44 @@ test('the site viewer refuses the CHILD, never the app (v1.0.67)', () => {
   // alternative has no boundary at all — it fired on `lastActivityPing`, i.e. on correct
   // code. A guard that trips on what it is meant to permit trains you to delete it.
   assert.doesNotMatch(src, /\bpin\b/i, 'the parent code must be verified in ONE place, and it is JS');
+});
+
+test('the site lock can actually be ENGAGED, and the scene stops with the sound (v1.0.70)', () => {
+  // ⚠️ ALL THREE OF THESE SHIPPED BROKEN AND WERE REPORTED FROM A DEVICE. Each is the same
+  // shape: correct-looking code with no reachable path, on a surface no browser can render.
+
+  // 1) THE PADLOCK MUST EXIST BEFORE A LOCK DOES. v1.0.67 emitted `webLockRequest` only from
+  //    paths that already required `childLocked`, so a site lock could never be turned ON —
+  //    the whole feature was unreachable ("אני לא רואה שיש נעילה לאתר אינטרנט ספציפי").
+  const web = readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java');
+  const webRef = readRepo('native-reference/KidsWebPlugin.java');
+  assert.equal(web, webRef, 'the two KidsWebPlugin copies have drifted');
+  const wsrc = web.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const build = wsrc.slice(wsrc.indexOf('private void buildOverlay'));
+  assert.match(build.slice(0, 4000), /notifyListeners\("webLockRequest"/,
+    'the viewer bar has no padlock — a site lock can never be engaged');
+  assert.match(build.slice(0, 4000), /if \(!parentMode\)/,
+    'the padlock shows in PARENT mode — that session browses unrestricted, and locking a child into it would undo every rule');
+  // the child's way out is hidden while locked (the refusal is elsewhere, this is the affordance)
+  assert.match(build.slice(0, 4000), /back\.setVisibility\(childLocked/,
+    'the close button stays on screen under a lock — a lock with a visible door');
+  // and the code is still never verified natively
+  assert.doesNotMatch(wsrc, /\bpin\b/i, 'the parent code must be verified in ONE place, and it is JS');
+
+  // 2) the audio scene must FREEZE, not reset, and must follow the media element itself so
+  //    every pause source is covered (shield, HUD, notification, call, screen-off)
+  const player = CODE.get('www/js/player.js');
+  assert.match(player, /const setPausedScene = \(\) =>[^;]*is-paused', !!video\.paused\)/,
+    'the paused scene is driven by something other than the media element — a pause source would be missed');
+  for (const ev of ['play', 'pause', 'ended']) {
+    assert.match(player, new RegExp(`addEventListener\\('${ev}', setPausedScene\\)`),
+      `the scene does not react to '${ev}'`);
+    assert.match(player, new RegExp(`removeEventListener\\('${ev}', setPausedScene\\)`),
+      `the '${ev}' listener leaks past teardown`);
+  }
+  assert.match(player, /classList\.remove\('is-paused'\)/,
+    'a stale is-paused survives teardown — it would freeze the NEXT track\'s scene');
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  assert.match(css, /is-paused[\s\S]{0,120}?animation-play-state:\s*paused/,
+    'the scene is stopped with something other than animation-play-state — anything else snaps it back to the start');
 });

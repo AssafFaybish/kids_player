@@ -95,8 +95,14 @@ public class PlaybackService extends Service {
                 @Override public void onStop() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
                 @Override public void onRewind() { KidsNativePlugin.emitPlaybackCommand("back"); }
                 @Override public void onFastForward() { KidsNativePlugin.emitPlaybackCommand("fwd"); }
-                // A car's own ⏮/⏭ still mean something sensible: the same ten seconds. The
-                // alternative — advertising nothing — leaves two dead buttons on a head unit.
+                // the lock screen's and the car's ⏪10/⏩10 — the custom actions published above
+                @Override public void onCustomAction(String action, android.os.Bundle extras) {
+                    if (ACTION_BACK.equals(action)) KidsNativePlugin.emitPlaybackCommand("back");
+                    else if (ACTION_FWD.equals(action)) KidsNativePlugin.emitPlaybackCommand("fwd");
+                }
+                // A head unit's own ⏮/⏭ KEYS still mean something sensible: the same ten
+                // seconds. They are no longer DRAWN anywhere (that is the point above), but a
+                // physical button on a steering wheel must not be dead.
                 @Override public void onSkipToNext() { KidsNativePlugin.emitPlaybackCommand("fwd"); }
                 @Override public void onSkipToPrevious() { KidsNativePlugin.emitPlaybackCommand("back"); }
             });
@@ -152,11 +158,26 @@ public class PlaybackService extends Service {
             s.setMetadata(md.build());
             // The ACTIONS are what a car renders as buttons — the notification's own actions
             // do not reach it. Both lists must agree or the two surfaces disagree.
+            // ⚠️ THE LOCK SCREEN AND THE CAR DRAW THE SESSION'S ACTIONS, NEVER THE
+            // NOTIFICATION'S. v1.0.69 gave the notification its ring-with-10 icons and the
+            // lock screen still showed the system's ⏮/⏭ triangles — reported from a device —
+            // because SKIP_TO_NEXT/PREVIOUS were advertised here and the system draws those
+            // with its OWN glyphs. They are gone: a standard action can only ever wear a
+            // standard icon.
+            //
+            // CUSTOM ACTIONS are the one mechanism that carries our own drawable onto those
+            // surfaces, so ⏪10/⏩10 are published as custom actions and handled in
+            // onCustomAction below.
             PlaybackState.Builder st = new PlaybackState.Builder()
                 .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
                     | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP
-                    | PlaybackState.ACTION_REWIND | PlaybackState.ACTION_FAST_FORWARD
-                    | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                    // kept so a steering wheel's own ⏪/⏩ keys still reach us: advertised
+                    // actions decide what is DRAWN, hardware media buttons arrive regardless
+                    | PlaybackState.ACTION_REWIND | PlaybackState.ACTION_FAST_FORWARD)
+                .addCustomAction(new PlaybackState.CustomAction.Builder(
+                    ACTION_BACK, "10 שניות אחורה", R.drawable.ic_seek_back_10).build())
+                .addCustomAction(new PlaybackState.CustomAction.Builder(
+                    ACTION_FWD, "10 שניות קדימה", R.drawable.ic_seek_fwd_10).build())
                 .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
                     Math.max(0, posMs), playing ? 1.0f : 0f);
             s.setPlaybackState(st.build());
