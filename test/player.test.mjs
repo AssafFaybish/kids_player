@@ -499,3 +499,34 @@ test('seekRelative goes through the CLAMP, on every engine (v1.0.68)', async () 
   // an unknown action must not seek at all — the notification can only ever send two
   assert.equal(tvKeyIntent('sideways', { time: 10, duration: 600 }).kind, 'ignore');
 });
+
+test('planCallResume: a call resumes only what a CALL stopped (v1.0.72)', async () => {
+  const { planCallResume } = await import('../www/js/playerlogic.js');
+  const base = { inWatch: true, key: 'yt:a', now: 1000 };
+
+  // THE REPORTED BUG, as a test. A parent paused the audio, went off to do something else,
+  // took a call — and the song played when the call ended. The lifecycle door always checked
+  // "was it playing?"; the POLL (which exists because a heads-up call fires no lifecycle
+  // event at all) saw only "not playing" and could not tell the two pauses apart.
+  assert.equal(planCallResume({ ...base, armed: null, mode: 'in_call', playing: false, userPaused: true }), null,
+    'a call armed a resume for a video the person had deliberately paused');
+
+  // …while a call that really did interrupt playback still arms
+  assert.equal(planCallResume({ ...base, armed: null, mode: 'in_call', playing: false, userPaused: false }), 'arm');
+  assert.equal(planCallResume({ ...base, armed: null, mode: 'in_communication', playing: false }), 'arm',
+    'VoIP (WhatsApp) is a call too');
+
+  // and once armed, the end of the call still resumes: the flag guards ARMING, which is
+  // where the two pauses are indistinguishable
+  const armed = { key: 'yt:a', at: 900 };
+  assert.equal(planCallResume({ ...base, armed, mode: 'normal', playing: false }), 'resume');
+
+  // the rules that were already true stay true
+  assert.equal(planCallResume({ ...base, armed: null, mode: 'normal', playing: false }), null,
+    'no call, no arming');
+  assert.equal(planCallResume({ ...base, armed, mode: 'unknown', playing: false }), null,
+    'only an affirmative "normal" resumes — a failed bridge must never mean "play it"');
+  assert.equal(planCallResume({ ...base, armed, mode: 'normal', playing: false, key: 'yt:b' }), 'disarm',
+    'a different video is up now');
+  assert.equal(planCallResume({ ...base, armed, mode: 'normal', playing: false, inWatch: false }), 'disarm');
+});

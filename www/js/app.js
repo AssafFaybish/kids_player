@@ -9,7 +9,7 @@ import {
 import * as wake from './wake.js';
 import { hasPin, setPin, verifyPin, clearPin } from './pin.js';
 import { getSetting, getSettings, putSetting } from './settings.js';
-import { playItem, stop, playbackState, pauseCurrent, resumeCurrent, seekRelative } from './player.js';
+import { playItem, stop, playbackState, pauseCurrent, resumeCurrent, seekRelative, markUserToggle } from './player.js';
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
@@ -767,6 +767,8 @@ async function checkCallResume() {
     armed: callResume,
     mode,
     playing: !!(st && st.playing),
+    // v1.0.72 — a call may resume only what a call stopped
+    userPaused: !!(st && st.userPaused),
     inWatch: nav.isActive('watch'),
     key: currentWatch && currentWatch.key
   });
@@ -3566,6 +3568,9 @@ async function handlePlaybackCommand(action) {
     // so omitting it here would blank the picture on the first play/pause tap
     const meta = { subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(currentWatch),
       posSec: st.time, durSec: st.duration };
+    // v1.0.72 — the notification's ⏯ is a person pressing pause, exactly like the centre
+    // tap: a call must not resume a song they deliberately stopped from the lock screen.
+    markUserToggle(st.playing);
     if (st.playing) { pauseCurrent(); await startBackgroundPlayback(currentWatch.title || '', false, meta); }
     else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true, meta); }
     return;

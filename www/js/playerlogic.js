@@ -392,7 +392,7 @@ export const isCallAudioMode = (mode) => CALL_MODES.has(String(mode || '').toLow
  *    starting it then would surprise whoever is in the room.
  */
 export function planCallResume({
-  armed = null, mode = 'unknown', playing = false, inWatch = true,
+  armed = null, mode = 'unknown', playing = false, inWatch = true, userPaused = false,
   key = null, now = Date.now(), maxWaitMs = CALL_RESUME_MAX_MS
 } = {}) {
   const call = isCallAudioMode(mode);
@@ -409,5 +409,13 @@ export function planCallResume({
     // running the matrix, not by reading it.
     return String(mode).toLowerCase() === 'normal' ? 'resume' : null;
   }
+  // ⚠️ ONLY A CALL THAT INTERRUPTED PLAYBACK MAY ARM. Reported from the field: a parent
+  // paused the audio, went off to do something else, took a call — and the song started
+  // playing when the call ended. The lifecycle door has always checked this (it arms only
+  // when the playhead said `playing`), but the POLL — which exists because a heads-up call
+  // fires no lifecycle event at all — saw only "not playing" and could not tell a call's
+  // pause from a deliberate one. `userPaused` is that missing distinction, and it belongs
+  // in the decision rather than in one of its two callers.
+  if (userPaused) return null;
   return call ? 'arm' : null;
 }
