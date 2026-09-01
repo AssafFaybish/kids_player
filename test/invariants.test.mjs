@@ -3862,9 +3862,24 @@ test('the live swipe track cleans up after itself, always (v1.0.62)', () => {
   const clear = swipe.slice(swipe.indexOf('const clearDrag = () =>'));
   const body = clear.slice(0, clear.indexOf('\n  };'));
   assert.match(body, /const run = pending/, 'clearDrag no longer flushes a committed turn — a fast flip loses pages');
-  assert.match(body, /if \(run\) run\(\)/, 'the committed turn is captured but never run');
+  assert.match(body, /\.then\(run\)/, 'the committed turn is captured but never run');
   assert.match(body, /ghost[\s\S]*remove\(\)/, 'the ghost is not removed — a stale page stays on screen');
   assert.match(body, /transform = ''/, 'the transform is not cleared — the grid stays translated');
+
+  // 3b) ⚠️ AND THE TURN MUST RUN BEFORE THE VISUAL RESET (v1.0.75). The old order removed
+  //     the ghost and zeroed the transform FIRST, so for the frames until the async render
+  //     landed the grid sat at rest still holding the PREVIOUS page — the flicker reported
+  //     from a device. The reset is a function called after the render resolves, and every
+  //     onSwipe must RETURN its render or there is nothing to wait for.
+  assert.match(body, /const reset = \(\) =>/, 'the reset is no longer deferrable');
+  assert.ok(body.indexOf('.then(run)') < body.indexOf('.then(reset)'),
+    'the transform is cleared before the new page is rendered — the old page flashes at rest');
+  // plain substrings: a hand-escaped regex built from a string is one backslash away from
+  // "Unterminated group", which is a guard that throws rather than one that checks
+  for (const r of ['return renderHome()', 'return renderFolderView()', 'return renderWatchGrid(']) {
+    assert.ok(app.includes(r),
+      `an onSwipe fires its render instead of returning it (${r}) — the swap cannot wait for the new page`);
+  }
 
   // 4) the live path is an ADDITION, never a replacement: renderPage is async, the viewport
   //    can be absent, and a ghost may never render — all of those must still turn the page.

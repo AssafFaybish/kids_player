@@ -7999,7 +7999,9 @@ function wire() {
   // a ghost that never rendered degrades to the v1.0.57 flick, never to nothing.
   attachSwipePager($('view-gallery'), (dir) => {
     page += dir === 'next' ? 1 : -1;
-    renderHome();
+    // v1.0.75 — RETURNED, not fired: ui/swipe.js awaits this before it clears the
+    // transform, so the new page is on screen before the grid comes back to rest.
+    return renderHome();
   }, () => ({ page, total: homePages }), {
     viewport: $('grid-vp'), grid: $('grid'),
     renderPage: (n, target) => { paintHomePage(target, n); }
@@ -8007,7 +8009,7 @@ function wire() {
 
   attachSwipePager($('view-folder'), (dir) => {
     folderPage += dir === 'next' ? 1 : -1;
-    renderFolderView().catch(() => {});
+    return renderFolderView().catch(() => {});   // v1.0.75 — awaited before the reset
   }, () => (folderPagerObj ? folderPagerObj.state() : null), {
     viewport: $('folder-grid-vp'), grid: $('folder-grid'),
     renderPage: (n, target) =>
@@ -8016,7 +8018,7 @@ function wire() {
 
   attachSwipePager($('watch-grid'), (dir) => {
     watchPage += dir === 'next' ? 1 : -1;
-    renderWatchGrid(currentWatch);
+    return renderWatchGrid(currentWatch);        // v1.0.75 — awaited before the reset
   }, () => (watchPager ? watchPager.state() : null), {
     viewport: $('watch-grid-vp'), grid: $('watch-grid'),
     renderPage: (n, target) => paintWatchPage(target, n, currentWatch)

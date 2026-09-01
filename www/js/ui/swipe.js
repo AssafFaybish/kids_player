@@ -82,12 +82,30 @@ export function attachSwipePager(el, onSwipe, getState, live = null) {
    */
   const clearDrag = () => {
     seq += 1;
-    if (drag && drag.ghost && drag.ghost.parentNode) drag.ghost.remove();
-    drag = null;
-    if (grid) { grid.style.transform = ''; grid.style.willChange = ''; }
-    if (vp) vp.classList.remove('swiping', 'snapping');
+    const token = seq;
+    const d = drag;
+    drag = null;                       // a new gesture must never adopt this one's state
     const run = pending; pending = null;
-    if (run) run();
+
+    const reset = () => {
+      // OUR ghost, by reference — removed even if a newer gesture has taken over the grid
+      if (d && d.ghost && d.ghost.parentNode) d.ghost.remove();
+      if (token !== seq) return;       // a newer gesture owns the transform now
+      if (grid) { grid.style.transform = ''; grid.style.willChange = ''; }
+      if (vp) vp.classList.remove('swiping', 'snapping');
+    };
+
+    if (!run) { reset(); return; }
+    // ⚠️ THE PAGE IS RENDERED WHILE THE GRID IS STILL TRANSLATED OFF-SCREEN, and only then
+    // is the transform cleared. The old order did the opposite — ghost away, transform to 0,
+    // THEN render — so for the frames until the (async) render landed, the grid sat at rest
+    // still holding the PREVIOUS page: the flicker reported from a device ("אחרי שמדפדפים
+    // יש ריצוד ולרגע הדף הקודם מוצג"). The comment on the commit path already promised this
+    // order; the code did not.
+    //
+    // The render is awaited BY VALUE, not by a timer: every onSwipe returns the promise of
+    // its own render, so the swap happens exactly when the new content exists.
+    Promise.resolve().then(run).catch(() => {}).then(reset);
   };
 
   /**
