@@ -4168,10 +4168,16 @@ test('the playback notification carries the app mark and real artwork (v1.0.66)'
   assert.match(fn, /artThumbId/,
     'the folder picture fallback is gone — an audio file NEVER has a thumbnail of its own, so this is the only picture most tracks can show');
   assert.match(fn, /BG_ART_MAX_BYTES/, 'an unbounded image crosses the bridge as base64 on every track change');
-  // a play/pause tap must not blank the picture: the service rebuilds the whole notification
-  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
-  assert.match(cmd, /artB64: await backgroundArtwork\(/,
-    'the toggle omits the artwork — the picture would vanish on the first play/pause');
+  // A publish must not blank the picture: the service rebuilds the WHOLE notification, so
+  // artwork omitted from any one publish makes it disappear. v1.0.74 funnelled every
+  // publish through one helper, which is a stronger form of the same guarantee — the guard
+  // follows it there, and pins that there is exactly ONE place that publishes.
+  const pub = fnSlice(app, 'async function republishBackgroundState(');
+  assert.ok(pub, 'the shared republish helper is gone');
+  assert.match(pub, /artB64: await backgroundArtwork\(/,
+    'a republish omits the artwork — the picture would vanish on the first play/pause');
+  assert.equal((app.match(/startBackgroundPlayback\(/g) || []).length, 2,
+    'the session is published from more than one place — they will drift apart');
 });
 
 test('the website locks close every door, and strand nobody (v1.0.67)', () => {
@@ -4351,4 +4357,35 @@ test('a deliberate pause is marked at every surface a person can press (v1.0.72)
   assert.match(app, /userPaused: !!\(st && st\.userPaused\)/, 'the watcher no longer passes it to the decision');
   assert.match(CODE.get('www/js/playerlogic.js'), /if \(userPaused\) return null;/,
     'planCallResume ignores a deliberate pause again');
+});
+
+test('the lock screen follows the PLAYER, not the last button pressed (v1.0.74)', () => {
+  // ⚠️ REPORTED FROM A DEVICE: the widget showed ⏸ — "playing, press to pause" — over a
+  // track that had FINISHED (57:06 of 57:06). The session state was published only when the
+  // notification's own buttons were pressed, so a pause from the screen, a call, or a track
+  // simply ending left it advertising STATE_PLAYING for ever.
+  const player = CODE.get('www/js/player.js');
+  assert.match(player, /opts\.onPlayState\(!video\.paused\)/,
+    'the player no longer reports its play state — the widget would go stale again');
+  for (const ev of ['play', 'pause', 'ended']) {
+    assert.match(player, new RegExp(`addEventListener\\('${ev}', notifyPlayState\\)`),
+      `a '${ev}' no longer republishes — the icon would lie after it`);
+    assert.match(player, new RegExp(`removeEventListener\\('${ev}', notifyPlayState\\)`),
+      `the '${ev}' reporter leaks past teardown`);
+  }
+  // 'ended' matters most: that is the exact state in the report
+  const app = CODE.get('www/js/app.js');
+  assert.match(app, /onPlayState: \(playing\) => \{ republishBackgroundState\(playing\)/,
+    'nothing listens for the player\'s state changes');
+
+  // ⚠️ THE TOGGLE REPORTS WHAT HAPPENED, NOT WHAT WAS ASKED FOR. resumeCurrent() can be
+  // refused by the browser (no user activation, a device still holding audio focus), and
+  // publishing "playing" straight after the call would leave the widget claiming a silent
+  // track is running — the very bug this fixes, one layer up.
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  const toggle = cmd.slice(0, cmd.indexOf("action !== 'fwd'"));
+  assert.doesNotMatch(toggle, /startBackgroundPlayback\(/,
+    'the toggle publishes its own optimistic state instead of waiting for the player');
+  assert.match(toggle, /if \(st\.playing\) pauseCurrent\(\); else resumeCurrent\(\);/,
+    'the toggle no longer just asks the player and lets the event report back');
 });
