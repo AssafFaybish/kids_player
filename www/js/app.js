@@ -3545,6 +3545,25 @@ async function armBackgroundPlayback(item) {
   bgPlayLive = !!ok;
 }
 
+/**
+ * v1.0.74 — republish the session state, so the lock-screen widget, the notification and a
+ * car all show what is ACTUALLY happening.
+ *
+ * Reported from a device: the widget showed ⏸ (i.e. "playing, press to pause") over a track
+ * that had finished — because the state was only ever published when the notification's own
+ * buttons were pressed. A pause from the screen, a call, or a track ending changed nothing.
+ *
+ * Cheap and idempotent: it does nothing unless the service is actually running.
+ */
+async function republishBackgroundState(playing) {
+  if (!bgPlayLive || !currentWatch) return;
+  const st = playbackState();
+  await startBackgroundPlayback(currentWatch.title || '', playing, {
+    subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(currentWatch),
+    posSec: st && st.time, durSec: st && st.duration
+  }).catch(() => {});
+}
+
 async function disarmBackgroundPlayback() {
   if (!bgPlayLive) return;
   bgPlayLive = false;
@@ -3564,15 +3583,13 @@ async function handlePlaybackCommand(action) {
   if (action === 'toggle') {
     const st = playbackState();
     if (!st) return;
-    // the artwork is re-sent on every publish: the service replaces its whole notification,
-    // so omitting it here would blank the picture on the first play/pause tap
-    const meta = { subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(currentWatch),
-      posSec: st.time, durSec: st.duration };
     // v1.0.72 — the notification's ⏯ is a person pressing pause, exactly like the centre
     // tap: a call must not resume a song they deliberately stopped from the lock screen.
     markUserToggle(st.playing);
-    if (st.playing) { pauseCurrent(); await startBackgroundPlayback(currentWatch.title || '', false, meta); }
-    else { resumeCurrent(); await startBackgroundPlayback(currentWatch.title || '', true, meta); }
+    // the republish rides the player's own play/pause event (onPlayState), so it reports
+    // what actually happened rather than what we asked for — a play() the browser refuses
+    // must not leave the widget claiming the track is running.
+    if (st.playing) pauseCurrent(); else resumeCurrent();
     return;
   }
   // v1.0.68 — ⏪/⏩ move INSIDE the track (user request, replacing skip-track). The seek is
@@ -3583,11 +3600,9 @@ async function handlePlaybackCommand(action) {
   if (seekRelative(action) === null) return;
   const st = playbackState();
   if (!st) return;
-  // republish, or the car's progress bar keeps extrapolating from the OLD position
-  await startBackgroundPlayback(currentWatch.title || '', st.playing, {
-    subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(currentWatch),
-    posSec: st.time, durSec: st.duration
-  });
+  // republish, or the car's progress bar keeps extrapolating from the OLD position. A seek
+  // fires no play/pause event, so this is the one place that still asks explicitly.
+  await republishBackgroundState(st.playing);
 }
 
 async function openWatch(item) {
@@ -3683,6 +3698,9 @@ async function openWatch(item) {
 
   await playItem(item, $('player-host'), {
     startAt,
+    // v1.0.74 — the lock screen and the car follow the REAL state, not just the last button
+    // pressed on the notification
+    onPlayState: (playing) => { republishBackgroundState(playing).catch(() => {}); },
     onExit: (reason) => { if ($('view-watch').classList.contains('active')) onVideoFinished(reason).catch(() => leaveWatch()); },
     onStatus: (s) => {
       if (!s) { status.classList.add('hidden'); status.textContent = ''; return; }

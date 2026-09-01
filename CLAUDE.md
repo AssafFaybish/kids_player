@@ -273,6 +273,34 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.74 — **THE LOCK SCREEN SHOWED ⏸ OVER A TRACK THAT HAD FINISHED** (field report, with
+  a screenshot reading 57:06 of 57:06 and a pause button).
+  - **ROOT CAUSE: THE SESSION STATE WAS PUBLISHED ONLY WHEN THE NOTIFICATION'S OWN BUTTONS
+    WERE PRESSED.** `armBackgroundPlayback` published `playing: true` at open, and the
+    toggle/seek handlers republished on their own taps — so a pause from the SCREEN, a pause
+    by a call, or a track simply ENDING changed nothing, and the widget kept advertising
+    `STATE_PLAYING` for ever. The icon is drawn from that state, which is why it offered to
+    pause a silent track.
+  - **THE STATE NOW FOLLOWS THE PLAYER**: `playItem` gained `onPlayState`, fired from the
+    file engine's own `play`/`pause`/`ended` listeners — the same three the audio scene
+    already used (v1.0.70). Files only, which is exactly right: YouTube is excluded from
+    background playback by design, so there is no second engine to teach.
+  - ⚠️ **IT REPORTS WHAT HAPPENED, NOT WHAT WAS ASKED FOR.** The notification's ⏯ now just
+    calls `pauseCurrent()`/`resumeCurrent()` and lets the player's event do the publishing:
+    `resumeCurrent()` can be REFUSED by the browser (no user activation, a device still
+    holding audio focus), and publishing "playing" straight after the call would leave the
+    widget claiming a silent track is running — the same bug, one layer up. Guard-pinned by
+    the ABSENCE of a publish in the toggle branch.
+  - **EVERY PUBLISH GOES THROUGH ONE HELPER** (`republishBackgroundState`), count-pinned at
+    two call sites — the arm and the helper. The artwork guard (v1.0.66) follows it there,
+    which makes "the picture is re-sent on every publish" true by construction rather than
+    per-caller.
+  - **`ended` IS THE CASE IN THE REPORT**, and it now does both things: corrects the state
+    AND reaches the disarm, so a finished track leaves no notification behind at all.
+  - 1 invariants guard (10 assertions), proven red three ways. Browser-verified with a
+    stubbed bridge on a real audio record: play, pause and ended each produced a republish,
+    and `ended` was followed by the service stopping.
+
 - v1.0.73 — **AN AUDIO FILE PLAYS IN THE ORDINARY PLAYER, NOT FULLSCREEN** (user request).
   - Fullscreen exists so a video fills the screen. An mp3 has no picture of its own — it
     plays behind the CSS music scene (v1.0.56) — so filling the screen with that scene hides

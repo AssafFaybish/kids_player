@@ -536,6 +536,11 @@ async function playFile(item, host, opts = {}, seq = 0) {
   // the pause the browser performs by itself when a track ends.
   const setPausedScene = () => { if (wrap) wrap.classList.toggle('is-paused', !!video.paused); };
   setPausedScene();
+  // v1.0.74 — TELL THE APP WHENEVER PLAYBACK STARTS OR STOPS, so the lock-screen widget and
+  // the car can be republished. Until now the session state was only ever refreshed when the
+  // NOTIFICATION itself was pressed, so a pause from the screen — or a track simply ending —
+  // left it advertising STATE_PLAYING, and the widget showed ⏸ over a silent track.
+  const notifyPlayState = () => { try { if (opts.onPlayState) opts.onPlayState(!video.paused); } catch {} };
   const ctl = {
     getTime: () => video.currentTime || 0,
     getDuration: () => video.duration || 0,
@@ -565,6 +570,9 @@ async function playFile(item, host, opts = {}, seq = 0) {
     video.removeEventListener('play', setPausedScene);
     video.removeEventListener('pause', setPausedScene);
     video.removeEventListener('ended', setPausedScene);
+    video.removeEventListener('play', notifyPlayState);
+    video.removeEventListener('pause', notifyPlayState);
+    video.removeEventListener('ended', notifyPlayState);
     try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
   };
   const finish = (reason = 'ended') => { const first = !torn; cleanup(); if (first && onExit) onExit(reason); };
@@ -578,6 +586,9 @@ async function playFile(item, host, opts = {}, seq = 0) {
   video.addEventListener('play', setPausedScene);
   video.addEventListener('pause', setPausedScene);
   video.addEventListener('ended', setPausedScene);
+  video.addEventListener('play', notifyPlayState);
+  video.addEventListener('pause', notifyPlayState);
+  video.addEventListener('ended', notifyPlayState);
   // wrapped: the DOM hands the listener an Event, which would arrive as the exit REASON
   video.addEventListener('ended', () => finish('ended'));
   // F3 + v1.0.32: the start is OUR decision (the resume offset, usually 0) — a
