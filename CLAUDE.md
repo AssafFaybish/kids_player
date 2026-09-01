@@ -273,6 +273,32 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.75 — **A PAGE TURN NO LONGER FLASHES THE PAGE YOU LEFT** (field report: "אחרי
+  שמדפדפים יש ריצוד ולרגע הדף הקודם מוצג, וכל הדפדוף לא חלק").
+  - **ROOT CAUSE: THE ORDER IN `clearDrag`, AND THE COMMENT ON THE COMMIT PATH ALREADY
+    PROMISED THE RIGHT ONE.** It read "the real render happens behind a grid already sitting
+    where the ghost was, so the swap itself is never seen" — while the code removed the
+    ghost, zeroed the transform, and only THEN ran the page turn. `renderHome` /
+    `renderFolderView` / `renderWatchGrid` are all async, so for the frames until the render
+    landed the grid sat at rest still holding the previous page. **The intent was documented;
+    the sequence was inverted.**
+  - **THE FIX IS TO RENDER WHILE THE GRID IS STILL OFF-SCREEN.** The settle leaves the grid
+    translated a full page away with the ghost covering the viewport; the turn now runs
+    there, and only when its promise resolves is the ghost removed and the transform
+    cleared — one frame, nothing to see. Every `onSwipe` RETURNS its render so the swap
+    waits on the new content rather than on a timer.
+  - ⚠️ **MEASURED, NOT REASONED.** Sampling every 20ms did NOT reproduce it — the window is
+    shorter than a sample. A `MutationObserver` on the grid's `style` fires as a MICROTASK,
+    i.e. before paint, and caught it exactly: with the old order, **2 frames** about to paint
+    at rest with the ghost gone and the old page still in the grid; with the fix, **0**. The
+    first attempt to "verify the negative" was too coarse and would have passed a broken fix.
+  - **THE FAST-FLIP FLUSH (v1.0.62) SURVIVES**: the pending turn is still run when a new
+    gesture cancels the settle — it is now run *before* the reset rather than after, and the
+    reset is skipped entirely if a newer gesture has taken the grid (`token !== seq`), while
+    the old ghost is removed by reference either way.
+  - 1 invariants guard extended (the v1.0.62 cleanup test now pins the ORDER and that all
+    three callbacks return their render), proven red on a planted regression.
+
 - v1.0.74 — **THE LOCK SCREEN SHOWED ⏸ OVER A TRACK THAT HAD FINISHED** (field report, with
   a screenshot reading 57:06 of 57:06 and a pause button).
   - **ROOT CAUSE: THE SESSION STATE WAS PUBLISHED ONLY WHEN THE NOTIFICATION'S OWN BUTTONS
