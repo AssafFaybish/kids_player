@@ -530,3 +530,22 @@ test('planCallResume: a call resumes only what a CALL stopped (v1.0.72)', async 
     'a different video is up now');
   assert.equal(planCallResume({ ...base, armed, mode: 'normal', playing: false, inWatch: false }), 'disarm');
 });
+
+test('opensFullscreen: only a KNOWN audio file opts out (v1.0.73)', async () => {
+  const { opensFullscreen } = await import('../www/js/playerlogic.js');
+  // the request: an audio file plays in the ordinary player, not fullscreen
+  assert.equal(opensFullscreen({ type: 'file', media: 'audio' }), false);
+  // …everything else keeps the v1.0.2 behaviour
+  assert.equal(opensFullscreen({ type: 'file', media: 'video' }), true);
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }), true);
+  // ⚠️ UNKNOWN IS TREATED AS VIDEO, and that is the safe direction. `media` is null for a
+  // record nothing has enriched yet (a share, a links-file row, a peer on an older app) and
+  // is only CORRECTED at loadedmetadata — long after the tap. Reading null as audio would
+  // open real videos windowed; reading it as video keeps exactly today's behaviour.
+  assert.equal(opensFullscreen({ type: 'file', media: null }), true);
+  assert.equal(opensFullscreen({ type: 'file' }), true);
+  // a YouTube record can never be 'audio' — the field belongs to files
+  assert.equal(opensFullscreen({ type: 'youtube', media: 'audio' }), true);
+  assert.equal(opensFullscreen(null), false);
+  assert.equal(opensFullscreen(), false);
+});

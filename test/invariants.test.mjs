@@ -2326,6 +2326,17 @@ test('a tap on a video reaches fullscreen SYNCHRONOUSLY (v1.0.2 rule, pinned v1.
     .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
   assert.ok(!/\bawait\b/.test(prelude),
     'openWatch awaits something BEFORE going fullscreen — the tap\'s user activation is spent');
+
+  // 3) v1.0.73 — an AUDIO file opts OUT of fullscreen (user request), and the decision is
+  //    the pure one. The call must stay unconditional-looking in the sense that matters —
+  //    synchronous, unawaited — while the CHOICE lives in playerlogic.
+  assert.match(app, /if \(opensFullscreen\(item\)\) enterPlayerFullscreen\(\);/,
+    'the fullscreen request is no longer gated by the pure decision — audio would fill the screen again');
+  const logic = MODULES.get('www/js/playerlogic.js');
+  assert.match(logic, /export function opensFullscreen\(item\)/, 'opensFullscreen is gone');
+  // ⚠️ pinned by ABSENCE: reading an UNKNOWN media as audio would open real videos windowed
+  assert.match(logic, /item\.type === 'file' && item\.media === 'audio'/,
+    'the opt-out is not restricted to a KNOWN audio file — an unenriched video would open windowed');
 });
 
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {
