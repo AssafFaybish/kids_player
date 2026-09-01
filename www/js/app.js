@@ -29,7 +29,7 @@ import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
-  fullscreenOrientation, planCallResume, backgroundPlayDecision } from './playerlogic.js';
+  fullscreenOrientation, planCallResume, backgroundPlayDecision, opensFullscreen } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -3602,7 +3602,11 @@ async function openWatch(item) {
   // Tapping a video goes straight to fullscreen (user request). Synchronous — still
   // inside the tap gesture. Exiting fullscreen (back / ⛶) lands on the watch page,
   // where the 🏠 button lives.
-  enterPlayerFullscreen();
+  // v1.0.73 — an AUDIO file does not (user request): there is nothing to fill the screen
+  // with but the music scene, and doing so hides the seek bar and the way back. The call
+  // stays SYNCHRONOUS and unawaited either way — the tap's user activation is spent by the
+  // first await, and a conditional costs nothing.
+  if (opensFullscreen(item)) enterPlayerFullscreen();
   // watch-grid context: the record's own folder (or where the child was browsing)
   // v1.0.12: when the child came from a FOLDER view, browse THAT folder — virtual
   // 🎞️ group folders aren't stored on the record, so item.folderId can't express

@@ -273,6 +273,27 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.73 — **AN AUDIO FILE PLAYS IN THE ORDINARY PLAYER, NOT FULLSCREEN** (user request).
+  - Fullscreen exists so a video fills the screen. An mp3 has no picture of its own — it
+    plays behind the CSS music scene (v1.0.56) — so filling the screen with that scene hides
+    the seek bar, ⭐ and the way back for no gain at all. ⛶ is still there for a child who
+    wants it.
+  - ⚠️ **ONLY A KNOWN `media: 'audio'` OPTS OUT, AND "UNKNOWN" IS TREATED AS VIDEO.** That
+    field is null for a record nothing has enriched yet (a share, a links-file row, a peer on
+    an older app) and is only CORRECTED at `loadedmetadata` from `videoWidth` — long after
+    the tap. Reading null as audio would open real videos windowed; reading it as video keeps
+    exactly today's behaviour, which is the safe direction for a guess. Pinned by the shape
+    of the test, not just its presence.
+  - **A VIDEO THAT TURNS OUT TO BE AUDIO KEEPS THE FULLSCREEN IT WAS GIVEN.** Dropping out of
+    fullscreen a second later, when `loadedmetadata` corrects the field, is a jump the child
+    did not ask for — and the scene it would reveal is the same one either way.
+  - **THE v1.0.2 RULE IS UNTOUCHED**: the call stays SYNCHRONOUS and unawaited inside the tap
+    gesture (an await first voids the user activation). A conditional costs nothing, and the
+    v1.0.40 guard that pins the no-await prelude was extended to pin the condition too.
+  - 1 unit test + the v1.0.40 guard extended, every guard proven red on a planted regression
+    (3). Browser-verified on the real library: tapping a song made **zero** fullscreen
+    requests and showed the music scene windowed, while the YouTube video still requested it.
+
 - v1.0.72 — **A CALL RESUMES ONLY WHAT A CALL STOPPED** (field report: "עצרתי את השמע
   ועברתי להתעסק עם משהו אחר, וכשסיימתי שיחה השיר חזר להתנגן").
   - **THE RULE WAS ALWAYS WRITTEN DOWN AND ENFORCED IN ONLY ONE OF THE TWO DOORS.** v1.0.57's

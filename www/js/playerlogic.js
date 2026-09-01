@@ -203,6 +203,27 @@ export function shouldFinishNearEnd({
  * paused before the screen went dark must stay paused, or the app starts making noise in a
  * pocket for a video nobody was watching (the v1.0.57 call-resume rule, same reasoning).
  */
+/**
+ * v1.0.73 — PURE: should opening this item go straight to FULLSCREEN? (user request: an
+ * audio file should not.)
+ *
+ * Fullscreen exists so a video fills the screen. An audio file has no picture of its own —
+ * it plays behind the CSS music scene (v1.0.56) — so filling the screen with that scene
+ * hides the seek bar, the ⭐ and the way back for no gain at all.
+ *
+ * ⚠️ ONLY A KNOWN 'audio' OPTS OUT. `media` is null for a record nothing has enriched yet
+ * (a share, a links-file row, a peer on an older app), and it is CORRECTED at
+ * `loadedmetadata` from `videoWidth` — long after the tap. Treating "unknown" as audio
+ * would open real videos windowed; treating it as video keeps exactly today's behaviour,
+ * which is the safe direction for a guess. A video that turns out to be audio simply keeps
+ * the fullscreen it was given — the alternative, dropping out of fullscreen a second later,
+ * is a jump the child did not ask for.
+ */
+export function opensFullscreen(item) {
+  if (!item) return false;
+  return !(item.type === 'file' && item.media === 'audio');
+}
+
 export function backgroundPlayDecision({ enabled = false, playing = false, item = null } = {}) {
   if (!enabled) return { play: false, why: 'off' };
   if (!item) return { play: false, why: 'no-item' };
