@@ -273,6 +273,30 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.72 — **A CALL RESUMES ONLY WHAT A CALL STOPPED** (field report: "עצרתי את השמע
+  ועברתי להתעסק עם משהו אחר, וכשסיימתי שיחה השיר חזר להתנגן").
+  - **THE RULE WAS ALWAYS WRITTEN DOWN AND ENFORCED IN ONLY ONE OF THE TWO DOORS.** v1.0.57's
+    own entry says the watcher "arms only if the video was actually PLAYING (otherwise a
+    video the child had paused before the call resumes after it)" — and the LIFECYCLE door
+    does exactly that (`onAppPause` reads the playhead before pausing). But the **POLL** —
+    which exists precisely because a heads-up call fires no lifecycle event at all — saw only
+    `!st.playing` and could not tell a call's pause from a deliberate one. So the guarded
+    door was the one calls rarely use, and the unguarded one was the common path.
+  - **THE DISTINCTION CANNOT BE INFERRED, SO IT IS RECORDED.** A video paused by a call and
+    one paused by a child are identical from outside. `player.markUserToggle` marks the
+    pause at the surfaces a person actually presses — the centre tap, the TV remote's OK and
+    the notification's ⏯ — and `playbackState()` carries it to the watcher.
+  - ⚠️ **AN APP-INITIATED PAUSE MUST NOT MARK**, and a guard pins that by ABSENCE: screen-off,
+    a scheduled break and the call's own pause are exactly the ones a call may legitimately
+    resume from. Marking them would silently delete the whole feature — proven by planting it.
+  - **CLEARED WHEREVER THE VIDEO PLAYS AGAIN** (`resumeCurrent`, and every new `playItem`), or
+    a stale mark would block the NEXT real call — the mirror-image bug, also plant-proven.
+  - The rule lives in `planCallResume`, not in its callers: two callers with one rule between
+    them is how this bug happened the first time.
+  - 1 unit test (the reported scenario, plus the whole matrix) + 1 invariants guard, every
+    guard proven red on a planted regression (5, covering BOTH directions). Browser-verified
+    on the live player: a centre-tap pause sets the mark, playing again clears it.
+
 - v1.0.71 — **A CENTRE TAP SAYS WHAT IT DID** (user request: the same YouTube feedback the
   ±10 seek already gave). The ±10 badge has existed since v1.0.9, so the gesture a child uses
   MOST — pause and resume — was the one with no confirmation at all.

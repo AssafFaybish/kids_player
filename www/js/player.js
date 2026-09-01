@@ -78,10 +78,25 @@ export function stop() {
  * database; this module only lends it the clock). Null when nothing is mounted — a
  * caller reading it after finish()/stop() gets null, never a stale player's numbers.
  */
+/**
+ * v1.0.72 — WAS THE CURRENT PAUSE A DELIBERATE HUMAN ACT?
+ *
+ * The call watcher needs this and cannot infer it: a video paused by a call and a video
+ * paused by a child look identical from outside. Only the surfaces that a person actually
+ * presses set it — the centre tap, the TV remote's OK and the notification's ⏯. An
+ * app-initiated pause (screen-off, a scheduled break, the call itself) deliberately does
+ * NOT, because those are exactly the ones a call may legitimately resume from.
+ */
+let userPausedAt = 0;
+
+/** Called by the toggle surfaces. `paused` is the state the person just chose. */
+export function markUserToggle(paused) { userPausedAt = paused ? Date.now() : 0; }
+
 export function playbackState() {
   if (!current || !current.ctl) return null;
   const c = current.ctl;
-  return { time: c.getTime(), duration: c.getDuration(), playing: c.isPlaying() };
+  return { time: c.getTime(), duration: c.getDuration(), playing: c.isPlaying(),
+    userPaused: userPausedAt > 0 };
 }
 
 /**
@@ -127,6 +142,7 @@ export function pauseCurrent() {
  */
 export function resumeCurrent() {
   if (!current || !current.ctl || !current.ctl.play) return false;
+  userPausedAt = 0;   // it is playing again: there is no deliberate pause left to protect
   try { current.ctl.play(); return true; } catch { return false; }
 }
 
@@ -146,6 +162,7 @@ const startFrom = (opts) => {
 };
 
 export async function playItem(item, host, opts = {}) {
+  userPausedAt = 0;   // a new video inherits nobody's pause
   // Fast path: YouTube → YouTube switches reuse the live player (no black flash).
   if (item.type === 'youtube' && current && current.kind === 'youtube' && current.reuse) {
     try { current.reuse(item, opts); return; } catch { /* fall through to full restart */ }
@@ -229,6 +246,7 @@ function setupHud(ctl) {
    */
   const toggleWithFlash = () => {
     const wasPlaying = ctl.isPlaying();
+    markUserToggle(wasPlaying);   // v1.0.72 — a call must not resume what a person stopped
     ctl.togglePlay();
     flash(wasPlaying ? '⏸' : '▶', 'toggle');
   };

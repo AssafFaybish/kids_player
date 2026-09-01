@@ -4311,3 +4311,33 @@ test('a centre tap SAYS what it did, and the two badges stay apart (v1.0.71)', (
   assert.match(base.slice(0, base.indexOf('}')), /pointer-events:\s*none/,
     'the badge takes pointer events — it sits over the video and would swallow the next tap');
 });
+
+test('a deliberate pause is marked at every surface a person can press (v1.0.72)', () => {
+  // ⚠️ THE POLL COULD NOT TELL TWO PAUSES APART. A call's pause and a child's pause look
+  // identical from outside, so the distinction has to be RECORDED where the person presses.
+  const player = CODE.get('www/js/player.js');
+  assert.match(player, /export function markUserToggle\(paused\)/, 'nothing records a deliberate pause');
+  // the state carries it to the watcher
+  assert.match(player, /userPaused: userPausedAt > 0/, 'playbackState no longer reports who paused');
+  // …set by the player-side toggle (centre tap AND the TV remote both route through it)
+  assert.match(player, /markUserToggle\(wasPlaying\);[\s\S]{0,60}?ctl\.togglePlay\(\)/,
+    'the centre tap and the remote no longer mark their pause');
+  // …cleared wherever the video plays again, or a stale mark would block a LATER real call
+  assert.match(fnSlice(player, 'export function resumeCurrent('), /userPausedAt = 0/,
+    'a resume leaves the mark standing — the next real call would not arm');
+  assert.match(fnSlice(player, 'export async function playItem('), /userPausedAt = 0/,
+    'a new video inherits the previous one\'s pause mark');
+  // ⚠️ app-initiated pauses must NOT mark: those are exactly the ones a call may resume from
+  const app = CODE.get('www/js/app.js');
+  const pause = appPauseBody(app);
+  assert.doesNotMatch(pause, /markUserToggle/,
+    'screen-off marks a deliberate pause — a call would then never resume the video');
+  // …but the notification's ⏯ IS a person pressing pause
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  assert.match(cmd, /markUserToggle\(st\.playing\)/,
+    'a pause from the lock screen is not marked — a call would resume what the parent stopped');
+  // and the decision, not the caller, owns the rule
+  assert.match(app, /userPaused: !!\(st && st\.userPaused\)/, 'the watcher no longer passes it to the decision');
+  assert.match(CODE.get('www/js/playerlogic.js'), /if \(userPaused\) return null;/,
+    'planCallResume ignores a deliberate pause again');
+});
