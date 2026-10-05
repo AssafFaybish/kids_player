@@ -339,7 +339,7 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     future change.
   - 24 unit tests (18 for the links format/sections/round trip and the sentences; 6 for
     `platform.copyText`/`fileUriToPath`/the lock refusal in the new `test/platform.test.mjs`) +
-    5 invariants guards and 4 re-anchored ones; **every new guard proven red on a planted regression (21 plants)**,
+    5 invariants guards and 4 re-anchored ones; **every new guard proven red on a planted regression (24 plants)**,
     reverted with `git restore` on a committed checkpoint. Java compiles (the class carries
     `copyText`/`refuseUnderLockTask`). **Browser-verified end to end through the real PIN gate**:
     the picker (2 → 3 chips after an import), one-profile copy (the `# פרופיל:` header, ` ,`,
