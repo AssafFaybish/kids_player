@@ -610,17 +610,36 @@
 
         <!-- v1.0.38 — THE LINKS FILE. One plain-text file, one link per line: the way to add
              a lot at once, and the way a whole library moves to another tablet or another
-             Google account. It replaced the Google-Sheets sources list. -->
+             Google account. It replaced the Google-Sheets sources list.
+             v1.0.93 — the same list can be COPIED as plain text (the parent pastes it into
+             WhatsApp or a mail), and it may cover several profiles, one section each. -->
         <div class="list-head" style="margin-top:18px"><span class="list-count">📄 קובץ לינקים</span></div>
-        <p class="hint">קובץ טקסט פשוט: <b>שורה אחת = לינק אחד</b> (ערוץ, רשימת השמעה או
+        <p class="hint">רשימה פשוטה: <b>שורה אחת = לינק אחד</b> (ערוץ, רשימת השמעה או
           סרטון). אפשר להוסיף באותה שורה, אחרי פסיק, שם להצגה — ולערוץ גם
           <code>auto</code> כדי שסרטונים חדשים ממנו ייכנסו בלי אישור. שורה שמתחילה ב-#
-          היא הערה. הייצוא שומר קובץ במכשיר ופותח חלונית שיתוף, כך שאפשר לשלוח אותו
-          לעצמכם ולייבא בטאבלט אחר.</p>
+          היא הערה. <b>📋 העתקה</b> שמה את הרשימה בלוח, כדי להדביק אותה בוואטסאפ או במייל;
+          <b>📤 ייצוא</b> שומר אותה כקובץ במכשיר ופותח חלונית שיתוף. בטאבלט האחר מדביקים
+          את הרשימה בתיבה שלמטה, או מייבאים את הקובץ.</p>
+        <!-- v1.0.93 — WHICH profiles the list covers. Hidden with a single profile: there is
+             nothing to choose, and the export is that profile. The open profile starts ticked. -->
+        <div id="links-profiles" class="links-profiles hidden">
+          <div class="links-profiles-title">אילו פרופילים לייצא?</div>
+          <div id="links-profiles-list" class="links-profiles-list"></div>
+        </div>
         <div class="row-btns">
-          <button id="links-export" class="btn btn-small" type="button">📤 ייצוא רשימת לינקים</button>
+          <button id="links-copy" class="btn btn-small" type="button">📋 העתקת הרשימה</button>
+          <button id="links-export" class="btn btn-small" type="button">📤 ייצוא לקובץ</button>
           <button id="links-import" class="btn btn-small" type="button">📥 ייבוא מקובץ</button>
-          <button id="links-share-text" class="btn btn-small hidden" type="button">📨 שליחה כטקסט</button>
+        </div>
+        <!-- Directly under the buttons that produce it: below the (often open) paste box it
+             landed off-screen on a phone, and a result nobody sees is the silent failure. -->
+        <div id="links-msg" class="form-msg"></div>
+        <!-- v1.0.93 — the LAST rung of copy and export: the list, selectable, to copy by hand.
+             The old rung was a modal whose text could not be selected at all (the app sets
+             user-select:none on <body>), so it showed the list and offered no way to take it. -->
+        <div id="links-copy-box" class="hidden">
+          <textarea id="links-copy-text" class="input links-paste links-copy" rows="6" dir="ltr" readonly
+            aria-label="רשימת הלינקים להעתקה"></textarea>
         </div>
         <!-- The paste door is NOT a fallback shown after a failure: Android TV has no file
              picker at all, and the WebView's picker is unverified on some devices. It is
@@ -633,7 +652,6 @@
             <button id="links-paste-go" class="btn btn-small" type="button">ייבוא מהטקסט</button>
           </div>
         </details>
-        <div id="links-msg" class="form-msg"></div>
 
         <!-- v1.0.39 — THE ROLLING WINDOW'S NOTICE. The sync never deletes on its own; when a
              channel grows past the window it says so HERE, by name, and the parent reviews.

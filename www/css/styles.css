@@ -657,6 +657,24 @@ html.tv .np-channel { font-size: 18px; }
 /* v1.0.38 links file: a paste box. Monospace + LTR because its content is links, and
    nowrap-free so a long URL wraps instead of scrolling the panel sideways. */
 .links-paste { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; resize: vertical; }
+/* v1.0.93 — the copy-by-hand box. SELECTABLE ON PURPOSE: <body> sets user-select:none
+   (a child must not long-press-select the UI), and a READONLY textarea is not editable
+   content, so it inherits that and cannot be selected at all — which made the old
+   "shown for manual copy" rung a list nobody could take. */
+.links-copy { -webkit-user-select: text; user-select: text; margin-bottom: 10px; }
+/* v1.0.93 — which profiles the links list covers: one chip per profile, the whole chip is
+   the tap target (a <label> around a real checkbox — the TV remote reaches the input). */
+.links-profiles { margin: 4px 0 10px; }
+.links-profiles-title { font-size: 15px; font-weight: 700; color: var(--muted); margin-bottom: 8px; }
+.links-profiles-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.lp-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px;
+  padding: 6px 12px; border-radius: 999px; background: #fff;
+  border: 2px solid #e3e0f5; font-weight: 700; color: var(--ink); cursor: pointer;
+}
+.lp-chip input { width: 20px; height: 20px; margin: 0; accent-color: var(--brand-2); }
+.lp-chip.lp-on { border-color: var(--brand-2); background: #f1f0ff; }
+.lp-avatar { font-size: 18px; line-height: 1; }
 .opt-details { margin-bottom: 12px; }
 .opt-details summary { cursor: pointer; color: var(--muted); font-weight: 700; padding: 6px 0; }
 

@@ -367,7 +367,8 @@ const CHANNEL_ADD_WAITS = {
   // ONE forced sync for the whole list, which is minutes on a 16-channel file; exporting
   // reads both scopes. Neither may run behind the ordinary screen.
   importing:{ title: 'מייבאים את הרשימה', step: 'מזהים את הערוצים ושומרים…' },
-  exporting:{ title: 'מכינים את הקובץ', step: 'אוספים את הערוצים והסרטונים…' }
+  // v1.0.93: shared by "📋 copy" and "📤 export" — it no longer always makes a file
+  exporting:{ title: 'מכינים את רשימת הלינקים', step: 'אוספים את הערוצים והסרטונים…' }
 };
 
 export function channelAddWait(stage, { count = 0 } = {}) {
@@ -2200,33 +2201,200 @@ export function linksImportOutcome({ channels = 0, playlists = 0, videos = 0, pe
 }
 
 /**
+ * PURE (v1.0.93): "נועם", "נועם ומיכל", "נועם, מיכל ודני". The conjunction ו is prefixed to
+ * the last name; before a name that does not start with a Hebrew letter it takes a hyphen
+ * ("ו-Dana"), the way it is written in running Hebrew text.
+ */
+export function hebList(names) {
+  const list = (Array.isArray(names) ? names : []).map((n) => String(n ?? '').trim()).filter(Boolean);
+  if (list.length <= 1) return list[0] || '';
+  const last = list[list.length - 1];
+  const conj = /^[\u05D0-\u05EA]/.test(last) ? 'ו' : 'ו-';
+  return `${list.slice(0, -1).join(', ')} ${conj}${last}`;
+}
+
+/**
+ * v1.0.93 — the length past which a COPIED list is unsafe to paste into a chat. WhatsApp
+ * cuts a message at 65,536 characters; the margin covers the parent's own words around it.
+ * A cut list still imports what survived (every line stands alone), so this is a warning,
+ * never a refusal — and a mail, or the file itself, carries any length.
+ */
+export const LINKS_CHAT_MAX_CHARS = 60000;
+
+/**
+ * PURE (v1.0.93): which profiles an export covers, in the ORDER the parent sees them.
+ * With one profile there is nothing to choose — the picker is hidden and the answer is
+ * that profile. Otherwise exactly the ticked ones; an empty answer is the caller's to
+ * refuse, never a silent fallback to "all" or to the active child.
+ */
+export function linksExportSelection({ profiles = [], selected = null, activeId = null } = {}) {
+  const list = (Array.isArray(profiles) ? profiles : []).filter((p) => p && p.id);
+  if (list.length <= 1) {
+    const only = list[0] ? list[0].id : activeId;
+    return only ? [only] : [];
+  }
+  const want = selected instanceof Set ? selected : new Set(Array.isArray(selected) ? selected : []);
+  return list.filter((p) => want.has(p.id)).map((p) => p.id);
+}
+
+const thousands = (n) => String(Math.max(0, Number(n) | 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+/** The sentence part both export answers share: "של נועם ומיכל", and who was left out. */
+function exportWho(profiles, empty) {
+  const names = (Array.isArray(profiles) ? profiles : []).filter(Boolean);
+  const gone = (Array.isArray(empty) ? empty : []).map((n) => String(n ?? '').trim()).filter(Boolean);
+  const who = names.length > 1 ? ` של ${hebList(names)}` : '';
+  const left = !gone.length ? ''
+    : gone.length === 1 ? ` · בפרופיל ${gone[0]} אין עדיין תוכן — הוא לא נכלל ברשימה`
+      : ` · בפרופילים ${hebList(gone)} אין עדיין תוכן — הם לא נכללו ברשימה`;
+  return { who, left };
+}
+
+/**
  * PURE: what the parent is told after an export, per delivery rung.
  *
  * EVERY rung names WHERE THE FILE IS, and no two share a sentence — an export whose file
  * the parent cannot find is the same failure as no export at all. 'nothing' exists because
  * an empty file that shares as a blank message is the silent-nothing failure (v1.0.26).
+ *
+ * v1.0.93: 'file-only' no longer blames "no app to share with" — the field cause was a
+ * percent-encoded Hebrew file name, not a missing app — and it points at the copy button,
+ * which is now always there. 'locked' is new: under the kiosk lock Android refuses to open
+ * any new window, so the share sheet CANNOT appear, and saying "a share window opened" there
+ * was the bug the parent reported. The count is channels + playlists + videos: `files` is a
+ * SUBSET of videos, and adding it counted every file link twice.
  */
-export function linksExportOutcome({ delivery = 'none', name = '', dir = '', counts = null } = {}) {
+export function linksExportOutcome({ delivery = 'none', name = '', dir = '', counts = null,
+  profiles = [], empty = [] } = {}) {
   const c = counts || {};
-  const n = Math.max(0, (c.channels | 0) + (c.playlists | 0) + (c.videos | 0) + (c.files | 0));
+  const n = Math.max(0, (c.channels | 0) + (c.playlists | 0) + (c.videos | 0));
   const where = dir ? `${dir}${name}` : name;
+  const { who, left } = exportWho(profiles, empty);
   switch (delivery) {
+    case 'no-selection':
+      return { ok: false, text: 'סמנו לפחות פרופיל אחד לייצוא' };
     case 'nothing':
       return { ok: false, text: 'אין עדיין תוכן לייצוא — הוסיפו סרטון או ערוץ קודם' };
     case 'native':
-      return { ok: true, text: `נשמר קובץ עם ${n} לינקים ונפתחה חלונית שיתוף. הקובץ במכשיר: ${where}` };
+      return { ok: true, text: `נשמר קובץ עם ${n} לינקים${who} ונפתחה חלונית שיתוף. הקובץ במכשיר: ${where}${left}` };
     case 'file-only':
-      return { ok: true, shareTextFallback: true,
-        text: `הקובץ נשמר במכשיר ✅ ${where} — לא נמצאה אפליקציה לשיתוף. אפשר לשלוח אותו כטקסט בכפתור שמתחת.` };
+      return { ok: true,
+        text: `הקובץ נשמר במכשיר ✅ ${where} — אבל חלונית השיתוף לא נפתחה. אפשר להעתיק את הרשימה בכפתור "📋 העתקת הרשימה" ולהדביק אותה בכל אפליקציה.${left}` };
+    case 'locked':
+      return { ok: true,
+        text: `הקובץ נשמר במכשיר ✅ ${where} — המכשיר נעול (נעילת יציאה), ובמצב הזה אנדרואיד לא פותח חלונית שיתוף. אפשר להעתיק את הרשימה בכפתור "📋 העתקת הרשימה".${left}` };
     case 'download':
-      return { ok: true, text: `הקובץ ירד לתיקיית ההורדות בשם ${name}` };
+      return { ok: true, text: `הקובץ ירד לתיקיית ההורדות בשם ${name}${left}` };
     case 'clipboard':
-      return { ok: true, text: 'הרשימה הועתקה ללוח — הדביקו אותה בהודעה או בקובץ ושמרו' };
+      return { ok: true, text: `הרשימה הועתקה ללוח — הדביקו אותה בהודעה או בקובץ ושמרו${left}` };
     case 'shown':
-      return { ok: true, shown: true, text: 'לא הצלחנו לשמור קובץ — הרשימה מוצגת כאן להעתקה ידנית' };
+      return { ok: true, shown: true, text: 'לא הצלחנו לשמור קובץ — הרשימה מוצגת למטה: לחיצה ארוכה עליה ← "העתק"' };
     default:
       return { ok: false, text: 'הייצוא נכשל — נסו שוב' };
   }
+}
+
+/**
+ * PURE (v1.0.93): what the parent is told after "📋 העתקת הרשימה".
+ *
+ * A copy has no visible result of its own — before Android 13 the system shows nothing —
+ * so the sentence carries the whole confirmation AND the next step (where to paste). It
+ * says how much was copied, and when the list is past what a chat carries it says so now,
+ * not after the other device imports a truncated half.
+ * how: 'native' | 'web' | 'legacy' (copied) | 'none' (failed — the text is shown to copy
+ * by hand) | 'no-selection' | 'nothing'.
+ * -> { ok, text, shown?, long? }
+ */
+export function linksCopyOutcome({ how = 'none', counts = null, chars = 0, profiles = [], empty = [] } = {}) {
+  const c = counts || {};
+  const n = Math.max(0, (c.channels | 0) + (c.playlists | 0) + (c.videos | 0));
+  const { who, left } = exportWho(profiles, empty);
+  if (how === 'no-selection') return { ok: false, text: 'סמנו לפחות פרופיל אחד להעתקה' };
+  if (how === 'nothing') return { ok: false, text: 'אין עדיין תוכן להעתקה — הוסיפו סרטון או ערוץ קודם' };
+  if (how === 'native' || how === 'web' || how === 'legacy') {
+    const long = Number(chars) > LINKS_CHAT_MAX_CHARS;
+    const what = n === 1 ? 'לינק אחד' : `${n} לינקים`;
+    let text = `הרשימה הועתקה ✅ (${what}${who}) — עכשיו פתחו וואטסאפ או מייל, לחצו לחיצה ארוכה בתיבת ההודעה ובחרו "הדבק".`;
+    if (long) {
+      text += ` ⚠️ הרשימה ארוכה (${thousands(chars)} תווים) — וואטסאפ עלול לחתוך אותה. במייל, או כקובץ בכפתור 📤, היא תגיע שלמה.`;
+    }
+    return { ok: true, long, text: text + left };
+  }
+  return { ok: false, shown: true,
+    text: 'לא הצלחנו להעתיק אוטומטית — הרשימה מוצגת למטה: לחיצה ארוכה עליה ← "העתק"' };
+}
+
+/** "3 ערוצים, סרטון אחד" — one profile's share of a multi-profile list, by kind. */
+function linksWhat(c) {
+  const x = c || {};
+  const parts = [];
+  if (x.channels | 0) parts.push(hebCount(x.channels, 'ערוץ', 'ערוצים'));
+  if (x.playlists | 0) parts.push(hebCountF(x.playlists, 'רשימת השמעה', 'רשימות השמעה'));
+  if (x.videos | 0) parts.push(hebCount(x.videos, 'סרטון', 'סרטונים'));
+  return parts.join(', ');
+}
+
+/**
+ * PURE (v1.0.93): the confirm for a list carrying SEVERAL profiles.
+ *
+ * Three answers, and the order is the recommendation: every list to the profile of the
+ * same name (the point of exporting several at once), everything into the profile that is
+ * open (the old behaviour, and the only one an older app has), or nothing. A profile that
+ * will be CREATED is named before the parent commits — the v1.0.22 rule is never mint a
+ * profile behind their back.
+ * @param targets [{ name, create, section: { counts } }] (linksfile.matchSectionTargets)
+ */
+export function linksSectionsConfirm({ targets = [], activeName = '' } = {}) {
+  const t = (Array.isArray(targets) ? targets : []).filter((x) => x && x.section);
+  const each = t.map((x) => `${x.name || 'בלי שם (לפרופיל הפתוח)'} (${linksWhat(x.section.counts) || 'ריק'})`);
+  const made = t.filter((x) => x.create && x.name).map((x) => x.name);
+  let text = `ברשימה ${t.length} פרופילים: ${each.join(' · ')}.`;
+  if (made.length === 1) text += ` הפרופיל ${made[0]} לא קיים כאן — הוא ייווצר.`;
+  else if (made.length > 1) text += ` הפרופילים ${hebList(made)} לא קיימים כאן — הם ייווצרו.`;
+  if (t.some((x) => { const c = x.section.counts || {}; return (c.channels | 0) + (c.playlists | 0) > 0; })) {
+    text += ' סרטונים מערוץ או מרשימה ימתינו לאישורכם, אלא אם סומן auto.';
+  }
+  const active = String(activeName || '').trim();
+  return {
+    emoji: '📄',
+    title: 'לייבא את הרשימה?',
+    text,
+    ok: 'כל רשימה לפרופיל שלה',
+    third: active ? `הכול ל${active}` : 'הכול לפרופיל הפתוח',
+    cancel: 'ביטול'
+  };
+}
+
+/**
+ * PURE (v1.0.93): what happened, PER PROFILE, after "every list to its own profile". Every
+ * profile is named with its own outcome, a zero names its cause (the v1.0.37 rule), and a
+ * channel added to a profile that is NOT open says when its videos will arrive — the sync
+ * runs per profile, so they come the next time that profile is entered, not now.
+ * @param results [{ name, created, active, res: applyLinksPlan's answer }]
+ */
+export function linksSectionsOutcome({ results = [], pending = 0 } = {}) {
+  const r = (Array.isArray(results) ? results : []).filter(Boolean);
+  const each = r.map(({ name, created, res }) => {
+    const x = res || {};
+    const added = (x.channels | 0) + (x.playlists | 0) + (x.videos | 0);
+    const label = `${name || 'הפרופיל הפתוח'}${created ? ' (פרופיל חדש)' : ''}`;
+    if (added) return `${label}: ${added === 1 ? 'נוסף' : 'נוספו'} ${linksWhat(x)}`;
+    if (x.existed) return `${label}: הכול כבר היה בספרייה`;
+    if (x.skippedDenied) return `${label}: הכול הוסר בעבר ולא הוחזר`;
+    if (x.failed) return `${label}: המקורות לא זוהו`;
+    return `${label}: לא נוסף כלום`;
+  });
+  const total = r.reduce((n, { res }) => n + ((res && ((res.channels | 0) + (res.playlists | 0) + (res.videos | 0))) | 0), 0);
+  let text = `${total ? '✅ ' : ''}${each.join(' · ')}`;
+  if (pending | 0) text += ` · ${hebCount(pending, 'סרטון', 'סרטונים')} ${pending === 1 ? 'ממתין' : 'ממתינים'} לאישור ברשימת "ממתינים" 👀`;
+  const later = r.filter(({ active, name, res }) => !active && name && res && ((res.channels | 0) + (res.playlists | 0)) > 0);
+  if (later.length) {
+    const ch = later.some(({ res }) => (res.channels | 0) > 0);
+    const pl = later.some(({ res }) => (res.playlists | 0) > 0);
+    const from = ch && pl ? 'מהערוצים ומהרשימות' : ch ? 'מהערוצים' : 'מהרשימות';
+    text += ` · הסרטונים ${from} של ${hebList(later.map(({ name }) => name))} יגיעו כשנכנסים ${later.length === 1 ? 'לפרופיל' : 'לכל פרופיל'}`;
+  }
+  return { ok: total > 0, text };
 }
 
 /* ---------------- custom folders (v1.0.56) ---------------- */

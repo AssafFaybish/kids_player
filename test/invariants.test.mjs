@@ -1959,11 +1959,20 @@ test('the links import goes through classifySourceRow, never a raw line', () => 
   const at = lf.indexOf('export function parseLinksFile(');
   assert.ok(at > 0, 'parseLinksFile is gone');
   const body = lf.slice(at, lf.indexOf('\n}\n', at));
-  assert.match(body, /parseSourceRows\(parseCsv\(/,
-    'parseLinksFile no longer tokenizes with parseCsv + parseSourceRows — the grammar was re-implemented');
+  // v1.0.93 DELIBERATE re-anchor: the composition split in two when lists gained PROFILE
+  // SECTIONS — parseLinksFile tokenizes the whole text with parseCsv (sections must be found
+  // on tokenized rows, or a quoted title spanning a newline would cut a section in half) and
+  // every group of rows is classified by planRows → parseSourceRows. The RULE is unchanged:
+  // one tokenizer, one classifier, no hand-rolled split. Both halves are pinned.
+  assert.match(body, /parseCsv\(s\)/,
+    'parseLinksFile no longer tokenizes with parseCsv — the grammar was re-implemented');
+  assert.match(body, /planRows\(rows, max\)/, 'a section no longer goes through planRows');
+  const pr = lf.slice(lf.indexOf('function planRows('), lf.indexOf('\n}\n', lf.indexOf('function planRows(')));
+  assert.match(pr, /parseSourceRows\(rows\)/,
+    'planRows no longer classifies with parseSourceRows — the grammar was re-implemented');
   // and it must refuse an unreadable body BEFORE it can read as empty
   const htmlAt = body.indexOf('looksLikeHtml(');
-  const parseAt = body.indexOf('parseSourceRows(');
+  const parseAt = body.indexOf('parseCsv(');
   assert.ok(htmlAt > 0 && htmlAt < parseAt,
     'looksLikeHtml must run BEFORE parsing, or a saved permission page reads as "0 links"');
   assert.doesNotMatch(lf, /split\(\s*\/\[\\t,\]/, 'a hand-rolled delimiter split is back');
@@ -2143,10 +2152,10 @@ test('the export WRITES the file before it shares it, and shares the FILE first 
   // hides Android/data from the Files app. Sharing the list as TEXT is the last rung —
   // EXTRA_TEXT is a Binder payload receivers truncate, and a 400-link message is not a
   // file the other device can import.
-  const app = MODULES.get('www/js/app.js');
-  const at = app.indexOf('async function linksExport(');
-  assert.ok(at > 0, 'linksExport is gone');
-  const body = app.slice(at, app.indexOf('\nlet lastLinksExportText', at));
+  // v1.0.93: re-anchored on the function's own braces — its old end anchor
+  // (`let lastLinksExportText`, the share-as-text fallback's buffer) is gone with that
+  // fallback, and an anchor that disappears makes the slice run to the end of app.js.
+  const body = fnSlice(CODE.get('www/js/app.js'), 'async function linksExport(');
   const write = body.indexOf('fsWriteTextExternal(');
   const shareF = body.indexOf('shareFile(');
   assert.ok(write > 0, 'the export no longer writes a file');
@@ -2154,6 +2163,9 @@ test('the export WRITES the file before it shares it, and shares the FILE first 
   assert.ok(!body.includes('shareText('), 'shareText must not be a rung of the export itself');
   // the empty library must be refused, not exported as a blank file
   assert.match(body, /delivery: 'nothing'/, 'an empty library must be named, not exported as an empty file');
+  // v1.0.93: under the kiosk lock the share sheet CANNOT open — the export must say so
+  // (shareFile answers 'locked') instead of folding it into a generic failure
+  assert.match(body, /shared === 'locked' \? 'locked'/, 'the kiosk-lock refusal is no longer its own rung');
 });
 
 test('the native shareFile exists in BOTH java copies and its FileProvider path is declared', () => {
@@ -2179,6 +2191,116 @@ test('the native shareFile exists in BOTH java copies and its FileProvider path 
   }
 });
 
+test('the links COPY goes to the clipboard, never through a share sheet (v1.0.93)', () => {
+  // THE FIELD BUG: "📨 שליחה כטקסט" opened a share chooser and reported "נפתחה חלונית
+  // שיתוף" the moment startActivity returned — and over a pinned screen (the kiosk lock)
+  // Android drops that window silently. The parent pressed a button and nothing happened.
+  // A copy opens no window, and a failed copy is SAID (the list is shown to copy by hand).
+  const app = CODE.get('www/js/app.js');
+  const copy = fnSlice(app, 'async function linksCopy(');
+  assert.match(copy, /copyText\(built\.text/, 'the copy no longer copies the list text');
+  assert.ok(!/shareText\(|shareFile\(/.test(copy), 'the copy opens a share sheet again');
+  assert.match(copy, /buildLinksExport\(list\)/, 'the copy builds its own list — it must be the export\'s text');
+  assert.match(copy, /if \(out\.shown\) showLinksCopyBox\(built\.text\)/, 'a failed copy no longer shows the list');
+  // ONE builder for both, and every profile collected from its OWN scopes — a builder that
+  // read activeProfileId would export the open child's list once per ticked profile
+  const exp = fnSlice(app, 'async function linksExport(');
+  assert.match(exp, /buildLinksExport\(list\)/, 'the export no longer shares the copy\'s builder');
+  const build = fnSlice(app, 'async function buildLinksExport(');
+  assert.match(build, /collectLinksExport\(prof\.id\)/, 'each profile must be read from its own scopes');
+  assert.match(build, /serializeLinksExport\(/, 'the builder no longer writes the sectioned format');
+  assert.doesNotMatch(app, /collectLinksExport\(activeProfileId\)/, 'an export reads only the open profile again');
+  // the selection is the pure rule's, and the panel renders the picker
+  assert.match(fnSlice(app, 'async function linksExportProfiles('), /linksExportSelection\(/,
+    'the profile selection no longer goes through the pure rule');
+  assert.match(fnSlice(app, 'async function refreshSourcesPanel('), /refreshLinksProfiles\(/,
+    'the profile picker is never rendered');
+  // the hidden share-as-text fallback is gone, and the copy button is always on screen
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  assert.ok(!html.includes('links-share-text') && !app.includes('links-share-text'), 'the share-as-text button is back');
+  const btn = html.match(/<button id="links-copy"[^>]*>/);
+  assert.ok(btn, 'the copy button is gone');
+  assert.doesNotMatch(btn[0], /\bhidden\b/, 'the copy button must always be visible — it is not a fallback');
+});
+
+test('a multi-profile import writes each part into ITS OWN profile\'s library (v1.0.93)', () => {
+  // applyLinksPlan falls back to the PERSONAL scope when a profile has no sources record —
+  // and a profile created by the import (or never opened) has none. Subscriptions written
+  // there sit under a scope the library never reads: the import "succeeds" and the child's
+  // folder stays empty. Every target gets a real record first, through the ONE mint site.
+  const body = fnSlice(CODE.get('www/js/app.js'), 'async function linksImportFromText(');
+  const ensure = body.indexOf('ensureSourcesFor(t.profileId)');
+  const apply = body.indexOf('applyLinksPlan(t.profileId');
+  assert.ok(ensure > 0, 'a target profile is written without a sources record');
+  assert.ok(apply > ensure, 'each part must be applied to ITS target, after that target has a library');
+  assert.doesNotMatch(body, /applyLinksPlan\(activeProfileId/, 'the import writes every part into the open profile again');
+  // the denied question checks each target against its OWN tombstones
+  assert.match(body, /loadDenySet\(t\.scope\)/, 'the denied check reads the wrong profile\'s tombstones');
+  assert.match(body, /loadDenySet\(db\.profScope\(t\.profileId\)\)/, 'the personal-scope tombstones are no longer checked');
+});
+
+test('the copy-by-hand box is SELECTABLE, and replaces the modal nobody could copy from (v1.0.93)', () => {
+  // <body> sets user-select:none and a READONLY textarea inherits it — so the old "shown for
+  // manual copy" rung (a modal) displayed the list and offered no way to take it.
+  const css = readFileSync(join(ROOT, 'www', 'css', 'styles.css'), 'utf8');
+  const rule = css.match(/\.links-copy\s*\{([^}]*)\}/);
+  assert.ok(rule, 'the .links-copy rule is gone');
+  assert.match(rule[1], /(^|[^-])user-select:\s*text/, 'the copy box is not selectable');
+  assert.match(rule[1], /-webkit-user-select:\s*text/, 'older WebViews need the prefixed property');
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  assert.match(html, /<textarea id="links-copy-text" class="[^"]*\blinks-copy\b[^"]*"[^>]*readonly/,
+    'the copy box lost its class or became editable');
+  assert.doesNotMatch(fnSlice(CODE.get('www/js/app.js'), 'async function linksExport('), /alertKid\(/,
+    'the export shows the list in a modal again — its text cannot be selected');
+});
+
+test('the export file path is DECODED before the native share opens it (v1.0.93)', () => {
+  // Filesystem.writeFile answers Uri.fromFile(..).toString(): the Hebrew profile name in the
+  // file name arrives percent-encoded, `new File(path)` does not exist, and the share sheet
+  // never opened — on almost every profile in this Hebrew app.
+  const w = fnSlice(CODE.get('www/js/platform.js'), 'export async function fsWriteTextExternal(');
+  assert.match(w, /return fileUriToPath\(/, 'fsWriteTextExternal hands back the encoded URI again');
+  assert.match(fnSlice(CODE.get('www/js/platform.js'), 'export function fileUriToPath('), /decodeURIComponent\(/,
+    'fileUriToPath no longer decodes');
+  // the native side keeps a backstop for an older JS bundle
+  const java = readFileSync(join(ROOT, 'android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java'), 'utf8');
+  const at = java.indexOf('public void shareFile(PluginCall call)');
+  const body = java.slice(at, java.indexOf('\n    }\n', java.indexOf('try {', at)));
+  assert.match(body, /new File\(Uri\.decode\(path\)\)/, 'shareFile lost its decode backstop');
+});
+
+test('the native share REFUSES under the kiosk lock, and the native copy exists (v1.0.93)', () => {
+  // Judged on ONE copy: the byte-parity assert makes it both.
+  const raw = readFileSync(join(ROOT, 'android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java'), 'utf8');
+  const java = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const method = (sig) => {
+    const at = java.indexOf(sig);
+    assert.ok(at > 0, `${sig} is gone`);
+    // brace-balanced, so a later method's body can never satisfy this one's assertions
+    let depth = 0;
+    for (let i = java.indexOf('{', at); i < java.length; i++) {
+      if (java[i] === '{') depth += 1;
+      else if (java[i] === '}' && --depth === 0) return java.slice(at, i + 1);
+    }
+    return java.slice(at);
+  };
+  const refuse = method('private boolean refuseUnderLockTask(PluginCall call)');
+  assert.match(refuse, /inLockTask\(\)/, 'the refusal no longer asks whether the screen is pinned');
+  assert.match(refuse, /reject\("locked", "LOCKED"\)/, 'the refusal lost the code the JS side reads');
+  assert.doesNotMatch(refuse, /stopLockTask|unlockTask/, 'never unpin to share — it raises the device keyguard (v1.0.36)');
+  for (const sig of ['public void shareText(PluginCall call)', 'public void shareFile(PluginCall call)']) {
+    const body = method(sig);
+    const r = body.indexOf('refuseUnderLockTask(call)');
+    assert.ok(r > 0, `${sig}: no kiosk-lock refusal — it announces a window Android will not show`);
+    assert.ok(r < body.indexOf('startActivity('), `${sig}: the refusal must come BEFORE startActivity`);
+  }
+  const copy = method('public void copyText(PluginCall call)');
+  assert.match(copy, /setPrimaryClip\(ClipData\.newPlainText\(/, 'copyText no longer writes a plain-text clip');
+  assert.match(copy, /runOnUiThread\(/, 'copyText left the UI thread — the clipboard service needs a Looper on old APIs');
+  assert.match(copy, /catch \(Exception e\)[\s\S]*?call\.reject\(/, 'a failed copy must be REPORTED, not swallowed');
+  assert.doesNotMatch(copy, /getPrimaryClip|getText\(\)/, 'never read the clip back — Android 12+ toasts "pasted from your clipboard"');
+});
+
 test('a links import cannot mint a duplicate profile name (v1.0.38)', () => {
   // A PROFILE NAME IS UNIQUE PER GOOGLE ACCOUNT, NOT PER DEVICE (v1.0.22): two devices each
   // creating "נועם" splits that child's gift progress and personal videos while the parent
@@ -2186,14 +2308,36 @@ test('a links import cannot mint a duplicate profile name (v1.0.38)', () => {
   // a NEW way to mint one and must not be the path that skips the check.
   const app = MODULES.get('www/js/app.js');
   assert.match(app, /async function profileNameClash\(/, 'the shared name gate is gone');
-  const gate = app.slice(app.indexOf('async function profileNameClash('));
-  assert.match(gate.slice(0, 900), /profileNameConflict\(/, 'the gate no longer uses the pure conflict rule');
-  assert.match(gate.slice(0, 900), /pullDrive\(/, 'the gate no longer pulls first — a peer name would be invisible');
-  const at = app.indexOf('async function linksImportFromText(');
-  const body = app.slice(at, app.indexOf('\n}\n', at));
+  // v1.0.93: anchored on the functions' own braces. The pull half moved into
+  // pullPeerProfiles (shared with the multi-profile import), and the old 900-char window
+  // only kept passing because that helper happened to sit right below the gate.
+  const gate = fnSlice(CODE.get('www/js/app.js'), 'async function profileNameClash(');
+  assert.match(gate, /profileNameConflict\(/, 'the gate no longer uses the pure conflict rule');
+  assert.match(gate, /pullPeerProfiles\(/, 'the gate no longer pulls first — a peer name would be invisible');
+  const pull = fnSlice(CODE.get('www/js/app.js'), 'async function pullPeerProfiles(');
+  assert.match(pull, /pullDrive\(/, 'pullPeerProfiles no longer pulls — a peer name would be invisible');
+  assert.ok(pull.indexOf('merged = await getProfiles()') > pull.indexOf('pullDrive('),
+    'the merged list must be read AFTER the pull, or it is the stale local one');
+  const body = fnSlice(CODE.get('www/js/app.js'), 'async function linksImportFromText(');
   assert.match(body, /profileNameClash\(/, 'the create-a-profile branch skips the uniqueness gate');
   assert.ok(body.indexOf('profileNameClash(') < body.indexOf('createProfile('),
     'the name is checked AFTER the profile is created');
+  // EVERY createProfile in the importer — the v1.0.93 per-profile branch mints several —
+  // must have a name gate (the clash check or the pull) between it and the previous one.
+  let from = 0;
+  for (let i = body.indexOf('createProfile('); i > 0; i = body.indexOf('createProfile(', i + 1)) {
+    const span = body.slice(from, i);
+    assert.ok(/profileNameClash\(|pullPeerProfiles\(/.test(span),
+      `a createProfile at offset ${i} in linksImportFromText has no name gate before it`);
+    from = i + 1;
+  }
+  // …and the per-profile branch PULLS whenever a name would be minted, then plans (and asks)
+  // on the MERGED list — so a sibling on another device is imported into, not minted twice
+  assert.match(body, /\.some\(\(t\) => t\.create\)\)\s*\{\s*list = \(await pullPeerProfiles\(/,
+    'a missing name no longer triggers the pull — a sibling on another device would be minted twice');
+  assert.match(body, /\.merged;[\s\S]*?const planned = lf\.matchSectionTargets\(\{[^}]*profiles: list/,
+    'the sections are matched against the pre-pull list — a sibling on another device would be minted twice');
+  assert.match(body, /targets = planned\.map\(/, 'the profiles created are not the ones the parent was shown');
   // and createNewProfile must share it rather than keep a private copy
   const cn = app.slice(app.indexOf('async function createNewProfile('), app.indexOf('async function activateProfile('));
   assert.match(cn, /profileNameClash\(/, 'createNewProfile grew a private copy of the gate again');
@@ -2256,9 +2400,16 @@ test('ensureSources mints a PROVISIONAL scope that cannot corrupt the backup map
   // corrupted a family's backup so every device (even a fresh reinstall) showed empty profiles
   // over a full database (field-reported). Comment-stripped, or this guard trips on its own
   // explanation. The merge-layer half is pinned by a gdrive.test.mjs unit test.
-  const src = fnSlice(CODE.get('www/js/app.js'), 'async function ensureSources(');
-  assert.ok(src, 'ensureSources is gone — re-anchor this guard');
-  assert.match(src, /libraryId: 'lib:p:' \+ activeProfileId/, 'ensureSources no longer mints the lib:p: default');
+  // v1.0.93 DELIBERATE re-anchor: the mint moved into ensureSourcesFor(profileId), because
+  // a multi-profile links import writes into profiles that are not open. ensureSources must
+  // DELEGATE to it — one mint site, so the rule below cannot hold in one door and be
+  // forgotten in a second (the v1.0.82 lesson).
+  const wrap = fnSlice(CODE.get('www/js/app.js'), 'async function ensureSources(');
+  assert.match(wrap, /ensureSourcesFor\(activeProfileId\)/, 'ensureSources no longer delegates to the one mint site');
+  assert.doesNotMatch(wrap, /putSources\(/, 'ensureSources grew a second, private mint');
+  const src = fnSlice(CODE.get('www/js/app.js'), 'async function ensureSourcesFor(');
+  assert.ok(src, 'ensureSourcesFor is gone — re-anchor this guard');
+  assert.match(src, /libraryId: 'lib:p:' \+ profileId/, 'ensureSourcesFor no longer mints the lib:p: default');
   assert.match(src, /updatedAt: 0\b/, 'the provisional mint no longer uses updatedAt 0 — it can win LWW and corrupt the backup map (v1.0.81)');
   assert.doesNotMatch(src, /updatedAt: Date\.now\(\)/, 'the provisional mint uses Date.now() again — it will overwrite the real mapping on a signed-out launch');
 });

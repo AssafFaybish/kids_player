@@ -273,6 +273,85 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.93 — **THE LINKS LIST CAN BE COPIED AS TEXT, AND IT CAN COVER SEVERAL PROFILES**
+  (field report: "כפתור שליחה כטקסט לא מגיב ולא מופיע שום דבר … צריך שהכפתור יעתיק … וגם לבחור
+  איזה פרופיל או מספר פרופילים לייצא"). Full record: [docs/V1038.md](docs/V1038.md) §v1.0.93.
+  - ⚠️ **TWO DEFECTS WERE BEHIND "NOTHING HAPPENS", AND THE FIRST IS WHY THE BUTTON EXISTED AT
+    ALL.** `Filesystem.writeFile` answers `Uri.fromFile(file).toString()`, which PERCENT-ENCODES
+    every non-ASCII character — and the export's file name carries the (Hebrew) profile name.
+    `fsWriteTextExternal` only stripped `file://`, so the native `shareFile` got `…%D7%A0…txt`,
+    `new File(path).exists()` was false, the share sheet NEVER opened for a Hebrew profile, and
+    the parent was told "לא נמצאה אפליקציה לשיתוף" — which revealed the hidden text fallback.
+    `platform.fileUriToPath` decodes; the native side decodes again (`Uri.decode`) as a backstop.
+  - ⚠️ **A SHARE OVER A PINNED SCREEN "SUCCEEDS" AND SHOWS NOTHING.** Android silently drops a
+    new task over lock-task mode (the v1.0.36 installer lesson), so the text share resolved and
+    the JS side announced "נפתחה חלונית שיתוף". Both native share methods now REFUSE first
+    (`refuseUnderLockTask` → `reject("locked", "LOCKED")`), `shareFile` answers `'locked'`, the
+    export says the device is locked, and `shareText` (incl. "שיתוף האפליקציה") COPIES instead.
+    **Never unpin to share** — guard-pinned (unpinning raises the device keyguard).
+  - **"📋 העתקת הרשימה" IS ALWAYS ON SCREEN AND COPIES THE FILE'S OWN TEXT** (user decision
+    2026-10-05: same text as the file, `#` header included, so a paste into the import box on
+    another device is identical to importing the file). `platform.copyText`: native
+    `KidsNative.copyText` (ClipboardManager on the UI thread; no permission; no window, so the
+    kiosk cannot swallow it; a too-large clip THROWS and is reported; it never reads the clip
+    back — Android 12+ would toast "pasted from your clipboard") → async Clipboard API →
+    `execCommand('copy')`. A failed copy is SAID and shows the list in a **selectable** box:
+    the old "shown" rung was a modal, and `<body>` sets `user-select:none`, which a READONLY
+    textarea inherits — it displayed the list and offered no way to take it.
+  - **A LINK IS FOLLOWED BY ` ,`** (space BEFORE the first comma): linkifiers treat `,` as part
+    of a URL path, so `…/UC…,קוקומלון,auto` was one broken link in WhatsApp. BEFORE, never after:
+    `parseCsv` opens a quote only at a field's first character, so `link, "a, b"` splits a quoted
+    title (measured). Every older app reads it unchanged — fields are trimmed. The link itself is
+    now quoted when it carries a comma (a direct-file URL used to split its own line).
+  - **SEVERAL PROFILES = ONE SECTION EACH** (user decision). A picker of profile chips above the
+    buttons — hidden with one profile, the open one pre-ticked, session-local (never synced,
+    re-seeded when the parent screen belongs to another profile), the selection decided by pure
+    `plan.linksExportSelection` (nothing ticked is REFUSED, never a silent "everyone"/"the open
+    one"). Pure `linksfile.serializeLinksExport`: ONE profile with content = the single-profile
+    file byte-for-byte; two or more = one header with NO profile name + `# ===== פרופיל: X =====`
+    per section. ⚠️ **THE `=====` IS THE COMPATIBILITY MECHANISM**: an older app's
+    `profileNameFromLines` regex never matches it, so it cannot offer "a new profile named X"
+    holding every child's content — it imports the whole list into the profile it is told to.
+    An empty profile gets no section (it would mint an empty profile on import) and is NAMED.
+    Each profile is collected from ITS OWN scopes (`collectLinksExport(prof.id)` — guard-pinned;
+    reading the open profile would export one child's list N times).
+  - **IMPORT OF A MULTI-PROFILE LIST ASKS ONCE** (`plan.linksSectionsConfirm`): every section to
+    the profile of the same NAME (`linksfile.matchSectionTargets`, the profileNameExists
+    comparison), or everything into the open profile (the deduplicated union), or nothing. ONE
+    unified `linksImportFromText` over a list of targets — still exactly one denied question
+    (each target against its OWN tombstones) and one `refreshAfterAdd` (the open profile's; the
+    sync runs per profile, so another profile's channels fill when it is entered, and
+    `linksSectionsOutcome` says so). **PULL BEFORE MINTING** (`pullPeerProfiles`, the extracted
+    pull half of `profileNameClash`): a sibling that exists only on another device is imported
+    INTO, never created twice (v1.0.22). New profiles are created, NOT activated. A single-
+    section list (every pre-v1.0.93 file) takes the old dialog, unchanged.
+  - ⚠️ **`ensureSources` BECAME `ensureSourcesFor(profileId)`** — the ONE provisional mint
+    (`lib:p:<id>`, `updatedAt: 0`, the v1.0.81 rule), with `ensureSources` delegating. A profile
+    never opened has no sources record, and `applyLinksPlan`'s fallback is the PERSONAL scope —
+    subscriptions written there sit where the library never reads. The v1.0.81 guard was
+    re-anchored deliberately and now also bans a second, private mint.
+  - Also fixed: the export's "N לינקים" counted every file TWICE (`files` ⊂ `videos`, and the sum
+    added both); `#links-msg` moved directly under the buttons (below the open paste box it sat
+    off-screen on a phone).
+  - **KNOWN BOUND** (user decision: later, separately): a Drive folder still exports one line
+    per FILE — a 751-song collection is ~75K characters and WhatsApp cuts at ~65K — so the copy
+    warns past `LINKS_CHAT_MAX_CHARS` (60000). Exporting a Drive folder as ONE link is its own
+    future change.
+  - 24 unit tests (18 for the links format/sections/round trip and the sentences; 6 for
+    `platform.copyText`/`fileUriToPath`/the lock refusal in the new `test/platform.test.mjs`) +
+    5 invariants guards and 4 re-anchored ones; **every new guard proven red on a planted regression (21 plants)**,
+    reverted with `git restore` on a committed checkpoint. Java compiles (the class carries
+    `copyText`/`refuseUnderLockTask`). **Browser-verified end to end through the real PIN gate**:
+    the picker (2 → 3 chips after an import), one-profile copy (the `# פרופיל:` header, ` ,`,
+    quoted titles), two-profile copy (two sections, each child's OWN playlist and video), the
+    failed copy showing the list fully selected with `user-select:text` under a `none` body, the
+    export's four native rungs with stubbed plugins (the share received the DECODED Hebrew path;
+    `locked` and a generic failure each with their own sentence), the per-profile import
+    creating דני WITHOUT switching to it (`lib:p:` + `updatedAt 0`, the channel's auto flag,
+    nothing in the personal scope), the merge answer creating nobody and deduplicating, cancel
+    writing nothing, and an old single-profile file getting the old dialog. **The real
+    clipboard, the share sheet and the kiosk refusal are DEVICE checklist items.**
+
 - v1.0.92 — **A HEADSET'S / HANDS-FREE'S FORWARD AND BACK KEYS CHANGE VIDEO** (user request:
   "בנוסף להשהייה או המשך … גם לדלג לסרטון הבא או לקודם על ידי לחיצה על המקש המתאים קדימה או
   אחורה בדיבורית" — the v1.0.88 session gave that button pause/resume; this is the other half).
