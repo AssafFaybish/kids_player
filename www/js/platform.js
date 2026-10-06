@@ -273,9 +273,26 @@ export async function fsWriteTextExternal(path, text) {
     const res = await FS.writeFile({
       path, directory: 'EXTERNAL', data: String(text ?? ''), encoding: 'utf8', recursive: true
     });
-    const uri = (res && (res.uri || res.path)) || '';
-    return uri ? String(uri).replace(/^file:\/\//, '') : null;
+    return fileUriToPath((res && (res.uri || res.path)) || '');
   } catch { return null; }
+}
+
+/**
+ * v1.0.93 — PURE: a `file://` URI as the filesystem path the native side opens.
+ *
+ * THE FIELD BUG: Filesystem.writeFile answers `Uri.fromFile(file).toString()`, which
+ * PERCENT-ENCODES every non-ASCII character — and an export file is named after the
+ * profile, which in this app is Hebrew. Stripping `file://` alone handed shareFile
+ * `…/kids-player-links-%D7%A0%D7%95…txt`; `new File(path).exists()` was false, the share
+ * sheet never opened, and the parent was told no app could share it. Decoded HERE, and the
+ * native side decodes again as a backstop. A malformed escape keeps the raw string rather
+ * than throwing (a literal '%' cannot reach us — fromFile encodes it as %25).
+ * -> absolute path | null
+ */
+export function fileUriToPath(uri) {
+  const raw = String(uri ?? '').replace(/^file:\/\//, '');
+  if (!raw) return null;
+  try { return decodeURIComponent(raw); } catch { return raw; }
 }
 
 /**
@@ -287,7 +304,57 @@ export async function fsWriteTextExternal(path, text) {
 export async function shareFile(path, { mimeType = 'text/plain', subject = '' } = {}) {
   const kids = plugin('KidsNative');
   if (!kids || !kids.shareFile || !path) return 'none';
-  try { await kids.shareFile({ path, mimeType, subject }); return 'native'; } catch { return 'none'; }
+  try { await kids.shareFile({ path, mimeType, subject }); return 'native'; }
+  catch (e) { return isLockedRefusal(e) ? 'locked' : 'none'; }
+}
+
+/**
+ * v1.0.93 — did the native share refuse because the screen is PINNED (the kiosk lock)?
+ * Android silently drops a new task over lock-task mode — startActivity "succeeds" and
+ * nothing appears — so the native side checks first and refuses with code LOCKED, and the
+ * caller can say WHY nothing opened instead of announcing a share window that never came.
+ */
+function isLockedRefusal(e) {
+  return !!e && (e.code === 'LOCKED' || /\blocked\b/.test(String(e.message || '')));
+}
+
+/**
+ * v1.0.93 — put plain text on the system clipboard. The links list's "📋 העתקת הרשימה":
+ * the parent pastes it into WhatsApp or a mail, and the other device pastes it into the
+ * import box.
+ *
+ * NATIVE FIRST (KidsNative.copyText → ClipboardManager): it needs no permission, works on
+ * every WebView version, keeps working under the kiosk lock (no window opens), and it can
+ * FAIL OUT LOUD — a clip too large for the system is an exception, not a silent no-op.
+ * The browser rungs are for the dev preview and an APK built before the method existed:
+ * the async Clipboard API, then the legacy execCommand('copy') on a hidden textarea.
+ * -> 'native' | 'web' | 'legacy' | 'none'. Never throws.
+ */
+export async function copyText(text, label = '') {
+  const t = String(text ?? '');
+  if (!t) return 'none';
+  const kids = plugin('KidsNative');
+  if (kids && kids.copyText) {
+    try { await kids.copyText({ text: t, label: String(label || '') }); return 'native'; } catch {}
+  }
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(t);
+      return 'web';
+    }
+  } catch { /* not focused / not permitted — try the legacy path */ }
+  try {
+    if (typeof document === 'undefined' || !document.execCommand || !document.body) return 'none';
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy') === true; } finally { ta.remove(); }
+    return ok ? 'legacy' : 'none';
+  } catch { return 'none'; }
 }
 
 /**
@@ -390,14 +457,19 @@ export function onBackButton(fn) {
 export async function shareText(text, subject = '') {
   const kids = plugin('KidsNative');
   if (kids && kids.shareText) {
-    try { await kids.shareText({ text, subject }); return 'native'; } catch {}
+    try { await kids.shareText({ text, subject }); return 'native'; }
+    catch (e) {
+      // v1.0.93 — under the kiosk lock no share window can open (see isLockedRefusal), and
+      // the Web Share rung below does not exist in the WebView: go straight to the copy, so
+      // "share" still hands the parent the text instead of doing nothing.
+      if (isLockedRefusal(e)) return (await copyText(text, subject)) === 'none' ? 'none' : 'clipboard';
+    }
   }
   if (typeof navigator !== 'undefined' && navigator.share) {
     try { await navigator.share({ text }); } catch { /* user cancelled */ }
     return 'web';
   }
-  try { await navigator.clipboard.writeText(text); return 'clipboard'; } catch {}
-  return 'none';
+  return (await copyText(text, subject)) === 'none' ? 'none' : 'clipboard';
 }
 
 /**

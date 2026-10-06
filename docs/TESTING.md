@@ -410,6 +410,23 @@ for anything destructive, and purge it afterwards.
       already exists on the account.
 - [ ] **Android TV**: no file picker exists, so the paste box must be OPEN by default and
       the whole flow must work from the remote.
+- [ ] **v1.0.93 — the Hebrew file name**: on a profile with a HEBREW name, **📤 ייצוא לקובץ**
+      must open Android's share sheet (before v1.0.93 the percent-encoded path made it fail
+      every time and the message blamed "no app").
+- [ ] **v1.0.93 — 📋 העתקת הרשימה**: the message says how many links were copied; long-press
+      in WhatsApp → הדבק pastes the whole list; tapping a CHANNEL link in the chat opens that
+      channel (the ` ,` keeps the URL clean). On Android 13+ the system's own "copied" preview
+      also appears.
+- [ ] **v1.0.93 — under the kiosk lock** (exit lock ON, screen pinned): 📤 must SAY the
+      device is locked and point at 📋 — never "נפתחה חלונית שיתוף" — and 📋 must still copy.
+      The pin must NOT be released by either button. "שיתוף האפליקציה" (About) copies its
+      message instead of doing nothing.
+- [ ] **v1.0.93 — several profiles**: tick two children → 📋 → paste on another tablet. The
+      confirm names both profiles and which will be CREATED; "כל רשימה לפרופיל שלה" creates the
+      missing one WITHOUT switching to it, and its channels fill when it is entered;
+      "הכול ל…" puts everything into the open profile and creates nothing. Repeat with the
+      same Google account on both tablets: an existing sibling must be imported into, never
+      duplicated.
 - [ ] Delete a video, then paste its link again: the ♻️ dialog must appear, "לא" must leave
       it deleted, and "החזרה" must bring it back and SURVIVE the next launch (that is the
       tombstone revocation reaching Drive).

@@ -19,11 +19,16 @@ package com.assaf.kidsplayer;
 //      DEVICE_CREDENTIAL — the FAST path back in for a parent who forgot the app's
 //      code. Reports instead of throwing; the 24-hour wait in recovery.js is the
 //      floor under it, because a child's tablet often has no lock screen at all.
+//   7) copyText (v1.0.93): ClipboardManager.setPrimaryClip — the links list's
+//      "📋 העתקת הרשימה". No permission, no new window (so it works under the kiosk
+//      lock, where every share sheet is silently refused), and a failure is reported.
 //
 // Canonical copy: native-reference/KidsNativePlugin.java — keep both in sync.
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.pm.PackageManager;
 import android.content.Context;
 import android.content.Intent;
@@ -257,11 +262,25 @@ public class KidsNativePlugin extends Plugin {
 
     /* ---------------- share sheet (v1.0.5) ---------------- */
 
+    /**
+     * v1.0.93 — the share chooser CANNOT appear over a pinned screen (the kiosk lock):
+     * Android silently drops a new task over lock-task mode, so startActivity "succeeds",
+     * nothing is shown, and the JS side used to announce "a share window opened". Refuse
+     * first, with a code the JS side reads, so it can say why — and offer the copy instead.
+     * Never unpin to share: stopLockTask raises the device keyguard (v1.0.36).
+     */
+    private boolean refuseUnderLockTask(PluginCall call) {
+        if (!inLockTask()) return false;
+        call.reject("locked", "LOCKED");
+        return true;
+    }
+
     /** Opens the system share chooser with plain text (link + explanation). */
     @PluginMethod
     public void shareText(PluginCall call) {
         String text = call.getString("text");
         if (text == null || text.isEmpty()) { call.reject("no-text"); return; }
+        if (refuseUnderLockTask(call)) return;
         String subject = call.getString("subject");
         try {
             Intent send = new Intent(Intent.ACTION_SEND);
@@ -294,8 +313,14 @@ public class KidsNativePlugin extends Plugin {
         String mimeType = call.getString("mimeType");
         if (mimeType == null || mimeType.isEmpty()) mimeType = "text/plain";
         String subject = call.getString("subject");
+        if (refuseUnderLockTask(call)) return;
         try {
             File f = new File(path);
+            // v1.0.93 — a PERCENT-ENCODED path (Filesystem.writeFile answers
+            // Uri.fromFile(..).toString(), which encodes the Hebrew profile name in the export's
+            // file name) never exists as typed. The JS side decodes it now; this is the backstop
+            // for an older JS bundle, and the reason the share sheet never opened in the field.
+            if (!f.exists()) f = new File(Uri.decode(path));
             if (!f.exists()) { call.reject("no-file"); return; }
             Context ctx = getContext();
             Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", f);
@@ -314,6 +339,40 @@ public class KidsNativePlugin extends Plugin {
             // list as text, then the clipboard), so reject rather than crash.
             call.reject("share-file-failed: " + e.getMessage());
         }
+    }
+
+    /* ---------------- clipboard (v1.0.93) ---------------- */
+
+    /**
+     * Put plain text on the system clipboard (the links list's "📋 העתקת הרשימה").
+     *
+     * Native rather than navigator.clipboard: it needs no permission, works on every
+     * WebView version, and — unlike a share sheet — opens no window, so the kiosk lock
+     * cannot swallow it. On the UI thread because getSystemService(CLIPBOARD_SERVICE) needs a
+     * Looper on the oldest supported APIs. A clip too large for the system throws
+     * (TransactionTooLargeException, rethrown from the system server) and is REPORTED, so the
+     * JS side shows the list to copy by hand instead of claiming it was copied.
+     * Never reads the clipboard back: on Android 12+ that pops a "pasted from your clipboard"
+     * toast over the parent's screen.
+     */
+    @PluginMethod
+    public void copyText(PluginCall call) {
+        String text = call.getString("text");
+        if (text == null || text.isEmpty()) { call.reject("no-text"); return; }
+        String label = call.getString("label");
+        final String clipLabel = label == null ? "" : label;
+        final Activity a = getActivity();
+        if (a == null) { call.reject("no-activity"); return; }
+        a.runOnUiThread(() -> {
+            try {
+                ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm == null) { call.reject("no-clipboard"); return; }
+                cm.setPrimaryClip(ClipData.newPlainText(clipLabel, text));
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("copy-failed: " + e.getMessage());
+            }
+        });
     }
 
     /* ---------------- notification permission (v1.0.64) ---------------- */

@@ -11,12 +11,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   LINKS_FILE_VERSION, parseSourceRows, linksFileHeader, profileNameFromLines,
-  canonicalLinkFor, serializeLinksFile, parseLinksFile, linksFileName
+  canonicalLinkFor, serializeLinksFile, parseLinksFile, linksFileName,
+  serializeLinksExport, sectionMarkerLine, sectionNameOf, matchSectionTargets
 } from '../www/js/linksfile.js';
+import { parseCsv } from '../www/js/csv.js';
 import {
   channelRowSubscription, manualVideoRecord, coveredBySubscription, deniedReAddPrompt,
   deniedRestorePrompt, linksImportConfirm, linksImportOutcome, linksExportOutcome,
-  planOrphanGC, LINKS_IMPORT_MAX, hebCount, hebCountF
+  planOrphanGC, LINKS_IMPORT_MAX, hebCount, hebCountF,
+  hebList, linksExportSelection, linksCopyOutcome, linksSectionsConfirm, linksSectionsOutcome,
+  LINKS_CHAT_MAX_CHARS
 } from '../www/js/plan.js';
 
 const CH_A = 'UCbCmjCuTUZos6Inko4u57UQ';
@@ -487,7 +491,7 @@ test('linksExportOutcome: EVERY rung says where the file is, and none shares a s
   const dir = 'Android/data/com.assaf.kidsplayer/files/exports/';
   const name = 'kids-player-links-נועם-2026-08-10.txt';
   const counts = { channels: 2, playlists: 0, videos: 3, files: 0 };
-  const rungs = ['native', 'file-only', 'download', 'clipboard', 'shown', 'nothing', 'none'];
+  const rungs = ['native', 'file-only', 'locked', 'download', 'clipboard', 'shown', 'nothing', 'no-selection', 'none'];
   const seen = new Set();
   for (const delivery of rungs) {
     const r = linksExportOutcome({ delivery, name, dir, counts });
@@ -495,13 +499,354 @@ test('linksExportOutcome: EVERY rung says where the file is, and none shares a s
     assert.ok(!seen.has(r.text), `${delivery}: shares a sentence with another rung`);
     seen.add(r.text);
     // the two rungs that actually produced a file on the device must name where it is
-    if (delivery === 'native' || delivery === 'file-only') {
+    if (delivery === 'native' || delivery === 'file-only' || delivery === 'locked') {
       assert.ok(r.text.includes(dir) && r.text.includes(name), `${delivery}: does not name the file`);
     }
   }
   assert.equal(linksExportOutcome({ delivery: 'nothing' }).ok, false);
+  assert.equal(linksExportOutcome({ delivery: 'no-selection' }).ok, false);
   assert.equal(linksExportOutcome({ delivery: 'native', name, dir, counts }).ok, true);
-  assert.equal(linksExportOutcome({ delivery: 'file-only', name, dir }).shareTextFallback, true);
   assert.match(linksExportOutcome({ delivery: 'native', name, dir, counts }).text, /5 לינקים/);
   assert.equal(typeof linksExportOutcome({}).text, 'string');
+  // v1.0.93 — the share sheet did not open: never "no app can share it" (the field cause
+  // was a percent-encoded Hebrew path), and the way out is the COPY button, named.
+  const fileOnly = linksExportOutcome({ delivery: 'file-only', name, dir }).text;
+  assert.doesNotMatch(fileOnly, /לא נמצאה אפליקציה/, 'file-only blames a missing app again');
+  assert.match(fileOnly, /📋 העתקת הרשימה/);
+  assert.equal(linksExportOutcome({ delivery: 'file-only', name, dir }).shareTextFallback, undefined,
+    'the share-as-text fallback is gone — the copy button is always there');
+  // the kiosk lock is SAID, not folded into a generic failure — and never "a window opened"
+  const locked = linksExportOutcome({ delivery: 'locked', name, dir }).text;
+  assert.match(locked, /נעול/);
+  assert.doesNotMatch(locked, /נפתחה חלונית/);
+});
+
+test('linksExportOutcome counts every link ONCE — a file is a video, not a second line (v1.0.93)', () => {
+  // `files` is a SUBSET of `videos` (serializeLinksFile counts a file in both), and the old
+  // sum added it on top: 3 channels + 2 Drive songs read "7 לינקים".
+  const r = linksExportOutcome({ delivery: 'native', name: 'x.txt', dir: 'd/', counts: { channels: 3, playlists: 0, videos: 2, files: 2 } });
+  assert.match(r.text, /5 לינקים/);
+  assert.doesNotMatch(r.text, /7 לינקים/);
+});
+
+/* ==================== v1.0.93 — clickable links, several profiles, the copy ==================== */
+
+const bodyOf = (lines) => lines.filter((l) => l && !l.startsWith('#'));
+
+test('a link is followed by a SPACE before its comma — it stays clickable in a chat (v1.0.93)', () => {
+  // Linkifiers treat ',' as part of a URL path: `…/channel/UC…,רחוב סומסום,auto` became ONE
+  // link to a channel that does not exist. The space ends the URL for every linkifier.
+  const out = serializeLinksFile({
+    subscriptions: [{ channelId: CH_A, autoApprove: true, titleOverride: 'רחוב סומסום' }, { channelId: CH_B }],
+    videos: [vid(VID_A, { title: 'פרפרים, חלק 2' }), vid(VID_B, { title: '' })]
+  });
+  const body = bodyOf(out.lines);
+  assert.ok(body.includes(`https://www.youtube.com/channel/${CH_A} ,רחוב סומסום,auto`), body.join('\n'));
+  // a line with nothing after the link carries no trailing space
+  assert.ok(body.includes(`https://www.youtube.com/channel/${CH_B}`), body.join('\n'));
+  assert.ok(body.includes(`https://www.youtube.com/watch?v=${VID_B}`), body.join('\n'));
+  for (const l of body) {
+    assert.match(l, /^\S+( ,|$)/, `the link must end at a space or the line end: ${l}`);
+  }
+  // the space goes BEFORE the comma: parseCsv opens a quote only at a field's first
+  // character, so a quoted title with a comma must still read back whole
+  assert.ok(body.includes(`https://www.youtube.com/watch?v=${VID_A} ,"פרפרים, חלק 2"`), body.join('\n'));
+  const back = parseLinksFile(out.text);
+  assert.equal(back.videos.find((v) => v.key === 'yt:' + VID_A).title, 'פרפרים, חלק 2');
+  assert.equal(back.channels.find((c) => c.channelRef.value === CH_A).flag, 'auto');
+  assert.equal(back.counts.invalid, 0);
+});
+
+test('a direct-file link that carries a comma is quoted and round-trips (v1.0.93)', () => {
+  // The link was the one field never quoted, so a comma in a file URL split its line.
+  const url = 'https://x.test/a,b.mp4';
+  const out = serializeLinksFile({
+    videos: [{ key: 'file:' + url, type: 'file', srcUrl: url, title: 'שיר', state: 'live', folderId: 'sheet', sortKey: 1 }]
+  });
+  const back = parseLinksFile(out.text);
+  assert.equal(back.counts.invalid, 0, bodyOf(out.lines).join('\n'));
+  assert.deepEqual(back.videos.map((v) => v.key), ['file:' + url]);
+  assert.equal(back.videos[0].title, 'שיר');
+});
+
+const famA = {
+  profileName: 'נועם',
+  subscriptions: [{ channelId: CH_A, autoApprove: true, titleOverride: 'רחוב סומסום' }],
+  videos: [vid(VID_A)]
+};
+const famB = {
+  profileName: 'מיכל',
+  subscriptions: [{ channelId: CH_A, autoApprove: false, titleOverride: 'רחוב סומסום' }, { channelId: PL_A, kind: 'playlist' }],
+  videos: [vid(VID_B)]
+};
+const AT = Date.parse('2026-10-05T09:00:00');
+
+test('serializeLinksExport: ONE profile is exactly the single-profile file (v1.0.93)', () => {
+  // byte-identical — so an older app reads it, and the import still offers "new profile X"
+  const one = serializeLinksExport({ profiles: [famA], exportedAt: AT, appVersion: '1.0.93' });
+  const file = serializeLinksFile({ ...famA, exportedAt: AT, appVersion: '1.0.93' });
+  assert.equal(one.text, file.text);
+  assert.equal(one.sections, 1);
+  assert.deepEqual(one.empty, []);
+  assert.deepEqual(one.profiles.map((x) => x.name), ['נועם']);
+  assert.equal(profileNameFromLines(one.lines), 'נועם');
+});
+
+test('serializeLinksExport: several profiles get a SECTION each, and no single-profile name (v1.0.93)', () => {
+  const two = serializeLinksExport({ profiles: [famA, famB], exportedAt: AT });
+  assert.equal(two.sections, 2);
+  assert.ok(two.lines.includes(sectionMarkerLine('נועם')));
+  assert.ok(two.lines.includes(sectionMarkerLine('מיכל')));
+  assert.ok(two.lines.indexOf(sectionMarkerLine('נועם')) < two.lines.indexOf(sectionMarkerLine('מיכל')),
+    'sections keep the order the parent sees the profiles in');
+  for (const l of two.lines) if (l.startsWith('#') || !l) continue; else assert.match(l, /^https:\/\//);
+  // AN OLDER APP must not read ONE profile name off a family list — it would offer a single
+  // new profile holding every child's content. Its regex never matches the section marker.
+  assert.equal(profileNameFromLines(two.lines), '');
+  assert.equal(profileNameFromLines(two.text), '');
+  // totals are the sum; the per-profile summary rides along for the outcome sentence
+  assert.equal(two.counts.channels, 2);
+  assert.equal(two.counts.playlists, 1);
+  assert.equal(two.counts.videos, 2);
+  assert.deepEqual(two.profiles.map((x) => x.name), ['נועם', 'מיכל']);
+  // deterministic: the same input is the same text
+  assert.equal(serializeLinksExport({ profiles: [famA, famB], exportedAt: AT }).text, two.text);
+});
+
+test('serializeLinksExport: a profile with NOTHING gets no section and is named (v1.0.93)', () => {
+  const empty = { profileName: 'דני', subscriptions: [], videos: [] };
+  const out = serializeLinksExport({ profiles: [famA, empty, famB], exportedAt: AT });
+  assert.equal(out.sections, 2);
+  assert.deepEqual(out.empty, ['דני']);
+  assert.ok(!out.lines.some((l) => sectionNameOf(l) === 'דני'), 'an empty section would mint an empty profile on import');
+  // one with content + one without ⇒ the SINGLE-profile shape, for the one with content
+  const solo = serializeLinksExport({ profiles: [empty, famB], exportedAt: AT });
+  assert.equal(solo.sections, 1);
+  assert.equal(solo.text, serializeLinksFile({ ...famB, exportedAt: AT }).text);
+  // nothing at all ⇒ zero counts, never a throw
+  const none = serializeLinksExport({ profiles: [empty], exportedAt: AT });
+  assert.equal(none.counts.channels + none.counts.playlists + none.counts.videos, 0);
+  assert.equal(serializeLinksExport({}).sections, 0);
+  assert.equal(serializeLinksExport({ profiles: [null, undefined] }).sections, 0);
+});
+
+test('sectionNameOf: only a real section marker, and a hostile name never becomes a profile (v1.0.93)', () => {
+  assert.equal(sectionNameOf(sectionMarkerLine('נועם')), 'נועם');
+  assert.equal(sectionNameOf('#=== profile: Dana ==='), 'Dana');
+  assert.equal(sectionNameOf('  # ===== פרופיל:   a   b   =====  '), 'a b');
+  assert.equal(sectionNameOf('# ===== פרופיל: x= ====='), 'x=');
+  assert.equal(sectionNameOf('# ===== פרופיל: ' + 'מ'.repeat(50) + ' ====='), 'מ'.repeat(20));
+  assert.equal(sectionNameOf('# ===== פרופיל: https://evil.test ====='), '', 'a link is not a name');
+  assert.equal(sectionNameOf('# ===== פרופיל: ====='), '');
+  // the SINGLE-profile marker and ordinary comments are not sections
+  assert.equal(sectionNameOf('# פרופיל: נועם'), null);
+  assert.equal(sectionNameOf('# הסרטונים שלי'), null);
+  assert.equal(sectionNameOf('https://www.youtube.com/watch?v=' + VID_A), null);
+  assert.equal(sectionNameOf(null), null);
+});
+
+test('MULTI-PROFILE ROUND TRIP: each section reads back as its own profile (v1.0.93)', () => {
+  const out = serializeLinksExport({ profiles: [famA, famB], exportedAt: AT });
+  const back = parseLinksFile(out.text);
+  assert.equal(back.ok, true);
+  assert.equal(back.profileName, '', 'a family list carries no single profile name');
+  assert.deepEqual(back.sections.map((x) => x.name), ['נועם', 'מיכל']);
+  const [a, b] = back.sections;
+  assert.deepEqual(a.channels.map((c) => c.channelRef.value), [CH_A]);
+  assert.equal(a.channels[0].flag, 'auto');
+  assert.deepEqual(a.videos.map((v) => v.key), ['yt:' + VID_A]);
+  assert.deepEqual(b.channels.map((c) => c.channelRef.value), [CH_A]);
+  assert.equal(b.channels[0].flag, '', 'each profile keeps its OWN auto/manual answer');
+  assert.deepEqual(b.playlists.map((p) => p.playlistId), [PL_A]);
+  assert.deepEqual(b.videos.map((v) => v.key), ['yt:' + VID_B]);
+  // the UNION ("everything into one profile") is deduplicated across sections
+  assert.deepEqual(back.channels.map((c) => c.channelRef.value), [CH_A]);
+  assert.equal(back.counts.total, 4, 'the shared channel counts once in the union');
+  assert.deepEqual(back.videos.map((v) => v.rowIndex), [0, 1], 'the union re-numbers line order');
+  assert.equal(back.counts.invalid, 0, 'a marker line must never read as an unrecognised line');
+});
+
+test('an OLD single-profile file is ONE section carrying its name — nothing changes for it (v1.0.93)', () => {
+  const file = serializeLinksFile({ ...famA, exportedAt: AT });
+  const back = parseLinksFile(file.text);
+  assert.equal(back.sections.length, 1);
+  assert.equal(back.sections[0].name, 'נועם');
+  assert.equal(back.profileName, 'נועם');
+  assert.deepEqual(back.sections[0].videos, back.videos, 'one section IS the whole plan');
+  assert.deepEqual(back.sections[0].channels, back.channels);
+  // a bare hand-typed list: one unnamed section
+  const bare = parseLinksFile('https://www.youtube.com/watch?v=' + VID_A + '\n');
+  assert.deepEqual(bare.sections.map((x) => x.name), ['']);
+});
+
+test('sections: stray lines, repeated names, a comma in a name, and a lone named section (v1.0.93)', () => {
+  const v = (id) => 'https://www.youtube.com/watch?v=' + id;
+  // lines above the first marker are the UNNAMED section; a repeated name merges
+  const text = [v(VID_A), sectionMarkerLine('נועם'), v(VID_B), sectionMarkerLine('נועם'), v(VID_A)].join('\n');
+  const back = parseLinksFile(text);
+  assert.deepEqual(back.sections.map((x) => x.name), ['', 'נועם']);
+  assert.deepEqual(back.sections[1].videos.map((x) => x.key), ['yt:' + VID_B, 'yt:' + VID_A]);
+  // a profile name may carry a COMMA — parseCsv splits the marker row; the name survives
+  const comma = parseLinksFile([sectionMarkerLine('נועם, הגדול'), v(VID_A), sectionMarkerLine('מיכל'), v(VID_B)].join('\n'));
+  assert.deepEqual(comma.sections.map((x) => x.name), ['נועם, הגדול', 'מיכל']);
+  // a marked list where only ONE section has links reads as that single profile, so the
+  // import offers "a new profile named …" exactly like an old single-profile file
+  const lone = parseLinksFile([sectionMarkerLine('נועם'), '# nothing here', sectionMarkerLine('מיכל'), v(VID_B)].join('\n'));
+  assert.deepEqual(lone.sections.map((x) => x.name), ['מיכל']);
+  assert.equal(lone.profileName, 'מיכל');
+});
+
+test('the import cap bounds every section AND the union (v1.0.93)', () => {
+  const ids = Array.from({ length: 6 }, (_, i) => 'abcdefghij' + String.fromCharCode(65 + i));
+  const v = (id) => 'https://www.youtube.com/watch?v=' + id;
+  const text = [sectionMarkerLine('א'), ...ids.slice(0, 4).map(v), sectionMarkerLine('ב'), ...ids.slice(2).map(v)].join('\n');
+  const back = parseLinksFile(text, { max: 3 });
+  for (const sec of back.sections) assert.ok(sec.counts.total <= 3, `${sec.name}: ${sec.counts.total}`);
+  assert.ok(back.counts.total <= 3);
+  assert.ok(back.counts.dropped > 0, 'what the cap refused is counted, never silent');
+});
+
+test('parseLinksFile stays TOTAL with section markers in it (v1.0.93)', () => {
+  for (const junk of [sectionMarkerLine(''), '# =====', '#=== profile: ===\n\n', sectionMarkerLine('x') + '\n"unclosed']) {
+    const r = parseLinksFile(junk);
+    assert.equal(typeof r.ok, 'boolean');
+    assert.ok(Array.isArray(r.sections));
+  }
+  assert.deepEqual(parseLinksFile('').sections, []);
+  assert.deepEqual(parseLinksFile('<html><body>x</body></html>').sections, []);
+});
+
+test('matchSectionTargets: the NAME is the identity, a missing one is CREATED (v1.0.93)', () => {
+  const sections = [{ name: 'נועם' }, { name: 'מיכל' }, { name: '' }, { name: '  דני  ' }];
+  const profiles = [{ id: 'p1', name: 'נועם' }, { id: 'p2', name: 'דני' }, null, { name: 'no id' }];
+  const t = matchSectionTargets({ sections, profiles, activeId: 'p9' });
+  assert.deepEqual(t.map((x) => [x.name, x.profileId, x.create]), [
+    ['נועם', 'p1', false],
+    ['מיכל', null, true],
+    ['', 'p9', false], // stray lines go to the OPEN profile
+    ['דני', 'p2', false] // whitespace-collapsed, like profileNameExists
+  ]);
+  assert.equal(t[0].section, sections[0]);
+  assert.deepEqual(matchSectionTargets({}), []);
+  assert.deepEqual(matchSectionTargets({ sections: [null], profiles: 'x' }), []);
+});
+
+/* ---------------- the plan.js sentences ---------------- */
+
+test('hebList joins names the way Hebrew prose does (v1.0.93)', () => {
+  assert.equal(hebList([]), '');
+  assert.equal(hebList(['נועם']), 'נועם');
+  assert.equal(hebList(['נועם', 'מיכל']), 'נועם ומיכל');
+  assert.equal(hebList(['נועם', 'מיכל', 'דני']), 'נועם, מיכל ודני');
+  assert.equal(hebList(['נועם', 'Dana']), 'נועם ו-Dana');
+  assert.equal(hebList([' ', null, 'א']), 'א');
+  assert.equal(hebList(null), '');
+});
+
+test('linksExportSelection: one profile needs no choice; otherwise exactly the ticked, in order (v1.0.93)', () => {
+  const ps = [{ id: 'a', name: 'א' }, { id: 'b', name: 'ב' }, { id: 'c', name: 'ג' }];
+  assert.deepEqual(linksExportSelection({ profiles: ps, selected: new Set(['c', 'a']) }), ['a', 'c']);
+  assert.deepEqual(linksExportSelection({ profiles: ps, selected: ['b'] }), ['b']);
+  assert.deepEqual(linksExportSelection({ profiles: ps, selected: new Set(['gone']) }), [],
+    'a deleted profile is not exported, and nothing ticked is NOT "everyone"');
+  assert.deepEqual(linksExportSelection({ profiles: ps, selected: null, activeId: 'a' }), [],
+    'nothing ticked is never a silent fallback to the open profile either');
+  assert.deepEqual(linksExportSelection({ profiles: [ps[1]], selected: new Set() }), ['b'],
+    'with ONE profile the picker is hidden and that profile is the answer');
+  assert.deepEqual(linksExportSelection({ profiles: [], activeId: 'z' }), ['z']);
+  assert.deepEqual(linksExportSelection({}), []);
+});
+
+test('linksCopyOutcome: says what was copied AND where to paste it, and warns before a chat cuts it (v1.0.93)', () => {
+  const counts = { channels: 3, playlists: 1, videos: 2, files: 2 };
+  const seen = new Set();
+  for (const how of ['native', 'none', 'no-selection', 'nothing']) {
+    const r = linksCopyOutcome({ how, counts, chars: 100 });
+    assert.ok(r.text && r.text.length > 10, how);
+    assert.ok(!seen.has(r.text), `${how}: shares a sentence`);
+    seen.add(r.text);
+  }
+  const ok = linksCopyOutcome({ how: 'native', counts, chars: 100 });
+  assert.equal(ok.ok, true);
+  assert.match(ok.text, /6 לינקים/, 'a file is one link, not two');
+  assert.match(ok.text, /הדבק/, 'the next step is part of the confirmation');
+  assert.equal(ok.long, false);
+  for (const how of ['web', 'legacy']) assert.equal(linksCopyOutcome({ how, counts }).ok, true, how);
+  assert.match(linksCopyOutcome({ how: 'native', counts: { videos: 1 } }).text, /לינק אחד/);
+  // past what a chat carries: still a success, with the warning — never a refusal
+  const long = linksCopyOutcome({ how: 'native', counts, chars: LINKS_CHAT_MAX_CHARS + 1 });
+  assert.equal(long.ok, true);
+  assert.equal(long.long, true);
+  assert.match(long.text, /וואטסאפ/);
+  assert.match(long.text, /60,001 תווים/);
+  // a failed copy SHOWS the list to copy by hand
+  const failed = linksCopyOutcome({ how: 'none', counts });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.shown, true);
+  // several profiles are named, and an empty one is said out loud
+  const fam = linksCopyOutcome({ how: 'native', counts, profiles: ['נועם', 'מיכל'], empty: ['דני'] });
+  assert.match(fam.text, /של נועם ומיכל/);
+  assert.match(fam.text, /דני/);
+  assert.doesNotMatch(linksCopyOutcome({ how: 'native', counts, profiles: ['נועם'] }).text, / של נועם/,
+    'one profile needs no name — the parent knows whose list it is');
+  assert.equal(typeof linksCopyOutcome().text, 'string');
+});
+
+test('linksSectionsConfirm: every profile named with its share, every NEW profile named before it exists (v1.0.93)', () => {
+  const targets = [
+    { name: 'נועם', create: false, section: { counts: { channels: 2, playlists: 0, videos: 1 } } },
+    { name: 'מיכל', create: true, section: { counts: { channels: 0, playlists: 1, videos: 0 } } },
+    { name: 'דני', create: true, section: { counts: { channels: 0, playlists: 0, videos: 3 } } }
+  ];
+  const c = linksSectionsConfirm({ targets, activeName: 'נועם' });
+  assert.match(c.text, /3 פרופילים/);
+  assert.match(c.text, /נועם \(2 ערוצים, סרטון אחד\)/);
+  assert.match(c.text, /מיכל \(רשימת השמעה אחת\)/);
+  assert.match(c.text, /הפרופילים מיכל ודני לא קיימים כאן — הם ייווצרו/);
+  assert.match(c.text, /ימתינו לאישורכם/, 'a channel or playlist in the list ⇒ the approval rule is said');
+  assert.equal(c.ok, 'כל רשימה לפרופיל שלה');
+  assert.equal(c.third, 'הכול לנועם');
+  assert.ok(c.cancel);
+  const one = linksSectionsConfirm({ targets: [targets[0], targets[1]], activeName: '' });
+  assert.match(one.text, /הפרופיל מיכל לא קיים כאן — הוא ייווצר/);
+  assert.equal(one.third, 'הכול לפרופיל הפתוח');
+  const videosOnly = linksSectionsConfirm({ targets: [targets[2]] });
+  assert.doesNotMatch(videosOnly.text, /ימתינו/);
+  assert.equal(typeof linksSectionsConfirm({ targets: [null, { section: {} }, 'x'] }).text, 'string');
+  assert.equal(typeof linksSectionsConfirm().text, 'string');
+});
+
+test('linksSectionsOutcome: PER PROFILE, each zero names its cause, and a closed profile is told when (v1.0.93)', () => {
+  const r = linksSectionsOutcome({
+    results: [
+      { name: 'נועם', active: true, res: { channels: 1, videos: 2 } },
+      { name: 'מיכל', created: true, active: false, res: { channels: 2 } },
+      { name: 'דני', active: false, res: { existed: 4 } },
+      { name: 'רון', active: false, res: { skippedDenied: 1 } },
+      { name: 'גל', active: false, res: { failed: 1 } },
+      { name: 'טל', active: false, res: {} }
+    ],
+    pending: 3
+  });
+  assert.equal(r.ok, true);
+  assert.match(r.text, /נועם: נוספו ערוץ אחד, 2 סרטונים/);
+  assert.match(r.text, /מיכל \(פרופיל חדש\): נוספו 2 ערוצים/);
+  assert.match(r.text, /דני: הכול כבר היה בספרייה/);
+  assert.match(r.text, /רון: הכול הוסר בעבר/);
+  assert.match(r.text, /גל: המקורות לא זוהו/);
+  assert.match(r.text, /טל: לא נוסף כלום/);
+  assert.match(r.text, /3 סרטונים ממתינים לאישור/);
+  // only the CLOSED profile that got a channel is told its videos come on entry
+  assert.match(r.text, /הסרטונים מהערוצים של מיכל יגיעו כשנכנסים לפרופיל/);
+  assert.doesNotMatch(r.text, /של נועם יגיעו/);
+  // the note names the KIND that will fill — a playlist is not a channel
+  assert.match(linksSectionsOutcome({ results: [{ name: 'טל', active: false, res: { playlists: 1 } }] }).text,
+    /הסרטונים מהרשימות של טל יגיעו כשנכנסים לפרופיל/);
+  assert.match(linksSectionsOutcome({ results: [
+    { name: 'א', active: false, res: { channels: 1 } }, { name: 'ב', active: false, res: { playlists: 2 } }] }).text,
+    /הסרטונים מהערוצים ומהרשימות של א וב יגיעו כשנכנסים לכל פרופיל/);
+  const nothing = linksSectionsOutcome({ results: [{ name: 'א', res: { existed: 1 } }] });
+  assert.equal(nothing.ok, false);
+  assert.match(linksSectionsOutcome({ results: [{ name: 'א', res: { videos: 1 } }] }).text, /א: נוסף סרטון אחד/);
+  assert.equal(typeof linksSectionsOutcome().text, 'string');
 });
